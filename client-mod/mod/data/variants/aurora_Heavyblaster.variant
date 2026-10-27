@@ -1,0 +1,47 @@
+{
+    "displayName": "Heavyblaster",
+    "fluxCapacitors": 4,
+    "fluxVents": 35,
+    "goalVariant": true,
+    "hullId": "aurora",
+    "hullMods": [
+        "safetyoverrides",
+        "hardened_subsystems"
+    ],
+    "permaMods": [
+        "frontemitter",
+        "hardenedshieldemitter",
+        "fluxdistributor"
+    ],
+    "sMods": [
+        "frontemitter",
+        "hardenedshieldemitter",
+        "fluxdistributor"
+    ],
+    "variantId": "aurora_Heavyblaster",
+    "weaponGroups": [
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 003": "irpulse",
+                "WS 004": "irpulse",
+                "WS 005": "irpulse",
+                "WS 007": "heavyblaster",
+                "WS 008": "heavyblaster",
+                "WS 009": "heavyblaster",
+                "WS 013": "ioncannon"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 010": "swarmer",
+                "WS 011": "heatseeker",
+                "WS 012": "heatseeker"
+            }
+        }
+    ],
+    "wings": []
+}

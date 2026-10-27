@@ -1,0 +1,10 @@
+{
+    "displayName": "Shuttle Pod (AlphaCoreMP)",
+    "fluxCapacitors": 0,
+    "fluxVents": 0,
+    "goalVariant": true,
+    "hullId": "shuttlepod",
+    "hullMods": [],
+    "variantId": "shuttlepod_cc_pod",
+    "weaponGroups": []
+}

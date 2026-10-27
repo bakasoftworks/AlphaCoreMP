@@ -1,0 +1,12 @@
+{
+    "displayName": "Test drone_strike",
+    "fluxCapacitors": 10,
+    "fluxVents": 10,
+    "goalVariant": false,
+    "hullId": "tempest",
+    "hullMods": [],
+    "permaMods": [],
+    "sMods": [],
+    "variantId": "tempest_cc_sys_drone_strike",
+    "weaponGroups": []
+}

@@ -1,0 +1,35 @@
+{
+  "displayName": "Kinetic-blaster",
+  "fluxCapacitors": 0,
+  "fluxVents": 11,
+  "goalVariant": false,
+  "hullId": "tempest",
+  "hullMods": [
+    "hardenedshieldemitter",
+    "frontemitter",
+    "safetyoverrides",
+    "fluxdistributor"
+  ],
+  "permaMods": [
+    "hardenedshieldemitter",
+    "frontemitter",
+    "fluxdistributor"
+  ],
+  "quality": 1,
+  "sModdedBuiltIns": [],
+  "sMods": [
+    "hardenedshieldemitter",
+    "frontemitter",
+    "fluxdistributor"
+  ],
+  "variantId": "tempest_kinetic-blaster",
+  "weaponGroups": [{
+    "autofire": false,
+    "mode": "LINKED",
+    "weapons": {
+      "WS 001": "kineticblaster",
+      "WS 002": "kineticblaster"
+    }
+  }],
+  "wings": []
+}

@@ -1,0 +1,9 @@
+# The joiner kit ships ONLY these custom variant definitions (plus the packed match's own roster ones); every other custom variant reaches a player over the wire at join.
+# minted by package-joiner-kit.ps1 at every home roll; the release chain C2 row proves parity with the source kit
+aurora_Heavyblaster
+conquest_Broadside
+grendel_Hypervelocity
+hyperion_cc_Overdriven
+mudskipper2_cc_Hellbore
+onslaught_Hephaestus
+shuttlepod_cc_pod

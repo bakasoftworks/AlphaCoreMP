@@ -1,0 +1,6 @@
+{
+    "baseHullId": "shuttlepod",
+    "skinHullId": "shuttlepod_cc_sys_interdictor",
+    "hullName": "Test System interdictor",
+    "systemId": "interdictor"
+}

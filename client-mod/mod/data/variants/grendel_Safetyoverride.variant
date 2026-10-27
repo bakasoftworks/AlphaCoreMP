@@ -1,0 +1,46 @@
+{
+    "displayName": "SO",
+    "fluxCapacitors": 17,
+    "fluxVents": 10,
+    "goalVariant": true,
+    "hullId": "grendel",
+    "hullMods": ["safetyoverrides"],
+    "permaMods": [
+        "hardened_subsystems",
+        "adaptive_coils",
+        "armoredweapons"
+    ],
+    "sMods": [
+        "hardened_subsystems",
+        "adaptive_coils",
+        "armoredweapons"
+    ],
+    "variantId": "grendel_Safetyoverride",
+    "weaponGroups": [
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 000": "lightdualmg",
+                "WS 004": "lightdualmg",
+                "WS 005": "lightdualmg",
+                "WS 006": "lightdualmg",
+                "WS 010": "heavymg",
+                "WS 011": "heavymg",
+                "WS 012": "dualflak",
+                "WS 013": "chaingun",
+                "WS 014": "chaingun"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "ALTERNATING",
+            "weapons": {
+                "WS 007": "hammer",
+                "WS 008": "hammer",
+                "WS 009": "hammer"
+            }
+        }
+    ],
+    "wings": []
+}

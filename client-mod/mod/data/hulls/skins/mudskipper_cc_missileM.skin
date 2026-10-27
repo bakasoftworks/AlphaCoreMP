@@ -1,0 +1,22 @@
+{
+    "baseHullId": "mudskipper",
+    "skinHullId": "mudskipper_cc_missileM",
+    "hullName": "Test Firer missileM",
+    "hullDesignation": "Frigate",
+    "ordnancePoints": 120,
+    "removeHints": [
+        "CIVILIAN"
+    ],
+    "removeWeaponSlots": [
+        "WS 003"
+    ],
+    "weaponSlotChanges": {
+        "WS 002": {
+            "angle": 0,
+            "arc": 210,
+            "mount": "TURRET",
+            "size": "MEDIUM",
+            "type": "MISSILE"
+        }
+    }
+}

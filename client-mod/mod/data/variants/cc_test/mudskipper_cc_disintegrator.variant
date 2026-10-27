@@ -1,0 +1,20 @@
+{
+    "displayName": "Test disintegrator",
+    "fluxCapacitors": 10,
+    "fluxVents": 10,
+    "goalVariant": false,
+    "hullId": "mudskipper_cc_energyM",
+    "hullMods": [],
+    "permaMods": [],
+    "sMods": [],
+    "variantId": "mudskipper_cc_disintegrator",
+    "weaponGroups": [
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 002": "disintegrator"
+            }
+        }
+    ]
+}

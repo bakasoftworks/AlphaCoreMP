@@ -1,0 +1,58 @@
+{
+    "displayName": "Gauss",
+    "fluxCapacitors": 13,
+    "fluxVents": 55,
+    "goalVariant": true,
+    "hullId": "invictus",
+    "hullMods": ["fluxdistributor"],
+    "permaMods": [
+        "armoredweapons",
+        "turretgyros",
+        "fluxbreakers"
+    ],
+    "sMods": [
+        "armoredweapons",
+        "turretgyros",
+        "fluxbreakers"
+    ],
+    "variantId": "invictus_Gauss",
+    "weaponGroups": [
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 001": "gauss",
+                "WS 002": "gauss",
+                "WS 009": "gauss",
+                "WS 010": "gauss"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "ALTERNATING",
+            "weapons": {
+                "WS 004": "locust",
+                "WS 007": "locust"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 000": "hephag",
+                "WS 006": "hephag",
+                "WS 008": "mark9"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 003": "mark9",
+                "WS 005": "hephag",
+                "WS 026": "hephag"
+            }
+        }
+    ],
+    "wings": []
+}

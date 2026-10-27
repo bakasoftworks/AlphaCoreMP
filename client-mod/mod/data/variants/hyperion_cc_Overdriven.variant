@@ -1,0 +1,43 @@
+{
+    "displayName": "Reckless (AlphaCoreMP)",
+    "fluxCapacitors": 10,
+    "fluxVents": 1,
+    "goalVariant": true,
+    "hullId": "hyperion",
+    "hullMods": [
+        "extendedshieldemitter",
+        "hardenedshieldemitter",
+        "safetyoverrides",
+        "auxiliarythrusters",
+        "missleracks",
+        "stabilizedshieldemitter"
+    ],
+    "permaMods": [
+        "auxiliarythrusters",
+        "missleracks",
+        "stabilizedshieldemitter"
+    ],
+    "sMods": [
+        "auxiliarythrusters",
+        "missleracks",
+        "stabilizedshieldemitter"
+    ],
+    "variantId": "hyperion_cc_Overdriven",
+    "weaponGroups": [
+        {
+            "autofire": false,
+            "mode": "ALTERNATING",
+            "weapons": {
+                "WS 001": "heavyblaster",
+                "WS 002": "heavyblaster"
+            }
+        },
+        {
+            "autofire": false,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 003": "jackhammer"
+            }
+        }
+    ]
+}

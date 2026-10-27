@@ -1,0 +1,32 @@
+# CC_Client planets.json - ADDITIVE merge into the vanilla planet-spec map (top-level key = spec
+# id). NEVER list this file in mod_info fullOverrides: that would REPLACE the whole vanilla map
+# instead of merging into it.
+#
+# cc_chicomoztoc (added 2026-08-08): Chicomoztoc as the campaign renders it - the values of the
+# vanilla barren-desert spec + the glow the campaign applies to that world at runtime:
+# hab_glows/sindria texture, orange 255/128/16, reverse light. Consumed by
+# MatchMissionBuilder.backdropType() behind a spec-store presence check (fail-closed: unmerged
+# spec => plain barren-desert, the previously shipped behavior).
+{
+	"cc_chicomoztoc":{
+		"name":"Barren-Desert",
+		"tilt":20,
+		"pitch":-2,
+		"rotation":-5,
+		"planetColor":[255,255,255,255],
+		"atmosphereThickness":0.1,
+		"atmosphereThicknessMin":20,
+		"atmosphereColor":[165,140,115,140],
+		"texture":"graphics/planets/marslike.jpg",
+		"icon":"graphics/warroom/icon_planet.png",
+		"iconColor":[165,120,100,255],
+		"isStar":false,
+		"lightPosition":[1,2,8],
+		"cloudTexture":"graphics/planets/clouds_banded01.png",
+		"cloudColor":[220,160,100,220],
+		"cloudRotation":12,
+		"glowTexture":"graphics/planets/sindria_glow.png", # Chicomoztoc city-lights (hab_glows/sindria)
+		"glowColor":[255,128,16,255],
+		"useReverseLightForGlow":true,
+	},
+}

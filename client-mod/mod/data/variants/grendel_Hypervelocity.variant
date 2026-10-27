@@ -1,0 +1,58 @@
+{
+    "displayName": "HVD",
+    "fluxCapacitors": 0,
+    "fluxVents": 8,
+    "goalVariant": true,
+    "hullId": "grendel",
+    "hullMods": [
+        "hardened_subsystems",
+        "phase_anchor",
+        "escort_package"
+    ],
+    "permaMods": [
+        "armoredweapons",
+        "fluxcoil",
+        "missleracks"
+    ],
+    "sMods": [
+        "armoredweapons",
+        "fluxcoil",
+        "missleracks"
+    ],
+    "variantId": "grendel_Hypervelocity",
+    "weaponGroups": [
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 010": "hveldriver",
+                "WS 011": "hveldriver",
+                "WS 012": "hveldriver",
+                "WS 013": "hveldriver",
+                "WS 014": "hveldriver"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 005": "vulcan",
+                "WS 006": "vulcan"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "ALTERNATING",
+            "weapons": {
+                "WS 007": "breach",
+                "WS 009": "breach"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {"WS 008": "heatseeker"}
+        }
+    ],
+    "wings": []
+}

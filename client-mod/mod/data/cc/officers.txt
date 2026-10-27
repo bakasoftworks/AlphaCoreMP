@@ -1,0 +1,32 @@
+# CC officers table: the seat officers attached to fielded ships, one officer per line.
+# Decoded BOTH ends by cc.starsector.server.match.OfficerRosterCodec (shared parser); # lines and
+# blank lines are skipped. Row grammar:
+#   officer|<variantId>|<shipName>|<personality>|<portraitPath>|<level>|<skillId>=<level>,...
+# Skill level 2 = ELITE (engine setSkillLevel(id, 2f)).
+# Seat rows are keyed by variant id: when a default seat variant is swapped, its row is RE-KEYED to
+# the new id so the officer keeps attaching (seat 2 conquest_Broadside replaced aurora_cc_hvb2 on
+# 2026-08-24; seat 1 grendel_Hypervelocity replaced grendel_cc_hmg earlier - the HMG variant file
+# stays on disk but is no longer fielded by default; ids are case-sensitive).
+officer|conquest_Broadside|Mys Aurora 1|reckless|graphics/portraits/portrait_league07.png|6|systems_expertise=2,energy_weapon_mastery=2,field_modulation=2,helmsmanship=2,target_analysis=2,combat_endurance=2
+officer|grendel_Hypervelocity|Myn Grendel 1|reckless|graphics/portraits/portrait_league07.png|6|systems_expertise=2,point_defense=2,ballistic_mastery=2,helmsmanship=2,impact_mitigation=2,target_analysis=2
+# Fortress wave AI-core officer twins, integrated sets baked. Ground truth = the game's own AI-core
+# officer generation (gamma L3 / beta L5 / alpha L7, all skills elite, personality reckless,
+# portraits ai1b/ai3b/ai2b) plus the Remnant AI-fleet integration step: level+1, plus ONE
+# weapons-flavor elite skill from the PD/missile weight predicate; capitals additionally swap
+# combat_endurance -> polarized_armor. Levels below are the POST-integration values (4 / 6 / 8).
+officer|glimmer_cc_gamma|Wisp Gamma|reckless|graphics/portraits/portrait_ai1b.png|4|helmsmanship=2,impact_mitigation=2,combat_endurance=2,energy_weapon_mastery=2
+officer|fulgent_cc_gamma|Ember Gamma|reckless|graphics/portraits/portrait_ai1b.png|4|helmsmanship=2,impact_mitigation=2,combat_endurance=2,energy_weapon_mastery=2
+officer|fulgent_cc_beta|Ember Beta|reckless|graphics/portraits/portrait_ai3b.png|6|helmsmanship=2,target_analysis=2,impact_mitigation=2,gunnery_implants=2,combat_endurance=2,energy_weapon_mastery=2
+officer|brilliant_cc_beta|Halo Beta|reckless|graphics/portraits/portrait_ai3b.png|6|helmsmanship=2,target_analysis=2,impact_mitigation=2,gunnery_implants=2,combat_endurance=2,point_defense=2
+officer|brilliant_cc_alpha|Halo Alpha|reckless|graphics/portraits/portrait_ai2b.png|8|helmsmanship=2,target_analysis=2,impact_mitigation=2,field_modulation=2,gunnery_implants=2,combat_endurance=2,damage_control=2,point_defense=2
+officer|radiant_cc_alpha|Corona Alpha|reckless|graphics/portraits/portrait_ai2b.png|8|helmsmanship=2,target_analysis=2,impact_mitigation=2,field_modulation=2,gunnery_implants=2,damage_control=2,energy_weapon_mastery=2,polarized_armor=2
+# Fortress station alpha-core officer (commissioned 2026-07-29): the raw vanilla alpha set (level 7,
+# ai2b, reckless, 7 elite skills) - NOT the Remnant-integrated wave-twin values. Bare variant id
+# (no _cc_ twin): the station fields at ONE tier only; the engine fans the captain's skills to
+# every child module.
+officer|station3_Standard|Bastion Alpha|reckless|graphics/portraits/portrait_ai2b.png|7|helmsmanship=2,target_analysis=2,impact_mitigation=2,field_modulation=2,gunnery_implants=2,combat_endurance=2,damage_control=2
+# Station-family twins (2026-08-31): the same Bastion Alpha values keyed to the
+# midline (the new default) + hightech fortress variants - the officer lane keys by variantId,
+# so each fieldable station family needs its own row.
+officer|station3_midline_Standard|Bastion Alpha|reckless|graphics/portraits/portrait_ai2b.png|7|helmsmanship=2,target_analysis=2,impact_mitigation=2,field_modulation=2,gunnery_implants=2,combat_endurance=2,damage_control=2
+officer|station3_hightech_Standard|Bastion Alpha|reckless|graphics/portraits/portrait_ai2b.png|7|helmsmanship=2,target_analysis=2,impact_mitigation=2,field_modulation=2,gunnery_implants=2,combat_endurance=2,damage_control=2

@@ -1,0 +1,2 @@
+id,name,order,tier,reqPoints,reqPointsPerExtraSkill,description,author,combat officer,admiral,admin,tags,icon,
+cc_skills_all,SKILLS: ALL,9999,1,0,,"This captain holds every combat officer skill (all-skills lever). The full list is abbreviated to this single marker.",,TRUE,,,,graphics/icons/skills/best_of_the_best.png,

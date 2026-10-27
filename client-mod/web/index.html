@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Variant editor</title>
+<link rel="stylesheet" href="web/editor.css">
+<link rel="stylesheet" href="web/codex.css">
+</head>
+<body data-ready="0">
+<header id="bar">
+ <div class="brand"><span class="mark">AlphaCoreMP</span><span class="sub">variant editor</span></div>
+ <div class="title">
+  <h1 id="hullTitle">Pick a hull</h1>
+  <div id="hullSub" class="sub"></div>
+ </div>
+ <div id="verdict" class="verdict"></div>
+ <div class="hdrBtns">
+  <button id="codexBtn" type="button" title="the game's codex: ships, weapons, fighters, hullmods, systems, skills (F2)">Codex</button>
+  <button id="renderBtn" type="button" title="settings: how the ship is drawn, the panel layout — remembered on this machine">Settings</button>
+  <button id="keysBtn" type="button" title="keyboard and mouse shortcuts (?)">?</button>
+ </div>
+ <div class="save">
+  <div class="row">
+   <input id="name" type="text" maxlength="48" placeholder="variant name" autocomplete="off" spellcheck="false">
+   <button id="save" class="primary" disabled>Save</button>
+   <button id="svprm" class="primary" disabled hidden title="dev stage: save this build, then promote it into the mod catalog (live on /ship of an armed serve, a changed body re-fans; a stem the mod already ships updates only at the next roll)">Sv+Prm</button>
+   <button id="fly" disabled title="save this build and make it your next spawn (the current build — the join window picks it too)">Fly</button>
+   <button id="promoteTop" class="primary" hidden title="Promote adds your current build to /ship for every player, or replaces the ship you loaded it from once you change it">Promote</button>
+   <button id="sfx" class="link" title="refit sounds play on clicks and equips (hover ticks: Settings) — click to mute">Sound: on</button>
+   <input id="sfxVolHdr" type="range" min="0" max="100" step="5" title="refit cue volume — remembered on this machine (Settings has it too)">
+  </div>
+  <span id="saveResult" class="sub"></span>
+ </div>
+</header>
+<div id="banner" hidden>
+ <span class="icon">!</span>
+ <span id="bannerText"></span>
+ <button id="bannerMore" class="link" hidden>details</button>
+ <ul id="problems" hidden></ul>
+</div>
+<main id="editor">
+ <aside id="rail" tabindex="0">
+  <div class="railHead">
+   <input id="hullSearch" type="search" placeholder="Search hulls" autocomplete="off">
+   <div class="opts">
+    <label class="chk" title="list the hulls this server's tier refuses (greyed)"><input id="showDenied" type="checkbox"> denied hulls</label>
+    <label class="chk"><input id="compactRail" type="checkbox"> compact</label>
+    <label class="chk" title="the (D) hulls — damaged skins with their own sprites — shown in the list (they were always listed; off hides them)"><input id="showD" type="checkbox" checked> (D) hulls</label>
+   </div>
+  </div>
+  <details id="savedBox" class="saved" hidden><summary>Saved builds <span id="savedN" class="n"></span><span id="savedCurrent"></span></summary><div id="saved" class="scroll"></div></details>
+  <details id="serverBox" class="saved server" hidden><summary>Server builds <span id="serverN" class="n"></span><span id="serverNote"></span></summary><div id="server" class="scroll"></div></details>
+  <details id="catalogBox" class="saved catalog" hidden><summary><span id="catalogTitle">Mod catalog</span> <span id="catalogN" class="n"></span><span id="catalogNote"></span></summary><div id="catalog" class="scroll"></div></details>
+  <div id="hostDim" class="hostDim" hidden></div>
+  <div id="hulls" class="scroll"></div>
+ </aside>
+ <section id="stage">
+  <div id="stageWrap">
+   <canvas id="canvas" width="320" height="200"></canvas>
+   <div id="bays" class="bays" hidden></div>
+   <div id="crBox" class="crBox" hidden>
+    <div class="crHead"><span class="k">Combat readiness</span><button id="crReset" class="link" type="button" hidden title="back to the 100 % default">reset</button><span id="crText" class="v">100 %</span></div>
+    <div class="crBar"><input id="crRange" type="range" min="0" max="100" value="100" title="drag to preview the ship at this combat readiness (arrow keys ±1, Page Up / Page Down ±10) — the top speed, shield flux/dam and the rows below follow it"><div id="crTicks" class="ticks"></div></div>
+    <div id="crFx" class="crFx"></div>
+   </div>
+   <aside id="statsCol" class="statsCol" hidden></aside>
+   <div id="stageTip" class="tip" hidden></div>
+   <div id="stageEmpty" class="emptyStage">
+    <div class="h">Build a ship</div>
+    <ol>
+     <li><b>Pick a hull</b> on the left — the join window's tier decides which are allowed.</li>
+     <li><b>Click a mount</b> on the ship, then a weapon from the list. Hullmods, vents and capacitors live on the tabs.</li>
+     <li><b>Save</b> — the game checks every edit; a valid ship appears in the join window's variant picker.</li>
+    </ol>
+   </div>
+  </div>
+  <div id="stageHint" class="hint"></div>
+  <div id="budget">
+   <div class="opRow"><span class="k">Ordnance points</span><div class="meter op"><div id="opSegs" class="segs"></div></div><span id="opText" class="v">—</span><span class="smods"><span class="k">S-mods</span><span id="smodText" class="v">—</span></span></div>
+   <div class="sliders">
+    <div class="slider"><label id="ventsLabel" class="k" for="ventsRange">Vents</label><button id="ventsDown" class="step" type="button" disabled title="one vent off (hold: repeat · shift: ten)">−</button><input id="ventsRange" type="range" min="0" max="0" value="0"><button id="ventsUp" class="step" type="button" disabled title="one vent on, 1 OP (hold: repeat · shift: ten)">+</button><span id="ventsText" class="v">0</span><span id="ventsEff" class="eff" title="flux dissipation / sec with these vents (hullmods included)">—</span></div>
+    <div class="slider"><label id="capsLabel" class="k" for="capsRange">Capacitors</label><button id="capsDown" class="step" type="button" disabled title="one capacitor off (hold: repeat · shift: ten)">−</button><input id="capsRange" type="range" min="0" max="0" value="0"><button id="capsUp" class="step" type="button" disabled title="one capacitor on, 1 OP (hold: repeat · shift: ten)">+</button><span id="capsText" class="v">0</span><span id="capsEff" class="eff" title="flux capacity with these capacitors (hullmods included)">—</span></div>
+   </div>
+  </div>
+ </section>
+ <aside id="dock">
+  <nav id="tabs">
+   <button data-tab="arm" class="on">Weapons</button>
+   <button data-tab="groups" title="weapon groups: which group each weapon fires in, Linked / Alternating, autofire (the refit's Manage weapon groups dialog)">Groups</button>
+   <button data-tab="mods">Hullmods</button>
+   <button data-tab="ship">Ship</button>
+   <button data-tab="wings" hidden>Fighters</button>
+  </nav>
+  <section id="tab-arm" class="tab on">
+   <div id="slotHead" class="dockHead"></div>
+   <input id="weaponSearch" type="search" placeholder="Filter weapons" autocomplete="off">
+   <div id="weapons" class="scroll list"></div>
+  </section>
+  <section id="tab-groups" class="tab">
+   <div id="groups" class="groups scroll"></div>
+  </section>
+  <section id="tab-mods" class="tab">
+   <div class="dockHead"><input id="modSearch" type="search" placeholder="Filter hullmods" autocomplete="off"><label class="chk" title="list the d-mods the game allows on this ship (off: hidden, like the refit picker) — remembered on this machine"><input id="showDmods" type="checkbox"> d-mods</label><span id="modsNote" class="sub"></span></div>
+   <div id="mods" class="scroll grid"></div>
+  </section>
+  <section id="tab-ship" class="tab">
+   <div id="statsBody" class="scroll"></div>
+  </section>
+  <section id="tab-wings" class="tab">
+   <div id="bayHead" class="dockHead"></div>
+   <input id="wingSearch" type="search" placeholder="Filter wings" autocomplete="off">
+   <div id="wingsBody" class="scroll list wingList"></div>
+  </section>
+  
+
+
+
+
+  <div id="renderCard" class="renderCard" hidden>
+   <div class="keysHead"><h3>Settings</h3><button id="renderClose" type="button" class="link" title="close (Esc)">close</button></div>
+   
+
+   <h4>Sound</h4>
+   
+
+
+
+   <label class="chk" title="refit cue sounds on clicks and equips — on by default; the header's Sound link is the same switch"><span>Refit cue sounds</span><input id="sfxOn" type="checkbox"></label>
+   <label class="chk" title="the mouse-over tick on buttons, rows, controls and weapon mounts — off by default; remembered on this machine"><span>Hover ticks</span><input id="hoverTick" type="checkbox"></label>
+   <label class="chk sfxvol" title="every refit cue's volume (hover, click, equip) — remembered on this machine (the header's Sound link mutes them outright)"><span>Refit cue volume</span><input id="sfxVol" type="range" min="0" max="100" step="5"><span id="sfxVolN" class="n"></span></label>
+   <h4>Ship rendering</h4>
+   <p id="renderInfo"></p>
+   <div class="renderLaws">
+    <label><input type="radio" name="renderLaw" value="smooth"><b>Smooth</b><span>nearest-neighbour up to the next whole step, then smoothed down to size</span></label>
+    <label><input type="radio" name="renderLaw" value="block"><b>Crisp</b><span>the art resampled (Lanczos) by the smallest amount that reaches a whole step, then drawn nearest-neighbour at that step — regular pixels at the exact fit</span></label>
+    <label><input type="radio" name="renderLaw" value="lanczos"><b>Lanczos</b><span>a sharp windowed-sinc resample straight from the sprite — no pixel blocks, a faint ring at hard edges</span></label>
+    <label><input type="radio" name="renderLaw" value="half"><b>Half steps</b><span>nearest-neighbour at the half step below the fit (×1, ×1.5, ×2 …) — regular pixels; the ship may draw smaller</span></label>
+    <label><input type="radio" name="renderLaw" value="whole"><b>Whole steps</b><span>nearest-neighbour at whole steps only (×1, ×2 …), never a fractional upscale — the zoom steps by whole factors too</span></label>
+    <details id="renderMore" class="renderMore"><summary>more</summary>
+     <label><input type="radio" name="renderLaw" value="chunky"><b>Chunky</b><span>like Crisp, but always the bigger pixel block</span></label>
+     <label><input type="radio" name="renderLaw" value="box"><b>Box</b><span>the exact area average of the covered source pixels — softer</span></label>
+     <label><input type="radio" name="renderLaw" value="sharp"><b>Nearest</b><span>raw nearest-neighbour at the exact fit — hard pixels of uneven width</span></label>
+    </details>
+   </div>
+   <p class="renderFoot">A fit within 10 % of a whole step always draws pure nearest-neighbour; a downscale is always resampled smoothly. Your pick is remembered on this machine.</p>
+  </div>
+ </aside>
+</main>
+<main id="codex" hidden>
+ <aside id="cxLeft">
+  <div id="cxHead" class="cxHead"><img id="cxHeadIcon" alt="" hidden><span id="cxHeadTitle">Codex</span><span id="cxHeadN" class="n"></span><button id="cxClose" class="link" type="button" title="close the codex (Esc)">close</button></div>
+  <div id="cxList" class="scroll"></div>
+  <div id="cxNav" class="cxNav">
+   <button id="cxBack" type="button" title="back (Q or ←)">◀</button>
+   <button id="cxFwd" type="button" title="forward (W or →)">▶</button>
+   <button id="cxUp" type="button" title="up one level (E or ↑)">▲</button>
+   <button id="cxRand" type="button" title="a random entry (R)">⚄</button>
+   <button id="cxKeys" type="button" title="keyboard shortcuts (?)">?</button>
+   <input id="cxSearch" type="search" placeholder="Ctrl-F to search" autocomplete="off" spellcheck="false">
+  </div>
+ </aside>
+ <section id="cxMain">
+  <div id="cxDetail">
+   <div id="cxBody" class="cxBody scroll"></div>
+   <aside id="cxRelated" class="cxRelated scroll"></aside>
+  </div>
+  <div id="cxTags" class="cxTags"></div>
+ </section>
+</main>
+<footer id="foot">
+ <span id="ping">connecting…</span>
+ <span id="customVerdict" class="sub"></span>
+ <span id="gateNote"></span>
+ <span id="bytesWrap"><span id="bytes"></span><span id="bytesInfo" class="ig" hidden title="what this number is">i</span></span>
+ <span id="counts"></span>
+ <span id="draftHint" class="sub"></span>
+ <label>tier <select id="tier"><option value="strict">strict</option><option value="standard" selected>standard</option><option value="permissive">permissive</option></select></label>
+ <span id="tierNote" class="sub"></span>
+</footer>
+<div id="tip" hidden></div>
+<div id="ctxMenu" hidden></div>
+
+<div id="keysCard" class="keysCard" hidden>
+ <div class="keysBox" role="dialog" aria-label="keyboard and mouse shortcuts">
+  <div class="keysHead"><h3>Shortcuts</h3><button id="keysClose" type="button" class="link" title="close (Esc or ?)">close</button></div>
+  
+
+  <div class="keysCols">
+   <section>
+    <h4>Editor</h4>
+    <table>
+     <tr><td class="k">F2</td><td>the codex — over a hull, weapon, hullmod or wing row: that entry</td></tr>
+     <tr><td class="k">Esc</td><td>close the wing picker, else the weapon picker, else a hover panel</td></tr>
+     <tr><td class="k">Ctrl-Z / Ctrl-Y</td><td>undo / redo (hold: repeat)</td></tr>
+     <tr><td class="k">Ctrl-S</td><td>save</td></tr>
+     <tr><td class="k">click a mount</td><td>its weapon list · shift+click: the last weapon again · right-click: unarm</td></tr>
+     <tr><td class="k">click a weapon row</td><td>arm the selected mount · right-click a loadout or Groups row: unarm</td></tr>
+     <tr><td class="k">right-click a weapon row</td><td>fill the empty mounts of this size / every compatible mount · put it everywhere · remove it everywhere · favourite (pinned to the top) · codex — while the menu is open, 1–9 and 0 pick its rows</td></tr>
+     <tr><td class="k">shift+right-click a weapon row</td><td>take that weapon off the selected mount</td></tr>
+     <tr><td class="k">Tab / Shift+Tab</td><td>with a mount selected: the next / previous empty mount (large → small, by type, bow → stern; any mount once all are armed) · on Groups: the next row's picker</td></tr>
+     <tr><td class="k">Q / E</td><td>the previous / next panel tab</td></tr>
+     <tr><td class="k">W A S D</td><td>the nearest mount in that direction (the hull list keeps W / S while it has the focus)</td></tr>
+     <tr><td class="k">Space</td><td>Done in a weapon or wing picker · else open the wheel's row (the loadout, Groups or the bay list)</td></tr>
+     <tr><td class="k">click off a mount</td><td>on the ship, or on the panel's empty space: Done (the mount or bay is deselected)</td></tr>
+     <tr><td class="k">mouse 4 / 5</td><td>back / forward through the hulls, tabs and pickers you visited (in the codex: its own back / forward)</td></tr>
+     <tr><td class="k">↑ ↓ or W S</td><td>in the hull list: the previous / next hull</td></tr>
+    </table>
+   </section>
+   <section>
+    <h4 class="cont">Editor, continued</h4>
+    <table>
+     <tr><td class="k">click a hullmod</td><td>add → build in (S-mod) → remove · right-click: remove · shift+right-click: build in / un-build directly</td></tr>
+     <tr><td class="k">Groups: a number</td><td>move the weapon there · shift: every same weapon · click a group row: Linked ⇄ Alternating</td></tr>
+     <tr><td class="k">Vents / Capacitors</td><td>drag the slider · ± buttons (hold: repeat · shift: ten) · mouse wheel anywhere on the strip: the nearest row, one per tick (shift: ten)</td></tr>
+     <tr><td class="k">Ordnance points bar</td><td>one segment per item, biggest first, weapons in their mount colours · hover: what it is · click: its mount, hullmod or bay · right-click: take it off the ship · shift+click a hullmod: build it in</td></tr>
+     <tr><td class="k">wheel, a mount or bay selected</td><td>cycle that mount's weapon / that bay's wing — from anywhere on the page (the next / previous one that fits)</td></tr>
+     <tr><td class="k">wheel over a mount or bay</td><td>none selected: over a mount on the ship or its loadout row — select it and cycle · over a bay chip or row — cycle that bay's wing in place</td></tr>
+     <tr><td class="k">wheel, nothing selected</td><td>moves the row cursor of the open tab (the loadout, Groups, the bay list) from almost anywhere · Space: open its picker · the hull list, the vents / capacitors strip and the cards keep their own scroll</td></tr>
+     <tr><td class="k">shift + wheel over the ship</td><td>zoom the ship in / out (resets when you pick another hull)</td></tr>
+     <tr><td class="k">drag the ship</td><td>zoomed in past ×1.00: move it around the stage (it re-centres at ×1.00 or on another hull)</td></tr>
+     <tr><td class="k">Settings (header)</td><td>how the ship is drawn (whole pixel steps, crisp blocks, Lanczos …) — remembered on this machine</td></tr>
+     <tr><td class="k">Skills (stats column)</td><td>all captain skills and commander bonuses (deprecated ones excluded) applied to the numbers and ammo — the OP budget never moves</td></tr>
+     <tr><td class="k">Combat readiness</td><td>drag · arrow keys ±1 · Page Up / Down ±10</td></tr>
+     <tr><td class="k">?</td><td>this card</td></tr>
+    </table>
+   </section>
+   <section class="cx">
+    <h4>Codex</h4>
+    <div class="cxTables">
+    <table>
+     <tr><td class="k">Q or ←</td><td>back</td></tr>
+     <tr><td class="k">W or →</td><td>forward</td></tr>
+     <tr><td class="k">E or ↑</td><td>up one level</td></tr>
+     <tr><td class="k">R</td><td>a random entry</td></tr>
+     <tr><td class="k">Ctrl-F or /</td><td>search</td></tr>
+    </table>
+    <table>
+     <tr><td class="k">Esc</td><td>clear the search, else close the codex</td></tr>
+     <tr><td class="k">F2</td><td>close the codex (from the editor: open it)</td></tr>
+     <tr><td class="k">tag chips</td><td>click: toggle · ctrl-click: only this one</td></tr>
+     <tr><td class="k">dotted stat value</td><td>hover: what it means</td></tr>
+    </table>
+    </div>
+   </section>
+  </div>
+ </div>
+</div>
+<script src="web/stage-scale.js"></script>
+<script src="web/editor.js"></script>
+<script src="web/codex.js"></script>
+</body>
+</html>

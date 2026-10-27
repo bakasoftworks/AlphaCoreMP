@@ -1,0 +1,14 @@
+Location: Bastion Fortress
+Date: MP Test - Bastion Mode (V1)
+
+Play with other players in a large-scale battle defending humanity's last sanctum, Chicomoztoc, against attacking waves of Remnant forces.
+
+Launch the game through the joiner kit (join-cc.bat) so this mission can find
+the server. Selecting this mission only checks the server: the briefing below
+shows whether it is reachable and the default hull (select the mission again to
+refresh). Pressing Play connects you and claims your seat; your ship appears as
+soon as the server fields it. If the server is not up yet, your ship waits
+parked and joins the moment it answers; if the server refuses, the on-screen
+banner says why - leave with ESC and press Play again.
+
+Use the chat (ENTER) to speak to other players. Use slash commands to do things like changing your next respawn ship, transferring to another vessel or station module, or respawning yourself. (try /help for a list of commands)

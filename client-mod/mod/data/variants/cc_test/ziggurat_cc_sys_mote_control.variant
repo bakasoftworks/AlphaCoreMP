@@ -1,0 +1,12 @@
+{
+    "displayName": "Test mote_control",
+    "fluxCapacitors": 10,
+    "fluxVents": 10,
+    "goalVariant": false,
+    "hullId": "ziggurat",
+    "hullMods": [],
+    "permaMods": [],
+    "sMods": [],
+    "variantId": "ziggurat_cc_sys_mote_control",
+    "weaponGroups": []
+}

@@ -1,0 +1,10 @@
+{
+	# CC_Client settings overrides (merged over starsector-core/data/config/settings.json by the game's loader).
+	#
+	# idleWhileWindowNotVisible (vanilla true): the title-screen / paused-combat main loop sleeps and does NOT
+	# advance a frame while the game window is unfocused. The variant editor's hullmod checks run on the game
+	# thread, one per frame, and the editor is used in a browser — i.e. with the game window unfocused — so the
+	# vanilla value stalls every answer until the player clicks the game. OFF keeps the loop advancing while
+	# unfocused; the cost is title-screen CPU/GPU while alt-tabbed.
+	"idleWhileWindowNotVisible":false
+}

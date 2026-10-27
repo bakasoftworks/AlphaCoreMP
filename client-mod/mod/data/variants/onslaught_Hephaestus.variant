@@ -1,0 +1,86 @@
+{
+    "displayName": "Custom",
+    "fluxCapacitors": 6,
+    "fluxVents": 55,
+    "goalVariant": true,
+    "hullId": "onslaught",
+    "hullMods": [
+        "targetingunit",
+        "ballistic_rangefinder",
+        "heavyarmor"
+    ],
+    "permaMods": [
+        "armoredweapons",
+        "shield_shunt",
+        "magazines"
+    ],
+    "sMods": [
+        "armoredweapons",
+        "shield_shunt",
+        "magazines"
+    ],
+    "variantId": "onslaught_Hephaestus",
+    "weaponGroups": [
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 016": "tpc",
+                "WS 017": "tpc",
+                "WS 019": "multineedler"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 018": "hephag",
+                "WS 020": "hephag"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 001": "heavyneedler",
+                "WS 003": "heavyneedler",
+                "WS 007": "heavyneedler"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 010": "dualflak",
+                "WS 011": "dualflak",
+                "WS 012": "dualflak",
+                "WS 013": "dualflak",
+                "WS 014": "dualflak",
+                "WS 015": "dualflak"
+            }
+        },
+        {
+            "autofire": false,
+            "mode": "ALTERNATING",
+            "weapons": {
+                "WS 021": "sabotpod",
+                "WS 022": "sabotpod",
+                "WS 023": "sabotpod",
+                "WS 024": "sabotpod"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 002": "vulcan",
+                "WS 004": "vulcan",
+                "WS 005": "vulcan",
+                "WS 006": "vulcan",
+                "WS 008": "vulcan",
+                "WS 009": "vulcan"
+            }
+        }
+    ],
+    "wings": []
+}

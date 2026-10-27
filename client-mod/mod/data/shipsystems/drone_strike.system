@@ -1,0 +1,11 @@
+{
+	# AlphaCoreMP: only the statsScript differs from the game's own drone_strike.system - the game
+	# merges this file onto its own key by key, so every other setting stays the game's. In a
+	# served match the piloted carrier's fighters are server-driven replicas, so the vanilla
+	# script's drone walk is empty and the system reads NO DRONES; the subclass counts those
+	# replicas as the drones and leaves the conversion to the server. Every other ship (and the
+	# server itself) runs the vanilla body unchanged. See the class doc of
+	# cc.starsector.client.CcDroneStrikeStats.
+	"id":"drone_strike",
+	"statsScript":"cc.starsector.client.CcDroneStrikeStats"
+}

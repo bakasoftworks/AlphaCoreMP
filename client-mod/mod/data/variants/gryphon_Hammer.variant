@@ -1,0 +1,44 @@
+{
+    "displayName": "Hammer",
+    "fluxCapacitors": 0,
+    "fluxVents": 18,
+    "goalVariant": true,
+    "hullId": "gryphon",
+    "hullMods": [
+        "safetyoverrides",
+        "unstable_injector",
+        "missile_autoloader"
+    ],
+    "permaMods": [
+        "missleracks",
+        "extendedshieldemitter",
+        "hardenedshieldemitter"
+    ],
+    "sMods": [
+        "missleracks",
+        "extendedshieldemitter",
+        "hardenedshieldemitter"
+    ],
+    "variantId": "gryphon_Hammer",
+    "weaponGroups": [
+        {
+            "autofire": false,
+            "mode": "ALTERNATING",
+            "weapons": {
+                "WS 001": "hammerrack",
+                "WS 010": "hammer",
+                "WS 011": "hammer",
+                "WS 012": "hammer"
+            }
+        },
+        {
+            "autofire": false,
+            "mode": "ALTERNATING",
+            "weapons": {
+                "WS 008": "sabotpod",
+                "WS 009": "sabotpod"
+            }
+        }
+    ],
+    "wings": []
+}

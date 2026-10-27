@@ -1,0 +1,63 @@
+{
+    "displayName": "Broadside",
+    "fluxCapacitors": 4,
+    "fluxVents": 55,
+    "goalVariant": true,
+    "hullId": "conquest",
+    "hullMods": [
+        "targetingunit",
+        "shield_shunt",
+        "ballistic_rangefinder",
+        "auxiliarythrusters"
+    ],
+    "permaMods": [
+        "turretgyros",
+        "armoredweapons",
+        "magazines"
+    ],
+    "sMods": [
+        "turretgyros",
+        "armoredweapons",
+        "magazines"
+    ],
+    "variantId": "conquest_Broadside",
+    "weaponGroups": [
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 011": "multineedler",
+                "WS 012": "multineedler",
+                "WS 015": "dualflak",
+                "WS 016": "chaingun"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 013": "multineedler",
+                "WS 014": "multineedler",
+                "WS 017": "dualflak",
+                "WS 018": "chaingun"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 001": "locust",
+                "WS 002": "locust"
+            }
+        },
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 019": "phasecl",
+                "WS 020": "phasecl"
+            }
+        }
+    ],
+    "wings": []
+}

@@ -1,0 +1,6 @@
+{
+    "baseHullId": "shuttlepod",
+    "skinHullId": "shuttlepod_cc_sys_mine_strike",
+    "hullName": "Test System mine_strike",
+    "systemId": "mine_strike"
+}

@@ -1,0 +1,52 @@
+{
+  "displayName": "Antimatter-SRM",
+  "fluxCapacitors": 32,
+  "fluxVents": 0,
+  "goalVariant": false,
+  "hullId": "doom",
+  "hullMods": [
+    "magazines",
+    "fluxcoil",
+    "targetingunit",
+    "missleracks",
+    "eccm"
+  ],
+  "permaMods": [
+    "fluxcoil",
+    "targetingunit",
+    "magazines"
+  ],
+  "quality": 1,
+  "sModdedBuiltIns": [],
+  "sMods": [
+    "fluxcoil",
+    "targetingunit",
+    "magazines"
+  ],
+  "variantId": "doom_antimatter-srm",
+  "weaponGroups": [
+    {
+      "autofire": true,
+      "mode": "LINKED",
+      "weapons": {
+        "WS 007": "amblaster",
+        "WS 008": "amblaster",
+        "WS 011": "amblaster",
+        "WS 012": "amblaster"
+      }
+    },
+    {
+      "autofire": false,
+      "mode": "LINKED",
+      "weapons": {
+        "WS 001": "amsrm",
+        "WS 002": "amsrm",
+        "WS 003": "amsrm",
+        "WS 004": "amsrm",
+        "WS 005": "amsrm",
+        "WS 006": "amsrm"
+      }
+    }
+  ],
+  "wings": []
+}

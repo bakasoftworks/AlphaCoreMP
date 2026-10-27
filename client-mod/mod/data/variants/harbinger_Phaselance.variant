@@ -1,0 +1,33 @@
+{
+    "displayName": "Custom",
+    "fluxCapacitors": 19,
+    "fluxVents": 0,
+    "goalVariant": true,
+    "hullId": "harbinger",
+    "hullMods": [
+        "advancedoptics",
+        "targetingunit",
+        "phase_anchor"
+    ],
+    "permaMods": [
+        "armoredweapons",
+        "fluxcoil",
+        "escort_package"
+    ],
+    "sMods": [
+        "armoredweapons",
+        "fluxcoil",
+        "escort_package"
+    ],
+    "variantId": "harbinger_Phaselance",
+    "weaponGroups": [{
+        "autofire": false,
+        "mode": "LINKED",
+        "weapons": {
+            "WS 001": "phasebeam",
+            "WS 002": "phasebeam",
+            "WS 003": "phasebeam"
+        }
+    }],
+    "wings": []
+}

@@ -1,0 +1,43 @@
+{
+	# A d-mod-FREE Mudskipper Mk II for served duels: same shape as the vanilla mudskipper2.skin (base
+	# hull, sprite, LARGE BALLISTIC WS 002 hardpoint, civilian removals) but it OMITS the "ill_advised"
+	# built-in d-mod ("Ill-Advised Modifications" — a chance of critical weapon/engine malfunction when
+	# stressed). The malfunction is RNG-driven, so the predicting client (real local engine) and the
+	# authoritative server would jam at different times and desync the duel; a mod-defined variant keeps
+	# both sides on identical ship data.
+	#
+	# Based on "mudskipper" (the real .ship hull), NOT on the "mudskipper2" skin — vanilla never skins a
+	# skin. Base mudskipper contributes the "civgrade" built-in; this skin adds only "comp_storage",
+	# giving the effective built-ins [civgrade, comp_storage].
+	"baseHullId":"mudskipper",
+	"skinHullId":"mudskipper2_cc",
+	"hullName":"Mudskipper Mk.II",
+	"hullDesignation":"Frigate",
+	"fleetPoints":4,
+	"ordnancePoints":30,
+	#"systemId":"",
+	"descriptionPrefix":"A dockyard refit tuned for sparring duels: the usual haphazard conversion work has been redone to spec, trading nasty surprises for predictability. What this gun platform lost in character it repays in honest, repeatable performance - exactly what you want when the fight itself is the experiment.",
+	"tags":["pirate_bp"],
+	"tech":"Pirate",
+	"spriteName":"graphics/ships/mudskipper/mudskipper2.png",
+	"baseValueMult":2,
+	"removeHints":[CIVILIAN],
+	#"addHints":[],
+	"removeWeaponSlots":["WS 003"], 	# ids
+	"removeEngineSlots":[], 			# indices, as engine slots have no id in the .ship file
+	"removeBuiltInMods":["ill_advised"],	# belt-and-suspenders: base mudskipper has none, so this is a no-op,
+											# but it documents intent and guards if the base ever gains it
+	"removeBuiltInWeapons":[], 			# weapon slot ids
+	"builtInMods":["comp_storage"],		# NB: NO "ill_advised" (the vanilla mudskipper2 adds it here)
+	"builtInWeapons":{
+    },
+    "weaponSlotChanges":{
+		"WS 002":{
+			#"angle": 0,
+            #"arc": 210,
+            "mount": "HARDPOINT",
+            "size": "LARGE",
+            "type": "BALLISTIC"
+		}
+	},
+}

@@ -1,0 +1,20 @@
+{
+    "displayName": "Test gorgonpod",
+    "fluxCapacitors": 10,
+    "fluxVents": 10,
+    "goalVariant": false,
+    "hullId": "mudskipper_cc_missileM",
+    "hullMods": [],
+    "permaMods": [],
+    "sMods": [],
+    "variantId": "mudskipper_cc_gorgonpod",
+    "weaponGroups": [
+        {
+            "autofire": true,
+            "mode": "LINKED",
+            "weapons": {
+                "WS 002": "gorgonpod"
+            }
+        }
+    ]
+}

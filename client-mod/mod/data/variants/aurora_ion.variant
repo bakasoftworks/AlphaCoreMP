@@ -1,0 +1,51 @@
+{
+  "displayName": "Ion",
+  "fluxCapacitors": 0,
+  "fluxVents": 20,
+  "goalVariant": false,
+  "hullId": "aurora",
+  "hullMods": [
+    "safetyoverrides",
+    "hardened_subsystems",
+    "frontemitter",
+    "hardenedshieldemitter",
+    "magazines"
+  ],
+  "permaMods": [
+    "frontemitter",
+    "hardenedshieldemitter",
+    "magazines"
+  ],
+  "quality": 1,
+  "sModdedBuiltIns": [],
+  "sMods": [
+    "frontemitter",
+    "hardenedshieldemitter",
+    "magazines"
+  ],
+  "variantId": "aurora_ion",
+  "weaponGroups": [
+    {
+      "autofire": true,
+      "mode": "LINKED",
+      "weapons": {
+        "WS 003": "ioncannon",
+        "WS 004": "ioncannon",
+        "WS 005": "ioncannon",
+        "WS 007": "ionpulser",
+        "WS 008": "ionpulser",
+        "WS 009": "ionpulser",
+        "WS 010": "ioncannon",
+        "WS 011": "ioncannon",
+        "WS 012": "ioncannon",
+        "WS 013": "ioncannon"
+      }
+    },
+    {
+      "autofire": false,
+      "mode": "LINKED",
+      "weapons": {"WS 006": "sabotpod"}
+    }
+  ],
+  "wings": []
+}

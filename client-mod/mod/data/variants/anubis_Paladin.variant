@@ -1,0 +1,34 @@
+{
+    "displayName": "Paladin",
+    "fluxCapacitors": 20,
+    "fluxVents": 35,
+    "goalVariant": true,
+    "hullId": "anubis",
+    "hullMods": [
+        "targetingunit",
+        "advancedoptics",
+        "escort_package",
+        "frontemitter"
+    ],
+    "permaMods": [
+        "turretgyros",
+        "armoredweapons",
+        "magazines"
+    ],
+    "sMods": [
+        "turretgyros",
+        "armoredweapons",
+        "magazines"
+    ],
+    "variantId": "anubis_Paladin",
+    "weaponGroups": [{
+        "autofire": true,
+        "mode": "LINKED",
+        "weapons": {
+            "WS 000": "guardian",
+            "WS 001": "guardian",
+            "WS 002": "guardian"
+        }
+    }],
+    "wings": ["broadsword_wing"]
+}

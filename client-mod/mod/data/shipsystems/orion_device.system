@@ -1,0 +1,11 @@
+{
+	# AlphaCoreMP: only the statsScript differs from the game's own orion_device.system - the game
+	# merges this file onto its own key by key, so every other setting stays the game's. In a
+	# served match every other ship's bomb arrives from the server, so on those ships the subclass
+	# spawns no local bomb (that would be a second blast and a second shove) and plays the vanilla
+	# blast particles and jitter on the served bomb instead. Your own ship, a match without a
+	# server, and the server itself run the vanilla body unchanged. See the class doc of
+	# cc.starsector.client.CcWrapOrionDeviceStats.
+	"id":"orion_device",
+	"statsScript":"cc.starsector.client.CcWrapOrionDeviceStats"
+}

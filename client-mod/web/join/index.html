@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaCoreMP - Join Multiplayer Match</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body data-state="loading">
+<header id="bar">
+ <div class="brand"><span class="mark">AlphaCoreMP</span><span class="sub">multiplayer</span></div>
+ <div class="title"><h1>Join a match</h1><div class="sub">connect - pick a ship - launch</div></div>
+ <div id="status" class="status">connecting to the join window...</div>
+</header>
+<main id="page">
+<div id="form" class="card">
+ <section id="connect" class="col">
+  <h2>Connect</h2>
+  <div class="row top">
+   <label for="paste">Paste</label>
+   <textarea id="paste" rows="1" placeholder="connect code (address:port:password)" autocomplete="off" spellcheck="false"></textarea>
+  </div>
+  <div id="pasteHint" class="line">Paste the connect code the host sent</div>
+  <div id="pasteStatus" class="line"></div>
+  <div class="row">
+   <label for="host">Address</label>
+   <input id="host" type="text" size="22" autocomplete="off" spellcheck="false">
+   <label for="port" class="inline">Port</label>
+   <input id="port" type="text" size="6" inputmode="numeric" autocomplete="off">
+  </div>
+  <div class="row">
+   <label for="password">Password</label>
+   <input id="password" type="password" size="30" autocomplete="off">
+  </div>
+  <div id="passwordHint" class="line"></div>
+  <div class="row">
+   <label for="name">Name</label>
+   <input id="name" type="text" size="22" maxlength="24" autocomplete="off" spellcheck="false">
+   <span class="hint">optional, shown over your ship</span>
+  </div>
+  <div id="kit" class="line"></div>
+  <div id="ready" class="line"></div>
+ </section>
+ <section id="fly" class="col">
+  <h2>Fly</h2>
+  <div class="row">
+   <label for="shipBtn">Ship</label>
+   <div id="shipCombo" class="combo">
+    <button id="shipBtn" type="button" class="comboBtn" aria-haspopup="listbox" aria-expanded="false" aria-controls="shipList"><span id="shipVal"></span><span class="caret"></span></button>
+    <input id="ship" type="hidden">
+    <div id="shipPop" class="comboPop" hidden>
+     <input id="shipSearch" type="search" placeholder="search ships - or type an id" autocomplete="off" spellcheck="false">
+     <div id="shipList" class="scroll list" role="listbox" aria-label="ship"></div>
+    </div>
+   </div>
+   <button id="refresh" type="button">Refresh</button>
+  </div>
+  <div id="teamRow" class="row" role="radiogroup" aria-label="Team" hidden>
+   <label>Team</label>
+   <label class="check inline"><input type="radio" name="team" value="0" checked> Let the server pick</label>
+   <label class="check inline"><input type="radio" name="team" value="1"> South team</label>
+   <label class="check inline"><input type="radio" name="team" value="2"> North team</label>
+  </div>
+  <div id="shipStatus" class="line"></div>
+  <div id="docLine" class="line"></div>
+  <div id="build" class="line"></div>
+  <div id="customs" class="rows" hidden></div>
+  <div id="verdicts" class="rows" hidden></div>
+  <div id="modsLine" class="line"></div>
+  <div id="mods" class="rows" hidden></div>
+  <div class="row">
+   <label></label>
+   <button id="edit" type="button">Open editor</button>
+   <span id="editHint" class="hint">launch first - the editor opens from the running game</span>
+  </div>
+ </section>
+ <details id="options" class="col wide" open>
+  <summary>Options<span class="sub">microphone, session report</span></summary>
+  <div class="row wrap">
+   <label for="mic">Microphone</label>
+   <select id="mic"><option value="0">System default</option></select>
+   <label class="check inline"><input id="micOn" type="checkbox"> Enable microphone</label>
+   <label for="gain" class="inline">Volume</label>
+   <input id="gain" type="range" min="0" max="200" value="100">
+   <span id="gainLabel" class="hint">100%</span>
+   <label for="quality" class="inline">Quality</label>
+   <select id="quality"><option value="">server default</option></select>
+   <button id="voiceTest" type="button">Test</button>
+   <progress id="level" max="100" value="0"></progress>
+  </div>
+  <div id="voiceStatus" class="line"></div>
+  <label class="check"><input id="logs" type="checkbox" checked> Save a session report zip on the Desktop (helps the host debug)</label>
+ </details>
+</div>
+<section id="face" class="card col" hidden>
+ <div id="facePick" class="pick"></div>
+ <div id="facePurpose" class="purpose"></div>
+ <div id="faceLine" class="line0"></div>
+ <div id="faceHint" class="hint wrap"></div>
+ <div class="row">
+  <button id="openEditor" type="button" disabled>Open editor</button>
+  <span class="hint">enabled once the title screen is up</span>
+ </div>
+</section>
+<footer id="foot" class="card">
+ <div id="note" class="note"></div>
+ <button id="launch" type="button" class="primary" disabled>Launch</button>
+ <button id="cancel" type="button">Cancel</button>
+</footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
