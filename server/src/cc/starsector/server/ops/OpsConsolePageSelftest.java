@@ -390,7 +390,8 @@ public final class OpsConsolePageSelftest {
     }
 
     /**
-     * {@code page-quit} (the owner, live 2026-10-27: "i STILL dont know how to actually *exit* the ops GUI"): ONE
+     * {@code page-quit} (the page offers a visible way to exit the console):
+     * ONE
      * {@code #btn-quit} button in {@code #nav} after {@code #theme-toggle}, its help row {@code tip-quit} once, the
      * script binds it and posts {@code /api/quit}; the no-key page and {@code #help-token} tell the double-click
      * way in (a second {@code ops-web.bat} opens the RUNNING ops GUI's page with its key).

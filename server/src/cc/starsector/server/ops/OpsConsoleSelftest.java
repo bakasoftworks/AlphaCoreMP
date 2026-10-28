@@ -280,8 +280,8 @@ final class OpsConsoleSelftest {
     }
 
     /**
-     * {@code console-running-card} (the owner, live 2026-10-27: "shouldnt it be easy for the user to find whatever is
-     * open"):
+     * {@code console-running-card} (a user finds the console that is already open):
+     *
      * the running card written and read back while its pid (this JVM) is ALIVE; no card, a dead pid's card, a
      * malformed card and an out-of-range port each read null; {@link OpsConsole#reopenRunning} on a Windows terminal
      * prints the KEYED address and spawns ONE browser (exit 0), off a terminal prints the file hint with no key and

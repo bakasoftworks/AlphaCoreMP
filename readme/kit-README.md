@@ -15,6 +15,8 @@ For players who know their way around - everything here is covered in full below
 5. In the match: Enter opens chat, `/help` lists the keys, and with "Enable microphone" on you hold "B" to talk to everyone or "Space" to talk to players near you. F9 marks a bug in the logs. When the game closes, the black window offers R to rejoin.
 6. For a new kit: delete `mods\CC_Client`, copy in the new one, run `join-cc.bat` again.
 
+Problems or questions: open an issue at https://github.com/bakasoftworks/AlphaCoreMP/issues (say which version you run and, if applicable, attach your session report, see "The session report" below).
+
 ## Contents
 
 - [What you need](#what-you-need), [Set up the kit (once)](#set-up-the-kit-once), [Join a match](#join-a-match), [Next time](#next-time), [In the match](#in-the-match), [After the game closes](#after-the-game-closes), [When the host changes the match](#when-the-host-changes-the-match), [Your own ship builds (optional)](#your-own-ship-builds-optional), [If something goes wrong](#if-something-goes-wrong)

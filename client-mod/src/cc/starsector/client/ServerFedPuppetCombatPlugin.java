@@ -411,8 +411,8 @@ public class ServerFedPuppetCombatPlugin extends BaseEveryFrameCombatPlugin {
      * <p>The "server-owned + real death" direction:
      * the kill-vs-departure FX split the earlier comment deferred is now made. A
      * {@code DESTROYED} despawn drives a <em>real in-game death</em> — explosion + a drifting
-     * hulk corpse — instead of the old instant {@link CombatEngineAPI#removeEntity} vanish the
-     * owner flagged as unrealistic ("ships leave corpses, they don't disappear"). The puppet is
+     * hulk corpse — instead of the old instant {@link CombatEngineAPI#removeEntity} vanish, which
+     * read as unrealistic: ships leave corpses. The puppet is
      * immune to LOCAL combat ({@link CollisionClass#NONE}, see {@link #makeServerOwned}), but
      * {@code applyDamage} is direct, so the SERVER's death still lands: restore normal collision
      * so the wreck behaves like any corpse, force a hulk so a corpse is guaranteed, then apply

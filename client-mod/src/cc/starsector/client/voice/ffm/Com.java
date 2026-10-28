@@ -28,7 +28,7 @@ import static java.lang.foreign.ValueLayout.JAVA_SHORT;
  * toolchain and rides the mod jar inertly on the stock Zulu-17 game JVM — the ONLY 17-side
  * reference is one {@code invokestatic} in {@code VoiceSinkFactory} whose declared types are all
  * 17 types, so a 17 JVM never loads any class here (lazy resolution, JVMS section 5.4.3.3). Nothing in
- * this package may be named as a field/local/cast/catch type by 17-compiled code.
+ * this package may be named as a field, local-variable, cast or catch type by 17-compiled code.
  *
  * <p>NATIVE-SEAM LAW (crash-class, not
  * machine-class): nothing externally derived crosses this boundary except inert PCM sample

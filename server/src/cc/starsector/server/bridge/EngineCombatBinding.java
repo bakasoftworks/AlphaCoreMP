@@ -149,7 +149,7 @@ public final class EngineCombatBinding {
      * script force-disable flag (a Threat fragment mount short of
      * members reads disabled every frame, {@code BaseFragmentMissileEffect.advance}); the
      * replica reconciles that bit against its OWN local swarm count, which diverges (launches never
-     * drain it) ⇒ the hive's disable()/repair() edge flicker (flight {@code 003637} T1). With this
+     * drain it) ⇒ the hive's disable()/repair() edge flicker. With this
      * handle bound the wire bit means engine-disabled (EMP / mount damage) only; the replica's own
      * vanilla {@code advance} keeps authoring the force-look from the local count, as vanilla shows.
      */

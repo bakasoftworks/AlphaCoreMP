@@ -130,8 +130,8 @@ public final class OpsConsole {
     /** The per-folder console lock under the package's {@code run/} ({@link #takeConsoleLock}). */
     static final String CONSOLE_LOCK_FILE = "console.lock";
     /**
-     * The running console's card under {@code run/} ({@link #writeRunningCard}; the owner, live 2026-10-27: "how do
-     * i know it is already open"): {@code pid=} {@code port=} {@code since=} {@code pack=}, one per line, written after the
+     * The running console's card under {@code run/} ({@link #writeRunningCard}; it tells a user a console is already
+     * open): {@code pid=} {@code port=} {@code since=} {@code pack=}, one per line, written after the
      * boot and removed by a confirmed Close ops GUI ({@link #handleQuit}). A second console that finds the lock held
      * reads it ({@link #runningConsole}) and, when that pid is alive, opens the RUNNING page instead of refusing
      * ({@link #reopenRunning}). A stale card (a crash, a killed window) is harmless: the lock is free then, so the
@@ -855,8 +855,8 @@ public final class OpsConsole {
     }
 
     /**
-     * A second console on a folder whose console is RUNNING (the owner, live 2026-10-27: "shouldnt it be easy for
-     * the user to find whatever is open"): one row names the holder, one sentence says what happens, then the running page
+     * A second console on a folder whose console is RUNNING (it leads the user to the console already open):
+     * one row names the holder, one sentence says what happens, then the running page
      * is opened the way a fresh start opens it ({@link #printAddress}'s law: a terminal gets the keyed address and
      * ONE browser spawn on Windows; a redirected stdout gets the file hint, never the key). Nothing of the folder
      * is touched: the card and the key are READ, the lock stays the holder's.
@@ -3563,7 +3563,8 @@ public final class OpsConsole {
     }
 
     /**
-     * Close ops GUI (the owner, live 2026-10-27: "i STILL dont know how to actually *exit* the ops GUI"): {@code POST
+     * Close ops GUI (the page's own visible way to exit the console):
+     * {@code POST
      * /api/quit}, keyed like every route, ONE server-minted confirm ({@link #QUIT_KEY}; the page's dialog shows
      * {@link #QUIT_ASK}); then the running card is removed, {@code cc-console quit=page} is printed, the ok answer
      * ({@link #QUIT_DETAIL}) is written and {@link #quitHook} ends the JVM after it ({@link #QUIT_LIVE}); the lock

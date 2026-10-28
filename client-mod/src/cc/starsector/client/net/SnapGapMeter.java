@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicLongArray;
  * of that design kept; the smoother itself is CLOSED by a standing rule: no foe
  * delay, ever). ZERO behavior change: nothing reads this but log rows.
  *
- * <p>WHY a gap histogram and not the existing gauges: flight {@code 200417} carried 13 wire
+ * <p>WHY a gap histogram and not the existing gauges: one test flight carried 13 wire
  * stalls of 68–145 ms while {@code jitter_ewma_ms} read 1.56 (an α=0.1 EWMA over 60 arrivals/s
  * smooths a 6-tick hole to noise) and {@code reader_gap_max_ms} is pinned by one cold-start
  * outlier for the flight. The 33–67 ms class ({@code foe_skip_frames} minus the SUSPEND-class

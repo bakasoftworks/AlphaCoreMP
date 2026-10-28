@@ -12,8 +12,8 @@ import java.util.List;
  * decision both ends iterate (game-free; client build.ps1 allowlist), pinned by
  * {@code OfficerRoutingContractRows}.
  *
- * <p>The owner law it encodes: "the player's skills should stay attached wherever the
- * seat goes" — try the FIELDED variant's curated row first (a {@code /ship} pick with its own
+ * <p>The law it encodes: the player's skills stay attached wherever the seat goes
+ * — try the FIELDED variant's curated row first (a {@code /ship} pick with its own
  * row keeps the variant-tuned officer), and only for a SEAT whose fielded variant differs
  * from its descriptor variant, fall back to the seat's DESCRIPTOR row. Non-seat hulls stay
  * strict-variant. A hit at index &gt; 0 is the TRANSFER lane (each end logs it in its own

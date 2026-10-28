@@ -12,7 +12,7 @@ import java.util.Set;
 /**
  * The yellow-map-arrows fix. The warroom draws a 2000-unit
  * RETREAT band for every deployed side-0 member whose
- * task-manager ORDERS read RETREAT. Flight {@code 220556} refuted the direct-order model:
+ * task-manager ORDERS read RETREAT. One test flight refuted the direct-order model:
  * every banded hull read {@code direct=false locked=true} — the writer was
  * {@code instantiateForCombat}'s {@code !canBeDeployedForCombat()} check on a zero-crew factory member, i.e.
  * {@code CombatTaskManager}'s LOCK-derived RETREAT, fixed at the mint

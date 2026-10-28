@@ -42,7 +42,7 @@ import java.util.stream.Stream;
  * {@code classes/} and {@code jre/} stand-ins, both settings templates, the {@code match-defaults/} standing pair and
  * one shipped shape pair, a kit zip stand-in under {@code kits/}, and a {@code MANIFEST.txt} rendered by
  * {@link PackageManifest#render} with {@code pack.stamp}, {@code git.head}, {@code kit.jar.md5} and
- * {@code pack.kit}. A folder is "updated" the way a host updates one: the next release's files are written over it
+ * {@code pack.kit} (the kit-verdict rows add {@code kit.fingerprint}). A folder is "updated" the way a host updates one: the next release's files are written over it
  * (nothing is deleted, as the operating system's unzip does), then the folder is started again. Every host-facing
  * line a row expects is spelled here, never read from the repair, so a reworded line flips its row; the fixture
  * hashes with its own digest, so a broken hash in the repair cannot agree with itself.
@@ -63,6 +63,7 @@ public final class PackageRepairSelftest {
     private static final String JAR_V1 = "11111111111111111111111111111111";
     private static final String JAR_V2 = "22222222222222222222222222222222";
     private static final String DATA = "0123456789abcdef0123456789abcdef";
+    private static final String DATA_V2 = "fedcba9876543210fedcba9876543210";
     private static final String STD_ID = "std-1v1";
     private static final String DUEL_ID = "duel-1";
     private static final String MINE_ID = "mine-7";
@@ -118,6 +119,9 @@ public final class PackageRepairSelftest {
         row("pkg-repair-merge-launcher-reader", PackageRepairSelftest::mergeLauncherReader);
         row("pkg-repair-rekey", PackageRepairSelftest::rekey);
         row("pkg-repair-rekey-kit-unreadable", PackageRepairSelftest::rekeyKitUnreadable);
+        row("pkg-repair-kit-data-only", PackageRepairSelftest::kitDataOnly);
+        row("pkg-repair-kit-match-only", PackageRepairSelftest::kitMatchOnly);
+        row("pkg-repair-kit-no-print-row", PackageRepairSelftest::kitNoPrintRow);
         row("pkg-repair-roster-belt", PackageRepairSelftest::rosterBelt);
         row("pkg-repair-half-pair", PackageRepairSelftest::halfPair);
         row("pkg-repair-not-packed", PackageRepairSelftest::notPacked);
@@ -430,6 +434,51 @@ public final class PackageRepairSelftest {
                 + " after the repeated repair");
     }
 
+    /**
+     * The kit line keys on what the join door compares (the kit jar md5, and the kit fingerprint with its match term
+     * stripped): the next release changes only the kit's DATA (the jar md5 the same), and the verdict still asks
+     * players for the new kit, because the door turns every old kit away.
+     *
+     */
+    private static void kitDataOnly(Path dir) throws Exception {
+        Path pkg = installed(dir, release(S1, JAR_V1, kitPrint(JAR_V1, DATA, STD_ID),
+                files(S1, JAR_V1, PROPS_V1, LAUNCHER_V1)));
+        Release v2 = stage("the next release (only the kit's data changed)", () -> release(S2, JAR_V1,
+                kitPrint(JAR_V1, DATA_V2, STD_ID), files(S2, JAR_V1, PROPS_V1, LAUNCHER_V1)));
+        stage("extract the next release over the folder", () -> extractOver(pkg, v2));
+        List<String> said = start(pkg);
+        String verdict = plainUpdate(1) + newKitLine(S2);
+        require(verdict.equals(last(said)), "a data-only kit change did not ask players for the new kit (flips if the"
+                + " verdict's kit line keys on kit.jar.md5 alone, so the host is never told while the door refuses"
+                + " every old kit): " + said);
+    }
+
+    /** Two releases whose kit fingerprints differ only in the match term name the same kit: no kit line. */
+    private static void kitMatchOnly(Path dir) throws Exception {
+        Path pkg = installed(dir, release(S1, JAR_V1, kitPrint(JAR_V1, DATA, STD_ID),
+                files(S1, JAR_V1, PROPS_V1, LAUNCHER_V1)));
+        Release v2 = stage("the next release (only the kit's match term changed)", () -> release(S2, JAR_V1,
+                kitPrint(JAR_V1, DATA, "std-2v2"), files(S2, JAR_V1, PROPS_V1, LAUNCHER_V1)));
+        stage("extract the next release over the folder", () -> extractOver(pkg, v2));
+        List<String> said = start(pkg);
+        require(plainUpdate(1).equals(last(said)), "a match-term-only fingerprint change asked players for a new kit"
+                + " (flips if the kit compare keeps the ;match= term, which the door strips - it accepts that kit):"
+                + " " + said);
+    }
+
+    /** An older folder's manifest has no kit.fingerprint row: the jar md5 alone still decides the kit line. */
+    private static void kitNoPrintRow(Path dir) throws Exception {
+        Path pkg = installed(dir, release(S1, JAR_V1, files(S1, JAR_V1, PROPS_V1, LAUNCHER_V1)));
+        Release v2 = stage("the next release (a new kit jar, the fingerprint row new)", () -> release(S2, JAR_V2,
+                kitPrint(JAR_V2, DATA, STD_ID), files(S2, JAR_V2, PROPS_V1, LAUNCHER_V1)));
+        stage("extract the next release over the folder", () -> extractOver(pkg, v2));
+        List<String> said = start(pkg);
+        String verdict = plainUpdate(3) + newKitLine(S2);
+        require(verdict.equals(last(said)), "a new kit jar under a manifest with no kit.fingerprint row did not ask"
+                + " players for the new kit (flips if the jar md5 compare is dropped when a fingerprint row is"
+                + " absent): " + said);
+    }
+
     /** A host match file fielding a mod variant the new kit lacks is named; one the kit carries is not. */
     private static void rosterBelt(Path dir) throws Exception {
         Path pkg = installed(dir, release(S1, JAR_V1, files(S1, JAR_V1, PROPS_V1, LAUNCHER_V1)));
@@ -685,9 +734,20 @@ public final class PackageRepairSelftest {
     }
 
     private static Release release(String stamp, String jarMd5, Map<String, byte[]> files) {
+        return release(stamp, jarMd5, null, files);
+    }
+
+    /**
+     * {@link #release} with a {@code kit.fingerprint} row ({@code kitPrintOrNull} null = a manifest older than that
+     * row, the shape every other row runs).
+     */
+    private static Release release(String stamp, String jarMd5, String kitPrintOrNull, Map<String, byte[]> files) {
         LinkedHashMap<String, String> meta = new LinkedHashMap<>();
         meta.put("git.head", GIT);
         meta.put("kit.jar.md5", jarMd5);
+        if (kitPrintOrNull != null) {
+            meta.put("kit.fingerprint", kitPrintOrNull);
+        }
         meta.put("pack.stamp", stamp);
         meta.put("pack.kit", kitName(stamp));
         LinkedHashMap<String, byte[]> copy = new LinkedHashMap<>(files);
@@ -700,6 +760,26 @@ public final class PackageRepairSelftest {
 
     private static String kitName(String stamp) {
         return "cc-kit-" + stamp + ".zip";
+    }
+
+    /**
+     * The kit rows' fixture strings: a kit fingerprint in the packer's full-composite shape (its match term kept, as
+     * the package manifest carries it); the update verdict from {@link #S1} to {@link #S2} over {@link #files} with
+     * {@code replaced} files replaced (the stamped class, plus the two standing sidecars on a new jar), the old kit
+     * removed and the new one added; and the kit line it ends in when players need the new kit.
+     *
+     */
+    private static String kitPrint(String jarMd5, String dataMd5, String matchId) {
+        return ContentFingerprints.composite(jarMd5, dataMd5, 1, matchId);
+    }
+
+    private static String plainUpdate(int replaced) {
+        return "updated to " + S2 + " (from " + S1 + "); " + replaced + " files replaced, 1 added, 1 removed; " + KEPT
+                + " (0 new settings rows added)";
+    }
+
+    private static String newKitLine(String stamp) {
+        return "; players need the new kit: " + shown("kits/" + kitName(stamp));
     }
 
     /** A release's program files: {@code classes/cc/A.class} differs per stamp, the kit zip is named after it. */

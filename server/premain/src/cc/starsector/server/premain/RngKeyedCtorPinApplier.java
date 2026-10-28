@@ -11,7 +11,7 @@ import org.objectweb.asm.Opcodes;
 
 /**
  * The keyed {@code java.util.Random.<init>()V} rewrite — a faithful
- * product port of the scout {@code local/rng-pin-agent/RngPinAgent} keyed mode (census mode stays
+ * product port of the scout agent's keyed mode (census mode stays
  * scout-only). The ctor's whole body is {@code this(seedUniquifier() ^ System.nanoTime())}:
  *
  * <ul>

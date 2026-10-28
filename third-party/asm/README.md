@@ -18,10 +18,11 @@ link, which JDK 25 removed (the JDK moved to `java.lang.classfile`).
 1. Pick the release from `https://repo1.maven.org/maven2/org/ow2/asm/asm/maven-metadata.xml`.
 2. `Invoke-WebRequest` the jar into this dir; fetch Central's `.jar.sha256`; write it to
    `asm-<ver>.jar.sha256` (`<hash>  asm-<ver>.jar`); delete the old pair.
-3. Bump `$script:CcAsmVersion` in the ASM helper `asm-vendor.ps1` (the ONLY version constant of the internal
-   build; the published tree's `build.ps1` names the jar file once - bump it there too).
-4. Rebuild all three agents (`local/trace-agent/build.ps1`, `local/rng-pin-agent/build.ps1` +
-   `smoke.ps1`, `server/build.ps1`) and run the transform-registry check `verify-transform-registry.ps1` (7/7).
+3. Bump the ASM version constant of the maintainer's build scripts, which are not part of this tree (the
+   ASM helper `asm-vendor.ps1` holds the ONLY one); the published tree's `build.ps1` names the jar file
+   once - bump it there too.
+4. Rebuild every agent that shades ASM (the product's premain agent and the maintainer's tracing agents,
+   with their smoke checks) and run the maintainer's transform-registry check (7/7).
 
-`*.jar` is gitignored repo-wide; `.gitignore` carries an explicit negation for this dir so the
-pinned jar IS tracked (a build must never depend on a network fetch).
+The pinned jar IS kept beside this note, so a build never depends on a network fetch (the maintainer's
+repository ignores `*.jar` everywhere else and tracks this one by an explicit exception).

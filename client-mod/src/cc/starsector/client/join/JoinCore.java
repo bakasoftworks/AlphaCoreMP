@@ -410,8 +410,8 @@ final class JoinCore {
     }
     /**
      * The launch face's text (row (f) law 4; the
-     * companion wording carried, the separate "helper" window and its justification gone — the
-     * owner, flight {@code 134310}: "its all unnecessarily confusing"). The FIRST line says what
+     * companion wording carried, the separate "helper" window and its justification gone, since a second
+     * window confused the player). The FIRST line says what
      * happens next in one breath; {@code asked} = the player pressed Open editor → Launch now, so
      * the face opens the browser itself. The hint carries the pick/re-submit law a player would otherwise
      * have to discover by hand plus the in-match Submit path (an accepted

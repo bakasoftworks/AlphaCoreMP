@@ -156,6 +156,10 @@ public final class RealEngineCombatBindingFactory {
     private static final String DEBRIS_SYSTEM_CLASS = "com.fs.starfarer.renderers.damage.DebrisParticleSystem";
 
     // ---- Public API + LWJGL, plain names (identity-clean even under descriptor-grade). ----
+    /** LWJGL 2's keyboard poll owner; its {@code created} / {@code keyDownBuffer} statics are the seed's targets. */
+    private static final String LWJGL_KEYBOARD_CLASS = "org.lwjgl.input.Keyboard";
+    /** Package-private holder of {@code global_lock}, the monitor every {@code Keyboard} query takes. */
+    private static final String LWJGL_KEYBOARD_PACKAGE_ACCESS_CLASS = "org.lwjgl.input.OpenGLPackageAccess";
     private static final String ARMOR_GRID_API = "com.fs.starfarer.api.combat.ArmorGridAPI";
     private static final String SHIP_HULL_SPEC_API = "com.fs.starfarer.api.combat.ShipHullSpecAPI";
     private static final String FLUX_TRACKER_API = "com.fs.starfarer.api.combat.FluxTrackerAPI";
@@ -1059,9 +1063,24 @@ public final class RealEngineCombatBindingFactory {
      * — non-fighter hulks never expire
      *       headless while a rendered client fades them off-camera; asymmetry owned at the D2
      *       hulk-row decision.</li>
+     *   <li><b>Keyboard zero-state seed (rung 6).</b> The serve's GL is a bare Pbuffer and
+     *       no LWJGL {@code Display} is ever created, so {@code Keyboard.created} stays false and EVERY
+     *       {@code Keyboard.isKeyDown(int)} throws {@code IllegalStateException("Keyboard must be created
+     *       before you can query key state")}.
+     * A third-party mod polling a hotkey from a combat plugin (MagicLib's
+     *       {@code MagicSubsystem.isKeyDown}, the free-cam plugins) would escape the engine's combat-map
+     *       plugin loop, which has no try/catch, and KILL the serve.
+     *
+     *       The seed flips {@code created} under LWJGL's own {@code OpenGLPackageAccess.global_lock}
+     *       with the class-init-allocated {@code keyDownBuffer} zeroed, so a poll reads {@code false}:
+     *       "nobody at the keyboard" IS the faithful headless truth. LIMIT: {@code Keyboard.next()} /
+     *       {@code getEventKey()} stay unsupported ({@code readBuffer} is allocated only by
+     *       {@code create()} — NPE), {@code Mouse} likewise.
+     *       The seed's readback asserts the three keys the probe reads ({@code KEY_F}, {@code KEY_LSHIFT},
+     *       {@code KEY_SPACE}, their codes read from the class, never hard-coded).</li>
      * </ol>
      *
-     * <p>Neither fakes a combat outcome — the real engine damage math still runs; these are
+     * <p>None fakes a combat outcome — the real engine damage math still runs; these are
      * presentation handles, not a reimplementation/stat-hack. Driven through the product
      * {@link HeadlessCombatContext} seam (the engine's own {@code setCombatUI} / {@code getViewport}
      * / {@code setEverythingNearViewport}) and <b>kept installed</b> (never restored) for the
@@ -1179,6 +1198,18 @@ public final class RealEngineCombatBindingFactory {
         Method setEverythingNearViewport = viewportClass.getMethod("setEverythingNearViewport", boolean.class);
         Method isEverythingNearViewport = viewportClass.getMethod("isEverythingNearViewport");
 
+        // Keyboard zero-state seed: the LWJGL keyboard handles, resolved on the engine's
+        // loader (lwjgl.jar sits on the game classpath, so the mod-jar loader's Keyboard IS this class).
+        // The bootstrap scout and the contract smoke chain the same step with these field names.
+        //
+        //
+        Class<?> keyboardClass = Class.forName(LWJGL_KEYBOARD_CLASS, true, loader);
+        Class<?> keyboardPackageAccessClass = Class.forName(LWJGL_KEYBOARD_PACKAGE_ACCESS_CLASS, true, loader);
+        Field keyboardGlobalLockField = keyboardPackageAccessClass.getDeclaredField("global_lock");
+        Field keyboardCreatedField = keyboardClass.getDeclaredField("created");
+        Field keyboardKeyDownBufferField = keyboardClass.getDeclaredField("keyDownBuffer");
+        Method keyboardIsKeyDown = keyboardClass.getMethod("isKeyDown", int.class);
+
         postInitFxContext = HeadlessCombatContext.builder()
                 .boundaryLabel("real-engine-combat-binding-factory")
                 .combatUiProxy(engine, combatUiInterface, getCombatUi, setCombatUi,
@@ -1191,7 +1222,23 @@ public final class RealEngineCombatBindingFactory {
                         getDebrisSystem,
                         setEverythingNearViewport,
                         isEverythingNearViewport)
+                .keyboardKeyDownZeroState(
+                        keyboardClass,
+                        keyboardGlobalLockField,
+                        keyboardCreatedField,
+                        keyboardKeyDownBufferField,
+                        keyboardIsKeyDown,
+                        lwjglKeyCode(keyboardClass, "KEY_F"),
+                        lwjglKeyCode(keyboardClass, "KEY_LSHIFT"),
+                        lwjglKeyCode(keyboardClass, "KEY_SPACE"))
                 .install();
+        System.out.println("real-engine-binding-factory keyboard_seed installed=true created="
+                + keyboardCreatedField.get(null) + " (Keyboard.isKeyDown reads false headless, never throws)");
+    }
+
+    /** An LWJGL {@code Keyboard.KEY_*} code read from the class itself — never a hard-coded scan code. */
+    private static int lwjglKeyCode(Class<?> keyboardClass, String constantName) throws Exception {
+        return keyboardClass.getField(constantName).getInt(null);
     }
 
     /**

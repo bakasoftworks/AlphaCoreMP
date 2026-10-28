@@ -387,7 +387,7 @@ public final class BootVariantRegistry {
     // ------------------------------------------------------------------ the title drill's rows
 
     /**
-     * Driven ONLY by {@code local/drills/editor-title-drill} (its {@code bootlaw?op=} route, by
+     * Driven ONLY by the maintainer's in-game editor drill (its {@code bootlaw?op=} route, by
      * method handle) — the in-game proof of both laws. {@code sweep} folds the definition of EVERY
      * boot id that has a {@code data/variants[/npc]/<id>.variant} file (the server catalog's scope)
      * through the client's mirror parser and the real fold: all must come back EQUAL.

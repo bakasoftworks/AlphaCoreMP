@@ -105,8 +105,8 @@ public final class ChatCommands {
          * block, re-applies the terrain stat lane on the live ships, mails ONE receipt. */
         TERRAIN_SHOW, TERRAIN_SET,
         /** Bare {@code /wave} — the category MENU (a KIND_WAVE picker listing,
-         * the bare-/spawnfoe shape; was USAGE, which the owner called a helper that "kinda
-         * sucks"). Admin-gated at dispatch. */
+         * the bare-/spawnfoe shape; was USAGE, a usage line that helped a player less than a menu).
+         * Admin-gated at dispatch. */
         WAVE_LIST, KICK_LIST, KICK_SET, KICK_WIRE,
         /** The admin debug-spawn verbs — {@code /debugships [variant]}
          * (the /ship shape over the FULL engine registry catalogue; the one-arg exact-pick vs

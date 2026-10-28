@@ -273,8 +273,8 @@ final class PredictKnobConfig {
      * = {@code off|apply} (default {@code apply}). The (114)(e) free-space residual face: the
      * server beam is live (wire FLAG_FIRING) while the local replica sits in refire COOLDOWN —
      * armed-no-ray windows (W17 8.6% / W18 3.3% of arms), each missed/late restart
-     * re-appearing up to ~1.4k su away at sweep rate = the owner "snapping around instead of
-     * moving continuously" jag. Fix at the relay seam
+     * re-appearing up to ~1.4k su away at sweep rate = a beam that snaps around instead of moving
+     * continuously. Fix at the relay seam
      * ({@link BeamPresentationLane#maintainBeamPresentation}): per wire-FIRING replica BEAM
      * mount, mirror ammo + zero the cycle cooldown so the per-frame force-fire restarts the
      * burst through the engine's OWN READY path;

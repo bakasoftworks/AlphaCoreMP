@@ -76,7 +76,11 @@ public final class RealEngineContentInit {
 
     /** Settings singleton holder; its static load method seeds {@code Global.getSettings()}. */
     private static final String SETTINGS_CLASS = "com.fs.starfarer.settings.StarfarerSettings";
-    /** The first 12 hex chars of SHA-256(field name) of the static {@code org.json.JSONObject} settings field. */
+    /**
+     * The first 12 hex chars of SHA-256(field name) of a static {@code org.json.JSONObject} settings field. It pins
+     * the {@code graphics} sub-object (assigned from the root inside the load), so a non-empty one proves the load
+     * ran — a root-level key (e.g. {@code ruleCommandPackages}) is read through the published {@code SettingsAPI}.
+     */
     private static final String SETTINGS_JSON_FIELD_NAME_HASH = "c1a976909838";
     /** Resource registry (singleton + the seed methods named "class"/"new"). */
     private static final String RESOURCE_CLASS = "com.fs.util.C";
@@ -120,6 +124,7 @@ public final class RealEngineContentInit {
     private static String modRegistrationError = "";
     private static int modDataDirsRegistered;
     private static String modDataDirError = "";
+    private static boolean settingsReloadedForMods;
 
     /** Fail-closed wrapper so caller code stays off the engine-internal, reflective surface. */
     public static final class RealEngineContentInitException extends RuntimeException {
@@ -183,13 +188,8 @@ public final class RealEngineContentInit {
 
             Field settingsJsonField = selectStaticJsonObjectFieldByNameHash(
                     settingsClass, SETTINGS_JSON_FIELD_NAME_HASH);
-            boolean settingsJsonReady = false;
-            if (settingsJsonField != null) {
-                Object settingsJson = settingsJsonField.get(null);
-                settingsJsonReady = settingsJson != null
-                        && JSON_OBJECT_CLASS.equals(settingsJson.getClass().getName())
-                        && jsonObjectLength(settingsJson) > 0;
-            }
+            boolean settingsJsonReady = settingsJsonField != null
+                    && settingsJsonReady(settingsJsonField.get(null));
             if (!settingsJsonReady) {
                 throw new RealEngineContentInitException(
                         "settings static JSON not ready after load (field hash "
@@ -242,6 +242,11 @@ public final class RealEngineContentInit {
             // BEFORE init(Map). Fail-soft so the true boundary surfaces at variant resolution
             // (RealEngineDemoRoster.resolveDemoVariant fail-closed), not masked here. ----
             registerEnabledModDataDirsIntoResourceRegistry(loader);
+
+            // ---- The Play thread's SECOND settings load: the load above ran before the mod dirs joined the
+            // resource registry, so the engine's per-root merge of data/config/settings.json saw core only
+            // (a mod's ruleCommandPackages / plugins rows dark => MagicLib dies at the rules load). ----
+            reloadSettingsAfterModDirs(settingsClass, settingsLoad, settingsJsonField, settingsApi);
 
             // ---- Snapshot the texture registry map before/after the loader runs ----
             Class<?> textureRegistryClass = Class.forName(TEXTURE_REGISTRY_CLASS, true, loader);
@@ -319,6 +324,68 @@ public final class RealEngineContentInit {
     /** Non-empty if mod-data-dir registration failed (fail-soft; the boundary then surfaces at variant resolution). */
     public static synchronized String modDataDirError() {
         return modDataDirError;
+    }
+
+    /** Whether the second (mod-dir) settings load ran — false on a vanilla-only serve, which keeps ONE load. */
+    public static synchronized boolean settingsReloadedForMods() {
+        return settingsReloadedForMods;
+    }
+
+    /**
+     * The Play thread's SECOND settings load, run once the enabled mods' data directories are on the resource
+     * registry. WHY: the engine merges {@code data/config/settings.json} across every registered resource root at
+     * load time,
+     * so the first load in
+     * {@link #ensureInitialized} (before {@link #registerEnabledModDataDirsIntoResourceRegistry}) sees core only
+     * and a mod's {@code ruleCommandPackages} / {@code plugins} rows stay dark — MagicLib then kills the serve at
+     * the rules load ("Command [ShouldShowMagicBountyBoard] not found in packages"). The real game loads settings
+     * twice: the launcher's (no mods) and the Play thread's after "Mod list finished" (mods registered) — this is
+     * that second load, the SAME static no-arg method, which
+     * reassigns the static JSON (a fresh merge, never an accumulation). The published {@code SettingsAPI} reads
+     * the statics per call, so no re-publish. Guard: only when at least one mod dir registered (a vanilla-only
+     * serve keeps ONE load, as before). Fail-closed like the first load: a dead reload throws here, never a
+     * silent core-only serve under mods. One stdout row carries the merged {@code ruleCommandPackages} count, read
+     * through the PUBLISHED {@code SettingsAPI} (the rules loader's own root-JSON path) — so the row also proves the
+     * published instance sees the merge (vanilla alone = 1 package; each mod's row adds one).
+     */
+    private static void reloadSettingsAfterModDirs(Class<?> settingsClass, Method settingsLoad,
+            Field settingsJsonField, Object settingsApi) throws IllegalAccessException {
+        if (modDataDirsRegistered <= 0) {
+            return;
+        }
+        invokeStaticNoArg(settingsClass.getName(), settingsLoad);
+        if (!settingsJsonReady(settingsJsonField.get(null))) {
+            throw new RealEngineContentInitException(
+                    "settings static JSON not ready after the mod-dir reload (field hash "
+                            + SETTINGS_JSON_FIELD_NAME_HASH + ", mod dirs " + modDataDirsRegistered + ")");
+        }
+        settingsReloadedForMods = true;
+        System.out.println("real-engine-content-init settings_reloaded mods=" + modDataDirsRegistered
+                + " ruleCommandPackages=" + settingsApiArrayLength(settingsApi, "ruleCommandPackages")
+                + " (the Play thread's second settings load: every enabled mod's settings.json merged)");
+    }
+
+    /** The static settings JSON is loaded: a non-null {@code org.json.JSONObject} with at least one key. */
+    private static boolean settingsJsonReady(Object settingsJson) {
+        return settingsJson != null
+                && JSON_OBJECT_CLASS.equals(settingsJson.getClass().getName())
+                && jsonObjectLength(settingsJson) > 0;
+    }
+
+    /**
+     * Length of the root-level {@code key} JSON array as the published {@code SettingsAPI.getJSONArray(String)}
+     * returns it (reflective, resolved on the public API interface — the instance is a non-public engine class, whose
+     * own {@code Method} would fail the access check); {@code -1} when absent or unreadable.
+     */
+    private static int settingsApiArrayLength(Object settingsApi, String key) {
+        try {
+            Class<?> settingsApiClass = Class.forName(SETTINGS_API_CLASS, false, settingsApi.getClass().getClassLoader());
+            Object array = settingsApiClass.getMethod("getJSONArray", String.class).invoke(settingsApi, key);
+            Object count = array.getClass().getMethod("length").invoke(array);
+            return count instanceof Number ? ((Number) count).intValue() : -1;
+        } catch (Throwable t) {
+            return -1;
+        }
     }
 
     /**

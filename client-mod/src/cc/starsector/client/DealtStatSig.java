@@ -10,8 +10,8 @@ import com.fs.starfarer.api.characters.PersonAPI;
 
 /**
  * The per-SHOOTER damage-DEALT stat signature, the owner
- * skills-hypothesis census (owner verbatim: "btw another explanation for dmg divergence
- * could be eg. the client not appylign the other player's skills clientside maybe idk"). The
+ * skills-hypothesis census (the client may not apply the other player's skills on its side).
+ * The
  * {@link TargetStatSig} twin on the OTHER side of the damage formula: where tsig renders the
  * victim's damage-TAKEN mults, this renders the shooter's damage-DEALT mults, in the same
  * byte-comparable law ({@code Double.toString((double) v)}; mods lanes via

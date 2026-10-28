@@ -32,7 +32,7 @@ import java.util.List;
  *
  * <p><b>Grader contract (byte-identical).</b> The {@code predict v12 beam-meter [<where>]:}
  * line's key=value token STRINGS are parsed order-independent by
- * {@code local/watch-bars/faraim-sweep-*.ps1}; the prefix + single-line grouping are
+ * the maintainer's sweep graders; the prefix + single-line grouping are
  * load-bearing. Keep every token string verbatim.
  *
  * <p><b>What stays plugin-side</b> (reached via {@code plugin.} /

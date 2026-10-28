@@ -13,7 +13,7 @@ import java.util.zip.CRC32;
  * ({@code cc.starsector.server.runtime.AwsdSnapshotCodec}) built on {@link WireBytes} only —
  * the game's script classloader (loader B) denies {@code java.io.Data*Stream}s to mod code,
  * so the server's {@code DataInputStream} walk cannot be shared. The cross-family golden
- * vectors ({@code local\goldens\awsd-vectors\}) pin both sides to the same bytes.
+ * vectors pin both sides to the same bytes.
  *
  * <p><b>Strict fail-closed versioning (D11 stale-kit posture):</b> unlike {@link AwssSnapshotReader}
  * (whose appended-tier schema walk makes forward tolerance meaningful), AWSD has no

@@ -115,7 +115,7 @@ final class MissileSplitLane {
      *  the live throwable that it is a <b>required precondition of the factory call</b>: the
      *  {@code BallisticProjectile} ctor unconditionally does {@code spec.getDamage().clone()},
      *  and a MIRV child store spec is damage-less by design ⇒ a clone without
-     *  the placeholder NPEs on EVERY child (35/35, both windows, watch {@code 194004}).
+     *  the placeholder NPEs on EVERY child (35/35, both windows).
      *  <b>Handles, not {@code new}:</b> {@code com.fs.starfarer.combat.E} is a class AND a
      *  package, Java's name reclassification picks the TYPE, so vanilla's own line does not
      *  compile verbatim (proved against the real build javac); the setter's parameter
@@ -503,7 +503,7 @@ final class MissileSplitLane {
      *  Vanilla's clone damage placeholder <b>IS mirrored</b> — it is
      *  a REQUIRED PRECONDITION of that factory call, not the cosmetic delta an earlier read declined:
      *  child store specs are damage-less and the ctor clones {@code spec.getDamage()}, so
-     *  skipping it NPEd 35/35 children in watch {@code 194004}. Presented damage
+     *  skipping it NPEd 35/35 children in one test watch. Presented damage
      *  is unaffected — real child damage rides {@link #applyChildOverrides} either way. Fail-soft per
      *  piece to the 7-arg approx lane (spec-native speed, no range override). Any resolve
      *  failure = treated guided, counted — never a guessed spawn. */

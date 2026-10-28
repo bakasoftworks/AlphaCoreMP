@@ -61,7 +61,7 @@ import com.fs.starfarer.api.loading.WeaponSpecAPI;
  *     swarm, an attractor-flung mote) get no launch FX — the first-sight limit the mine arm documents.</li>
  * </ol>
  * The own ship's attractor arc + lock jitter stay vanilla-local (the own system is predicted locally,
- * :212-270 runs as before); remote activators keep {@link MoteAttractorFxLane}. Knob
+ * and vanilla's own attractor code runs as before); remote activators keep {@link MoteAttractorFxLane}. Knob
  * {@code -Dcc.predict.moteReplica=off|meter|apply} (default apply; {@code meter} = count only, the
  * phantom generator stays ON); fail-soft throughout (every throw counted + logged, never rethrown).
  */

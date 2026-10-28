@@ -100,8 +100,8 @@ final class SpawnSystemGate {
      *     spawns a DAMAGING arc entity per firing ({@code spawnEmpArc} EMP 1500 at an enemy,
      *     {@code spawnEmpArcPierceShields} at an ally) picked by a LOCAL all-ships search
      *     ({@code findTarget} → {@code Misc.findClosestShipTo}), then {@code applyEffectToTarget} (a
-     *     local phase overload / the ally's system fired / cooldowns). Measured: threat flight
-     *     {@code 122506} pressed the overseer replica 29×, activation at tick 8612 (state OUT @8677)
+     *     local phase overload / the ally's system fired / cooldowns). Measured: one threat test flight
+     * pressed the overseer replica 29×, activation at tick 8612 (state OUT @8677)
      *     — the local engine lashed on its own while the wire's {@code ARC_HIT} flavor 3/4 already
      *     carries every arc and the per-mount state wire / the own-flux slave carry the EMP + overload.</li>
      * </ul>

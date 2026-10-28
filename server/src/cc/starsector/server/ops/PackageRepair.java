@@ -1573,7 +1573,7 @@ public final class PackageRepair {
                         .append(d.replaced().size()).append(" files replaced, ").append(d.added().size())
                         .append(" added, ").append(d.removed().size()).append(" removed; ").append(KEPT)
                         .append(" (").append(appended).append(" new settings rows added)");
-                kitChanged = !Objects.equals(old.kitJarMd5(), now.kitJarMd5());
+                kitChanged = kitChanged(old, now);
             }
             String kit = now.packKit();
             if (kitChanged && now.kitJarMd5() != null && plainName(kit)) {
@@ -1586,6 +1586,29 @@ public final class PackageRepair {
                 }
             }
             return v.toString();
+        }
+
+        /**
+         * Whether the players' installed kits stop matching this package, judged as the join door judges an installed
+         * kit, so the verdict asks for the new kit exactly when the door would refuse the old one: the kit jar md5
+         * differs, OR both manifests carry a {@link PackageManifest#KIT_FINGERPRINT} and those composites differ once
+         * their {@code ;match=} term is stripped ({@link KitPacker#withoutMatch}: the jar AND data halves; a kit packed
+         * for another match shape is still the same kit). A jar-only compare missed a data-only kit change (every
+         * variant file new, the jar unchanged): the host was never told while the door turned every old kit away. A
+         * manifest older than the fingerprint row, or one whose row is blank (the door reads blank as absent too),
+         * leaves the jar md5 as the whole compare. Case-sensitive, as the door (both sides are minted lowercase).
+         *
+         */
+        private static boolean kitChanged(PackageManifest old, PackageManifest now) {
+            if (!Objects.equals(old.kitJarMd5(), now.kitJarMd5())) {
+                return true;
+            }
+            String was = old.kitFingerprint();
+            String is = now.kitFingerprint();
+            if (was == null || was.isBlank() || is == null || is.isBlank()) {
+                return false;
+            }
+            return !KitPacker.withoutMatch(was).equals(KitPacker.withoutMatch(is));
         }
 
         /** Appends the log (a header + this start's lines + the verdict), then prints the verdict LAST. */

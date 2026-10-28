@@ -14,6 +14,8 @@ For hosts who know their way around - everything here is covered in full below.
 5. Press "Start server" and wait for LISTENING (about a minute). Press "Copy join brick": send players that connect code privately, and the kit zip from the `kits` folder.
 6. "End match" stops the server. To update, drop the new zip onto `update.bat` (Linux: `sh update.sh <zip>`) and start again: settings, passwords, bans and kept ships are kept.
 
+Problems or questions: open an issue at https://github.com/bakasoftworks/AlphaCoreMP/issues (say which version you run and, if applicable, attach the server's `run/` log).
+
 ## What this is
 
 This folder runs an AlphaCoreMP server: it hosts multiplayer matches for players who use the AlphaCoreMP joiner kit, running the game engine headlessly from your own Starsector install. It brings its own Java runtime (the `jre` folder), so there is nothing else to install. The server has an ops GUI, the ops GUI, which you open with `ops-web.bat` (Windows) or `ops-web.sh` (Linux); it can also be reached over an SSH tunnel (see [The ops GUI](#the-ops-gui)) and is used for server configuration and management. AlphaCoreMP's own code is under the MIT License (see [Licenses](#licenses) at the end of this file).
@@ -158,6 +160,8 @@ Players never need a match file: their join windows fetch the match from the ser
 - The `match` folder is the server's own. The shipped shapes are copied from `match-defaults\` into `match\` once, at the first start; the ops GUI writes the copies, their `.fingerprint` files and the password files, and an update replaces `match-defaults\` and keeps your copies. Change a match only in the ops GUI (its "Apply" buttons and "New match shape..."), never by editing a match file by hand: the server may start a hand-edited file without warning, players who joined that match before can keep their old copy, and the ops GUI's next change to that match rebuilds the file from the settings it shows. Without the ops GUI, you write the password file yourself (see [Running without the ops GUI](#running-without-the-ops-gui-servebat-and-stopbat)). To undo a hand edit to a shipped shape, delete that match file and its `.fingerprint` file; the next start makes a fresh copy from `match-defaults\`.
 
 ## Mods
+
+Mods: the server runs the same mods as the players and checks the list when they join. Looks-only and client-side mods work as they are. Mods that give ships extra abilities on their own hotkeys are not synced yet: the server fires those abilities by the mod's automatic logic instead of your key, so the two sides can disagree until a compatibility update lands.
 
 - Extract each mod's folder into `serve-mods\` (Linux: `serve-mods/`), next to `CC_Client`, the server's own mod. The "Mods" tab lists what is there: set a mod to "required" (the server loads it; every player must have it), "optional" (players may run it; the server does not load it, for graphics-only mods such as GraphicsLib) or "off", then press "Start server". Without the ops GUI, write the ids into `cc-server.properties` (`mods.enabled=id1,id2` and `mods.optional=id3`; the id is the "id" in the mod's `mod_info.json`) and start `serve.bat` (Linux: `sh serve.sh`).
 - "Remove" sets the mod to off; to take it off the list, delete its folder from `serve-mods` while the server is stopped. Nothing in `serve-mods` is ever deleted by the server.

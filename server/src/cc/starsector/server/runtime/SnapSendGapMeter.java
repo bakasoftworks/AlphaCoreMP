@@ -6,8 +6,8 @@ import java.util.Locale;
  * The per-session SNAP SEND-gap meter — the serve-side twin of the kit's arrival meter
  * {@code client-mod/src/cc/starsector/client/net/SnapGapMeter.java}.
  *
- * <p>WHY: flight {@code 141854} — the owner marked two "possible
- * stutters"; the kit seat's arrival histogram read {@code ge33=140 ge67=34 max 309.3 ms} against {@code 5 / 0 / 40.1}
+ * <p>WHY: one test flight marked two possible stutters;
+ * the kit seat's arrival histogram read {@code ge33=140 ge67=34 max 309.3 ms} against {@code 5 / 0 / 40.1}
  * on seat 1, with no kit frame hitch, no GC and no serve tick overrun near the marks. Nothing on the serve said when
  * each session's snapshots LEFT, so "the serve sent late to that one session" and "the path delivered late" could not
  * be told apart. This meter is the serve half of that split: the same histogram, clocked where the serve's fan hands

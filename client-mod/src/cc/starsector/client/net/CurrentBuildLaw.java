@@ -31,8 +31,8 @@ public final class CurrentBuildLaw {
     }
 
     /**
-     * The HELLO pick for a launch (owner #13 / flight
-     * {@code 105707}): the current build is consumed ONLY by a launch that HOSTS the editor
+     * The HELLO pick for a launch:
+     * the current build is consumed ONLY by a launch that HOSTS the editor
      * ({@code -Dcc.editor} not {@code off}) — the editor is its sole producer, and a rig's local/observer
      * seat (editor off) sharing the install must never fly the joiner's build. Precedence: current build
      * (editor hosted) → the launch pick → {@code ""} = the server default.
