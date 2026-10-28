@@ -1,7 +1,7 @@
 #Requires -Version 7
-# build.ps1 - builds this source tree on Windows: the headless server's classes and agent jars, then the client mod
-# jar. No tests, no checks, nothing is installed or copied into the game: every output lands inside this tree (but the
-# server folder -ServerFolder names and the kit zip -KitZip names).
+# build.ps1 - builds this source tree, on Windows or on Linux (PowerShell 7 on either): the headless server's classes
+# and agent jars, then the client mod jar. No tests, no checks, nothing is installed or copied into the game: every
+# output lands inside this tree (but the server folder -ServerFolder names and the kit zip -KitZip names).
 #
 # OUTPUTS (the same relative paths the maintainer's internal build writes, so the two can be compared file by file):
 #   server/classes                          the server, the vendored Concentus audio codec, the game-API probe classes
@@ -15,7 +15,10 @@
 #   client-mod/mod/jre-cc, client-mod/mod/kit-jvm.args  -KitRuntime only: the kit's own Java runtime + its launch options
 #
 # NEEDS: PowerShell 7; a JDK 17 or newer (javac + jar + java); for the client, a JDK 25 as well; an installed
-# Starsector 0.98a (its jars are on the compile class path; nothing in the game folder is written).
+# Starsector 0.98a (its jars are on the compile class path; nothing in the game folder is written). The same script
+# runs on Linux under pwsh with Linux JDKs and a copy of the WINDOWS game's starsector-core folder (the Linux download
+# is a different build of the game: the client does not compile against it and the server does not start on it; the
+# server alone builds against either); only -KitRuntime is a Windows step (below).
 #
 # WHY TWO JDKs: the client's voice package (client-mod/src/cc/starsector/client/voice/ffm) uses the Java foreign
 # function and memory API, final in Java 22, so a JDK 25 javac compiles it with --release 22, plus the three small
@@ -24,7 +27,9 @@
 # Usage: build.ps1 [-GameDir <Starsector folder>] [-Jdk17Bin <JDK bin>] [-Jdk25Bin <JDK 25 bin>] [-SkipClient] [-KitRuntime]
 #                  [-ServerFolder <dir> -Package <cc-server zip> [-Kit <player kit zip>]]
 #                  [-KitZip <kit zip to write> -Descriptor <match file>]
-#   -Jdk17Bin   default: $env:JAVA_HOME\bin when it holds javac.exe, else the folder of the javac on PATH.
+#   -GameDir    default: the usual Windows folder, C:\Program Files (x86)\Fractal Softworks\Starsector. On Linux there
+#               is no usual folder: pass it - the copied starsector-core folder itself, or a folder holding one.
+#   -Jdk17Bin   default: $env:JAVA_HOME\bin when it holds javac (javac.exe on Windows), else the folder of the javac on PATH.
 #   -Jdk25Bin   required unless -SkipClient.
 #   -ServerFolder + -Package (always together): after the server build, lay out a runnable server folder in <dir> (an
 #               empty folder, or one this step made before): this build's server classes and cc-premain.jar, and
@@ -51,7 +56,9 @@
 #               the args are re-derived every run), so every kit packed after it carries them and join-cc.bat runs the
 #               join window and the game on that runtime: the voice chat's low-latency path needs Java 22 or newer.
 #               To go back to a kit without a runtime, delete the two. Without them join-cc.bat runs the game on its
-#               own Java 17, and voice chat takes its higher-latency path.
+#               own Java 17, and voice chat takes its higher-latency path. Windows only: the image is a Windows runtime
+#               for the players' PCs (jlink builds for the system it runs on), so a Linux build refuses the switch and
+#               packs kits without a runtime; link it on Windows, or copy a client-mod/mod that already carries it.
 #   A source host with its OWN kit, two runs: first build.ps1 -KitZip <kit zip> -Descriptor <match file>, then
 #               build.ps1 -SkipClient -ServerFolder <dir> -Package <cc-server zip> -Kit <that kit zip>; the folder's
 #               MANIFEST then names that kit (pack.kit) and its jar (kit.jar.md5), the folder holds the kit zip at
@@ -61,13 +68,12 @@
 #               Add -KitRuntime to the first run for a kit with its own Java runtime (above).
 #               A packer refusal names its reason token: census = the match names a ship variant neither this mod nor
 #               the game (-GameDir) has; match_read = the match file is unreadable or not a match file; live_token
-#               = it carries a seat token the redaction could not clear; keep_list = client-mod/kit-keep-variants.txt
-#               names a variant this mod does not carry, or keeps none; write = the zip or its sidecar could not be
+#               = it carries a seat token the redaction could not clear; write = the zip or its sidecar could not be
 #               written.
 #   A source host: build, then -ServerFolder <empty dir> -Package <the released cc-server zip>.
 #   exit 0 = built; any failure throws, naming the step.
 param(
-    [string] $GameDir = 'C:\Program Files (x86)\Fractal Softworks\Starsector',
+    [string] $GameDir = '',
     [string] $Jdk17Bin = '',
     [string] $Jdk25Bin = '',
     [switch] $SkipClient,
@@ -80,6 +86,17 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+# One script for both systems. Windows: the JDK tools end in .exe, a class path joins with ';', paths compare without
+# case. Linux: no suffix, ':', and a case-sensitive file system. Every path this script builds from a literal uses '/',
+# which both systems take; the fold list below keeps '\' on purpose (its note says why).
+$exeSuffix = if ($IsWindows) { '.exe' } else { '' }
+$cpSep = [string][IO.Path]::PathSeparator
+$dirSep = [string][IO.Path]::DirectorySeparatorChar
+$pathCompare = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+if (-not $GameDir) {
+    if ($IsWindows) { $GameDir = 'C:\Program Files (x86)\Fractal Softworks\Starsector' }
+    else { throw 'pass -GameDir <game folder> (a copy of the Windows game''s starsector-core folder, or a folder holding one): the build knows no usual game folder on Linux' }
+}
 if ([bool]$ServerFolder -ne [bool]$Package) { throw '-ServerFolder and -Package come together: pass both (the folder to lay out and the released cc-server zip), or neither' }
 if ($Kit -and -not $ServerFolder) { throw '-Kit belongs to -ServerFolder / -Package: pass all three, or drop -Kit' }
 if ($Package -and -not (Test-Path -LiteralPath $Package -PathType Leaf)) { throw "-Package is not a file: $Package (the released cc-server zip)" }
@@ -89,6 +106,7 @@ if ($Package -and -not (Test-Path -LiteralPath $Package -PathType Leaf)) { throw
 if ([bool]$KitZip -ne [bool]$Descriptor) { throw '-KitZip and -Descriptor come together: pass both (the kit zip to write and the match file it carries), or neither' }
 if ($KitZip -and $SkipClient) { throw '-KitZip packs the client build into the kit: drop -SkipClient' }
 if ($KitRuntime -and $SkipClient) { throw '-KitRuntime links the kit''s Java runtime beside the client build: drop -SkipClient' }
+if ($KitRuntime -and -not $IsWindows) { throw '-KitRuntime runs on Windows only: jlink builds a runtime for the system it runs on, and the kit''s runtime is a Windows one for the players'' PCs (join-cc.bat runs the game on it). Drop the switch (the kit then runs the game on its own Java 17; voice chat takes its higher-latency path), or link it on Windows' }
 if ($KitZip) {
     $descLeaf = (Split-Path -Leaf $Descriptor).ToLowerInvariant()
     if ($descLeaf.Contains('-tokens') -or $descLeaf.EndsWith('.password') -or $descLeaf.EndsWith('.adminpassword') -or $descLeaf -eq 'cc-door-credentials.properties') {
@@ -112,7 +130,7 @@ foreach ($need in @((Join-Path $server 'src'), (Join-Path $client 'src'))) {
 
 # ---- tools: the two JDKs, the game jars, the ASM library ------------------------------------------------------------
 if (-not $Jdk17Bin) {
-    if ($env:JAVA_HOME -and (Test-Path -LiteralPath (Join-Path $env:JAVA_HOME 'bin\javac.exe') -PathType Leaf)) {
+    if ($env:JAVA_HOME -and (Test-Path -LiteralPath (Join-Path $env:JAVA_HOME "bin/javac$exeSuffix") -PathType Leaf)) {
         $Jdk17Bin = Join-Path $env:JAVA_HOME 'bin'
     } else {
         $onPath = @(Get-Command javac -CommandType Application -ErrorAction SilentlyContinue)
@@ -120,28 +138,41 @@ if (-not $Jdk17Bin) {
         $Jdk17Bin = Split-Path -Parent $onPath[0].Source
     }
 }
-$javac = Join-Path $Jdk17Bin 'javac.exe'
-$jar = Join-Path $Jdk17Bin 'jar.exe'
-$java = Join-Path $Jdk17Bin 'java.exe'
+$javac = Join-Path $Jdk17Bin "javac$exeSuffix"
+$jar = Join-Path $Jdk17Bin "jar$exeSuffix"
+$java = Join-Path $Jdk17Bin "java$exeSuffix"
 foreach ($exe in @($javac, $jar, $java)) {
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "-Jdk17Bin holds no $(Split-Path -Leaf $exe): $Jdk17Bin" }
 }
 if (-not $SkipClient) {
     if (-not $Jdk25Bin) { throw '-Jdk25Bin is required for the client (a JDK 25 bin folder: its javac compiles the voice package at --release 22); or pass -SkipClient' }
-    $javac25 = Join-Path $Jdk25Bin 'javac.exe'
-    if (-not (Test-Path -LiteralPath $javac25 -PathType Leaf)) { throw "-Jdk25Bin holds no javac.exe: $Jdk25Bin" }
+    $javac25 = Join-Path $Jdk25Bin "javac$exeSuffix"
+    if (-not (Test-Path -LiteralPath $javac25 -PathType Leaf)) { throw "-Jdk25Bin holds no javac${exeSuffix}: $Jdk25Bin" }
 }
 Write-Host "JDK: $Jdk17Bin$(if ($SkipClient) { ' (client skipped)' } else { "; JDK 25: $Jdk25Bin" })"
 
+# The game's jar folder: starsector-core under the Windows install; a folder that holds the jars itself (a copied
+# starsector-core on a Linux host, or the Linux download) is taken as it is.
 $core = Join-Path $GameDir 'starsector-core'
+if (-not (Test-Path -LiteralPath (Join-Path $core "starfarer_obf.jar") -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $GameDir "starfarer_obf.jar") -PathType Leaf)) { $core = $GameDir }
 $gameJars = @('json.jar', 'starfarer.api.jar', 'lwjgl_util.jar')
 if (-not $SkipClient) { $gameJars += @("starfarer_obf.jar", 'fs.common_obf.jar', 'fs.sound_obf.jar', 'lwjgl.jar', 'log4j-1.2.9.jar') }
 $absent = @($gameJars | Where-Object { -not (Test-Path -LiteralPath (Join-Path $core $_) -PathType Leaf) })
 if ($absent.Count -gt 0) { throw "game jar(s) missing under ${core}: $($absent -join ', ') (pass -GameDir <Starsector folder>)" }
 $jsonJar = Join-Path $core 'json.jar'
+# The client sources name the engine's class names as the WINDOWS download of 0.98a-RC8 has them; the Linux download
+# is a separate build of the same version (its internal names differ), so a client build against it fails deep in
+# javac. Tell the two apart up front by the engine jar's sha256: the Windows download's jar (6,029,184 bytes) is the one
+# the client sources match, and the one the server runs from.
+if (-not $SkipClient) {
+    $engineJar = Join-Path $core "starfarer_obf.jar"
+    $engineSha = (Get-FileHash -LiteralPath $engineJar -Algorithm SHA256).Hash.ToLowerInvariant()
+    $windowsBuild = $engineSha -eq '5dd222b9e266d2ac2d63b3dad4983eb05caaf5a247d7dfb82aaeba47ea774cc8'
+    if (-not $windowsBuild) { throw "client: $core does not hold the Windows build of Starsector 0.98a-RC8 that the client sources (and the server at start) need (its engine jar's sha256 is $engineSha; the Linux download's jars are a separate build): point -GameDir at a copy of the Windows game's folder (the one with starsector-core), the folder a Linux host serves from; or pass -SkipClient (the server alone builds against either)" }
+}
 
 # The ASM library ships beside the sources with its sha256; a missing or changed jar stops the build before any use.
-$asmJar = Join-Path $root 'third-party\asm\asm-9.10.1.jar'
+$asmJar = Join-Path $root 'third-party/asm/asm-9.10.1.jar'
 $asmPin = "$asmJar.sha256"
 if (-not (Test-Path -LiteralPath $asmJar -PathType Leaf)) { throw "ASM jar missing: $asmJar" }
 if (-not (Test-Path -LiteralPath $asmPin -PathType Leaf)) { throw "ASM sha256 file missing: $asmPin" }
@@ -151,7 +182,8 @@ if ($asmHave -ne $asmWant) { throw "ASM jar sha256 mismatch: file $asmHave, expe
 
 function Reset-Dir([string] $Path) {
     $full = [IO.Path]::GetFullPath($Path)
-    if (-not $full.StartsWith(([IO.Path]::GetFullPath($root).TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) { throw "refusing to clear a folder outside this tree: $full" }
+    $rootPrefix = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($root)) + $dirSep
+    if (-not $full.StartsWith($rootPrefix, $pathCompare)) { throw "refusing to clear a folder outside this tree: $full" }
     if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $full | Out-Null
 }
@@ -179,9 +211,9 @@ Invoke-Javac 'server product' $javac @('--release', '17', '-cp', $jsonJar, '-d',
 Write-Host "server product: $($sources.Count) sources -> server/classes"
 
 # 2. probe-api: the few classes that implement game API interfaces, compiled against the game's API jar.
-$probeSources = @(Get-ChildItem -LiteralPath (Join-Path $server 'probe-api\src') -Recurse -Filter '*.java' -ErrorAction SilentlyContinue)
+$probeSources = @(Get-ChildItem -LiteralPath (Join-Path $server 'probe-api/src') -Recurse -Filter '*.java' -ErrorAction SilentlyContinue)
 if ($probeSources.Count -gt 0) {
-    $probeCp = "$core\starfarer.api.jar;$core\lwjgl_util.jar;$jsonJar;$classes"
+    $probeCp = @((Join-Path $core 'starfarer.api.jar'), (Join-Path $core 'lwjgl_util.jar'), $jsonJar, $classes) -join $cpSep
     Invoke-Javac 'server probe-api' $javac @('--release', '17', '-cp', $probeCp, '-d', $classes) @($probeSources.FullName)
     Write-Host "server probe-api: $($probeSources.Count) sources -> server/classes"
 }
@@ -192,7 +224,7 @@ $premain = Join-Path $server 'premain'
 $premainClasses = Join-Path $premain 'classes'
 Reset-Dir $premainClasses
 $premainSources = @(Get-ChildItem -LiteralPath (Join-Path $premain 'src') -Recurse -Filter '*.java')
-Invoke-Javac 'server premain' $javac @('--release', '17', '-cp', "$classes;$asmJar", '-d', $premainClasses) @($premainSources.FullName)
+Invoke-Javac 'server premain' $javac @('--release', '17', '-cp', "$classes$cpSep$asmJar", '-d', $premainClasses) @($premainSources.FullName)
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead($asmJar)
 $shaded = 0
@@ -200,7 +232,7 @@ try {
     foreach ($entry in $zip.Entries) {
         if ($entry.FullName.EndsWith('/')) { continue }
         if ($entry.FullName -notlike 'org/objectweb/asm/*.class') { continue }
-        $dest = Join-Path $premainClasses ($entry.FullName -replace '/', '\')
+        $dest = Join-Path $premainClasses ($entry.FullName.Replace('/', $dirSep))
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
         [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
         $shaded++
@@ -238,9 +270,10 @@ if ($SkipClient) { Write-Host 'client skipped (-SkipClient)'; exit 0 }
 
 # ---- client mod -------------------------------------------------------------------------------------------------------
 # 5. the compile class path: the game's jars (the game runtime has them all) + the server classes.
-$cp = @("$core\starfarer.api.jar", "$core\starfarer_obf.jar", "$core\fs.common_obf.jar", "$core\fs.sound_obf.jar",
-    "$core\lwjgl.jar", "$core\lwjgl_util.jar", "$core\log4j-1.2.9.jar", $jsonJar, $classes) -join ';'
-$out = Join-Path $client 'build\classes'
+$cpJars = @('starfarer.api.jar', "starfarer_obf.jar", 'fs.common_obf.jar', 'fs.sound_obf.jar', 'lwjgl.jar', 'lwjgl_util.jar',
+    'log4j-1.2.9.jar' | ForEach-Object { Join-Path $core $_ })
+$cp = ($cpJars + @($jsonJar, $classes)) -join $cpSep
+$out = Join-Path $client 'build/classes'
 Reset-Dir $out
 $clientSrc = Join-Path $client 'src'
 
@@ -248,10 +281,10 @@ $clientSrc = Join-Path $client 'src'
 # it names for their signatures without emitting them. B (JDK 25, --release 17): the three factories that name it.
 # Main (JDK 17): everything else, with A and B's classes on the class path.
 $allSrcFiles = @(Get-ChildItem -LiteralPath $clientSrc -Recurse -Filter '*.java' | ForEach-Object { $_.FullName })
-$ffmSrcFiles = @($allSrcFiles | Where-Object { $_ -like '*\voice\ffm\*' })
-$voiceDir = Join-Path $clientSrc 'cc\starsector\client\voice'
+$ffmSrcFiles = @($allSrcFiles | Where-Object { $_.Replace('\', '/') -like '*/voice/ffm/*' })
+$voiceDir = Join-Path $clientSrc 'cc/starsector/client/voice'
 $bridgeSrcFiles = @('VoiceSinkFactory.java', 'VoiceSourceFactory.java', 'VoiceProbeEarFactory.java' | ForEach-Object { Join-Path $voiceDir $_ })
-$srcFiles = @($allSrcFiles | Where-Object { $_ -notlike '*\voice\ffm\*' -and $bridgeSrcFiles -notcontains $_ })
+$srcFiles = @($allSrcFiles | Where-Object { $_.Replace('\', '/') -notlike '*/voice/ffm/*' -and $bridgeSrcFiles -notcontains $_ })
 if ($ffmSrcFiles.Count -eq 0 -or @($bridgeSrcFiles | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0) { throw 'client: the voice/ffm sources or one of the three voice factory sources are missing' }
 # -XDstringConcat=inline: string concatenation compiles to plain StringBuilder chains, not invokedynamic call sites
 # whose first run spins method handles (a measured first-frame stall in game).
@@ -259,13 +292,13 @@ if ($ffmSrcFiles.Count -eq 0 -or @($bridgeSrcFiles | Where-Object { -not (Test-P
 Assert-Exit 'client pass A (voice/ffm, JDK 25)'
 & $javac25 -encoding UTF-8 --release 17 -XDstringConcat=inline -Xlint:all -sourcepath $clientSrc -implicit:none -cp $out -d $out $bridgeSrcFiles
 Assert-Exit 'client pass B (voice factories, JDK 25)'
-Invoke-Javac 'client main' $javac @('--release', '17', '-XDstringConcat=inline', '-Xlint:all', '-cp', "$cp;$out", '-d', $out) $srcFiles
+Invoke-Javac 'client main' $javac @('--release', '17', '-XDstringConcat=inline', '-Xlint:all', '-cp', "$cp$cpSep$out", '-d', $out) $srcFiles
 Write-Host "client: $($ffmSrcFiles.Count) + $($bridgeSrcFiles.Count) + $($srcFiles.Count) sources -> client-mod/build/classes"
 
 # 7. the sound self-check probe: --release 8 so both the game's Java 17 and newer runtimes run it.
-$probeSrc = Join-Path $client 'sound-check\SoundProbe.java'
+$probeSrc = Join-Path $client 'sound-check/SoundProbe.java'
 if (-not (Test-Path -LiteralPath $probeSrc -PathType Leaf)) { throw "client: missing $probeSrc" }
-& $javac -encoding UTF-8 --release 8 -Xlint:-options -cp "$core\lwjgl.jar" -d (Join-Path $client 'mod') $probeSrc
+& $javac -encoding UTF-8 --release 8 -Xlint:-options -cp (Join-Path $core 'lwjgl.jar') -d (Join-Path $client 'mod') $probeSrc
 Assert-Exit 'SoundProbe'
 Write-Host 'client: SoundProbe -> client-mod/mod/SoundProbe.class'
 
@@ -273,7 +306,8 @@ Write-Host 'client: SoundProbe -> client-mod/mod/SoundProbe.class'
 # officer formats, the handshake, the shared laws), each with its nested classes (<Name>$*.class), and the whole
 # vendored codec package, so client and server read and write the same formats with the same code. The maintainer's
 # internal build holds this list SET-EQUAL to its own fold list on every build (a class missing here would be a
-# NoClassDefFoundError in the game for a build of this tree only), so the two lists name the same entries.
+# NoClassDefFoundError in the game for a build of this tree only), so the two lists name the same entries. The entries
+# keep the '\' form that comparison reads; the loop below turns it into the system's own separator.
 $fold = @(
     'cc\starsector\server\client\PilotIntentClientSession.class',
     'cc\starsector\server\runtime\PilotIntentFrame.class',
@@ -325,9 +359,10 @@ $fold = @(
     'cc\starsector\server\client\ChunkMergerCore.class'
 )
 foreach ($rel in $fold) {
-    $srcPath = Join-Path $classes $rel
+    $relPath = $rel.Replace('\', $dirSep)
+    $srcPath = Join-Path $classes $relPath
     if (-not (Test-Path -LiteralPath $srcPath -PathType Leaf)) { throw "fold: $rel is missing from server/classes" }
-    $dstDir = Split-Path -Parent (Join-Path $out $rel)
+    $dstDir = Split-Path -Parent (Join-Path $out $relPath)
     New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
     $baseName = [IO.Path]::GetFileNameWithoutExtension($srcPath)
     $siblings = Get-ChildItem -LiteralPath (Split-Path -Parent $srcPath) -Filter "$baseName*.class" | Where-Object {
@@ -335,9 +370,9 @@ foreach ($rel in $fold) {
     }
     foreach ($cls in $siblings) { Copy-Item -LiteralPath $cls.FullName -Destination (Join-Path $dstDir $cls.Name) -Force }
 }
-$codecDir = Join-Path $classes 'org\concentus'
-if (-not (Test-Path -LiteralPath $codecDir -PathType Container)) { throw 'fold: org\concentus is missing from server/classes' }
-$codecDst = Join-Path $out 'org\concentus'
+$codecDir = Join-Path $classes 'org/concentus'
+if (-not (Test-Path -LiteralPath $codecDir -PathType Container)) { throw 'fold: org/concentus is missing from server/classes' }
+$codecDst = Join-Path $out 'org/concentus'
 New-Item -ItemType Directory -Force -Path $codecDst | Out-Null
 Get-ChildItem -LiteralPath $codecDir -Filter '*.class' | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $codecDst $_.Name) -Force }
 Write-Host "client fold: $($fold.Count) server classes + their nested classes, org/concentus"
@@ -353,17 +388,17 @@ if (Test-Path -LiteralPath $webSrc -PathType Container) {
         Copy-Item -LiteralPath $f.FullName -Destination $dst
     }
 }
-$skinIds = @(Get-ChildItem -LiteralPath (Join-Path $client 'mod\data\hulls\skins') -Filter '*.skin' -File | ForEach-Object {
+$skinIds = @(Get-ChildItem -LiteralPath (Join-Path $client 'mod/data/hulls/skins') -Filter '*.skin' -File | ForEach-Object {
     $m = [regex]::Match((Get-Content -LiteralPath $_.FullName -Raw), '"skinHullId"\s*:\s*"([^"]+)"')
     if ($m.Success) { $m.Groups[1].Value }
 } | Sort-Object -Unique)
-$skinResDir = Join-Path $out 'cc\starsector\client\editor'
+$skinResDir = Join-Path $out 'cc/starsector/client/editor'
 New-Item -ItemType Directory -Force -Path $skinResDir | Out-Null
 [IO.File]::WriteAllText((Join-Path $skinResDir 'mod-skins.txt'), (($skinIds -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
 Write-Host "client resources: web files $(@(Get-ChildItem -LiteralPath (Join-Path $out 'web') -Recurse -File -ErrorAction SilentlyContinue).Count), mod skins $($skinIds.Count)"
 
 # 10. the mod jar; --date pins every entry time, so the same classes always pack to the same jar bytes.
-$jarsDir = Join-Path $client 'mod\jars'
+$jarsDir = Join-Path $client 'mod/jars'
 New-Item -ItemType Directory -Force -Path $jarsDir | Out-Null
 $modJar = Join-Path $jarsDir 'cc-client-mod.jar'
 if (Test-Path -LiteralPath $modJar) { Remove-Item -LiteralPath $modJar -Force }
@@ -381,10 +416,10 @@ if ($KitRuntime) {
     . (Join-Path $client 'kit-runtime.ps1')
     $jdk25Home = Split-Path -Parent $Jdk25Bin
     $implVer = Read-CcTemurinVersion $jdk25Home
-    $jreDir = Join-Path $client 'mod\jre-cc'
+    $jreDir = Join-Path $client 'mod/jre-cc'
     $stampPath = Join-Path $jreDir 'cc-kit-jre.txt'
     $stampRows = Get-CcKitRuntimeStampRows $implVer
-    $cached = (Test-Path -LiteralPath $stampPath -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $jreDir 'bin\javaw.exe') -PathType Leaf) -and
+    $cached = (Test-Path -LiteralPath $stampPath -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $jreDir 'bin/javaw.exe') -PathType Leaf) -and
         ((@(Get-Content -LiteralPath $stampPath) -join "`n") -ceq ($stampRows -join "`n"))
     if ($cached) {
         Write-Host "kit runtime: client-mod/mod/jre-cc kept ($implVer; the stamp is unchanged)"
@@ -400,7 +435,7 @@ if ($KitRuntime) {
     if (-not (Test-Path -LiteralPath $vm -PathType Leaf)) { throw "kit runtime: vmparams not found: $vm (pass -GameDir <Starsector folder>)" }
     $argLines = [string[]] (Convert-CcVmparamsToKitArgs (Get-Content -LiteralPath $vm -Raw))
     if ($argLines -notcontains '--enable-native-access=ALL-UNNAMED') { throw 'kit runtime: the derived kit-jvm.args lacks --enable-native-access=ALL-UNNAMED (the voice path needs it)' }
-    $argLines | Set-Content -LiteralPath (Join-Path $client 'mod\kit-jvm.args') -Encoding ASCII
+    $argLines | Set-Content -LiteralPath (Join-Path $client 'mod/kit-jvm.args') -Encoding ASCII
     Write-Host "kit runtime: client-mod/mod/kit-jvm.args ($($argLines.Count - 2) options from vmparams)"
 }
 
@@ -510,17 +545,17 @@ function Add-KitRuntimeNotices([System.Collections.Generic.List[string]] $L, [st
 }
 
 function Invoke-KitPack([string] $ModDir, [string] $JavaExe, [string] $Classes, [string] $DescriptorPath, [string] $OutZip, [string] $Game, [string] $JdkHome) {
-    $stage = [IO.Path]::GetFullPath((Join-Path $root 'build\kit-stage'))
+    $stage = [IO.Path]::GetFullPath((Join-Path $root 'build/kit-stage'))
     Reset-Dir $stage
     $stageMod = Join-Path $stage 'CC_Client'
-    $modFull = [IO.Path]::GetFullPath($ModDir).TrimEnd('\')
+    $modFull = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($ModDir))
     $matchNames = @('match.txt', 'match.txt.txt', 'match.txt.fingerprint', 'match.txt.password', 'kit.files')
     $secrets = @()
     foreach ($f in @(Get-ChildItem -LiteralPath $modFull -Recurse -File -Force)) {
         $rel = $f.FullName.Substring($modFull.Length + 1)
         if ($matchNames -contains $rel) { continue }
         $leaf = $f.Name.ToLowerInvariant()
-        if ($leaf.Contains('-tokens') -or $leaf.EndsWith('.password') -or $leaf.EndsWith('.adminpassword') -or $leaf -eq 'cc-door-credentials.properties') { $secrets += $rel.Replace('\', '/'); continue }
+        if ($leaf.Contains('-tokens') -or $leaf.EndsWith('.password') -or $leaf.EndsWith('.adminpassword') -or $leaf -eq 'cc-door-credentials.properties') { $secrets += $rel.Replace($dirSep, '/'); continue }
         $dst = Join-Path $stageMod $rel
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
         Copy-Item -LiteralPath $f.FullName -Destination $dst
@@ -529,7 +564,7 @@ function Invoke-KitPack([string] $ModDir, [string] $JavaExe, [string] $Classes, 
     # CC_Client/THIRD-PARTY-NOTICES.txt (the mod's LICENSE.txt points at it): the Concentus codec is built into the
     # jar, so its licence text travels with every copy of the kit - the same header, fields and whole-text rule the
     # maintainer's notices composer follows; the Java-runtime section joins it when the stage carries jre-cc.
-    $licence = Join-Path $root 'server\vendor\concentus\LICENSE'
+    $licence = Join-Path $root 'server/vendor/concentus/LICENSE'
     if (-not (Test-Path -LiteralPath $licence -PathType Leaf)) { throw 'joiner kit: server/vendor/concentus/LICENSE is missing - a kit never ships the codec without its licence text' }
     $notices = [System.Collections.Generic.List[string]]::new()
     $notices.AddRange([string[]] @('THIRD-PARTY NOTICES', '', 'This package includes software made by others. Each part is listed below: what',
@@ -542,6 +577,7 @@ function Invoke-KitPack([string] $ModDir, [string] $JavaExe, [string] $Classes, 
     $notices.AddRange([string[]] @([IO.File]::ReadAllLines($licence)))
     $stagedJre = Join-Path $stageMod 'jre-cc'
     if (Test-Path -LiteralPath $stagedJre -PathType Container) {
+        if (-not $IsWindows) { throw 'joiner kit: client-mod/mod carries jre-cc, whose notices read the version information of its Windows DLLs - a Windows step: pack this kit on Windows, or delete client-mod/mod/jre-cc and kit-jvm.args for a kit without a runtime' }
         if (-not (Test-Path -LiteralPath (Join-Path $stageMod 'kit-jvm.args') -PathType Leaf)) { throw 'joiner kit: client-mod/mod has jre-cc but no kit-jvm.args - re-run with -KitRuntime (or delete jre-cc)' }
         $notices.Add(('=' * 80))
         Add-KitRuntimeNotices $notices $JdkHome $stagedJre
@@ -549,19 +585,16 @@ function Invoke-KitPack([string] $ModDir, [string] $JavaExe, [string] $Classes, 
     [IO.File]::WriteAllText((Join-Path $stageMod 'THIRD-PARTY-NOTICES.txt'), (($notices -join "`r`n") + "`r`n"), [Text.UTF8Encoding]::new($false))
     $composed = @('CC_Client/match.txt', 'CC_Client/kit.files', 'CC_Client/kit-manifest.txt', 'README.md')
     [string[]] $entries = @(Get-ChildItem -LiteralPath $stage -Recurse -File -Force |
-        ForEach-Object { $_.FullName.Substring($stage.Length + 1).Replace('\', '/') } | Where-Object { $composed -notcontains $_ })
+        ForEach-Object { $_.FullName.Substring($stage.Length + 1).Replace($dirSep, '/') } | Where-Object { $composed -notcontains $_ })
     [Array]::Sort($entries, [StringComparer]::Ordinal)
-    $list = [IO.Path]::GetFullPath((Join-Path $root 'build\kit-entries.txt'))
+    $list = [IO.Path]::GetFullPath((Join-Path $root 'build/kit-entries.txt'))
     [IO.File]::WriteAllText($list, (($entries -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $sidecar = Join-Path $stage 'match.txt.fingerprint'
-    # The kit ships only the custom variant definitions client-mod/kit-keep-variants.txt names (plus the match's own
-    # roster ones); the packer drops every other one from the kit (a player's game receives those over the wire at
-    # join). The list is the same one the released kits were packed with, so this kit carries the same variants.
-    $keep = Join-Path $root 'client-mod\kit-keep-variants.txt'
-    if (-not (Test-Path -LiteralPath $keep -PathType Leaf)) { throw 'joiner kit: client-mod/kit-keep-variants.txt is missing - this source tree is incomplete (the kit packer needs that list of the custom variants a kit ships)' }
+    # The kit ships every custom variant definition under client-mod/mod/data/variants, the same set the released kits
+    # carry.
     $kv = @("base=dir:$stage", "descriptor=$DescriptorPath", 'posture=redact', "out=$OutZip", "sidecarOut=$sidecar",
-        "stamp=$stamp", "entries=$list", "game=$Game", "keepVariants=$keep")
+        "stamp=$stamp", "entries=$list", "game=$Game")
     $all = @(& $JavaExe -cp $Classes cc.starsector.server.ops.KitPacker @kv 2>&1)
     $code = $LASTEXITCODE
     $rows = @($all | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ForEach-Object { "$_" })
@@ -576,8 +609,7 @@ function Invoke-KitPack([string] $ModDir, [string] $JavaExe, [string] $Classes, 
     if ($Matches[1] -ne (Split-Path -Leaf $OutZip) -or $Matches[4] -ne $stamp) { throw "joiner kit: the packer reported file=$($Matches[1]) stamp=$($Matches[4]) for $(Split-Path -Leaf $OutZip) stamp $stamp" }
     $packedMd5 = $Matches[3]
     $packedEntries = [int]$Matches[2]
-    if (@($errRows | Where-Object { $_ -cmatch '^kit-packer: variants kept=\d+ stripped=\d+$' }).Count -ne 1) { throw 'joiner kit: the kit packer exited 0 without its one variants line (kept / stripped) - it did not apply the variant list' }
-    $stagedMd5 = (Get-FileHash -LiteralPath (Join-Path $stageMod 'jars\cc-client-mod.jar') -Algorithm MD5).Hash.ToLowerInvariant()
+    $stagedMd5 = (Get-FileHash -LiteralPath (Join-Path $stageMod 'jars/cc-client-mod.jar') -Algorithm MD5).Hash.ToLowerInvariant()
     if ($packedMd5 -ne $stagedMd5) { throw "joiner kit: the packer hashed the jar as $packedMd5 but the staged jar is $stagedMd5" }
     if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) { throw 'joiner kit: the packer wrote no fingerprint sidecar (build/kit-stage/match.txt.fingerprint)' }
     return $packedEntries

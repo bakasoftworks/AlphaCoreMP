@@ -25,7 +25,8 @@ import java.util.regex.Pattern;
  * ({@code Get-Date -Format 'yyyyMMdd-HHmmss'}); a shape slug is {@code [a-z0-9-]{1,40}}.
  *
  *
- * The variant keep-list's row grammar and its R13 text.
+ * The variant keep-list's row grammar and its R13 text
+ * DELETED with the strip - the kit ships every custom variant def.
  */
 public final class KitPackRules {
 
@@ -66,15 +67,8 @@ public final class KitPackRules {
     public static final Pattern PACK_KIT = Pattern.compile("[A-Za-z0-9._-]{1,80}\\.zip");
     /** The kit stamp grammar = the roll's {@code yyyyMMdd-HHmmss} (passes the bat's vguard charset). */
     public static final Pattern STAMP = Pattern.compile("[0-9]{8}-[0-9]{6}");
-    /** Unresolved roster ids an R7 text (and stale keep-list ids an R13 text) names at most. */
+    /** Unresolved roster ids an R7 text names at most. */
     public static final int MAX_CENSUS_IDS_SHOWN = 6;
-    /**
-     * One id row of the {@code dir:} pack's variant keep-list file ({@code keepVariants=}): a variant id is a file
-     * name stem, so the row grammar is a plain name (no path, no separator, never a placeholder char); anything else
-     * is a usage refusal before the pack reads the stage.
-     *
-     */
-    public static final Pattern KEEP_VARIANT_ID = Pattern.compile("[A-Za-z0-9_.-]{1,80}");
     /** The chars of a refused entry name an R4 text shows at most. */
     public static final int MAX_ENTRY_CHARS_SHOWN = 80;
     /** Every kit zip entry's time: {@code 2026-01-01T00:00:00} (UTC wall clock) = the jar pin of
@@ -516,24 +510,6 @@ public final class KitPackRules {
         List<String> shown = ids.size() > MAX_CENSUS_IDS_SHOWN ? ids.subList(0, MAX_CENSUS_IDS_SHOWN) : ids;
         return "The match " + shape + " names ships neither the joiner kit nor the game has: " + String.join(", ", shown)
                 + " - choose another match shape.";
-    }
-
-    /**
-     * R13: the {@code dir:} pack's variant keep-list does not fit the stage, in two shapes. {@code staleIds} non-empty =
-     * ids the keep-list names that no staged custom variant file carries (at most {@link #MAX_CENSUS_IDS_SHOWN}
-     * named): the list was minted against another mod tree. Empty = the keep-list plus the match's roster resolve to
-     * no staged custom variant at all: a kit stripped of every one would field none of the mod's ships. Either way
-     * the fix is the same: the home roll re-mints the list from the match library and the mod tree.
-     *
-     */
-    public static String textR13(List<String> staleIds) {
-        if (staleIds == null || staleIds.isEmpty()) {
-            return "The kit's variant keep-list resolves to no shipped variant - nothing was written; the home roll"
-                    + " re-mints the keep-list.";
-        }
-        List<String> shown = staleIds.size() > MAX_CENSUS_IDS_SHOWN ? staleIds.subList(0, MAX_CENSUS_IDS_SHOWN) : staleIds;
-        return "The kit's variant keep-list names variants this mod does not carry: " + String.join(", ", shown)
-                + " - the keep-list is stale; the home roll re-mints it.";
     }
 
     /** R9: the kits volume lacks {@code mb} MiB. */

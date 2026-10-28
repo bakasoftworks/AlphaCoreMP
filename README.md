@@ -36,12 +36,12 @@ Full guide: [the server README](readme/host-README.md). The same file is inside 
 
 This repository is the source of the mod and the server. You do not need it to play or to host on the released server.
 
-- Build on Windows with PowerShell 7, Starsector 0.98a-RC8 installed, a JDK 17 or newer and a JDK 25:
+- Build on Windows or Linux with PowerShell 7, Starsector 0.98a-RC8, a JDK 17 or newer and a JDK 25:
 
       .\build.ps1 -GameDir "<Starsector folder>" -Jdk17Bin "<JDK 17>\bin" -Jdk25Bin "<JDK 25>\bin"
 
-  `-SkipClient` builds the server only. The mod lands at `client-mod/mod/jars/cc-client-mod.jar`.
-- To host on your own build: pack a joiner kit (`-KitZip` with `-Descriptor`), then lay out a server folder (`-SkipClient -ServerFolder -Package -Kit`) and start it with its `ops-web.bat`.
+  On Linux: `pwsh ./build.ps1` with the same options, `-GameDir` naming a copy of the Windows install's `starsector-core` folder. `-SkipClient` builds the server only. The mod lands at `client-mod/mod/jars/cc-client-mod.jar`.
+- To host on your own build: pack a joiner kit (`-KitZip` with `-Descriptor`), then lay out a server folder (`-SkipClient -ServerFolder -Package -Kit`) and start it with its `ops-web.bat` (Linux: `sh ops-web.sh`).
 - Where the code is: `server/src` (the server), `client-mod/src` (the mod), `client-mod/web` (the join window and the ship editor).
 
 Full guide: [the source README](readme/source-README.md): what is where, how it works, building, hosting on your own build, and the project's status.

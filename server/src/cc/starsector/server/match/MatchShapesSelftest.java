@@ -196,7 +196,7 @@ public final class MatchShapesSelftest {
         MatchShapes.ShapeSetResult shipped = MatchShapes.writeShapeSet(
                 kitLines(kit.matchId(), "data/variants/sub/" + id + ".variant"), kit, lib, Set.of(id), out2);
         require(shipped.written().equals(List.of("match-a")), "a mod variant the kit ships (file= row in a subfolder)"
-                + " was refused - flips if the file= id rule drifts from the packer's BaseName keep-list");
+                + " was refused - flips if the file= id rule stops keying a subfolder row by its BaseName");
         Path out3 = mkdir(dir, "out3");
         MatchShapes.ShapeSetResult vanilla = MatchShapes.writeShapeSet(kitLines(kit.matchId()), kit, lib, Set.of(),
                 out3);

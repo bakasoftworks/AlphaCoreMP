@@ -47,10 +47,8 @@ import java.util.zip.ZipException;
  * zip all from here — one writer per artifact, no pwsh twin to fork).
  *
  * <p>Order ({@link #pack}): (a) INPUT — the zip through {@link KitZip#read} (or the caller's entry list
- * under a stage dir), then, in {@code dir:} mode with a variant keep-list only, THE STRIP ({@link #keepVariants}: every
- * staged custom variant the keep-list and the descriptor's roster do not name leaves the entry list, so the surface,
- * {@code dataMd5}, the {@code file=} rows and the census below all see the shipped set; R13 when the list is stale
- * or keeps nothing); (b) VERIFY in memory before anything is written — the base sidecar's {@code jar=}
+ * under a stage dir: every listed name ships, every custom variant def the stage carries included);
+ * (b) VERIFY in memory before anything is written — the base sidecar's {@code jar=}
  * equals the kit jar's md5 (and the package MANIFEST's {@code kit.jar.md5}), {@code hs=} equals
  * {@link HandshakeCodec#HANDSHAKE_VERSION} (else R2), {@code data=} equals {@code dataMd5} over the
  * kit's own surface and the {@code file=} rows list exactly that surface (else R3), and with a MANIFEST
@@ -72,8 +70,9 @@ import java.util.zip.ZipException;
  * deadline (R11) makes the commit gate refuse the rename, so "nothing was written" stays true.
  *
  *
- * The variant keep-list strip, the ONE implementation the repo roll and the
- * exported source's build share (the roll's own strip retired with it).
+ * The variant keep-list strip DELETED - a {@code dir:}
+ * pack ships every entry its caller lists, every custom variant def included. WHY: the strip's two reasons are gone
+ * (the kit already ships every skin; every release re-rolls the kit), so the kit carries the whole variant set.
  */
 public final class KitPacker {
 
@@ -94,15 +93,10 @@ public final class KitPacker {
      * {@code stamp} = {@code yyyyMMdd-HHmmss}; {@code manifestOrNull} = the package {@code MANIFEST.txt}
      * (its folder is the package root the restart probe reads); {@code gameRootOrNull} = the game folder
      * (the install root OR its {@code starsector-core}); {@code ceilingS} = the commit deadline in
-     * seconds from the start (≤ 0 = none: the tool main); {@code keepVariantsOrNull} = the variant keep-list's ids
-     * ({@code dir:} mode only, each in {@link KitPackRules#KEEP_VARIANT_ID}; null = no strip, the stage packed whole):
-     * the custom variants the kit ships beside the descriptor's own roster ids, every other staged one is sent
-     * over the wire at join instead ({@link #keepVariants}). WHY a list and not a file: the main reads the file
-     * under its usage law, an in-process caller hands the ids over, and both reach ONE strip.
+     * seconds from the start (≤ 0 = none: the tool main).
      */
     public record Request(Path base, boolean dirMode, Path descriptor, Posture posture, Path out, Path sidecarOut,
-            String stamp, Path manifestOrNull, Path gameRootOrNull, List<String> dirEntriesOrNull, int ceilingS,
-            List<String> keepVariantsOrNull) {
+            String stamp, Path manifestOrNull, Path gameRootOrNull, List<String> dirEntriesOrNull, int ceilingS) {
     }
 
     /**
@@ -152,8 +146,6 @@ public final class KitPacker {
     public static final String UNOFFERED = "unoffered";
     /** The zip or the package sidecar could not be written (I/O, an existing target). */
     public static final String WRITE = "write";
-    /** R13: the variant keep-list names a variant the stage lacks, or keeps none. */
-    public static final String KEEP_LIST = "keep_list";
 
     /** The zip write step (the rows swap it to block / fail the write; default {@link KitZip#write}). */
     @FunctionalInterface
@@ -174,18 +166,11 @@ public final class KitPacker {
             "# fingerprint= is the armed door's expected composite (re-read per serve);",
             "# file= rows are the client's digest surface (mod code cannot list data/** in-game).");
 
-    /**
-     * The pack's outcome plus the two facts the main's stdout row prints, and the strip's two counts (variant ids
-     * kept / stripped; both -1 when no keep-list was given) the main's one stderr line prints.
-     */
-    record Packed(Result result, int entries, String jarMd5, int keptVariants, int strippedVariants) {
+    /** The pack's outcome plus the two facts the main's stdout row prints. */
+    record Packed(Result result, int entries, String jarMd5) {
         static Packed refused(Result result) {
-            return new Packed(result, 0, null, -1, -1);
+            return new Packed(result, 0, null);
         }
-    }
-
-    /** {@link #keepVariants}'s answer: the stripped entry list and the two id counts. */
-    record Strip(List<KitZip.Entry> entries, int kept, int stripped) {
     }
 
     /** A refusal unwinding {@link #runOrThrow} (carries its finished {@link Result}). */
@@ -244,8 +229,8 @@ public final class KitPacker {
 
     /**
      * (d) The roster census: every roster {@code variantId()} must be one the kit ships ({@code kitVariantIds},
-     * {@link MatchShapes#shippedVariantIds} over the kit sidecar's {@code file=} rows = the roll's BaseName
-     * keep-list) or a vanilla variant (a RECURSIVE walk of {@code data/variants/**} under
+     * {@link MatchShapes#shippedVariantIds} over the kit sidecar's {@code file=} rows = every custom variant def
+     * the kit ships) or a vanilla variant (a RECURSIVE walk of {@code data/variants/**} under
      * {@code ServeLauncher.resolveGame(gameRootOrNull)} — stations sit under {@code stations/} — of at most
      * {@link KitPackRules#MAX_VANILLA_FILES} files; ids = the file name minus a case-insensitive
      * {@code .variant}, compared ordinal). The game folder is read ONLY when some id is not in the kit:
@@ -331,18 +316,6 @@ public final class KitPacker {
                 throw refuse(ENTRY, KitPackRules.textR4(name, PackageManifest.mask(e.name())));
             }
         }
-        // THE STRIP (dir: + a keep-list only): before (b), so the surface, dataMd5, the file= rows and the census
-        // all see the shipped set; the descriptor is read here (its roster joins the keep set) and reused at (c)
-        MatchDescriptor early = null;
-        int kept = -1;
-        int stripped = -1;
-        if (req.keepVariantsOrNull() != null) {
-            early = readLive(req, shape);
-            Strip s = keepVariants(entries, req.keepVariantsOrNull(), early);
-            entries = s.entries();
-            kept = s.kept();
-            stripped = s.stripped();
-        }
         requireInTime(deadline, req);
 
         // (b) VERIFY, in memory
@@ -423,7 +396,7 @@ public final class KitPacker {
         requireInTime(deadline, req);
 
         // (c) COMPOSE
-        MatchDescriptor live = early != null ? early : readLive(req, shape);
+        MatchDescriptor live = readLive(req, shape);
         // The kit ships no match file; the redacted form is what the door serves a joiner, so a
         // descriptor whose redaction still leaves a live token is refused here, and a zip: pack never
         // keeps tokens (KEEP is the repo roll's dir: posture only).
@@ -501,7 +474,7 @@ public final class KitPacker {
         boolean sidecarChanged = req.sidecarOut() != null && !Arrays.equals(readOrNull(req.sidecarOut()), sidecarBytes);
         if (!write) {
             return new Packed(new Result(true, CHECKED, KitPackRules.textChecked(shape), out, sidecarChanged),
-                    composed.size(), jarMd5, kept, stripped);
+                    composed.size(), jarMd5);
         }
 
         // (f) WRITE
@@ -528,77 +501,8 @@ public final class KitPacker {
         boolean restart = sidecarChanged && serverMayHoldOldSidecar(req.manifestOrNull());
         String display = folderName(out) + "\\" + out.getFileName();
         return new Packed(new Result(true, MADE, KitPackRules.textDone(PackageManifest.mask(display), restart), out,
-                sidecarChanged), composed.size(), jarMd5, kept, stripped);
+                sidecarChanged), composed.size(), jarMd5);
     }
-
-    /**
-     * THE STRIP: the staged customs = every entry whose surface key ({@link KitPackRules#surfaceKeyOrNull}) sits under
-     * {@code data/variants/} and ends {@code .variant} (both ASCII-case-insensitive, any depth; id = the file name minus
-     * the suffix, case kept, compared ordinal = {@link MatchShapes#shippedVariantIds}' rule over the same names, so the
-     * census reads exactly what this keeps). keep = ({@code fileIds} UNION the roster's variant ids) INTERSECT the staged
-     * ids; every staged custom outside keep leaves the list (a file of a kept id ships at every depth it is staged).
-     * FAIL-CLOSED (R13): a {@code fileIds} id no staged custom carries (the list was minted against another mod tree,
-     * named in file order), or an empty keep set. A roster id that is no staged custom is NOT an error here: the census
-     * resolves it against the game's own variants exactly as without a keep-list. WHY here, before the verify: the
-     * roll and the exported source's build must ship the same variants, so ONE strip both call is the parity, and a
-     * stripped file can then never reach the surface, the fingerprint or the zip. The zip writer composes no
-     * directory entry, so a folder the strip empties leaves no trace in the kit.
-     *
-     */
-    static Strip keepVariants(List<KitZip.Entry> entries, List<String> fileIds, MatchDescriptor roster)
-            throws Refusal {
-        Set<String> staged = new TreeSet<>();
-        for (KitZip.Entry e : entries) {
-            String id = stagedVariantIdOrNull(e.name());
-            if (id != null) {
-                staged.add(id);
-            }
-        }
-        List<String> stale = new ArrayList<>();
-        for (String id : new LinkedHashSet<>(fileIds)) {
-            if (!staged.contains(id)) {
-                stale.add(PackageManifest.mask(id));
-            }
-        }
-        if (!stale.isEmpty()) {
-            throw refuse(KEEP_LIST, KitPackRules.textR13(stale));
-        }
-        Set<String> keep = new TreeSet<>(fileIds);
-        for (MatchDescriptor.RosterRow row : roster.roster()) {
-            keep.add(row.variantId());
-        }
-        keep.retainAll(staged);
-        if (keep.isEmpty()) {
-            throw refuse(KEEP_LIST, KitPackRules.textR13(List.of()));
-        }
-        List<KitZip.Entry> out = new ArrayList<>(entries.size());
-        for (KitZip.Entry e : entries) {
-            String id = stagedVariantIdOrNull(e.name());
-            if (id == null || keep.contains(id)) {
-                out.add(e);
-            }
-        }
-        return new Strip(out, keep.size(), staged.size() - keep.size());
-    }
-
-    /** The staged custom variant id of a kit entry name (see {@link #keepVariants}), or null for any other entry. */
-    private static String stagedVariantIdOrNull(String entryName) {
-        String rel = KitPackRules.surfaceKeyOrNull(entryName);
-        if (rel == null) {
-            return null;
-        }
-        String folded = rel.toLowerCase(Locale.ROOT);
-        if (!folded.startsWith(VARIANTS_REL) || !folded.endsWith(VARIANT_SUFFIX)) {
-            return null;
-        }
-        String leaf = rel.substring(rel.lastIndexOf('/') + 1);
-        String id = leaf.substring(0, leaf.length() - VARIANT_SUFFIX.length());
-        return id.isEmpty() ? null : id;
-    }
-
-    /** The staged customs' folder under the mod root and their file suffix (lower case: compared folded). */
-    private static final String VARIANTS_REL = "data/variants/";
-    private static final String VARIANT_SUFFIX = ".variant";
 
     /** The descriptor, gated and decoded (R6 on a private name, an unreadable file or a non-match file). */
     private static MatchDescriptor readLive(Request req, String shape) throws Refusal {
@@ -629,16 +533,6 @@ public final class KitPacker {
         }
         if (req.dirMode() && req.dirEntriesOrNull() == null) {
             throw new IllegalArgumentException("kit packer: dir mode needs the caller's entry list");
-        }
-        if (req.keepVariantsOrNull() != null) {
-            if (!req.dirMode()) {
-                throw new IllegalArgumentException("kit packer: a variant keep-list rides dir mode only");
-            }
-            for (String id : req.keepVariantsOrNull()) {
-                if (id == null || !KitPackRules.KEEP_VARIANT_ID.matcher(id).matches()) {
-                    throw new IllegalArgumentException("kit packer: a keep-list id is outside the id grammar");
-                }
-            }
         }
     }
 
@@ -921,16 +815,12 @@ public final class KitPacker {
     /**
      * {@code base=zip:<kit zip>|dir:<stage> descriptor=<file> posture=redact|keep out=<zip>
      * sidecarOut=<file> stamp=<yyyyMMdd-HHmmss> [manifest=<MANIFEST.txt>] [game=<root>]
-     * [entries=<listfile>] [keepVariants=<file>] [check=true]} ({@code entries=} required with {@code dir:}: one
-     * stage-relative name per line, UTF-8, ≤ 1 MiB; {@code check=true} required with {@code zip:}, else
-     * {@code reason=usage}: the tool never re-packs a release kit). {@code keepVariants=} ({@code dir:} only, else
-     * usage): the variant keep-list, UTF-8 text ≤ {@link KitPackRules#MAX_SIDECAR_BYTES}, one variant id per line in
-     * {@link KitPackRules#KEEP_VARIANT_ID}, {@code #} comment lines and blank lines skipped, one leading byte-order
-     * mark dropped; an unreadable / over-cap file or an id outside the grammar = usage ({@link #keepVariants} applies
-     * it). Exit 0 + ONE stdout row {@code kit-packer: ok file=<out name>
-     * entries=<n> jarMd5=<lowercase hex> stamp=<stamp>} (the same row for {@code check=true}, nothing
-     * written), and with {@code keepVariants=} ONE stderr line {@code kit-packer: variants kept=<n> stripped=<n>}
-     * (variant ids); exit 2 + {@code kit-packer: refused reason=<token>} with the R text on stderr
+     * [entries=<listfile>] [check=true]} ({@code entries=} required with {@code dir:}: one
+     * stage-relative name per line, UTF-8, ≤ 1 MiB, every listed name packed; {@code check=true} required with
+     * {@code zip:}, else {@code reason=usage}: the tool never re-packs a release kit). Exit 0 + ONE stdout row
+     * {@code kit-packer: ok file=<out name> entries=<n> jarMd5=<lowercase hex> stamp=<stamp>} (the same row for
+     * {@code check=true}, nothing written), nothing on stderr; exit 2 + {@code kit-packer: refused reason=<token>}
+     * with the R text on stderr
      * ({@code reason=usage} = a malformed command line). stdout never carries a path beyond the out NAME
      * and never a secret. No ceiling: a slow disk finishes.
      */
@@ -950,7 +840,7 @@ public final class KitPacker {
     static int runMain(String[] kv, PrintStream out, PrintStream err) {
         Map<String, String> args = new LinkedHashMap<>();
         Set<String> keys = Set.of("base", "descriptor", "posture", "out", "sidecarOut", "stamp", "manifest", "game",
-                "entries", "check", "keepVariants");
+                "entries", "check");
         for (String arg : kv == null ? new String[0] : kv) {
             int eq = arg == null ? -1 : arg.indexOf('=');
             if (eq <= 0 || !keys.contains(arg.substring(0, eq)) || args.put(arg.substring(0, eq), arg.substring(eq + 1)) != null) {
@@ -996,23 +886,13 @@ public final class KitPacker {
         } else if (args.containsKey("entries")) {
             return usage(out, err);
         }
-        List<String> keepIds = null;
-        if (args.containsKey("keepVariants")) {
-            if (!dirMode || blank(args.get("keepVariants"))) {
-                return usage(out, err);
-            }
-            keepIds = readKeepList(Paths.get(args.get("keepVariants")));
-            if (keepIds == null) {
-                return usage(out, err);
-            }
-        }
         Request req;
         try {
             req = new Request(Paths.get(base.substring(4)), dirMode, Paths.get(args.get("descriptor")),
                     "keep".equals(posture) ? Posture.KEEP : Posture.REDACT, Paths.get(args.get("out")),
                     Paths.get(args.get("sidecarOut")), args.get("stamp"),
                     args.containsKey("manifest") ? Paths.get(args.get("manifest")) : null,
-                    args.containsKey("game") ? Paths.get(args.get("game")) : null, entries, 0, keepIds);
+                    args.containsKey("game") ? Paths.get(args.get("game")) : null, entries, 0);
             requireWellFormed(req);
         } catch (RuntimeException malformed) {
             QUIET_FAILURES.incrementAndGet();
@@ -1025,57 +905,15 @@ public final class KitPacker {
             out.println("kit-packer: refused reason=" + r.token());
             return 2;
         }
-        if (keepIds != null) {
-            err.println("kit-packer: variants kept=" + p.keptVariants() + " stripped=" + p.strippedVariants());
-        }
         out.println("kit-packer: ok file=" + PackageManifest.mask(String.valueOf(req.out().getFileName()))
                 + " entries=" + p.entries() + " jarMd5=" + p.jarMd5() + " stamp=" + req.stamp());
         return 0;
     }
 
-    /**
-     * The {@code keepVariants=} file's ids in file order (deduped), or null = a usage refusal: unreadable, over
-     * {@link KitPackRules#MAX_SIDECAR_BYTES}, or a non-comment line outside {@link KitPackRules#KEEP_VARIANT_ID}
-     * (each line stripped of surrounding blanks first; one leading byte-order mark dropped). An empty or
-     * comment-only file is a valid EMPTY list: the strip then keeps the roster's customs only (R13 when none).
-     *
-     */
-    /** U+FEFF, spelled as a number (a decoded UTF-8 byte-order mark). */
-    private static final char BYTE_ORDER_MARK = (char) 0xFEFF;
-
-    private static List<String> readKeepList(Path file) {
-        byte[] bytes;
-        try (InputStream in = Files.newInputStream(file)) {
-            bytes = in.readNBytes(KitPackRules.MAX_SIDECAR_BYTES + 1);
-        } catch (IOException | RuntimeException unreadable) {
-            QUIET_FAILURES.incrementAndGet();
-            return null;
-        }
-        if (bytes.length > KitPackRules.MAX_SIDECAR_BYTES) {
-            return null;
-        }
-        String text = new String(bytes, StandardCharsets.UTF_8);
-        if (!text.isEmpty() && text.charAt(0) == BYTE_ORDER_MARK) {
-            text = text.substring(1);
-        }
-        LinkedHashSet<String> ids = new LinkedHashSet<>();
-        for (String raw : text.split("\r?\n")) {
-            String line = raw.strip();
-            if (line.isEmpty() || line.startsWith("#")) {
-                continue;
-            }
-            if (!KitPackRules.KEEP_VARIANT_ID.matcher(line).matches()) {
-                return null;
-            }
-            ids.add(line);
-        }
-        return List.copyOf(ids);
-    }
-
     private static int usage(PrintStream out, PrintStream err) {
         err.println("kit-packer: usage: base=zip:<kit zip>|dir:<stage> descriptor=<file> posture=redact|keep out=<zip>"
                 + " sidecarOut=<file.fingerprint> stamp=<yyyyMMdd-HHmmss> [manifest=<MANIFEST.txt>] [game=<root>]"
-                + " [entries=<listfile> (dir: only, required)] [keepVariants=<file> (dir: only)]"
+                + " [entries=<listfile> (dir: only, required)]"
                 + " [check=true (zip: only, required; dir: optional)]");
         out.println("kit-packer: refused reason=usage");
         return 2;

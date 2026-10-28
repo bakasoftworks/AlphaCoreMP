@@ -12,14 +12,16 @@ For readers who know their way around - everything here is covered in full below
 
 - To play, you do not need this source: use the joiner kit. To host on the released server, use
   the server package. This tree is for building the mod and the server, or for hosting on your own build.
-- Build, from the tree's root folder (the one holding `build.ps1`), on Windows with PowerShell 7, Starsector 0.98a-RC8 installed, a JDK 17 or newer and a
-  JDK 25:
+- Build, from the tree's root folder (the one holding `build.ps1`), on Windows or Linux with PowerShell 7,
+  Starsector 0.98a-RC8, a JDK 17 or newer and a JDK 25:
 
       .\build.ps1 -GameDir "<Starsector folder>" -Jdk17Bin "<JDK 17>\bin" -Jdk25Bin "<JDK 25>\bin"
 
-  `-SkipClient` builds the server only. The mod lands at `client-mod/mod/jars/cc-client-mod.jar`.
+  On Linux: `pwsh ./build.ps1` with the same options, `-GameDir` naming a copy of the Windows install's
+  `starsector-core` folder ([Build](#build) says why). `-SkipClient` builds the server only. The mod lands at
+  `client-mod/mod/jars/cc-client-mod.jar`.
 - To host on your own build: pack a joiner kit (`-KitZip` with `-Descriptor`), then lay out a server folder
-  (`-SkipClient -ServerFolder -Package -Kit`) and start it with its `ops-web.bat`; see
+  (`-SkipClient -ServerFolder -Package -Kit`) and start it with its `ops-web.bat` (Linux: `sh ops-web.sh`); see
   [Host a match on your own build](#host-a-match-on-your-own-build).
 - Where the code is: `server/src` (the server), `client-mod/src` (the mod), `client-mod/web` (the join window and
   the ship editor). MIT License; the third-party parts keep their own licenses.
@@ -52,28 +54,41 @@ as `host-README.md`.
 
 ## Build
 
-The build runs on Windows, installs nothing and writes nothing into the game folder. You need:
+The build runs on Windows or Linux, installs nothing and writes nothing into the game folder. You need:
 
-- PowerShell 7 (`pwsh`), not the older Windows PowerShell that comes with Windows.
-- Starsector 0.98a-RC8, installed: the build compiles against its `starsector-core` jars; nothing from the game is
-  copied into this tree.
+- PowerShell 7 (`pwsh`). On Windows, not the older Windows PowerShell that comes with Windows. On Linux, install it
+  as Microsoft describes (apt or dnf packages, or a tar.gz):
+  https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-linux
+- Starsector 0.98a-RC8's game files: the build compiles against the game's jars; nothing from the game is copied
+  into this tree. On Windows, the installed game. On Linux, a copy of the Windows install's `starsector-core`
+  folder (`scp` or a USB stick, about 220 MB): the Linux download of the same version is a different build of the
+  game, which the mod does not compile against and the server refuses to start on.
 - A JDK 17 or newer, which the build runs on; the server is compiled for Java 17.
 - A JDK 25, or any JDK whose `javac` accepts `--release 22`, for the voice code that uses Java's foreign function
   API; a server-only build does not need it.
 
-If you downloaded this tree as a zip, Windows may mark its files as from the internet, and PowerShell 7 then
-refuses `build.ps1`, saying it `is not digitally signed`: run `Get-ChildItem -Recurse -File | Unblock-File`
+On Linux, use Linux builds of both JDKs, for example Eclipse Temurin's tar.gz files: unpack them anywhere and pass
+each one's `bin` folder.
+
+On Windows, if you downloaded this tree as a zip, Windows may mark its files as from the internet, and PowerShell 7
+then refuses `build.ps1`, saying it `is not digitally signed`: run `Get-ChildItem -Recurse -File | Unblock-File`
 once from the tree's root folder before the first build (not only `build.ps1`: `-KitRuntime` also loads
 `client-mod/kit-runtime.ps1`). A `git clone` has no such mark, and PowerShell's default execution policy needs no
-change.
+change. Linux has no such mark.
 
-From the tree's root folder (the one holding `build.ps1`):
+From the tree's root folder (the one holding `build.ps1`), on Windows:
 
     .\build.ps1 -GameDir "<Starsector folder>" -Jdk17Bin "<JDK 17>\bin" -Jdk25Bin "<JDK 25>\bin"
 
-Leave out `-GameDir` if the game is in the usual folder, `C:\Program Files (x86)\Fractal Softworks\Starsector`,
-and `-Jdk17Bin` if `JAVA_HOME` (else the first `javac` on `PATH`) is a JDK 17 or newer (version not checked). The
-first line names the JDKs it picked; success ends with exit code 0 and:
+On Linux:
+
+    pwsh ./build.ps1 -GameDir ~/starsector-core -Jdk17Bin "<JDK 17>/bin" -Jdk25Bin "<JDK 25>/bin"
+
+On Windows, leave out `-GameDir` if the game is in the usual folder,
+`C:\Program Files (x86)\Fractal Softworks\Starsector`. On Linux there is no usual folder, so `-GameDir` is always
+needed: the folder holding the game's jars (the copied `starsector-core`, or a folder with `starsector-core`
+inside). On either system, leave out `-Jdk17Bin` if `JAVA_HOME` (else the first `javac` on `PATH`) is a JDK 17 or
+newer (version not checked). The first line names the JDKs it picked; success ends with exit code 0 and:
 
     client jar: client-mod/mod/jars/cc-client-mod.jar
 
@@ -90,7 +105,8 @@ play on your build you normally host.
 
 ### Host a match on your own build
 
-Two runs, in order (add `-GameDir`, `-Jdk17Bin` if needed):
+Two runs, in order (add `-GameDir`, `-Jdk17Bin` if needed; on Linux, `pwsh ./build.ps1`, `/` in the paths, and
+`-GameDir` always):
 
     .\build.ps1 -Jdk25Bin "<JDK 25>\bin" -KitZip "<folder>\<kit name>.zip" -Descriptor "<folder>\match.txt"
     .\build.ps1 -SkipClient -ServerFolder "<empty folder>" -Package "<cc-server zip>" -Kit "<folder>\<kit name>.zip"
@@ -101,22 +117,24 @@ with `serve.bat`, or `ops-web.bat` for the ops GUI (a web page), and send player
 folder. Without `-Kit`, it serves the package's own kit. A server folder takes only the kit it was made with, so
 after a code change use a new kit name and folder.
 
-A Linux host can lay the folder out on Windows from the Linux package (`-Package "<cc-server-linux zip>"`), which
-supplies its Java runtime, start scripts (`serve.sh`, `stop.sh`, `ops-web.sh`) and native libraries; this build's
-server classes are the same on both systems. Copy the whole folder onto a Linux disk, to a path without spaces or
-colons, and start it with `sh serve.sh` or `sh ops-web.sh` (they restore the execute bits a copy from Windows
-loses). This route is untested on Linux; if it will not start there, run the released Linux package (its own
-build and kit, not yours).
+On Linux, make both runs there and pass the Linux package (`-Package "<cc-server-linux zip>"`): it supplies the
+folder's Java runtime, start scripts (`serve.sh`, `stop.sh`, `ops-web.sh`) and native libraries, and this build's
+server classes are the same on both systems. Lay the folder out on a Linux file system, at a path without spaces or
+colons, and start it right there with `sh serve.sh`, or `sh ops-web.sh` for the ops GUI. The folder's `README.md`
+has the rest of the Linux steps: the tools to install, the game files the server runs on (the same copy of the
+Windows `starsector-core`) and the activation. The kit is still for players on Windows; packed on Linux, it has no
+Java runtime of its own ([below](#give-the-kit-its-own-java-runtime)). A folder laid out on Windows from the Linux
+package and copied onto a Linux disk starts the same way (the start scripts restore the execute bits a copy from
+Windows loses).
 
 ### Pack a joiner kit
 
 `-KitZip` packs the kit; `-Descriptor` is a match file whose ships the packer checks against this mod and the
 game. Pass the package's `match.txt`, as above: the server folder keeps the package's match whichever file you
-pass, so the packer then checks that match's ships and your kit keeps its custom ship variants.
+pass, so the packer then checks that match's ships.
 
 The kit holds `CC_Client` (a copy of `client-mod/mod` with the jar you just built), a player `README.md`, the
-manifest `join-cc.bat` checks, license notices, and only the custom ship variants that
-`client-mod/kit-keep-variants.txt` lists or the match uses (others arrive on joining). It never holds a match file
+manifest `join-cc.bat` checks, license notices, and every custom ship variant the mod has. It never holds a match file
 (the server sends the match, so one kit joins every match on a server that serves it) or a secret: a seat-token or
 password file in `client-mod/mod` stops packing.
 
@@ -132,6 +150,13 @@ from then on runs the game on it.
 - A `vmparams` option that would make every player's Java write a dump, recording, log or crash file, load an
   agent or read options from another file stops the build, which names it.
 - Delete `jre-cc` and `kit-jvm.args` to pack kits without a runtime again.
+
+`-KitRuntime` is a Windows step: jlink builds a runtime for the system it runs on, and this one is a Windows
+runtime for the players' PCs (`join-cc.bat` runs the game on it). On Linux the build refuses the switch, and a kit
+packed there has no runtime: players run the game on its own Java 17, and voice chat takes its higher-latency path.
+A `client-mod/mod` that already carries `jre-cc` (copied from Windows) is refused for packing on Linux too, since the
+kit's notices read the version information of the runtime's Windows DLLs: pack that kit on Windows, or delete
+`jre-cc` and `kit-jvm.args`.
 
 ### Install the mod by hand
 
@@ -160,9 +185,9 @@ This is a pre-release, and a player will still see these:
 
 | Option | What it does |
 | --- | --- |
-| `-GameDir`, `-Jdk17Bin`, `-Jdk25Bin` | The game and the two JDKs. |
+| `-GameDir`, `-Jdk17Bin`, `-Jdk25Bin` | The game and the two JDKs (`-GameDir` always needed on Linux). |
 | `-SkipClient` | Server only. |
-| `-KitRuntime` | The kit's own Java runtime. |
+| `-KitRuntime` | The kit's own Java runtime (Windows only). |
 | `-KitZip` + `-Descriptor` | Pack a joiner kit. |
 | `-ServerFolder` + `-Package` | Lay out a server folder. |
 | `-Kit` | The kit that folder serves. |
@@ -211,13 +236,18 @@ library asks for and the package's trimmed runtime lacks.
 | Message | What to do |
 | --- | --- |
 | Windows PowerShell refuses the script (may cite `#requires`) | Use PowerShell 7 (`pwsh`). |
-| `<step>: javac exited <n>`, `client pass ...: exited <n>` | See the compiler's lines; check the first line names a JDK 17+ (and 25). |
+| `no JDK found` | Pass `-Jdk17Bin`, set `JAVA_HOME`, or put `javac` on `PATH`. |
+| `the build knows no usual game folder on Linux` | Pass `-GameDir`: the copy of the Windows `starsector-core`. |
+| `game jar(s) missing under <folder>` | Point `-GameDir` at the game (on Linux: the copy of the Windows `starsector-core`). |
+| `<step>: javac exited <n>`, `client pass ...: exited <n>` | See the compiler's lines; check the first line names a JDK 17+ (and 25). On Linux, check `-GameDir` holds the Windows game files, not the Linux download's. |
 | `not a JDK folder (no release file)` | Point `-Jdk25Bin` at a full JDK 25's `bin`. |
 | `-KitZip name must be letters, digits` | Use only letters, digits, `.`, `_`, `-`; at most 80 characters before `.zip`. |
 | `server folder: exited <code>` | `2`: refused, nothing changed (see its `REFUSED` line). Other: failed; run the same command again - the folder will not start until it completes once. |
 | `client-mod/mod holds ... seat-token or password file(s)` | Move them out of the mod folder. |
-| `... kit-keep-variants.txt is missing`, `... concentus/LICENSE is missing` | Get the file again from the published source. |
-| `kit packer reason=<word>` | `census`: a ship variant neither the mod nor the game has. `match_read`: unreadable or not a match file. `live_token`: an uncleared seat token. `keep_list`: the keep list names a variant the mod lacks, or none. `write`: could not write. Else: read the lines above. |
+| `-KitRuntime runs on Windows only` | Drop the switch, or give the kit its runtime on Windows. |
+| `client-mod/mod carries jre-cc` (Linux) | Pack that kit on Windows, or delete `client-mod/mod/jre-cc` and `kit-jvm.args`. |
+| `... concentus/LICENSE is missing` | Get the file again from the published source. |
+| `kit packer reason=<word>` | `census`: a ship variant neither the mod nor the game has. `match_read`: unreadable or not a match file. `live_token`: an uncleared seat token. `write`: could not write. Else: read the lines above. |
 
 ## License and third-party code
 

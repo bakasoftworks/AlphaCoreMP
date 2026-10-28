@@ -167,10 +167,10 @@ public final class MatchShapes {
     /**
      * The variant ids the kit ships, read off its sidecar's {@code file=} rows (the grammar
      * {@link ContentFingerprintMint#mintSidecarLines} writes: {@code file=<mod-root-relative, /-separated path>}).
-     * The id rule mirrors the kit packer's keep/strip ({@code KitPacker.keepVariants}, the {@code keepVariants=} law
-     * over the tracked keep file; a staged {@code CC_Client\data\variants\**\*.variant} entry is keyed by its BaseName): a row under
-     * {@code data/variants/} ending {@code .variant} (both ASCII-case-insensitive, as the Windows walk) yields the
-     * last path segment minus {@code .variant}, case kept (ids compare ordinal). Comments and other rows ignored.
+     * The id rule: a row under {@code data/variants/} (any depth) ending {@code .variant} (both
+     * ASCII-case-insensitive, as the Windows walk) is keyed by its last path segment minus {@code .variant}, case
+     * kept (ids compare ordinal). Comments and other rows ignored. re-worded
+     * when the kit packer's keep-list strip was deleted - the kit ships every custom variant def it stages.
      */
     public static Set<String> shippedVariantIds(List<String> kitSidecarLines) {
         Set<String> ids = new TreeSet<>();

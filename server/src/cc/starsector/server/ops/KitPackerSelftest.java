@@ -66,7 +66,8 @@ import java.util.zip.ZipOutputStream;
  * {@code kit-leak}) are restored in {@code finally}. Entry: {@link #run()} (the ops gate chain) and {@link #main} (exit 0 / 1).
  *
  *
- * The kit-keep-variants row and R13's two templates.
+ * The kit-keep-variants row and R13's two templates
+ * DELETED with the strip; the kit-ships-every-variant row holds the whole-set pack.
  */
 public final class KitPackerSelftest {
 
@@ -122,11 +123,6 @@ public final class KitPackerSelftest {
             + " Run the kit pack again.";
     private static final String S_R12 = "The match file would show joiners a real seat code - nothing was"
             + " written.";
-    // R13's two shapes: a stale keep-list id, an empty keep set
-    private static final String S_R13 = "The kit's variant keep-list names variants this mod does not carry: <ids> -"
-            + " the keep-list is stale; the home roll re-mints it.";
-    private static final String S_R13_EMPTY = "The kit's variant keep-list resolves to no shipped variant - nothing"
-            + " was written; the home roll re-mints the keep-list.";
 
     public static void main(String[] args) {
         System.exit(run() == 0 ? 0 : 1);
@@ -148,7 +144,7 @@ public final class KitPackerSelftest {
         row("kit-rules-twin", dir -> rulesTwin());
         row("kit-pack-dir", KitPackerSelftest::packDir);
         row("kit-commit-gate", KitPackerSelftest::commitGate);
-        row("kit-keep-variants", KitPackerSelftest::keepVariants);
+        row("kit-ships-every-variant", KitPackerSelftest::shipsEveryVariant);
         row("kit-texts", dir -> texts());
         System.out.println("KitPackerSelftest: " + (failures == 0 ? "ALL PASS" : failures + " FAILED"));
         return failures;
@@ -429,8 +425,7 @@ public final class KitPackerSelftest {
         writeKit(badName, f.entries);
         before = snap(f.dir);
         KitPacker.Result named = seen(KitPacker.pack(new KitPacker.Request(badName, false, f.descB,
-                KitPacker.Posture.REDACT, f.out("match-b"), sidecarOf(f.descB), STAMP, f.manifest, f.game, null, 0,
-                null)));
+                KitPacker.Posture.REDACT, f.out("match-b"), sidecarOf(f.descB), STAMP, f.manifest, f.game, null, 0)));
         require(KitPacker.NOT_THIS_KIT.equals(named.token()) && KitPackRules.textR2("bad name.zip").equals(named.text()),
                 "a base named outside the pack.kit grammar: " + named.token() + " - flips if the packer reads a kit"
                         + " the MANIFEST could not have named");
@@ -620,7 +615,7 @@ public final class KitPackerSelftest {
         List<String> names = new ArrayList<>(f.entries.keySet());
         Path dirOut = f.out("match-b-dir");
         KitPacker.Result d = seen(KitPacker.pack(new KitPacker.Request(f.stage, true, f.descB,
-                KitPacker.Posture.REDACT, dirOut, null, STAMP, null, f.game, names, 0, null)));
+                KitPacker.Posture.REDACT, dirOut, null, STAMP, null, f.game, names, 0)));
         require(d.ok() && KitPacker.MADE.equals(d.token()), "dir: mode answered " + d.token() + " '" + d.text()
                 + "' - flips if the roll's stage pack refuses the staged kit");
         require(Arrays.equals(Files.readAllBytes(zipOut), Files.readAllBytes(dirOut)), "dir: over the stage !="
@@ -636,7 +631,7 @@ public final class KitPackerSelftest {
         withMatch.add(MATCH);
         Path listedOut = f.out("match-b-listed");
         KitPacker.Result listed = seen(KitPacker.pack(new KitPacker.Request(f.stage, true, f.descB,
-                KitPacker.Posture.REDACT, listedOut, null, STAMP, null, f.game, withMatch, 0, null)));
+                KitPacker.Posture.REDACT, listedOut, null, STAMP, null, f.game, withMatch, 0)));
         require(listed.ok(), "SETUP: the dir: pack with the stage's match.txt listed did not land (" + listed.token()
                 + ")");
         require(!entries(listedOut).containsKey(MATCH), "a stage listing its match.txt packed it into the kit -"
@@ -692,14 +687,14 @@ public final class KitPackerSelftest {
         missing.add("CC_Client/data/variants/ghost.variant");
         Map<String, byte[]> before = snap(f.dir);
         KitPacker.Result m = seen(KitPacker.pack(new KitPacker.Request(f.stage, true, f.descB,
-                KitPacker.Posture.REDACT, f.out("match-b-miss"), null, STAMP, null, f.game, missing, 0, null)));
+                KitPacker.Posture.REDACT, f.out("match-b-miss"), null, STAMP, null, f.game, missing, 0)));
         require(KitPacker.DAMAGED.equals(m.token()) && KitPackRules.textR3("stage",
                 "CC_Client/data/variants/ghost.variant").equals(m.text()), "a listed entry missing on disk: "
                 + m.token() + " '" + m.text() + "' - flips if dir: mode skips a listed file");
         List<String> slip = new ArrayList<>(names);
         slip.add("../outside.txt");
         KitPacker.Result s = seen(KitPacker.pack(new KitPacker.Request(f.stage, true, f.descB,
-                KitPacker.Posture.REDACT, f.out("match-b-slip"), null, STAMP, null, f.game, slip, 0, null)));
+                KitPacker.Posture.REDACT, f.out("match-b-slip"), null, STAMP, null, f.game, slip, 0)));
         require(KitPacker.ENTRY.equals(s.token()), "a listed ../ name: " + s.token() + " - flips if dir: mode reads"
                 + " outside the stage");
         requireSame(before, snap(f.dir), "a dir: refusal wrote");
@@ -776,129 +771,55 @@ public final class KitPackerSelftest {
     }
 
     /**
-     * kit-keep-variants: the {@code dir:} pack's variant keep-list strip, the one law the repo roll and the exported
-     * source's build share. A stage of three customs (kitship_A, kitship_B, npc/kitship_C) + a keep file naming A + a
-     * descriptor rostering B and a vanilla id packs A and B ONLY (the zip, kit.files' and the package sidecar's
-     * file= rows all the kept set, no npc/ trace, the stderr counts line); a ghost id and an empty keep set refuse
-     * R13 writing nothing; keepVariants= with zip: or a malformed id row is usage; without it the stage packs whole.
+     * kit-ships-every-variant: a {@code dir:} pack ships EVERY custom variant def its entry list names - a root one
+     * ({@code kitship_A}, no roster of the packed match names it), an {@code npc/} one and one in another subfolder -
+     * as zip entries AND as {@code file=} rows of both kit.files and the package sidecar, rc 0, and stderr carries no
+     * {@code variants kept=} counts line (the keep-list strip is gone, so nothing is dropped and nothing counted).
      *
      */
-    private static void keepVariants(Path dir) throws Exception {
+    private static void shipsEveryVariant(Path dir) throws Exception {
         Fx f = fx(dir, KitPackRules.SessionBlock.REDACTED_NO_PASSWORD);
+        String root = "CC_Client/data/variants/kitship_A.variant";
         String npc = "CC_Client/data/variants/npc/kitship_C.variant";
+        String sub = "CC_Client/data/variants/extra/kitship_D.variant";
         stageFile(f.stage.resolve(npc), utf8("{\"variantId\":\"kitship_C\"}\n"));
+        stageFile(f.stage.resolve(sub), utf8("{\"variantId\":\"kitship_D\"}\n"));
         List<String> names = new ArrayList<>(f.entries.keySet());
         names.add(npc);
+        names.add(sub);
+        require(names.contains(root), "SETUP: the fixture stage lacks its root custom " + root);
         Path list = f.dir.resolve("entries.txt");
         Files.writeString(list, String.join("\n", names) + "\n", StandardCharsets.UTF_8);
-        Path keep = f.dir.resolve("keep.txt");
-        Files.writeString(keep, "# the kit's custom variants\n\nkitship_A\n", StandardCharsets.UTF_8);
         Path roll = f.dir.resolve("roll");
         Files.createDirectories(roll);
-        Path out = f.out("match-b-keep");
-        Path sidecarOut = roll.resolve("keep.txt.fingerprint");
+        Path out = f.out("match-b-every");
+        Path sidecarOut = roll.resolve("every.txt.fingerprint");
         ByteArrayOutputStream so = new ByteArrayOutputStream();
         ByteArrayOutputStream se = new ByteArrayOutputStream();
         int rc = KitPacker.runMain(new String[] {"base=dir:" + f.stage, "descriptor=" + f.descB, "posture=redact",
-            "out=" + out, "sidecarOut=" + sidecarOut, "stamp=" + STAMP, "game=" + f.game, "entries=" + list,
-            "keepVariants=" + keep}, stream(so), stream(se));
+            "out=" + out, "sidecarOut=" + sidecarOut, "stamp=" + STAMP, "game=" + f.game, "entries=" + list},
+                stream(so), stream(se));
         String stdout = so.toString(StandardCharsets.UTF_8);
         String stderr = se.toString(StandardCharsets.UTF_8);
         require(rc == 0 && stdout.startsWith("kit-packer: ok file=" + out.getFileName() + " entries=")
-                && stdout.split("\r?\n").length == 1, "the keep-list pack: rc " + rc + " stdout '" + stdout.trim() + "'"
-                        + " stderr '" + stderr.trim() + "' - flips if a keep-list naming a staged custom refuses, or the"
+                && stdout.split("\r?\n").length == 1, "the whole-set pack: rc " + rc + " stdout '" + stdout.trim() + "'"
+                        + " stderr '" + stderr.trim() + "' - flips if a stage carrying subfolder customs refuses, or the"
                         + " one stdout row grows");
-        require(stderr.equals("kit-packer: variants kept=2 stripped=1" + System.lineSeparator()), "stderr '"
-                + stderr.trim() + "', want the one counts line kept=2 stripped=1 - flips if the counts miss the"
-                + " roster's id, count files, or the line goes");
-        Set<String> want = new TreeSet<>(List.of("CC_Client/data/variants/kitship_A.variant",
-                "CC_Client/data/variants/kitship_B.variant"));
-        Set<String> variants = new TreeSet<>();
-        try (ZipFile z = new ZipFile(out.toFile())) {
-            for (Enumeration<? extends ZipEntry> en = z.entries(); en.hasMoreElements();) {
-                ZipEntry e = en.nextElement();
-                require(!e.isDirectory() && !e.getName().startsWith("CC_Client/data/variants/npc"), e.getName()
-                        + " is in the kit - flips if the strip leaves a directory entry or a stripped file behind");
-                if (e.getName().startsWith("CC_Client/data/variants/")) {
-                    variants.add(e.getName());
-                }
-            }
-        }
-        require(variants.equals(want), "the kit's variants " + variants + ", want " + want + " - flips if the keep set"
-                + " is not (file ids UNION the roster) INTERSECT the staged customs");
-        Set<String> wantRows = new TreeSet<>();
-        for (String n : names) {
-            String key = KitPackRules.surfaceKeyOrNull(n);
-            if (key != null && !n.equals(npc)) {
-                wantRows.add(key);
-            }
+        require(!stderr.contains("variants kept="), "stderr '" + stderr.trim() + "' carries a variants counts line -"
+                + " flips if the keep-list strip (or its counts line) comes back");
+        Set<String> zipped = entries(out).keySet();
+        for (String v : List.of(root, npc, sub)) {
+            require(zipped.contains(v), v + " is not in the kit - flips if the pack drops a listed custom variant"
+                    + " (a strip by roster or keep-list, or a walk that skips subfolders)");
         }
         Set<String> kitRows = fileRowsOf(lines(entries(out).get(SIDECAR)));
-        require(kitRows.equals(wantRows) && fileRowsOf(lines(Files.readAllBytes(sidecarOut))).equals(wantRows),
-                "kit.files / the package sidecar list " + kitRows + ", want the kept surface " + wantRows + " - flips"
-                        + " if the strip runs after the verify (a stripped file stays in the fingerprint)");
-        Path checkOut = f.out("match-b-keep-check");
-        ByteArrayOutputStream ce = new ByteArrayOutputStream();
-        rc = KitPacker.runMain(new String[] {"base=dir:" + f.stage, "descriptor=" + f.descB, "posture=redact",
-            "out=" + checkOut, "sidecarOut=" + roll.resolve("check.txt.fingerprint"), "stamp=" + STAMP,
-            "game=" + f.game, "entries=" + list, "keepVariants=" + keep, "check=true"},
-                stream(new ByteArrayOutputStream()), stream(ce));
-        require(rc == 0 && !Files.exists(checkOut) && ce.toString(StandardCharsets.UTF_8).trim()
-                .equals("kit-packer: variants kept=2 stripped=1"), "check=true with a keep-list: rc " + rc + " or it"
-                        + " wrote - flips if the package-time proof skips the strip or writes");
-        // (ii) a ghost id, (iii) an empty keep set: R13, nothing written
-        Path vanillaDesc = f.match.resolve("match-vanilla.txt");
-        Files.writeString(vanillaDesc, MatchDescriptorCodec.encode(MatchDescriptors.redact(descriptor("kitfx-vanilla-0005",
-                List.of("vanilla_X"), "v"))), StandardCharsets.UTF_8);
-        Map<String, byte[]> before = snap(f.dir);
-        KitPacker.Result ghost = seen(KitPacker.pack(new KitPacker.Request(f.stage, true, f.descB,
-                KitPacker.Posture.REDACT, f.out("match-b-ghost"), null, STAMP, null, f.game, names, 0,
-                List.of("kitship_A", "ghost_Q"))));
-        require(KitPacker.KEEP_LIST.equals(ghost.token()) && KitPackRules.textR13(List.of("ghost_Q")).equals(ghost.text()),
-                "a keep-list naming a ghost: " + ghost.token() + " '" + ghost.text() + "' - flips if a stale keep-list"
-                        + " packs (a variant the list promises would be missing)");
-        KitPacker.Result empty = seen(KitPacker.pack(new KitPacker.Request(f.stage, true, vanillaDesc,
-                KitPacker.Posture.REDACT, f.out("match-vanilla-keep"), null, STAMP, null, f.game, names, 0, List.of())));
-        require(KitPacker.KEEP_LIST.equals(empty.token()) && KitPackRules.textR13(List.of()).equals(empty.text()),
-                "an empty keep set: " + empty.token() + " '" + empty.text() + "' - flips if a kit stripped of every"
-                        + " custom variant packs");
-        Path comments = f.dir.resolve("keep-comments.txt");
-        Files.writeString(comments, "# nothing kept\n# by this list\n", StandardCharsets.UTF_8);
-        ByteArrayOutputStream eo = new ByteArrayOutputStream();
-        rc = KitPacker.runMain(new String[] {"base=dir:" + f.stage, "descriptor=" + vanillaDesc, "posture=redact",
-            "out=" + f.out("match-vanilla-main"), "sidecarOut=" + roll.resolve("vanilla.txt.fingerprint"),
-            "stamp=" + STAMP, "game=" + f.game, "entries=" + list, "keepVariants=" + comments},
-                stream(eo), stream(new ByteArrayOutputStream()));
-        require(rc == 2 && eo.toString(StandardCharsets.UTF_8).trim().equals("kit-packer: refused reason=keep_list"),
-                "a comments-only keep file + a vanilla-only roster through the main: rc " + rc + " '"
-                        + eo.toString(StandardCharsets.UTF_8).trim() + "' - flips if the main's file reader keeps a"
-                        + " comment row or the empty set packs");
-        Files.delete(comments);
-        requireSame(before, snap(f.dir), "a keep-list refusal wrote");
-        // (iv) keepVariants= is dir: only, and a row outside the id grammar is usage
-        Path bad = f.dir.resolve("keep-bad.txt");
-        Files.writeString(bad, "kitship_A\n../kitship_B\n", StandardCharsets.UTF_8);
-        for (String[] kv : new String[][] {{"base=zip:" + f.kit, "keepVariants=" + keep, "check=true"},
-            {"base=dir:" + f.stage, "keepVariants=" + bad, "entries=" + list},
-            {"base=dir:" + f.stage, "keepVariants=" + f.dir.resolve("no-such-keep.txt"), "entries=" + list}}) {
-            ByteArrayOutputStream uo = new ByteArrayOutputStream();
-            Path usageOut = f.out("match-b-usage");
-            List<String> argv = new ArrayList<>(List.of(kv));
-            argv.addAll(List.of("descriptor=" + f.descB, "posture=redact", "out=" + usageOut, "sidecarOut="
-                    + roll.resolve("usage.txt.fingerprint"), "stamp=" + STAMP, "game=" + f.game));
-            rc = KitPacker.runMain(argv.toArray(new String[0]), stream(uo), stream(new ByteArrayOutputStream()));
-            require(rc == 2 && uo.toString(StandardCharsets.UTF_8).trim().equals("kit-packer: refused reason=usage")
-                    && !Files.exists(usageOut), String.join(" ", kv).replace(f.dir.toString(), "<fx>") + ": rc " + rc
-                            + " '" + uo.toString(StandardCharsets.UTF_8).trim() + "' - flips if keepVariants= rides"
-                            + " zip: mode, or a path-shaped / missing keep file is read");
+        Set<String> pkgRows = fileRowsOf(lines(Files.readAllBytes(sidecarOut)));
+        for (String v : List.of(root, npc, sub)) {
+            String key = KitPackRules.surfaceKeyOrNull(v);
+            require(key != null && kitRows.contains(key) && pkgRows.contains(key), "kit.files / the package sidecar"
+                    + " lack the file= row of " + v + " - flips if a shipped custom variant leaves the fingerprint"
+                    + " surface (the door would bounce the kit)");
         }
-        // (v) no keep-list: the stage packs whole (npc/ included)
-        Path whole = f.out("match-b-whole");
-        KitPacker.Result w = seen(KitPacker.pack(new KitPacker.Request(f.stage, true, f.descB, KitPacker.Posture.REDACT,
-                whole, null, STAMP, null, f.game, names, 0, null)));
-        require(w.ok() && entries(whole).containsKey(npc) && entries(whole).keySet().containsAll(want), "no keep-list: "
-                + w.token() + " - flips if the strip runs without a keep-list (every caller that passes none must pack"
-                + " byte-identically to before)");
     }
 
     /** The {@code file=} rows of sidecar lines. */
@@ -926,11 +847,8 @@ public final class KitPackerSelftest {
         templates.put(KitPacker.DISK, S_R9);
         templates.put(KitPacker.TIMEOUT, S_R11);
         templates.put(KitPacker.LIVE_TOKEN, S_R12);
-        templates.put(KitPacker.KEEP_LIST, S_R13);
         Set<String> covered = new TreeSet<>();
         boolean restart = false;
-        boolean r13Empty = false;
-        boolean r13Stale = false;
         for (KitPacker.Result r : SEEN) {
             String t = r.text();
             require(t != null && !t.isBlank(), r.token() + " came with no text - flips if a refusal goes silent");
@@ -952,15 +870,10 @@ public final class KitPackerSelftest {
                 body = t.substring(0, t.length() - S_RESTART.length() - 1);
                 restart = true;
             }
-            boolean emptyShape = KitPacker.KEEP_LIST.equals(r.token()) && templateOf(S_R13_EMPTY).matcher(body).matches();
-            r13Empty |= emptyShape;
-            r13Stale |= KitPacker.KEEP_LIST.equals(r.token()) && !emptyShape;
-            require(emptyShape || templateOf(template).matcher(body).matches(), r.token() + " text '" + t + "' is not"
+            require(templateOf(template).matcher(body).matches(), r.token() + " text '" + t + "' is not"
                     + " the template '" + template + "' - flips if a KitPackRules text drifts from the decided wording");
             covered.add(r.token());
         }
-        require(r13Empty && r13Stale, "no row saw R13's " + (r13Empty ? "stale-id" : "empty-keep-set") + " shape -"
-                + " flips if that keep-list refusal stops being reachable");
         Set<String> want = new TreeSet<>(templates.keySet());
         want.remove(KitPacker.DISK);
         Set<String> missing = new TreeSet<>(want);
@@ -1021,7 +934,7 @@ public final class KitPackerSelftest {
         KitPacker.Request request(Path descriptor, Path out, KitPacker.Posture posture, Path manifestOrNull,
                 Path gameOrNull, int ceilingS) {
             return new KitPacker.Request(kit, false, descriptor, posture, out, sidecarOf(descriptor), STAMP,
-                    manifestOrNull, gameOrNull, null, ceilingS, null);
+                    manifestOrNull, gameOrNull, null, ceilingS);
         }
 
         void put(String name, String text) throws IOException {
