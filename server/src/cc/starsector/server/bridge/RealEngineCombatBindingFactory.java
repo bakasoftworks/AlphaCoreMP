@@ -137,9 +137,11 @@ public final class RealEngineCombatBindingFactory {
      * Engine-internal combat-UI interface ({@code CombatEngine.getCombatUI()} return type /
      * {@code setCombatUI(K)} arg; descriptor {@code (Lcom/fs/starfarer/combat/K;)V}). A public
      * interface (it extends an internal interface and {@code CombatUIAPI}) — a valid {@link java.lang.reflect.Proxy}
-     * target — whose {@code getEntityToFollow()} the damage path reads.
+     * target — whose {@code getEntityToFollow()} the damage path reads. Public so the suite's HUD-dark row
+     * ({@code PilotShipRows} R8) proxies the SAME interface the serve does — the install API jar's {@code CombatUIAPI}
+     * declares no {@code isHideHud()}, this engine interface does.
      */
-    private static final String COMBAT_UI_INTERFACE_CLASS = "com.fs.starfarer.combat.K";
+    public static final String COMBAT_UI_INTERFACE_CLASS = "com.fs.starfarer.combat.K";
     /**
      * Concrete combat viewport ({@code CombatEngine.getViewport()} return; constructed non-null in
      * the engine ctor, independent of any UI). The damage-path debris FX reads
@@ -490,6 +492,8 @@ public final class RealEngineCombatBindingFactory {
             Method shipTimeMultRead = resolveShipTimeMultReadHandle(loader);
             Method phaseCloakToggle = resolvePhaseCloakHandle(shipClass);
             Method pullBackFightersRead = resolvePullBackFightersRead(shipClass);
+            Method shipCustomDataRead = resolveShipCustomDataRead(shipClass);
+            Method shipCustomDataWrite = resolveShipCustomDataWrite(shipClass);
             Method shipIsPhasedRead = resolveShipIsPhasedHandle(shipClass);
             Method engineFastTimeRead = resolveIsInFastTimeAdvance(engineClass);
 
@@ -609,6 +613,8 @@ public final class RealEngineCombatBindingFactory {
                     .playerShipVentCommand(commands[12])
                     .playerShipShieldToggle(commands[13], phaseCloakToggle)
                     .playerShipPullBackFighters(commands[14], pullBackFightersRead)
+                    .shipCustomDataRead(shipCustomDataRead)
+                    .shipCustomDataWrite(shipCustomDataWrite)
                     .shipPhaseCloakRead(shipIsPhasedRead)
                     .shipCrReads(
                             shipCrReads[0], shipCrReads[1], shipCrReads[2],
@@ -1821,6 +1827,35 @@ public final class RealEngineCombatBindingFactory {
     private static Method resolvePullBackFightersRead(Class<?> shipClass) {
         try {
             return shipClass.getMethod("isPullBackFighters");
+        } catch (Throwable ignore) {
+            return null;
+        }
+    }
+
+    /**
+     * The public {@code ShipAPI.getCustomData()} read backing the human-pilot mark: the serve writes
+     * {@code "cc_client.pilot"} into a seat's own hull map so a mod's subclass can tell a human-flown
+     * hull from an AI one and read the pilot's mod-ability mask. Fail-soft null => no mark is ever
+     * written (counted once per apply state, never a throw).
+     */
+    private static Method resolveShipCustomDataRead(Class<?> shipClass) {
+        try {
+            return shipClass.getMethod("getCustomData");
+        } catch (Throwable ignore) {
+            return null;
+        }
+    }
+
+    /**
+     * The public {@code ShipAPI.setCustomData(String, Object)} write the human-pilot mark's first write per hull
+     * tenure goes through: the engine's getter returns a FRESH detached map while the hull's own map field is still
+     * null (its {@code getCustomData} body), so only the setter creates the hull's map. Fail-soft null => the
+     * applier puts into the getter's map, and its identity read-back counts any write that does not stick.
+     *
+     */
+    private static Method resolveShipCustomDataWrite(Class<?> shipClass) {
+        try {
+            return shipClass.getMethod("setCustomData", String.class, Object.class);
         } catch (Throwable ignore) {
             return null;
         }

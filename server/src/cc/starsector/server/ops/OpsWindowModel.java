@@ -87,7 +87,51 @@ public final class OpsWindowModel {
             // The page's PvP mode word (on|off; null = no control =
             // the picked file's mode stands) and its Station pick (a family, or blank / "-" = the fortress's
             // stock station), read only when Start switches a PvP file back to the fortress.
-            String pvpText, String pvpStationText) {
+            String pvpText, String pvpStationText,
+            // The MagicLib word (magicseam.enabled; on|off;
+            // null = no control = row untouched) - the rngPinsText twin, a boot-time row.
+            String magicSeamText,
+            // The player-ship word (pilotship.enabled; on|off;
+            // null = no control = row untouched) - the magicSeamText twin, a boot-time row.
+            String pilotShipText) {
+        /** The pre-player-ship 26-component shape (every caller before the
+         * player-ship select) - no player-ship control = {@code null} = the {@code pilotship.enabled} row stays
+         * untouched. */
+        public StartFields(String bindHost, String bindPort, String tickText,
+                String fortressDpText, String passwordText, String selDescriptor,
+                ServerOpsCore.DescriptorInfo selInfo, String joinerDefaultText,
+                String fortressWaveScaleText, String adminPasswordText, String waveCategoryText,
+                String endlessText, String modsEnabledText, String modsOptionalText,
+                String terrainText, String terrainLevelText, String asteroidsText,
+                String waveRosterFullDpText, String waveRosterMultiplierText,
+                String seatsPerSourceText, String allSkillsText, String rngPinsText, boolean debugWatch,
+                String pvpText, String pvpStationText, String magicSeamText) {
+            this(bindHost, bindPort, tickText, fortressDpText, passwordText, selDescriptor,
+                    selInfo, joinerDefaultText, fortressWaveScaleText, adminPasswordText,
+                    waveCategoryText, endlessText, modsEnabledText, modsOptionalText, terrainText,
+                    terrainLevelText, asteroidsText, waveRosterFullDpText, waveRosterMultiplierText,
+                    seatsPerSourceText, allSkillsText, rngPinsText, debugWatch, pvpText, pvpStationText,
+                    magicSeamText, null);
+        }
+
+        /** The pre-MagicLib 25-component shape (every caller before the
+         * MagicLib select) - no MagicLib control = {@code null} = the {@code magicseam.enabled} row stays untouched. */
+        public StartFields(String bindHost, String bindPort, String tickText,
+                String fortressDpText, String passwordText, String selDescriptor,
+                ServerOpsCore.DescriptorInfo selInfo, String joinerDefaultText,
+                String fortressWaveScaleText, String adminPasswordText, String waveCategoryText,
+                String endlessText, String modsEnabledText, String modsOptionalText,
+                String terrainText, String terrainLevelText, String asteroidsText,
+                String waveRosterFullDpText, String waveRosterMultiplierText,
+                String seatsPerSourceText, String allSkillsText, String rngPinsText, boolean debugWatch,
+                String pvpText, String pvpStationText) {
+            this(bindHost, bindPort, tickText, fortressDpText, passwordText, selDescriptor,
+                    selInfo, joinerDefaultText, fortressWaveScaleText, adminPasswordText,
+                    waveCategoryText, endlessText, modsEnabledText, modsOptionalText, terrainText,
+                    terrainLevelText, asteroidsText, waveRosterFullDpText, waveRosterMultiplierText,
+                    seatsPerSourceText, allSkillsText, rngPinsText, debugWatch, pvpText, pvpStationText, null);
+        }
+
         /** The pre-PvP 23-component shape (every caller before the
          * PvP select, the Swing window included) - no PvP control = {@code null} = the picked file's mode stands. */
         public StartFields(String bindHost, String bindPort, String tickText,
@@ -199,7 +243,7 @@ public final class OpsWindowModel {
                     waveRosterFullDpText, //
                     waveRosterMultiplierText, seatsPerSourceText, allSkillsText,
                     rngPinsText, debugWatch, // the copy carries the posture
-                    pvpText, pvpStationText);
+                    pvpText, pvpStationText, magicSeamText, pilotShipText);
         }
 
         /** The same fields with the debug-watch posture set — the button's press builds a Start's
@@ -210,7 +254,7 @@ public final class OpsWindowModel {
                     adminPasswordText, waveCategoryText, endlessText, modsEnabledText,
                     modsOptionalText, terrainText, terrainLevelText, asteroidsText,
                     waveRosterFullDpText, waveRosterMultiplierText, seatsPerSourceText,
-                    allSkillsText, rngPinsText, on, pvpText, pvpStationText);
+                    allSkillsText, rngPinsText, on, pvpText, pvpStationText, magicSeamText, pilotShipText);
         }
     }
 

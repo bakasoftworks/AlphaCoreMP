@@ -11,6 +11,7 @@ import cc.starsector.server.runtime.ModSet; //
 import cc.starsector.server.runtime.OperatorCommandFile;
 import cc.starsector.server.runtime.WireKnob; //
 import cc.starsector.server.transform.RngPinKnobs;
+import cc.starsector.server.transform.TransformRegistry;
 
 /**
  * The Start-form match-tuning rows of {@code cc-server.properties} carved out of
@@ -367,6 +368,99 @@ public final class OpsMatchRows {
      * agree. */
     public static String rngPinsFieldPrefill(List<String> lines) {
         return "false".equals(fieldPrefill(lines, RNG_PINS_KEY, "true")) ? "off" : "on";
+    }
+
+    // ---------------------------------------------- MagicLib abilities follow the pilot
+
+    /**
+     * The host's MagicLib switch, {@link TransformRegistry#MAGIC_SEAM_ENABLED_FILE_KEY} (never a
+     * second literal): {@code true} = the serve changes MagicLib's ability class in memory while it
+     * loads, so each player's MagicLib abilities do on the server what they did on that player's
+     * own screen; {@code false} = MagicLib runs unchanged and the abilities on player ships run by
+     * the mod's own AI. The row is load-time only (a running serve never re-reads it). The
+     * window only WRITES the row: the serve JVM's own startup reads the file and decides (no launch
+     * argument is composed from it anywhere), and the launcher refuses anything but exactly
+     * {@code true|false}, so the window writes exactly those two words. Label on both shells:
+     * {@link #MAGIC_SEAM_LABEL}. The {@link #RNG_PINS_KEY} row's twin, field for field.
+     *
+     */
+    public static final String MAGIC_SEAM_KEY = TransformRegistry.MAGIC_SEAM_ENABLED_FILE_KEY;
+    /** The control's label, one string for the Swing form and the web page. */
+    public static final String MAGIC_SEAM_LABEL = "MagicLib abilities follow the pilot";
+    /** The comment a file without the row gets above it when Start appends it. */
+    public static final String MAGIC_SEAM_COMMENT =
+            "# true = MagicLib abilities follow the pilot (each player's MagicLib abilities do on the server"
+                    + " what they did on that player's screen); false = they run by the mod's own AI on player ships";
+    /** The refusal's stem; the message appends the typed text. */
+    public static final String R_MAGIC_SEAM = MAGIC_SEAM_LABEL + " must be on or off";
+
+    /** MagicLib combo word ({@code on} / {@code off}, case-folded, trimmed) to the row value
+     * ({@code "true"} / {@code "false"}); anything else is refused. */
+    public static String parseMagicSeam(String text) {
+        String trimmed = text == null ? "" : text.trim();
+        String folded = trimmed.toLowerCase(Locale.ROOT);
+        if (folded.equals("on")) {
+            return "true";
+        }
+        if (folded.equals("off")) {
+            return "false";
+        }
+        throw new IllegalArgumentException(R_MAGIC_SEAM + " (got '" + echo(trimmed) + "').");
+    }
+
+    /** MagicLib combo prefill: {@code off} for an explicit {@code false} row, else {@code on}. An
+     * ABSENT row reads {@code on} here AND in the serve: the serve's compiled default is true, the
+     * shipped template says {@code true}, and the launcher's receipt stamps an absent row as on —
+     * three places that agree. */
+    public static String magicSeamFieldPrefill(List<String> lines) {
+        return "false".equals(fieldPrefill(lines, MAGIC_SEAM_KEY, "true")) ? "off" : "on";
+    }
+
+    // ---------------------------------------------- each pilot's ship counts as the player's
+
+    /**
+     * The host's player-ship switch, {@link TransformRegistry#PILOT_SHIP_ENABLED_FILE_KEY} (never a
+     * second literal): {@code true} = the serve changes ship scripts in memory while it loads, so a
+     * ship's own scripts (hullmods, ship systems, weapons) treat the ship a player flies as the
+     * player's ship, as in single player; {@code false} = they run as today. DEFAULT OFF: an absent
+     * row is off in the serve and here. The row is load-time only (a running serve never re-reads
+     * it). The window only WRITES the row: the serve JVM's own startup reads the file and decides
+     * (no launch argument is composed from it anywhere) and refuses anything but exactly
+     * {@code true|false}, so the window writes exactly those two words. Its companion row
+     * {@code pilotship.exclude} is file-only (no control). Label: {@link #PILOT_SHIP_LABEL}. The
+     * {@link #MAGIC_SEAM_KEY} row's twin, field for field, except the default.
+     *
+     */
+    public static final String PILOT_SHIP_KEY = TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY;
+    /** The control's label on the ops GUI. */
+    public static final String PILOT_SHIP_LABEL = "Each pilot's ship counts as the player's";
+    /** The comment a file without the row gets above it when Start appends it. */
+    public static final String PILOT_SHIP_COMMENT =
+            "# true = each pilot's ship counts as the player's (a ship's own scripts treat the ship a player"
+                    + " flies as the player's ship, as in single player); false = they run as today";
+    /** The refusal's stem; the message appends the typed text. */
+    public static final String R_PILOT_SHIP = PILOT_SHIP_LABEL + " must be on or off";
+
+    /** Player-ship combo word ({@code on} / {@code off}, case-folded, trimmed) to the row value
+     * ({@code "true"} / {@code "false"}); anything else is refused. */
+    public static String parsePilotShip(String text) {
+        String trimmed = text == null ? "" : text.trim();
+        String folded = trimmed.toLowerCase(Locale.ROOT);
+        if (folded.equals("on")) {
+            return "true";
+        }
+        if (folded.equals("off")) {
+            return "false";
+        }
+        throw new IllegalArgumentException(R_PILOT_SHIP + " (got '" + echo(trimmed) + "').");
+    }
+
+    /** Player-ship combo prefill: {@code on} for an explicit {@code true} row, else {@code off}. An
+     * ABSENT row reads {@code off} here AND in the serve: the serve's compiled default is false and
+     * the shipped template says {@code false} - the feature stays off until a host turns it on.
+     * */
+    public static String pilotShipFieldPrefill(List<String> lines) {
+        return "true".equals(fieldPrefill(lines, PILOT_SHIP_KEY, "false")) ? "on" : "off";
     }
 
     // ---------------------------------------------- fortress wave scale

@@ -1803,7 +1803,8 @@ public final class OpsConsole {
                     f.endlessText(), f.modsEnabledText(), f.modsOptionalText(), f.terrainText(),
                     f.terrainLevelText(), f.asteroidsText(), f.waveRosterFullDpText(),
                     f.waveRosterMultiplierText(), f.seatsPerSourceText(), f.allSkillsText(),
-                    f.rngPinsText(), false, f.pvpText(), f.pvpStationText());
+                    f.rngPinsText(), false, f.pvpText(), f.pvpStationText(), f.magicSeamText(),
+                    f.pilotShipText());
             fields = fields.withDebugWatch(debugWatch); // the flow's upsert writes the posture row either way
             // The package Start's wrap - the Game folder
             // saved into launcher.properties right before the ONE spawn

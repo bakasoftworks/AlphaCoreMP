@@ -45,12 +45,17 @@ public final class HandshakeBounceLadder {
 
     /**
      * Classify a HELLO payload that is not the door's own version ({@link Handshake13#VERSION}) as
-     * the newest legacy grammar it fully matches — version 13 first ({@link #classifyV13OrNull}),
-     * then 12 ({@link #classifyV12OrNull}, wired here by THE FLIP), then 11..1 — or
+     * the newest legacy grammar it fully matches — version 14 first ({@link #classifyV14OrNull}), then
+     * 13 ({@link #classifyV13OrNull}), then 12 ({@link #classifyV12OrNull}, wired here by THE FLIP),
+     * then 11..1 — or
      * {@code null} for garbage (silent drop). Newest-first so a payload is always attributed to the
      * highest version whose complete grammar it satisfies.
      */
     public static StaleHello classifyOrNull(byte[] payload) {
+        StaleHello v14 = classifyV14OrNull(payload);
+        if (v14 != null) {
+            return v14;
+        }
         StaleHello v13 = classifyV13OrNull(payload);
         if (v13 != null) {
             return v13;
@@ -121,8 +126,8 @@ public final class HandshakeBounceLadder {
         return v12 == null ? null : new StaleHello(12, v12.nonce(), v12.cookie());
     }
 
-    /** A version-13 kit's F1, exactly as its encoder wrote it. */
-    private static final int V13 = 13, V13_OPEN_HEAD_BYTES = 11, V13_FLAGS_DEFINED = 0x07;
+    /** A version-13 kit's F1, exactly as its encoder wrote it (a version-14 F1 differs only in byte 0). */
+    private static final int V13 = 13, V14 = 14, V13_OPEN_HEAD_BYTES = 11, V13_FLAGS_DEFINED = 0x07;
 
     /**
      * The v13 rung: a WELL-FORMED version-13 F1 = the complete grammar a version-13 kit's
@@ -136,7 +141,25 @@ public final class HandshakeBounceLadder {
      *
      */
     public static StaleHello classifyV13OrNull(byte[] payload) {
-        if (payload == null || payload.length != Handshake13.OPEN_PAYLOAD_BYTES || (payload[0] & 0xFF) != V13
+        return classifyOpenOrNull(payload, V13);
+    }
+
+    /**
+     * The v14 rung: a WELL-FORMED version-14 F1. The version-14 bump added only the {@code u8 team}
+     * closing the SEALED F2 body; the F1 bytes stayed the version-13 grammar (bytes 0..10 are frozen
+     * across versions, the length is the same 123 B), so this is the v13 rung with the version byte
+     * compared against the literal 14 → {@code StaleHello(14, nonce)}, else {@code null}. A version-14
+     * kit at a version-15 door meets this rung instead of being admitted and then dropped as corrupt at
+     * its first ability press.
+     */
+    public static StaleHello classifyV14OrNull(byte[] payload) {
+        return classifyOpenOrNull(payload, V14);
+    }
+
+    /** The shared F1 grammar of the v13 and v14 rungs at one literal version byte (the body of the v13 rung,
+     * moved verbatim when the v14 rung joined). */
+    private static StaleHello classifyOpenOrNull(byte[] payload, int version) {
+        if (payload == null || payload.length != Handshake13.OPEN_PAYLOAD_BYTES || (payload[0] & 0xFF) != version
                 || payload[10] != 0 || (payload[9] & ~V13_FLAGS_DEFINED) != 0) {
             return null;
         }
@@ -149,7 +172,7 @@ public final class HandshakeBounceLadder {
         for (int i = 1; i <= 8; i++) {
             nonce = (nonce << 8) | (payload[i] & 0xFF);
         }
-        return new StaleHello(V13, nonce);
+        return new StaleHello(version, nonce);
     }
 
     /**
@@ -177,6 +200,8 @@ public final class HandshakeBounceLadder {
     public static byte[] encodeReject(StaleHello stale, int startingRoundId, int tickRate,
             long serverLife) {
         return switch (stale.version()) {
+            case 14 -> HandshakeCodec.WelcomePayload.encodeRejectedKitOutdatedV14(
+                    stale.nonce(), startingRoundId, tickRate, serverLife);
             case 13 -> HandshakeCodec.WelcomePayload.encodeRejectedKitOutdatedV13(
                     stale.nonce(), startingRoundId, tickRate, serverLife);
             case 12 -> HandshakeCodec.WelcomePayload.encodeRejectedKitOutdatedV12(

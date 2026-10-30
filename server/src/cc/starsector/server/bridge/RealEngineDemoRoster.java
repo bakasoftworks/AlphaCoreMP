@@ -8,6 +8,7 @@ import cc.starsector.server.platform.AllSkillsAttach;
 import cc.starsector.server.platform.HeadlessCombatContext;
 import cc.starsector.server.platform.OfficerAttach;
 import cc.starsector.server.platform.RegistryVariantClone;
+import cc.starsector.server.runtime.PickableVariants;
 import cc.starsector.server.runtime.ServerConfig;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
@@ -1256,8 +1257,9 @@ public final class RealEngineDemoRoster {
      * Shape-aware resolve: an EXPLICIT knob value wins in
      * both directions (strict-bool throw preserved — the A/B lever at the watch stays
      * {@code cc.server.deployFlyIn=false}); UNSET defaults ON for {@code bastion:fortress}
-     * only (the owner's t=0 "glimmers insta-die on the station, they should be flying in"
-     * debrief — every other shape keeps the teleport default until its own grade).
+     * only (the 2026-07-28 debrief of that shape: two glimmers spawned on top of the station at t=0 and
+     * insta-died instead of flying in — every other shape keeps the teleport
+     * default until its own grade).
      */
     public static boolean deployFlyInEnabled(String shapeOrNull) {
         String raw = ServerConfig.resolve(
@@ -2586,13 +2588,16 @@ public final class RealEngineDemoRoster {
     }
 
     /**
-     * W7 B1b: every enabled mod's existing {@code data/variants} dir, launcher declaration
-     * order — the reflective {@code ModManager} walk ({@code RealEngineContentInit}
+     * W7 B1b: every enabled mod's existing {@code data/variants} dir — the KIT's root FIRST, found by its
+     * mod ID ({@link PickableVariants#kitRootFirst}; the launcher's own order is by display NAME, so the kit
+     * led the walk only by luck), then the rest in launcher order — the reflective
+     * {@code ModManager} walk ({@code RealEngineContentInit}
      * {@code registerEnabledModDataDirsIntoResourceRegistry} idiom). Fail-soft to EMPTY with a
      * loud line: the {@code /ship} allowlist is a player nicety and must never fail a serve
      * boot (the caller replies "picking unavailable" off an empty scan).
      */
     public static List<java.io.File> enabledModVariantRoots() {
+        List<String> ids = new ArrayList<>();
         List<java.io.File> roots = new ArrayList<>();
         try {
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
@@ -2603,8 +2608,10 @@ public final class RealEngineDemoRoster {
                     (List<?>) modManagerClass.getMethod("getEnabledMods").invoke(modManager);
             for (Object spec : enabledMods) {
                 String modPath = (String) spec.getClass().getMethod("getPath").invoke(spec);
+                String modId = (String) spec.getClass().getMethod("getId").invoke(spec);
                 java.io.File root = new java.io.File(modPath, "data/variants");
                 if (root.isDirectory()) {
+                    ids.add(modId == null ? "" : modId);
                     roots.add(root);
                 }
             }
@@ -2615,7 +2622,7 @@ public final class RealEngineDemoRoster {
                     + (cause.getMessage() == null ? "" : cause.getMessage()));
             return Collections.emptyList();
         }
-        return roots;
+        return PickableVariants.kitRootFirst(ids, roots);
     }
 
     static Object resolveVariantById(ClassLoader loader, Class<?> hullVariantClass,

@@ -51,4 +51,42 @@ public interface ShipManeuverCommandView {
      * Bits above {@code 0xFF} are never set.
      */
     int maneuverMask();
+
+    /**
+     * {@link #pilotSeat()} value for a hull with NO pilot
+     * mark. Seats are 1..255, so 0 is free to mean "absent".
+     */
+    int PILOT_SEAT_NONE = 0;
+
+    /** The legal width of {@link #pilotMask()}: one byte, ability slot k = bit k. */
+    int PILOT_MASK_BITS = 0xFF;
+
+    /**
+     * The seat whose pilot mark this hull carries this tick, 1..255, or
+     * {@link #PILOT_SEAT_NONE}. WHY it is read here: a joined pilot's ability toggles drive a
+     * mod's per-hull behaviour (a drive flame, a subsystem) through a mark the serve writes on
+     * the hull's own custom data before the step; the serve's mod reads that mark, but a
+     * REMOTE client's copy of the hull never sees it, so the wire carries exactly what the
+     * serve's mod read — one source, no second bookkeeping.
+     */
+    int pilotSeat();
+
+    /**
+     * The serve's applied ability bits for {@link #pilotSeat()} (0..255, slot k = bit k; the
+     * low byte of the mark's mask), or 0 when the hull carries no mark.
+     */
+    int pilotMask();
+
+    /** The mark's flags bit 0: the serve follows the pilot's MagicLib decision on this hull. */
+    int PILOT_FLAG_FOLLOW = 0x01;
+
+    /**
+     * The mark's flags byte (0..255; the low byte of the
+     * mark's {@code [3]}), or 0 when the hull carries no mark or a pre-flags (length 2) mark.
+     * WHY it rides beside the pair: a remote copy of a piloted hull must gate its MagicLib
+     * subsystem exactly as the serve does (follow the pilot's decision only where the serve does,
+     * else the mod's own AI), so the wire relays the serve's flags rather than each window
+     * re-deciding.
+     */
+    int pilotFlags();
 }

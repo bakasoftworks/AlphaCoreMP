@@ -268,6 +268,11 @@ final class OpsConsoleSelftest {
         row(fails, "page-roster-mult", () -> rosterMultPageRow(html, js));
         row(fails, "page-seats-allskills", () -> seatsAllSkillsPageRow(html, js));
         row(fails, "page-rngpins", () -> rngPinsPageRow(html, js));
+        row(fails, "page-magicseam", () -> magicSeamPageRow(html, js));
+        row(fails, "page-pilotship", () -> pilotShipPageRow(html, js));
+        row(fails, "status-magic-line", () -> statusMagicLineRow(html, js));
+        row(fails, "status-magic-cell", () -> statusMagicCellRow(html, js));
+        row(fails, "status-pilot-line", () -> statusPilotLineRow(html, js));
         row(fails, "page-pvp", () -> pvpPageRow(html, js));
         row(fails, "page-lease", () -> pageLeaseRow(html, js));
         row(fails, "forms-custom-keep", OpsConsoleSelftest::formsCustomKeepRow);
@@ -480,6 +485,311 @@ final class OpsConsoleSelftest {
             }
         }
         return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /** {@code page-magicseam} - over the SERVED html + js: the MagicLib select
+     * ({@code setup.mods.magicSeam}, on selected / off, labelled {@link OpsMatchRows#MAGIC_SEAM_LABEL}) sits inside
+     * {@code #pre-start} (locked while a server runs: the serve reads the row only while it loads), its hint names the
+     * props row and has its help row, and it rides the config prefill list and the Start payload under its own key
+     * (a payload sending the MagicLib word as {@code rngPins} would flip the replay pins instead). */
+    static String magicSeamPageRow(String html, String js) {
+        List<String> bad = new ArrayList<>();
+        int pre = html.indexOf("<fieldset id=\"pre-start\"");
+        int preEnd = pre < 0 ? -1 : html.indexOf("</fieldset>", pre);
+        int sel = html.indexOf("<select id=\"f-magic-seam\" data-cc=\"setup.mods.magicSeam\"");
+        if (sel < 0 || pre < 0 || sel < pre || sel > preEnd
+                || !html.startsWith("<option selected>on</option><option>off</option></select>",
+                        html.indexOf('>', sel) + 1)) {
+            bad.add("no MagicLib select (on selected, off) with its twin id inside #pre-start (flips if it moves out of"
+                    + " the boot-time lock group or stops opening at on)");
+        }
+        if (!html.contains("<label for=\"f-magic-seam\">" + OpsMatchRows.MAGIC_SEAM_LABEL + "</label>")
+                || !html.contains("<dt>" + OpsMatchRows.MAGIC_SEAM_LABEL + "</dt><dd data-hint=\"hint-magic-seam\"></dd>")) {
+            bad.add("the select's label or its help row drifted from '" + OpsMatchRows.MAGIC_SEAM_LABEL + "'");
+        }
+        if (!html.contains("<p class=\"hint\" id=\"hint-magic-seam\">writes " + OpsMatchRows.MAGIC_SEAM_KEY
+                + "; on = ")) {
+            bad.add("#hint-magic-seam lacks its text (the row it writes)");
+        }
+        for (String need : List.of("['f-magic-seam', 'magicSeam']", "magicSeam: CC.el('f-magic-seam').value")) {
+            if (!js.contains(need)) {
+                bad.add("the script lacks " + need + " (the saved row stops prefilling or Start stops writing it)");
+            }
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /** {@code page-pilotship} - over the SERVED html + js: the player-ship select
+     * ({@code setup.mods.pilotShip}, on / off with OFF selected = the shipped default, labelled
+     * {@link OpsMatchRows#PILOT_SHIP_LABEL}) sits inside {@code #pre-start} right after the MagicLib select (locked while
+     * a server runs: the serve reads the row only while it loads), its hint names the props row and has its help row, and
+     * it rides the config prefill list and the Start payload under its own key (a payload sending the word as
+     * {@code magicSeam} would flip the MagicLib row instead). */
+    static String pilotShipPageRow(String html, String js) {
+        List<String> bad = new ArrayList<>();
+        int pre = html.indexOf("<fieldset id=\"pre-start\"");
+        int preEnd = pre < 0 ? -1 : html.indexOf("</fieldset>", pre);
+        int magic = html.indexOf("<select id=\"f-magic-seam\"");
+        int sel = html.indexOf("<select id=\"f-pilot-ship\" data-cc=\"setup.mods.pilotShip\"");
+        if (sel < 0 || pre < 0 || sel < pre || sel > preEnd || magic < 0 || sel < magic
+                || html.indexOf("<select", magic + 1) != sel
+                || !html.startsWith("<option>on</option><option selected>off</option></select>",
+                        html.indexOf('>', sel) + 1)) {
+            bad.add("no player-ship select (on, off selected) with its twin id right after the MagicLib select inside"
+                    + " #pre-start (flips if it moves out of the boot-time lock group, or stops opening at off)");
+        }
+        if (!html.contains("<label for=\"f-pilot-ship\">" + OpsMatchRows.PILOT_SHIP_LABEL + "</label>")
+                || !html.contains("<dt>" + OpsMatchRows.PILOT_SHIP_LABEL + "</dt><dd data-hint=\"hint-pilot-ship\"></dd>")) {
+            bad.add("the select's label or its help row drifted from '" + OpsMatchRows.PILOT_SHIP_LABEL + "'");
+        }
+        if (!html.contains("<p class=\"hint\" id=\"hint-pilot-ship\">writes " + OpsMatchRows.PILOT_SHIP_KEY
+                + "; on = ")) {
+            bad.add("#hint-pilot-ship lacks its text (the row it writes)");
+        }
+        for (String need : List.of("['f-pilot-ship', 'pilotShip']", "pilotShip: CC.el('f-pilot-ship').value")) {
+            if (!js.contains(need)) {
+                bad.add("the script lacks " + need + " (the saved row stops prefilling or Start stops writing it)");
+            }
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /** {@code status-magic-line} - the MATCH line's MagicLib sentence through the
+     * whole host path (a {@link OpsStatusFile.MagicSeam} composed into status lines, parsed back by {@link OpsSnapshot},
+     * answered by {@link ServerOpsCore#statusJson} as {@code magicSeamLine}): an applied receipt reads on, the host
+     * switch "off (host switch)", a disarmed seam "off (MagicLib version not recognised)" for an unknown build and
+     * "off (the server's MagicLib check failed: the token)" for the seam's own miss, an armed or absent receipt
+     * "off (MagicLib not in this match)"; a writer with no {@code magic_seam} key and a previous server's leftover file
+     * answer "" (no line). Over the SERVED html + js: {@code #magic-seam} is an id-only span inside the MATCH cluster,
+     * hidden until the script writes the sentence into it, and hidden again while the sentence reads empty. */
+    static String statusMagicLineRow(String html, String js) {
+        List<String> bad = new ArrayList<>();
+        String head = "MagicLib abilities follow the pilot: ";
+        String applied = "applied:0123456789abcdef";
+        String[][] cases = {
+                {applied, head + "on", "an applied receipt stops reading on"},
+                {"off", head + "off (host switch)", "the host switch stops reading off (host switch)"},
+                {"disarmed:window_absent", head + "off (MagicLib version not recognised)",
+                        "an unknown MagicLib build reads on or shows the raw token"},
+                {"disarmed:not_allowlisted", head + "off (MagicLib version not recognised)",
+                        "a build outside the verified set reads as the serve's own failure"},
+                {"disarmed:hook_abi", head + "off (the server's MagicLib check failed: hook_abi)",
+                        "the seam's own miss reads on or loses the token a bug report needs"},
+                {"armed", head + "off (MagicLib not in this match)", "an armed seam that met no MagicLib reads on or no line"},
+                {null, head + "off (MagicLib not in this match)", "a serve with no receipt (unset) reads on or no line"}};
+        for (String[] c : cases) {
+            String got = answerMember(magicStatusJson(magicSnap(new OpsStatusFile.MagicSeam(c[0], true, MAGIC_BITS)),
+                    true), "magicSeamLine");
+            if (!c[1].equals(got)) {
+                bad.add(c[0] + " -> '" + got + "' (flips if " + c[2] + ")");
+            }
+        }
+        String none = answerMember(magicStatusJson(magicSnap(null), true), "magicSeamLine");
+        if (!"".equals(none)) {
+            bad.add("no magic_seam key -> '" + none + "' (flips if a pre-seam writer paints a MagicLib line or the"
+                    + " answer drops the key)");
+        }
+        String leftover = answerMember(magicStatusJson(magicSnap(new OpsStatusFile.MagicSeam(applied, true, MAGIC_BITS)),
+                false), "magicSeamLine");
+        if (!"".equals(leftover)) {
+            bad.add("a previous server's leftover file -> '" + leftover + "' (flips if a dead writer's receipt paints"
+                    + " this match's line)");
+        }
+        int match = html.indexOf("<div class=\"cluster\" id=\"cl-match\"");
+        int matchEnd = match < 0 ? -1 : html.indexOf("</div>", match);
+        int span = html.indexOf("<span id=\"magic-seam\" hidden></span>");
+        if (span < 0 || match < 0 || span < match || span > matchEnd) {
+            bad.add("no hidden id-only #magic-seam span inside the MATCH cluster (flips if it moves out of the cluster,"
+                    + " shows an empty line before the first status, or gains a control id)");
+        }
+        for (String need : List.of("typeof s.magicSeamLine === 'string' ? s.magicSeamLine : ''",
+                "CC.el('magic-seam')", "CC.show(el, line !== '')", "renderMagicSeam(s);")) {
+            if (!js.contains(need)) {
+                bad.add("the script lacks " + need + " (the line stops reading the answer, stops hiding on '', or is"
+                        + " never rendered)");
+            }
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /** {@code status-magic-cell} - each seat's MagicLib cell and the host words
+     * the page shows as its title, through the same host path as {@code status-magic-line}: a followed seat (the FOLLOW
+     * predicate's why is null) reads follows; a seat whose HELLO carried 0x08 but is not followed reads reports with the
+     * words for host_off / not_applied / door_unarmed; a seat without 0x08 (none, or the replica bit alone) reads "-"
+     * with no title even while the host switch is off. The answer's column names and the served page agree: the
+     * MagicLib header and template cell sit right after ctrl, the why has no cell of its own, and the script's
+     * fallback column list equals {@link ServerOpsCore#SEAT_COLUMNS} and reads the why into the cell's title. */
+    static String statusMagicCellRow(String html, String js) {
+        List<String> bad = new ArrayList<>();
+        String applied = "applied:0123456789abcdef";
+        // {receipt, door armed, the seat's ctrl depth (7 = 0x08, 8 = no bits, 9 = 0x10 alone), cell, title, regression}
+        String[][] cases = {
+                {applied, "1", "7", "follows", "", "a followed seat stops reading follows or gains a title"},
+                {applied, "1", "8", "-", "", "a seat whose game reports nothing reads follows or reports"},
+                {applied, "1", "9", "-", "", "the replica bit alone reads as reporting MagicLib states"},
+                {"off", "1", "7", "reports", "host switch off", "the host_off words drift or the cell stops reporting"},
+                {"off", "1", "8", "-", "", "a seat that reports nothing gains the host-off title"},
+                {"disarmed:window_absent", "1", "7", "reports", "MagicLib unchanged on the server",
+                        "the not_applied words drift"},
+                {applied, "0", "7", "reports", "the mod check is off for this match", "the door_unarmed words drift"
+                        + " or an unarmed door follows"}};
+        for (String[] c : cases) {
+            String body = magicStatusJson(magicSnap(new OpsStatusFile.MagicSeam(c[0], "1".equals(c[1]), MAGIC_BITS)),
+                    true);
+            String want = "," + c[2] + ",\"" + c[3] + "\",\"" + c[4] + "\",";
+            if (!body.contains(want)) {
+                int at = body.indexOf("," + c[2] + ",\"");
+                String got = at < 0 ? "no seat" : body.substring(at, Math.min(body.length(), at + 60));
+                bad.add(c[0] + (c[1].equals("1") ? "" : " door unarmed") + " ctrl " + c[2] + " -> " + got
+                        + " (flips if " + c[3] + "/" + c[4] + " is lost: " + c[5] + ")");
+            }
+        }
+        if (!magicStatusJson(magicSnap(null), true).contains("\"ctrl\",\"MagicLib\",\"MagicLib why\",\"custom\"")) {
+            bad.add("seatColumns lacks ctrl, MagicLib, MagicLib why, custom (flips if the names the page reads its"
+                    + " cells by leave their slot)");
+        }
+        int ctrlTh = html.indexOf("data-cc=\"live.seat.col.ctrl\">ctrl</th>");
+        int magicTh = html.indexOf("<th scope=\"col\" data-cc=\"live.seat.col.magicLib\">MagicLib</th>");
+        if (ctrlTh < 0 || magicTh < 0 || html.indexOf("<th", ctrlTh) != magicTh) {
+            bad.add("no live.seat.col.magicLib header right after ctrl (flips if the header leaves its slot)");
+        }
+        if (!html.contains("data-col=\"ctrl\"></td><td role=\"gridcell\" data-col=\"MagicLib\"></td>")
+                || html.contains("data-col=\"" + ServerOpsCore.MAGIC_WHY_COLUMN + "\"")) {
+            bad.add("the seat row template lacks the MagicLib cell after ctrl or shows the why as a cell (flips if the"
+                    + " body drifts from the header)");
+        }
+        StringBuilder cols = new StringBuilder("const COLS = [");
+        for (int i = 0; i < ServerOpsCore.SEAT_COLUMNS.length; i++) {
+            cols.append(i > 0 ? ", '" : "'").append(ServerOpsCore.SEAT_COLUMNS[i]).append('\'');
+        }
+        String flat = js.replaceAll("\\s+", " ");
+        if (!flat.contains(cols.append("];").toString())) {
+            bad.add("the script's fallback COLS drifted from the server's seat columns (flips if MagicLib or its why"
+                    + " leaves the list or moves)");
+        }
+        if (!js.contains("td.dataset.col === 'MagicLib'") || !js.contains("r.cell('MagicLib why')")) {
+            bad.add("the script no longer reads the MagicLib why into the MagicLib cell's title");
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /** HELLO flag bits per seat for the MagicLib rows: seat 1 reports (0x08), seat 2 none, seat 3 the replica bit
+     *  alone (0x10). */
+    private static final java.util.function.IntUnaryOperator MAGIC_BITS = seat -> seat == 1 ? 0x08 : seat == 3 ? 0x10 : 0;
+
+    /** Status lines for three live seats (ids 1..3, ctrl depths 7..9 so each
+     *  seat's cells are findable in the answer) composed with {@code magic} (null = a writer with no MagicLib rows)
+     *  and parsed back - the reader the ops GUI's status answer is built from. */
+    private static OpsSnapshot magicSnap(OpsStatusFile.MagicSeam magic) {
+        return OpsSnapshot.parse(magicLines(magic));
+    }
+
+    /** {@link #magicSnap}'s status lines, before the parse. */
+    private static List<String> magicLines(OpsStatusFile.MagicSeam magic) {
+        List<OpsStatusFile.SeatRow> rows = List.of(
+                new OpsStatusFile.SeatRow(1, "cid-a", "e1", "wolf_Assault", true, 1L, 1L, 7),
+                new OpsStatusFile.SeatRow(2, "cid-b", "e2", "wolf_Assault", true, 1L, 1L, 8),
+                new OpsStatusFile.SeatRow(3, "cid-c", "e3", "wolf_Assault", true, 1L, 1L, 9));
+        return OpsStatusFile.composeLines(1L, 2L, "run", "h", 1, 0L, 0, 1, 0L, rows.size(),
+                0.0d, 0.0d, 0.0d, 0L, 0L, 0L, 0L, 0, 0.0d, 0L, "off", rows, new long[rows.size()][2],
+                PhaseWindowStats.Snapshot.EMPTY, OpsStatusFile.CustomStats.NONE, null, null, magic);
+    }
+
+    /** {@code status-pilot-line} - the MATCH line's player-ship sentence, read
+     * BY NAME from a status file's {@code pilot_ship=} row (the {@link #magicLines} fixture plus that one row, parsed
+     * by {@link OpsSnapshot} and answered by {@link ServerOpsCore#statusJson} as {@code pilotShipLine}): every receipt
+     * class the premain writes gets its host words - applied with a count of script classes (plural, singular, zero,
+     * unreadable), armed, off, each refused reason under the one start-time wrapper (both families, every load-time
+     * wrap token, a Throwable token and an unknown token kept, bounded), each latch; {@code unset}, an
+     * empty row, a writer with no row and a previous server's leftover file answer "" (no line). Over the SERVED html
+     * + js: {@code #pilot-ship} is an id-only hidden span inside the MATCH cluster, the script writes the sentence
+     * into it and hides it again while the sentence reads empty. */
+    static String statusPilotLineRow(String html, String js) {
+        List<String> bad = new ArrayList<>();
+        String head = "Each pilot's ship counts as the player's: ";
+        String refused = head + "off (the start-time check refused the switch: ";
+        String[][] cases = {
+                {"applied:7", head + "on (7 script classes)", "an applied receipt stops reading on with its class"
+                        + " count, or calls the classes mod classes again (the count includes vanilla scripts)"},
+                {"applied:1", head + "on (1 script class)", "one redirected class reads as a plural or loses its count"},
+                {"applied:0", head + "on (no script class yet)", "a zero count (the window wrapped, no script yet)"
+                        + " reads 0 script classes or off"},
+                {"applied:x9", head + "on", "an unreadable count hides a live window or paints the raw token"},
+                {"armed", head + "on (no script class yet)", "an armed window reads off or no line"},
+                {"off", head + "off", "the host switch off stops reading off or gains a reason"},
+                {"refused:ship_fingerprint", refused + "game version not recognised)",
+                        "a ship-code fingerprint refusal reads on, shows the raw token or names a game-version check"},
+                {"refused:golden_mismatch", refused + "game version not recognised)",
+                        "a golden mismatch reads as anything but an unknown game version"},
+                {"refused:not_target", refused + "game version not recognised)",
+                        "a ship class the wrap did not take shows the raw token"},
+                {"refused:self_check", refused + "game version not recognised)",
+                        "a wrap that failed its own re-read shows the raw token"},
+                {"refused:window_repeated", refused + "game version not recognised)",
+                        "an already-wrapped ship class shows the raw token"},
+                {"refused:window_absent", refused + "game version not recognised)",
+                        "a ship class with no advance body shows the raw token"},
+                {"refused:class_version", refused + "game version not recognised)",
+                        "a ship class too old to wrap shows the raw token"},
+                {"refused:holder_missing", refused + "server files incomplete)",
+                        "a missing helper class reads as a game version problem, shows the raw token or the wrapper"
+                                + " still says the game-version check failed"},
+                {"refused:holder_abi", refused + "server files incomplete)",
+                        "a wrong-shape helper class reads as a game version problem"},
+                {"refused:error:NullPointerException", refused + "error:NullPointerException)",
+                        "a wrap Throwable is folded into a family or loses the class name a bug report needs"},
+                {"refused:step_x", refused + "step_x)", "an unknown refusal loses the token a bug report needs"},
+                {"latched:leak", head + "off (switched off for this match after a fault)",
+                        "a leak latch reads on (the window is off for the match)"},
+                {"latched:mirror_overflow", head + "off (switched off for this match after a fault)",
+                        "a latch reason other than leak reads on or no line"},
+                {"unset", "", "a serve where nothing decided the switch paints a line"},
+                {"", "", "an empty row paints a line"},
+                {"garbled", "", "a receipt outside the set paints a line"}};
+        for (String[] c : cases) {
+            List<String> lines = new ArrayList<>(magicLines(null));
+            lines.add("pilot_ship=" + c[0]);
+            String got = answerMember(magicStatusJson(OpsSnapshot.parse(lines), true), "pilotShipLine");
+            if (!c[1].equals(got)) {
+                bad.add("'" + c[0] + "' -> '" + got + "' (flips if " + c[2] + ", or the answer drops the key)");
+            }
+        }
+        String none = answerMember(magicStatusJson(magicSnap(null), true), "pilotShipLine");
+        if (!"".equals(none)) {
+            bad.add("no pilot_ship row -> '" + none + "' (flips if an older writer paints a line or the answer drops"
+                    + " the key)");
+        }
+        List<String> live = new ArrayList<>(magicLines(null));
+        live.add("pilot_ship=applied:7");
+        String leftover = answerMember(magicStatusJson(OpsSnapshot.parse(live), false), "pilotShipLine");
+        if (!"".equals(leftover)) {
+            bad.add("a previous server's leftover file -> '" + leftover + "' (flips if a dead writer's receipt paints"
+                    + " this match's line)");
+        }
+        int match = html.indexOf("<div class=\"cluster\" id=\"cl-match\"");
+        int matchEnd = match < 0 ? -1 : html.indexOf("</div>", match);
+        int span = html.indexOf("<span id=\"pilot-ship\" hidden></span>");
+        if (span < 0 || match < 0 || span < match || span > matchEnd) {
+            bad.add("no hidden id-only #pilot-ship span inside the MATCH cluster (flips if it moves out of the cluster,"
+                    + " shows an empty line before the first status, or gains a control id)");
+        }
+        for (String need : List.of("typeof s.pilotShipLine === 'string' ? s.pilotShipLine : ''",
+                "CC.el('pilot-ship')", "renderPilotShip(s);")) {
+            if (!js.contains(need)) {
+                bad.add("the script lacks " + need + " (the line stops reading the answer or is never rendered)");
+            }
+        }
+        int fn = js.indexOf("const renderPilotShip = (s) => {");
+        int fnEnd = fn < 0 ? -1 : js.indexOf("};", fn);
+        if (fn < 0 || fnEnd < 0 || !js.substring(fn, fnEnd).contains("CC.show(el, line !== '')")) {
+            bad.add("renderPilotShip no longer hides the line on '' (flips if an empty sentence shows a blank line)");
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /** The status answer for {@code snap} at its own stamp ({@code writerAlive} false = a previous server's file). */
+    private static String magicStatusJson(OpsSnapshot snap, boolean writerAlive) {
+        return ServerOpsCore.statusJson(snap, null, "x", writerAlive, false, 10.0, 1L, List.of());
     }
 
     /** {@code page-pvp} - over the SERVED html + js: ONE PvP mode select
@@ -763,18 +1073,19 @@ final class OpsConsoleSelftest {
     }
 
     /**
-     * {@code draft-ids-parity} - {@link OpsSetupDraft#DRAFT_IDS} holds 22
-     * ids: 20 of {@link OpsParity#PACKAGE_IDS} and exactly two of {@link OpsParity#PAGE_ONLY_IDS} (the
+     * {@code draft-ids-parity} - {@link OpsSetupDraft#DRAFT_IDS} holds 24
+     * ids: 22 of {@link OpsParity#PACKAGE_IDS} and exactly two of {@link OpsParity#PAGE_ONLY_IDS} (the
      * second game folder and the PvP mode select); none is {@link OpsSetupDraft#NEVER_DRAFTED}; the 4 page-only ids
      * are disjoint from every other parity list, match the page's {@code data-cc} grammar, and the shape's Players pair is
-     * not drafted. Re-pinned for the PvP select.
+     * not drafted. Re-pinned for the PvP select; re-pinned for the
+     * MagicLib select; re-pinned for the player-ship select.
      */
     static String draftIdsParityRow() {
         List<String> bad = new ArrayList<>();
         long pkg = OpsSetupDraft.DRAFT_IDS.stream().filter(OpsParity.PACKAGE_IDS::contains).count();
         List<String> pageOnly = OpsSetupDraft.DRAFT_IDS.stream().filter(OpsParity.PAGE_ONLY_IDS::contains)
                 .sorted().toList();
-        if (OpsSetupDraft.DRAFT_IDS.size() != 22 || pkg != 20
+        if (OpsSetupDraft.DRAFT_IDS.size() != 24 || pkg != 22
                 || !pageOnly.equals(List.of("setup.gameRootSecond", "setup.match.pvp"))) {
             bad.add("draft ids " + OpsSetupDraft.DRAFT_IDS.size() + " = package " + pkg + " + page-only " + pageOnly
                     + " (flips if a draft id drifts from the page's parity ids, or the PvP select stops being drafted)");
@@ -995,6 +1306,8 @@ final class OpsConsoleSelftest {
             row(fails, "web-start-roster-mult", () -> startRosterMultRow(rig));
             row(fails, "web-start-seats", () -> startSeatsRow(rig));
             row(fails, "web-start-rngpins", () -> startRngPinsRow(rig));
+            row(fails, "web-start-magicseam", () -> startMagicSeamRow(rig));
+            row(fails, "web-start-pilotship", () -> startPilotShipRow(rig));
             row(fails, "web-start-pvp", () -> startPvpRow(rig));
             row(fails, "web-start-descriptor-overcap", () -> startDescriptorOverCapRow(rig));
             row(fails, "web-start-gameroot", () -> startGameRootRow(rig));
@@ -3142,7 +3455,7 @@ final class OpsConsoleSelftest {
         Path kits = KitPacker.kitsDir(rig.pkg);
         Path zip = kits.resolve("good.zip");
         String md5 = "0123456789abcdef0123456789abcdef";
-        String fp = "jar=" + md5 + ";data=abc;hs=14";
+        String fp = "jar=" + md5 + ";data=abc;hs=15";
         byte[][] prior = new byte[3][];
         boolean[] kitsExisted = {false};
         setup(r, () -> {
@@ -5332,6 +5645,136 @@ final class OpsConsoleSelftest {
                     + " (flips if the console's Start drops the replay-pins word)");
         }
         if (!config1.body().contains("\"rngPins\":\"off\"")) {
+            bad.add("config after " + PeerText.bound(config1.body(), 80) + " (the written row stops prefilling)");
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /**
+     * {@code web-start-magicseam} - the MagicLib word through the REAL
+     * {@code POST /api/start} over the rig's package props (the {@code web-start-rngpins} shape): a crafted
+     * {@code magicSeam=maybe} is refused with the MagicLib sentence before anything is written or spawned;
+     * {@code magicSeam=off} reaches the spawn and writes {@code magicseam.enabled=false} exactly once (no launch
+     * argument: the serve's own startup reads the file) while the replay-pins rows stay byte-for-byte as they were (a
+     * word landing in the neighbouring StartFields slot flips that), and {@code /api/config} then serves
+     * {@code "magicSeam":"off"}. The props bytes are restored in {@code finally}.
+     */
+    private static String startMagicSeamRow(Rig rig) throws Exception {
+        String r = "web-start-magicseam";
+        Path props = rig.pkg.resolve(ServeLauncher.DEFAULT_CONFIG);
+        String fields = startFields("match-web-pkg.txt");
+        AtomicReference<byte[]> prior = new AtomicReference<>();
+        setup(r, () -> {
+            awaitStaging();
+            prior.set(Files.readAllBytes(props));
+        });
+        Resp refused;
+        Resp set;
+        Resp config1;
+        int spawns0;
+        int spawns1;
+        int spawns2;
+        byte[] afterRefused;
+        List<String> before;
+        List<String> afterSet;
+        try {
+            before = Files.readAllLines(props, StandardCharsets.UTF_8);
+            spawns0 = rig.spawned.size();
+            refused = post(rig, "/api/start", fields + "&magicSeam=maybe");
+            awaitStaging();
+            spawns1 = rig.spawned.size();
+            afterRefused = Files.readAllBytes(props);
+            set = post(rig, "/api/start", fields + "&magicSeam=off");
+            awaitStaging();
+            spawns2 = rig.spawned.size();
+            afterSet = Files.readAllLines(props, StandardCharsets.UTF_8);
+            config1 = call(rig, "GET", "/api/config", rig.boot.token(), null);
+        } finally {
+            setup(r, () -> Files.write(props, prior.get()));
+        }
+        List<String> bad = new ArrayList<>();
+        if (!refused.body().contains(OpsMatchRows.R_MAGIC_SEAM) || spawns1 != spawns0
+                || !Arrays.equals(prior.get(), afterRefused)) {
+            bad.add("magicSeam=maybe " + PeerText.bound(refused.body(), 120) + " spawns " + spawns0 + "/" + spawns1
+                    + " (flips if a crafted word is ignored, written or spawned)");
+        }
+        long seamRows = afterSet.stream().filter(l -> l.startsWith(OpsMatchRows.MAGIC_SEAM_KEY + "=")).count();
+        if (!set.body().startsWith("{\"ok\":true") || spawns2 <= spawns1 || seamRows != 1
+                || !afterSet.contains(OpsMatchRows.MAGIC_SEAM_KEY + "=false")) {
+            bad.add("off " + PeerText.bound(set.body(), 120) + " spawns " + spawns1 + "/" + spawns2 + " rows=" + seamRows
+                    + " (flips if the console's Start drops the MagicLib word)");
+        }
+        List<String> pinsBefore = before.stream().filter(l -> l.startsWith(OpsMatchRows.RNG_PINS_KEY + "=")).toList();
+        List<String> pinsAfter = afterSet.stream().filter(l -> l.startsWith(OpsMatchRows.RNG_PINS_KEY + "=")).toList();
+        if (!pinsBefore.equals(pinsAfter)) {
+            bad.add("replay-pins rows " + pinsBefore + " -> " + pinsAfter
+                    + " (flips if the MagicLib word is written through the replay-pins slot)");
+        }
+        if (!config1.body().contains("\"magicSeam\":\"off\"")) {
+            bad.add("config after " + PeerText.bound(config1.body(), 80) + " (the written row stops prefilling)");
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /**
+     * {@code web-start-pilotship} - the player-ship word through the REAL
+     * {@code POST /api/start} over the rig's package props (the {@code web-start-magicseam} shape): a crafted
+     * {@code pilotShip=maybe} is refused with the player-ship sentence before anything is written or spawned;
+     * {@code pilotShip=on} sent beside {@code magicSeam=off} reaches the spawn and writes {@code pilotship.enabled=true}
+     * exactly once and {@code magicseam.enabled=false} exactly once (no launch argument: the serve's own startup reads
+     * the file) - crossed StartFields slots, or one word written through both keys, flip one of the two values - and
+     * {@code /api/config} then serves {@code "pilotShip":"on"} (an absent row serves off, so a row that was never written
+     * reads off). The props bytes are restored in {@code finally}.
+     */
+    private static String startPilotShipRow(Rig rig) throws Exception {
+        String r = "web-start-pilotship";
+        Path props = rig.pkg.resolve(ServeLauncher.DEFAULT_CONFIG);
+        String fields = startFields("match-web-pkg.txt");
+        AtomicReference<byte[]> prior = new AtomicReference<>();
+        setup(r, () -> {
+            awaitStaging();
+            prior.set(Files.readAllBytes(props));
+        });
+        Resp refused;
+        Resp set;
+        Resp config1;
+        int spawns0;
+        int spawns1;
+        int spawns2;
+        byte[] afterRefused;
+        List<String> afterSet;
+        try {
+            spawns0 = rig.spawned.size();
+            refused = post(rig, "/api/start", fields + "&pilotShip=maybe");
+            awaitStaging();
+            spawns1 = rig.spawned.size();
+            afterRefused = Files.readAllBytes(props);
+            set = post(rig, "/api/start", fields + "&pilotShip=on&magicSeam=off");
+            awaitStaging();
+            spawns2 = rig.spawned.size();
+            afterSet = Files.readAllLines(props, StandardCharsets.UTF_8);
+            config1 = call(rig, "GET", "/api/config", rig.boot.token(), null);
+        } finally {
+            setup(r, () -> Files.write(props, prior.get()));
+        }
+        List<String> bad = new ArrayList<>();
+        if (!refused.body().contains(OpsMatchRows.R_PILOT_SHIP) || spawns1 != spawns0
+                || !Arrays.equals(prior.get(), afterRefused)) {
+            bad.add("pilotShip=maybe " + PeerText.bound(refused.body(), 120) + " spawns " + spawns0 + "/" + spawns1
+                    + " (flips if a crafted word is ignored, written or spawned)");
+        }
+        long pilotRows = afterSet.stream().filter(l -> l.startsWith(OpsMatchRows.PILOT_SHIP_KEY + "=")).count();
+        if (!set.body().startsWith("{\"ok\":true") || spawns2 <= spawns1 || pilotRows != 1
+                || !afterSet.contains(OpsMatchRows.PILOT_SHIP_KEY + "=true")) {
+            bad.add("on " + PeerText.bound(set.body(), 120) + " spawns " + spawns1 + "/" + spawns2 + " rows=" + pilotRows
+                    + " (flips if the ops GUI's Start drops the player-ship word)");
+        }
+        long magicRows = afterSet.stream().filter(l -> l.startsWith(OpsMatchRows.MAGIC_SEAM_KEY + "=")).count();
+        if (magicRows != 1 || !afterSet.contains(OpsMatchRows.MAGIC_SEAM_KEY + "=false")) {
+            bad.add("MagicLib rows=" + magicRows + " (flips if the player-ship word is written through the MagicLib"
+                    + " slot, or the two slots are crossed)");
+        }
+        if (!config1.body().contains("\"pilotShip\":\"on\"")) {
             bad.add("config after " + PeerText.bound(config1.body(), 80) + " (the written row stops prefilling)");
         }
         return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);

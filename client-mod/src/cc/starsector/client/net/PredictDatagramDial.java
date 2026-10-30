@@ -269,8 +269,12 @@ public final class PredictDatagramDial {
             warmHs13Once();
             // the process's one team pick rides this dial only until a door admits one (an observer never picks)
             final int team = observer ? 0 : FIRST_HELLO_TEAM.get();
+            // The MagicLib report bits (0x08 / 0x10, a REPORT about this
+            // game; the memo is MagicLib-free and returns 0 until its guarded probe decided) ride every HELLO.
             flight = new Handshake13Flight(lane, Handshake13.secretBytes(seatToken),
-                    observer ? Handshake13.FLAG_OBSERVER : 0, helloFingerprint, helloClientId,
+                    (observer ? Handshake13.FLAG_OBSERVER : 0)
+                            | cc.starsector.client.magic.MagicCapabilities.helloFlagBits(),
+                    helloFingerprint, helloClientId,
                     shipId, variant, team, Handshake13PairBudget.process().host(budgetHostKey(server)), rng);
             byte[] hello = flight.start(nowMillis()); // null = send nothing (b2 contract)
             int cookieChallenges = 0;

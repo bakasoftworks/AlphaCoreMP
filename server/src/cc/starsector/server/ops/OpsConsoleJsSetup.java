@@ -91,6 +91,14 @@ package cc.starsector.server.ops;
  * <p>Deterministic replay pins (RNG) ({@code #f-rng-pins}) rides
  * {@code SETUP_PREFILL} ({@code /api/config} {@code rngPins}) and {@code CC.startForm} sends it as {@code rngPins}.
  *
+ * <p>MagicLib abilities follow the pilot ({@code #f-magic-seam}) rides
+ * {@code SETUP_PREFILL} ({@code /api/config} {@code magicSeam}) and {@code CC.startForm} sends it as
+ * {@code magicSeam} - the replay-pins select's twin.
+ *
+ * <p>Each pilot's ship counts as the player's ({@code #f-pilot-ship}) rides
+ * {@code SETUP_PREFILL} ({@code /api/config} {@code pilotShip}) and {@code CC.startForm} sends it as
+ * {@code pilotShip} - the MagicLib select's twin.
+ *
  * <p>Main's fold on that lane: the New match shape's Players ({@code #f-new-players}) is
  * prefilled from the picked base's {@code seats} ({@code /api/config} {@code options[].seats}; blank without a
  * decode), refilled when Based on changes, and sent as {@code players} in the {@code /api/shape-new} POST
@@ -158,7 +166,8 @@ final class OpsConsoleJsSetup {
               ['f-asteroids', 'asteroids'], ['f-game-root', 'gameRoot'],
               ['f-game-root-second', 'gameRootSecond'], ['f-record', 'record'],
               ['f-seats-per-source', 'seatsPerSource'], ['f-all-skills', 'allSkills'],
-              ['f-rng-pins', 'rngPins'], ['f-pvp', 'pvp']];
+              ['f-rng-pins', 'rngPins'], ['f-magic-seam', 'magicSeam'], ['f-pilot-ship', 'pilotShip'],
+              ['f-pvp', 'pvp']];
             // The PvP match shape: a picked file of this shape prefills PvP mode On.
             const SETUP_PVP_SHAPE = 'bastion:fortress:pvp';
             const SETUP_LOCK_WHY = 'Locked while a server runs.';
@@ -1140,6 +1149,8 @@ final class OpsConsoleJsSetup {
                 seatsPerSource: CC.el('f-seats-per-source').value,
                 allSkills: CC.el('f-all-skills').value,
                 rngPins: CC.el('f-rng-pins').value,
+                magicSeam: CC.el('f-magic-seam').value,
+                pilotShip: CC.el('f-pilot-ship').value,
                 pvp: CC.el('f-pvp').value,
                 pvpStation: CC.el('f-map-station').value,
                 gameRoot: CC.el('f-game-root').value,

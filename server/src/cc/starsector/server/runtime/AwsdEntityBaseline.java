@@ -39,6 +39,9 @@ import java.util.List;
  * The v10 armor field rides {@code armorFrac}: the ship's armor
  * pool as a 1⁄255 fraction — fraction family, but with NO min-1 clamp (armor
  * legitimately ablates to exactly 0; the min-1 floor is hull-only).
+ * The v14 pilot triple rides {@code pilotSeat}/{@code pilotMask}/{@code pilotFlags} (u8 each;
+ * {@link #PILOT_SEAT_NONE_WIRE} = no mark, canonical (0, 0, 0); flags bit 0 = the pilot's
+ * MagicLib decision is followed on this hull).
  * Mounts ride sorted ascending by unique {@code mountIndex} (the domain tier
  * order), at most 255.
  */
@@ -79,6 +82,9 @@ public record AwsdEntityBaseline(
         int depHalfSecU16,
         int peakHalfSecU16,
         int fighterRatePct,
+        int pilotSeat,
+        int pilotMask,
+        int pilotFlags,
         List<Mount> mounts) {
 
     /** Wire {@code ownerWire} value carrying {@code NO_OWNER_CONNECTION} (−1). */
@@ -107,6 +113,40 @@ public record AwsdEntityBaseline(
      * the CR record is absent / its read unbound. Independent of the CR-absent 0/0/0 shape.
      */
     public static final int FIGHTER_RATE_NONE_WIRE = 0xFF;
+    /**
+     * Wire {@code pilotSeat} value for a hull carrying NO
+     * pilot mark (v14): seats are 1..255, so 0 means "no seat's mod-drive bits apply to this
+     * hull". The triple ({@code pilotSeat}, {@code pilotMask}, {@code pilotFlags}) relays the mark
+     * the serve's own mod reads off the hull this tick; its canonical absent shape is (0, 0, 0) —
+     * seat 0 with a non-zero mask or flags is refused, one bit pattern per meaning (the SYS_NONE
+     * idiom).
+     */
+    public static final int PILOT_SEAT_NONE_WIRE = 0;
+
+    /**
+     * The pre-flags shape: a record whose mark carries no
+     * flags byte (pilotFlags 0 — the pilot's MagicLib decision is not followed on this hull).
+     * Kept so pair-shaped callers stay source-compatible; the wire always carries the third byte.
+     */
+    public AwsdEntityBaseline(int entityId, int epoch, long anchorTick, int contentId, int ownerWire,
+            int qx, int qy, int qvx, int qvy, int qFacing, int qAngVel,
+            int maxHp, int hullFrac, int armorFrac, int maxFlux, int fluxLevel, int hardFluxFrac, int fluxFlags,
+            int shieldFacingU8, int fleetSide,
+            int engineDisabledMask, int enginePermDisabledMask, int engineControllerState,
+            int maneuverMask, int sysStateCode, int sysEffectLevel, int qSysCd, int sysAmmoWire,
+            int cloakStateWire, int cloakEffectFrac, int qCloakCd, int cloakAmmoWire,
+            int crU8, int depHalfSecU16, int peakHalfSecU16, int fighterRatePct,
+            int pilotSeat, int pilotMask, List<Mount> mounts) {
+        this(entityId, epoch, anchorTick, contentId, ownerWire,
+                qx, qy, qvx, qvy, qFacing, qAngVel,
+                maxHp, hullFrac, armorFrac, maxFlux, fluxLevel, hardFluxFrac, fluxFlags,
+                shieldFacingU8, fleetSide,
+                engineDisabledMask, enginePermDisabledMask, engineControllerState,
+                maneuverMask, sysStateCode, sysEffectLevel, qSysCd, sysAmmoWire,
+                cloakStateWire, cloakEffectFrac, qCloakCd, cloakAmmoWire,
+                crU8, depHalfSecU16, peakHalfSecU16, fighterRatePct,
+                pilotSeat, pilotMask, 0, mounts);
+    }
 
     /**
      * One mount's quantized keyframe fields. {@code qCooldownMax} @0.01 s,
@@ -194,6 +234,14 @@ public record AwsdEntityBaseline(
         if (fighterRatePct != FIGHTER_RATE_NONE_WIRE && (fighterRatePct < 0 || fighterRatePct > 100)) {
             throw new IllegalArgumentException(
                     "fighterRatePct outside 0..100 | FIGHTER_RATE_NONE_WIRE: " + fighterRatePct);
+        }
+        requireU8("pilotSeat", pilotSeat);
+        requireU8("pilotMask", pilotMask);
+        requireU8("pilotFlags", pilotFlags);
+        if (pilotSeat == PILOT_SEAT_NONE_WIRE && (pilotMask != 0 || pilotFlags != 0)) {
+            // Canonical absent shape: an unmarked hull carries mask 0 and flags 0 (no seat owns its bits).
+            throw new IllegalArgumentException("pilotSeat 0 (no mark) must ride pilotMask 0 and pilotFlags 0; got 0x"
+                    + Integer.toHexString(pilotMask) + "/0x" + Integer.toHexString(pilotFlags));
         }
         if (sysStateCode == SYS_NONE_WIRE) {
             // Canonical absent shape (one bit pattern per meaning): a systemless ship's

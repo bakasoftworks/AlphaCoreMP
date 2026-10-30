@@ -62,8 +62,10 @@ public final class ReplayFeed implements Closeable {
      * mints and ends sessions without importing the door (and its rows run without a socket).
      */
     public interface SessionDoor {
-        /** Admit a session under its RECORDED (signed) id; observers carry seat 0 and ship 0. */
-        void mint(long sessionId, int seat, long shipId, boolean observer, boolean admin);
+        /** Admit a session under its RECORDED (signed) id; observers carry seat 0 and ship 0; {@code helloMagicBits}
+         *  = the seat's recorded HELLO 0x08 / 0x10 reports ({@link MatchRecordRows#sessHelloMagicBits}), so the
+         *  re-sim's mark FOLLOW predicate reads what the live serve read. */
+        void mint(long sessionId, int seat, long shipId, boolean observer, boolean admin, int helloMagicBits);
 
         /** End a live session with its recorded departure reason (a server token). */
         void die(long sessionId, String departureReason);
@@ -1279,7 +1281,7 @@ public final class ReplayFeed implements Closeable {
 
     private void mintRecorded(SessionDoor door, MatchRecordRows.SessRow s) {
         door.mint(s.sessionId(), s.seat(), s.shipId(), (s.flags() & MatchRecordRows.SESS_FLAG_OBSERVER) != 0,
-                (s.flags() & MatchRecordRows.SESS_FLAG_ADMIN) != 0);
+                (s.flags() & MatchRecordRows.SESS_FLAG_ADMIN) != 0, MatchRecordRows.sessHelloMagicBits(s.flags()));
         seatBySession.put(s.sessionId(), s.seat());
         mintedPerSeat[s.seat()]++;
     }

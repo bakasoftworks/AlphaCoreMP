@@ -56,10 +56,15 @@ final class OpsSetupDraft {
      * uplink. Pinned by rows {@code draft-allowlist} and {@code draft-ids-parity}.
      * + {@code setup.match.pvp}, the PvP mode select - a Start-time fact
      * like the shape pick (Start switches the picked file's mode; no Apply, no config row), so it is drafted.
+     * + {@code setup.mods.magicSeam}, the MagicLib select - a boot-time
+     * config row Start writes, drafted like its replay-pins neighbour.
+     * + {@code setup.mods.pilotShip}, the player-ship select - a boot-time
+     * config row Start writes, drafted like its MagicLib neighbour.
      */
     static final Set<String> DRAFT_IDS = Set.of("setup.bindHost", "setup.bindPort", "setup.advertise",
             "setup.gameRoot", "setup.gameRootSecond", "setup.tickRate", "setup.record", "setup.net.seatsPerSource",
-            "setup.officer.allSkills", "setup.replay.rngPins", "setup.shape", "setup.fortress.dp",
+            "setup.officer.allSkills", "setup.replay.rngPins", "setup.mods.magicSeam", "setup.mods.pilotShip",
+            "setup.shape", "setup.fortress.dp",
             "setup.fortress.terrain", "setup.fortress.terrainLevel", "setup.fortress.asteroids", "setup.wave.scale",
             "setup.wave.rosterDp", "setup.wave.rosterMultiplier", "setup.wave.category", "setup.joiner.default",
             "setup.joiner.endless", "setup.match.pvp");

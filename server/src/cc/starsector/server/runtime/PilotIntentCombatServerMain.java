@@ -424,6 +424,17 @@ public final class PilotIntentCombatServerMain {
                     throw new ReplayBoot.ReplayRefusedException(java.util.List.of(vtabRefusal));
                 }
             }
+            // The MagicLib seam's POST-boot leg, the first fleet's S4 leg wired by main. The
+            // forced define runs DURING the engine boot (RealEngineContentInit), so only here does the receipt say applied / disarmed; a
+            // reel recorded applied that re-sims unapplied, the reverse, or another window sha exits through the same
+            // refusal path (the pre-boot leg = ReplayBoot's refusal (19); why two legs = its class doc).
+            if (replay != null) {
+                String seamRefusal = replay.magicSeamRefusalOrNull(
+                        System.getProperty(MatchRecordMeta.MAGIC_SEAM_SYSPROP));
+                if (seamRefusal != null) {
+                    throw new ReplayBoot.ReplayRefusedException(java.util.List.of(seamRefusal));
+                }
+            }
 
             java.util.List<java.io.File> variantRoots = RealEngineDemoRoster.enabledModVariantRoots();
             PickableVariants pickable;
@@ -434,15 +445,18 @@ public final class PilotIntentCombatServerMain {
                 pickable = PickableVariants.empty();
                 variantCatalog = VariantCatalogStore.empty();
             } else {
-                if (variantRoots.size() > 1) {
-                    System.out.println("pilot-intent-combat-server pickable_variants"
-                            + " extra_roots_ignored=" + (variantRoots.size() - 1)
-                            + " scanned=" + variantRoots.get(0));
-                }
-                pickable = PickableVariants.scan(
-                        variantRoots.get(0), RealEngineDemoRoster::variantResolvable);
-                // W7c B2: the SAME root feeds the wire catalog — root ∪ npc/
-                // (waves need npc ids client-side too), pre-encoded once at boot.
+                // Every enabled mod's root is pickable — the KIT's root
+                // first BY MOD ID (PickableVariants.kitRootFirst; the launcher orders mods by display NAME,
+                // so root 0 was the kit only by luck), then launcher order; an earlier
+                // root wins a duplicate stem. A mod variant stays under every pick law (bans, the hidden set,
+                // overrides): the host enabled the mod.
+                pickable = PickableVariants.scan(variantRoots, RealEngineDemoRoster::variantResolvable);
+                // The KIT root alone feeds the wire catalog (root 0 = the kit by id, never by name order; a
+                // set with no kit root logs kit_root_missing and root 0 is then whatever the launcher listed
+                // first); mod roots are pick-only. The catalog
+                // delivers kit-local definitions to the client (root ∪ npc/, since waves need npc ids
+                // client-side too, pre-encoded once at boot), while a mod variant is already on every
+                // player's disk through that mod's own install.
                 // A LOCAL empty table for the scan only when
                 // engine-less — never installed (the door stays unfolded).
                 variantCatalog = VariantCatalogStore.scan(variantRoots.get(0),

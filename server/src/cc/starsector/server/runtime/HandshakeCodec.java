@@ -110,8 +110,12 @@ public final class HandshakeCodec {
      * joiner's side pick; {@link Handshake13#TEAM_MAX}); a version-13 kit's well-formed F1 earns the
      * version-13-SHAPED {@code kit_outdated} ({@link WelcomePayload#encodeRejectedKitOutdatedV13}).
      *
-     * Fourteen-tier: v14 admit / v13..v1 bounce / garbage silent. */
-    public static final int HANDSHAKE_VERSION = 14;
+     * v15: the version-14 bytes unchanged; the bump gates the PINT {@code heldControls} ability bits
+     * 13..20, which a version-14 serve refuses at decode — a version-14 kit's well-formed F1 earns the
+     * version-14-SHAPED {@code kit_outdated} ({@link WelcomePayload#encodeRejectedKitOutdatedV14}).
+     *
+     * Fifteen-tier: v15 admit / v14..v1 bounce / garbage silent. */
+    public static final int HANDSHAKE_VERSION = 15;
     /** HELLO v12 cookie tail cap (the door's {@code DoorCookie.BYTES} is 17; the cap leaves room
      * for a future shape without another bump). A longer tail REJECTS at decode, fail-closed. */
     public static final int HELLO_COOKIE_MAX_BYTES = 32;
@@ -733,6 +737,21 @@ public final class HandshakeCodec {
         public static byte[] encodeRejectedKitOutdatedV13(long nonceEcho, int startingRoundId,
                 int tickRate, long serverLife) {
             return frame(13, WELCOME_REJECTED, nonceEcho, 0L, startingRoundId,
+                    DoorRejectReasons.KIT_OUTDATED, 0L, tickRate, 0, serverLife,
+                    CUSTOM_TIER_STANDARD, 4, CUSTOM_S_MOD_CAP_ENGINE, 0);
+        }
+
+        /**
+         * The v14-SHAPED {@code kit_outdated} bounce: version byte <b>14</b>, the same REJECTED
+         * layout and values as {@link #encodeRejectedKitOutdatedV13} — a version-14 kit reads its
+         * one plaintext REJECT at its own version byte, so its F1 at a version-15 door reads
+         * "kit outdated" instead of a silent timeout (and never reaches the ability-bit decode that
+         * would drop it as corrupt). 57 B payload: never larger than the 123 B F1 it answers.
+         *
+         */
+        public static byte[] encodeRejectedKitOutdatedV14(long nonceEcho, int startingRoundId,
+                int tickRate, long serverLife) {
+            return frame(14, WELCOME_REJECTED, nonceEcho, 0L, startingRoundId,
                     DoorRejectReasons.KIT_OUTDATED, 0L, tickRate, 0, serverLife,
                     CUSTOM_TIER_STANDARD, 4, CUSTOM_S_MOD_CAP_ENGINE, 0);
         }

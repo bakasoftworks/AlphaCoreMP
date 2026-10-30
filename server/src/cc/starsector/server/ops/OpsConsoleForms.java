@@ -406,6 +406,14 @@ final class OpsConsoleForms {
      * <p>{@code pvp} (PvP mode, on|off) and {@code pvpStation} (the
      * page's Station pick) obey it too: absent = {@code null} = the picked file's mode stands; present = the
      * text as sent, refused by {@link OpsMatchApply#parsePvpMode} unless on|off.
+     *
+     * <p>{@code magicSeam} (the MagicLib word, on|off) obeys it
+     * too: absent = {@code null} = the {@code magicseam.enabled} row untouched; present = the text as
+     * sent, refused by {@link OpsMatchRows#parseMagicSeam} unless on|off.
+     *
+     * <p>{@code pilotShip} (the player-ship word, on|off) obeys it
+     * too: absent = {@code null} = the {@code pilotship.enabled} row untouched; present = the text as
+     * sent, refused by {@link OpsMatchRows#parsePilotShip} unless on|off.
      */
     static OpsWindowModel.StartFields startFields(Map<String, List<String>> form, String selDescriptor,
             ServerOpsCore.DescriptorInfo selInfo, String keptMatchPassword) {
@@ -423,7 +431,8 @@ final class OpsConsoleForms {
                 first(form, "modsOptional"), first(form, "terrain"), first(form, "terrainLevel"),
                 first(form, "asteroids"), first(form, "waveRosterFullDp"),
                 first(form, "waveRosterMultiplier"), first(form, "seatsPerSource"), first(form, "allSkills"),
-                first(form, "rngPins"), false, first(form, "pvp"), first(form, "pvpStation"));
+                first(form, "rngPins"), false, first(form, "pvp"), first(form, "pvpStation"),
+                first(form, "magicSeam"), first(form, "pilotShip"));
     }
 
     static String matchPasswordText(Map<String, List<String>> form, String kept) {

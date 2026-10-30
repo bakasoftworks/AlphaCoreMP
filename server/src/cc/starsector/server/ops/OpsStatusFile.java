@@ -12,10 +12,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.IntUnaryOperator;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 import cc.starsector.server.match.MatchDescriptor;
+import cc.starsector.server.runtime.Handshake13;
+import cc.starsector.server.runtime.MagicSeamFollow;
 
 /**
  * Ops snapshot surface: the machine-readable file {@code serveNPeer} rewrites (1 s
@@ -179,6 +182,48 @@ public final class OpsStatusFile {
         }
     }
 
+    /**
+     * The MagicLib seam facts behind the match-level {@code magic_seam=} key
+     * and each seat's {@code seat.N.magic=} / {@code seat.N.magic_why=} pair. {@code receiptOrNull} = the serve's
+     * seam receipt ({@code off} | {@code armed} | {@code applied:<16 hex>} | {@code disarmed:<reason>}; null = no
+     * receipt, written as {@link #MAGIC_SEAM_UNSET}); {@code doorArmed} = this match's door fingerprint is set;
+     * {@code helloBitsBySeat} maps a seat id (>= 0, 0 = an observer) to that seat's latest admitted HELLO flag bits
+     * (0 = none). WHY these three inputs: they are exactly the pilot mark's FOLLOW inputs, and every seat's verdict
+     * is {@link MagicSeamFollow#whyOrNull} over them - the one predicate, never a second one - so the host reads
+     * "follows" for the same seats the serve follows.
+     */
+    public record MagicSeam(String receiptOrNull, boolean doorArmed, IntUnaryOperator helloBitsBySeat) {
+        public MagicSeam {
+            Objects.requireNonNull(helloBitsBySeat, "helloBitsBySeat");
+        }
+    }
+
+    /** {@code magic_seam=} when the serve holds no seam receipt (nothing decided the seam at its boot). */
+    public static final String MAGIC_SEAM_UNSET = "unset";
+    /**
+     * {@code pilot_ship=} when the serve's JVM holds no player-ship receipt (no premain decided the switch). The key
+     * carries the receipt sysprop ({@link cc.starsector.server.transform.TransformRegistry#PILOT_SHIP_RECEIPT_SYSPROP})
+     * as read at each compose: {@code off} | {@code armed} | {@code applied:<k>} | {@code refused:<reason>} |
+     * {@code latched:<reason>}.
+     */
+    public static final String PILOT_SHIP_UNSET = "unset";
+    /** {@code seat.N.magic=}: the serve follows this pilot's own MagicLib decisions on the seat's hull. */
+    public static final String MAGIC_FOLLOWS = "follows";
+    /** {@code seat.N.magic=}: the seat's game reports its MagicLib states (HELLO bit 0x08), yet the serve does not
+     *  follow them; {@code seat.N.magic_why=} says why. */
+    public static final String MAGIC_REPORTS = "reports";
+    /** {@code seat.N.magic=}: the seat's game reports no MagicLib states; also {@code magic_why=} for a followed seat. */
+    public static final String MAGIC_NONE = "-";
+
+    /** The seat's {@code magic=} cell from its FOLLOW verdict ({@code why}
+     *  null = followed) and its HELLO flag bits (0x08 = its game reports its MagicLib states). */
+    static String magicCell(String why, int helloBits) {
+        if (why == null) {
+            return MAGIC_FOLLOWS;
+        }
+        return (helloBits & Handshake13.FLAG_MAGIC_UP) != 0 ? MAGIC_REPORTS : MAGIC_NONE;
+    }
+
     /** The {@code ships.base_ids} / {@code ships.hidden_ids} bound (more = {@code ships.over_cap=1}). */
     public static final int SHIP_ID_ROW_CAP = 64;
     /** The {@code ships.last} bound (the cut keeps a visible ellipsis inside it). */
@@ -262,6 +307,7 @@ public final class OpsStatusFile {
     private Supplier<CustomStats> customStats;
     private Supplier<List<BanRow>> banRows; // P27 ban rows source
     private Supplier<ShipStats> shipStats; // null = no ships.* rows
+    private Supplier<MagicSeam> magicSeam; // null = no magic_seam / seat.N.magic rows
 
     // ---- last-write window baselines ----
     private long winSimTick = -1L;
@@ -338,6 +384,12 @@ public final class OpsStatusFile {
      *  (null = no {@code ships.*} key at all). */
     public void attachShipStats(Supplier<ShipStats> ships) {
         this.shipStats = ships;
+    }
+
+    /** The MagicLib seam facts supplier, read at each compose (null = no
+     *  {@code magic_seam} key and no {@code seat.N.magic} rows: a reader then shows no MagicLib line or cell). */
+    public void attachMagicSeam(Supplier<MagicSeam> seam) {
+        this.magicSeam = seam;
     }
 
     /** Forced lobby snapshot right after the door opens (phase=lobby, no sessions yet). */
@@ -467,7 +519,8 @@ public final class OpsStatusFile {
                 bytesSentTotal, bytesRecvTotal, sentBps, recvBps,
                 lastOverrunFrames, lastDebtNanos / 1_000_000.0d, sendFailures,
                 commandFile, rows, seatBps, phaseWin, custom == null ? CustomStats.NONE : custom,
-                banRows == null ? null : banRows.get(), shipStats == null ? null : shipStats.get());
+                banRows == null ? null : banRows.get(), shipStats == null ? null : shipStats.get(),
+                magicSeam == null ? null : magicSeam.get());
         if ("run".equals(phase) && phaseWin.frames() > 0L) {
             // 1 Hz mirror: the file above is a latest-wins REWRITE — this line is what keeps
             // the per-window phase timeline in archived serve logs (rides the stdout lane).
@@ -612,6 +665,24 @@ public final class OpsStatusFile {
             int overrunFrames, double debtMs, long sendFailures, String commandFile,
             List<SeatRow> seats, long[][] seatBps, PhaseWindowStats.Snapshot phaseWin,
             CustomStats custom, List<BanRow> bans, ShipStats ships) {
+        return composeLines(stampMs, pid, phase, host, port, upSeconds, round, frame, simTick, seatsTotal,
+                tickPerS, utilPct, workMaxMs, bytesSentTotal, bytesRecvTotal, sentBps, recvBps, overrunFrames, debtMs,
+                sendFailures, commandFile, seats, seatBps, phaseWin, custom, bans, ships, null);
+    }
+
+    /** {@link #composeLines} + the MagicLib seam rows - {@code magic_seam=}
+     *  (the receipt, sanitized; {@link #MAGIC_SEAM_UNSET} without one) right before {@code seat.count=}, and per seat
+     *  {@code magic=} ({@link #MAGIC_FOLLOWS} | {@link #MAGIC_REPORTS} | {@link #MAGIC_NONE}) + {@code magic_why=}
+     *  (the {@link MagicSeamFollow#whyOrNull} token, {@link #MAGIC_NONE} when followed) after {@code customs=}; and
+     *  the player-ship receipt {@code pilot_ship=} ({@link #PILOT_SHIP_UNSET} without one) right before
+     *  {@code magic_seam=}. Additive optional keys (no version bump); {@code magic == null} writes none. */
+    public static List<String> composeLines(long stampMs, long pid, String phase, String host,
+            int port, long upSeconds, int round, int frame, long simTick, int seatsTotal,
+            double tickPerS, double utilPct, double workMaxMs,
+            long bytesSentTotal, long bytesRecvTotal, long sentBps, long recvBps,
+            int overrunFrames, double debtMs, long sendFailures, String commandFile,
+            List<SeatRow> seats, long[][] seatBps, PhaseWindowStats.Snapshot phaseWin,
+            CustomStats custom, List<BanRow> bans, ShipStats ships, MagicSeam magic) {
         int clients = 0;
         for (SeatRow row : seats) {
             if (row.live()) {
@@ -695,6 +766,15 @@ public final class OpsStatusFile {
             lines.add("ships.last=" + shipLast);
             lines.add("ships.persist_failed=" + Math.max(0L, ships.persistFailed()));
         }
+        if (magic != null) {
+            // The player-ship receipt rides the serve's transform-facts
+            // block (a writer with no MagicSeam - the goldens - writes neither key), read live so a step-guard
+            // latch mid-match reaches the host at the next compose; right before magic_seam=.
+            String pilotShip = System.getProperty(cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_RECEIPT_SYSPROP);
+            lines.add("pilot_ship=" + (pilotShip == null || pilotShip.isBlank() ? PILOT_SHIP_UNSET : sanitize(pilotShip)));
+            String receipt = magic.receiptOrNull();
+            lines.add("magic_seam=" + (receipt == null || receipt.isBlank() ? MAGIC_SEAM_UNSET : sanitize(receipt)));
+        }
         lines.add("seat.count=" + seats.size());
         for (int i = 0; i < seats.size(); i++) {
             SeatRow row = seats.get(i);
@@ -728,6 +808,14 @@ public final class OpsStatusFile {
             // comma-joined, mint order; "" = none) — ban/export reach a held-but-unflown id.
             // ≤ 16 ids × ~25 chars sits under the sanitize cap.
             lines.add(p + "customs=" + sanitize(row.customs()));
+            if (magic != null) {
+                // The seat's MagicLib cell + its reason, judged by the mark's
+                // own predicate over the mark's own inputs (the receipt, the door, the seat's HELLO bits).
+                int bits = magic.helloBitsBySeat().applyAsInt(row.seatId());
+                String why = MagicSeamFollow.whyOrNull(magic.receiptOrNull(), magic.doorArmed(), bits);
+                lines.add(p + "magic=" + magicCell(why, bits));
+                lines.add(p + "magic_why=" + (why == null ? MAGIC_NONE : why));
+            }
         }
         if (bans == null) {
             return lines;

@@ -63,6 +63,10 @@ public final class CcTransformPremain {
         // BEFORE the inert return: a product serve passes no enable list at all, so a postured boot's
         // pin set must be added here or every product serve would boot inert.
         PinPosture pins = decidePinPosture(enabledIds);
+        // BEFORE the inert return too: the seam's host row arms on every boot that loads this premain
+        SwitchRow magicSeam = armMagicSeam(pins.file(), instrumentation);
+        // AFTER the seam, so the seam's window match still sees MagicLib's original bytes
+        SwitchRow pilotShip = armPilotShip(pins.file(), instrumentation);
         if (enabledIds.isEmpty()) {
             // a census request on an inert premain is a refusal, never a silent no-op
             String census = System.getProperty(RngPinKnobs.CENSUS_SYSPROP);
@@ -106,6 +110,27 @@ public final class CcTransformPremain {
                 case NEW_TYPE_SWAP -> {
                     eagerJarGate(entry);
                     typeSwapEntries.add(entry);
+                }
+                case FOREIGN_LOAD_TIME_SEAM -> {
+                    // NO eagerJarGate - a mod jar is never on
+                    // java.class.path, so the gate would refuse a healthy serve. The host row arms the seam
+                    // (armMagicSeam, above); naming it here may only agree with that row.
+                    if (!magicSeam.on()) {
+                        refuse(List.of(entry.id() + " is in -Dcc.transform.enable but "
+                                + TransformRegistry.MAGIC_SEAM_ENABLED_FILE_KEY + " resolves false (from "
+                                + magicSeam.from() + ") — remove it from -Dcc.transform.enable or set "
+                                + TransformRegistry.MAGIC_SEAM_ENABLED_FILE_KEY + "=true"));
+                    }
+                }
+                case SCOPED_WINDOW, FOREIGN_CALL_SITE_REDIRECT -> {
+                    // Armed (and eager-gated) by the host row in
+                    // armPilotShip, above; naming either here may only agree with that row.
+                    if (!pilotShip.on()) {
+                        refuse(List.of(entry.id() + " is in -Dcc.transform.enable but "
+                                + TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY + " resolves false (from "
+                                + pilotShip.from() + ") — remove it from -Dcc.transform.enable or set "
+                                + TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY + "=true"));
+                    }
                 }
             }
         }
@@ -195,26 +220,10 @@ public final class CcTransformPremain {
             return new PinPosture(false, false, "none", null);
         }
         java.util.Properties file = config.props();
-        String[] decided = null;
-        String[][] tiers = {
-                {"sysprop", RngPinKnobs.ENABLED_SYSPROP, System.getProperty(RngPinKnobs.ENABLED_SYSPROP)},
-                {"env", RngPinKnobs.ENABLED_ENV, System.getenv(RngPinKnobs.ENABLED_ENV)},
-                {"file", RngPinKnobs.ENABLED_FILE_KEY, file.getProperty(RngPinKnobs.ENABLED_FILE_KEY)}};
-        for (String[] tier : tiers) {
-            if (tier[2] == null || tier[2].isBlank()) {
-                continue; // a blank row = absent, as the launcher and the keyed loop below read it
-            }
-            String v = tier[2].trim();
-            if (!v.equals("true") && !v.equals("false")) {
-                refuse(List.of(tier[1] + " (" + tier[0] + " tier) must be exactly true or false, got '"
-                        + bounded(tier[2]) + "' — the RNG pin switch never guesses a mode"));
-            }
-            if (decided == null) {
-                decided = new String[] {v, tier[0]};
-            }
-        }
-        boolean on = decided == null || decided[0].equals("true");
-        String from = decided == null ? "default" : decided[1];
+        SwitchRow row = resolveStrictSwitch(RngPinKnobs.ENABLED_SYSPROP, RngPinKnobs.ENABLED_ENV,
+                RngPinKnobs.ENABLED_FILE_KEY, file, true, "RNG pin switch");
+        boolean on = row.on();
+        String from = row.from();
         if (on) {
             String[][] keyed = {
                     {"sysprop", RngPinKnobs.KEYED_SYSPROP, System.getProperty(RngPinKnobs.KEYED_SYSPROP)},
@@ -238,6 +247,106 @@ public final class CcTransformPremain {
             }
         }
         return new PinPosture(true, on, from, file);
+    }
+
+    /** A strict on/off host row's resolved value and the tier that decided it ({@code default|sysprop|env|file}). */
+    private record SwitchRow(boolean on, String from) {
+    }
+
+    /**
+     * ONE strict on/off host row, walked sysprop &gt; env &gt; file &gt;
+     * {@code dflt}; extracted from the replay-pin walk so the MagicLib seam row shares its tiers and its refusal
+     * shape. A blank tier is absent, as the launcher and the keyed loop read it; every PRESENT
+     * tier, a shadowed lower one included, must be exactly {@code true} or {@code false}, else the launch is
+     * refused: this premain is the only parser on some launch paths, and a loose value would flip a mode
+     * silently. {@code file} null = not postured (no file tier).
+     */
+    private static SwitchRow resolveStrictSwitch(String sysprop, String env, String fileKey,
+            java.util.Properties file, boolean dflt, String switchName) {
+        String[][] tiers = {
+                {"sysprop", sysprop, System.getProperty(sysprop)},
+                {"env", env, System.getenv(env)},
+                {"file", fileKey, file == null ? null : file.getProperty(fileKey)}};
+        String[] decided = null;
+        for (String[] tier : tiers) {
+            if (tier[2] == null || tier[2].isBlank()) {
+                continue;
+            }
+            String v = tier[2].trim();
+            if (!v.equals("true") && !v.equals("false")) {
+                refuse(List.of(tier[1] + " (" + tier[0] + " tier) must be exactly true or false, got '"
+                        + bounded(tier[2]) + "' — the " + switchName + " never guesses a mode"));
+            }
+            if (decided == null) {
+                decided = new String[] {v, tier[0]};
+            }
+        }
+        return decided == null ? new SwitchRow(dflt, "default") : new SwitchRow(decided[0].equals("true"), decided[1]);
+    }
+
+    /**
+     * The MagicLib pilot seam's host row {@code magicseam.enabled}
+     * (sysprop {@code cc.magicseam.enabled} &gt; env {@code CC_MAGICSEAM_ENABLED} &gt; the config file's row &gt;
+     * true): ON registers {@link MagicSeamApplier} and sets the receipt {@code cc.magic.seam=armed}; OFF registers
+     * nothing and sets {@code off}; a non-boolean tier refuses the launch. Decided here, never by a launch argument,
+     * so the frozen serve command line stays unchanged. The applier is load-time only and fail-open (a third-party
+     * target never refuses a launch), so a file-less boot arms it too: it costs one name compare per class define.
+     * The log line avoids the {@code "armed:"} token the enable-list receipt prints.
+     */
+    private static SwitchRow armMagicSeam(java.util.Properties file, Instrumentation instrumentation) {
+        SwitchRow row = resolveStrictSwitch(TransformRegistry.MAGIC_SEAM_ENABLED_SYSPROP,
+                TransformRegistry.MAGIC_SEAM_ENABLED_ENV, TransformRegistry.MAGIC_SEAM_ENABLED_FILE_KEY, file, true,
+                "MagicLib seam switch");
+        if (row.on()) {
+            instrumentation.addTransformer(new MagicSeamApplier(), false);
+        }
+        System.setProperty(TransformRegistry.MAGIC_SEAM_RECEIPT_SYSPROP,
+                row.on() ? MagicSeamApplier.RECEIPT_ARMED : MagicSeamApplier.RECEIPT_OFF);
+        log("magicseam: " + (row.on() ? "ON" : "OFF") + " from=" + row.from());
+        return row;
+    }
+
+    /**
+     * The player-ship window's host row {@code pilotship.enabled} (sysprop
+     * {@code cc.pilotship.enabled} &gt; env {@code CC_PILOTSHIP_ENABLED} &gt; the config file's row &gt; FALSE):
+     * OFF registers nothing and sets the receipt {@code cc.pilot.ship=off}, so every class loads as shipped. ON
+     * runs the eager gate first, fail-closed because the wrap edits an engine method: the ship-advance fingerprint
+     * on the engine jar ({@link #eagerJarGate}), then the holder and typed-target probe; a miss sets
+     * {@code refused:<reason>}, prints the refusal row and refuses the launch naming the row. A pass registers
+     * {@link PilotShipApplier} with the file-only {@code pilotship.exclude} list and sets {@code armed}. Decided
+     * here, never by a launch argument, so the frozen serve command line stays unchanged. The switch's own rows
+     * (ON / OFF, refused) carry the {@code [cc-premain] pilotship} prefix, on stderr beside the launch decisions.
+     */
+    private static SwitchRow armPilotShip(java.util.Properties file, Instrumentation instrumentation) {
+        SwitchRow row = resolveStrictSwitch(TransformRegistry.PILOT_SHIP_ENABLED_SYSPROP,
+                TransformRegistry.PILOT_SHIP_ENABLED_ENV, TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY, file, false,
+                "player-ship switch");
+        System.err.println("[cc-premain] pilotship: " + (row.on() ? "ON" : "OFF") + " from=" + row.from());
+        if (!row.on()) {
+            System.setProperty(TransformRegistry.PILOT_SHIP_RECEIPT_SYSPROP, TransformRegistry.PILOT_SHIP_RECEIPT_OFF);
+            return row;
+        }
+        TransformRegistry.Entry window = TransformRegistry.byId(TransformRegistry.PILOT_SHIP_WINDOW_ID);
+        try {
+            eagerJarGate(window);
+        } catch (IllegalStateException gateRefused) {
+            // the gate already printed its boundary (jar unresolvable, class absent or fingerprint drift)
+            refusePilotShip(row, "ship_fingerprint", window.id() + " launch gate refused (the boundary above)");
+        }
+        String[] holder = PilotShipApplier.holderProbeRefusal();
+        if (holder != null) {
+            refusePilotShip(row, holder[0], holder[1]);
+        }
+        instrumentation.addTransformer(new PilotShipApplier(window, PilotShipApplier.parseExclude(file)), false);
+        System.setProperty(TransformRegistry.PILOT_SHIP_RECEIPT_SYSPROP, TransformRegistry.PILOT_SHIP_RECEIPT_ARMED);
+        return row;
+    }
+
+    /** The player-ship refusal: receipt + refusal row, then the launch refusal naming the host row (throws). */
+    private static void refusePilotShip(SwitchRow row, String reason, String boundary) {
+        PilotShipApplier.publishRefused(reason);
+        refuse(List.of(boundary + " — " + TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY + " resolves true (from "
+                + row.from() + "); set " + TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY + "=false to start"));
     }
 
     /**

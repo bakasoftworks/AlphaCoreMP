@@ -9,6 +9,7 @@ import static cc.starsector.server.bridge.EngineCombatBinding.numberAsInt;
 import cc.starsector.server.adapter.ShipCommandSink;
 import cc.starsector.server.bridge.EngineCombatBinding.EngineBindingException;
 import cc.starsector.server.bridge.EngineCombatBinding.PilotApplyResult;
+import cc.starsector.server.transform.PilotShipWindow;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -77,6 +78,12 @@ final class PilotCommandApplier {
     private final Method shipGetPhaseCloak; // nullable: phase guard unavailable => shield lane FAILS CLOSED (same verb toggles the cloak)
     private final Object weaponCommandPullBackFighters; // nullable: carrier fighter-mode mirror unsupported (lane fails closed)
     private final Method shipIsPullBackFighters; // nullable: ShipAPI.isPullBackFighters read (lane fails closed)
+    private final Method shipGetCustomData; // nullable: ShipAPI.getCustomData read (the human-pilot mark is never written)
+    private int pilotMarkReadErrors; // getCustomData reads that threw (logged once, then counted; each latches the state unbound)
+    private final Method shipSetCustomData; // nullable: ShipAPI.setCustomData, the mark's first write per tenure (creates the hull's map; null = put into the getter's map)
+    private int pilotMarkLostWrites; // first writes the getter did not read back by identity (logged once, counted per state; retried next frame)
+    private Method shipGetChildModulesCopy; // ShipAPI.getChildModulesCopy, resolved at the first re-point on the hull's class (re-resolved for another class)
+    private int pilotShipModuleFaults; // module walks that failed at a re-point (logged once, then counted; the root still answers itself)
     private final Method playerShipUseSystem; // nullable: system activation unsupported
     private final Method systemCanBeActivated; // nullable: ShipSystemAPI.canBeActivated guard unavailable
     private final Method shipSetFacing; // nullable: authoritative facing write unavailable
@@ -136,6 +143,16 @@ final class PilotCommandApplier {
     // loss before a rising edge may engage the retreat drive (~83 ms at 60 Hz — far under human
     // command-UI latency, far over a measured 3-frame stale-flicker).
     static final int RETREAT_EDGE_QUARANTINE_FALSE_FRAMES = 5; // package-private: read by PilotApplyState (own file)
+    /** The human-pilot mark's post-re-key ability quarantine: consecutive applied frames with NO ability bit a
+     * fresh hull tenure needs before its mask may read non-zero — the bit-9 window, for the bit-9 reason (a
+     * client's stale sample from its previous body must not fire an ability on the fresh one). */
+    static final int ABILITY_EDGE_QUARANTINE_CLEAR_FRAMES = RETREAT_EDGE_QUARANTINE_FALSE_FRAMES;
+    /**
+     * The hull customData key the serve writes for a seat's OWN hull: {@code int[]{seatId, abilityMask, 0, flags}}
+     * ({@code [2]} = role, 0 = the serve's own mark; {@code [3]} bit 0 = the pilot's MagicLib decision is followed).
+     * Append-only: a reader of the first two slots takes length &gt;= 2.
+     */
+    public static final String PILOT_MARK_KEY = "cc_client.pilot";
     private static final int WIRE_BIT_SHIELD_ON = 10; // PilotIntentFrame.SHIELD_ON state-mirror (originally a law-split apply: OMNI hold / non-OMNI mismatch-edge — since superseded, see applyShieldBit)
     private static final int WIRE_BIT_PHASE_CLOAK = 11; // PilotIntentFrame.PHASE_CLOAK state-mirror (mismatch-edge toggle on cloak hulls)
     private static final int WIRE_BIT_PULL_BACK_FIGHTERS = 12; // PilotIntentFrame.PULL_BACK_FIGHTERS state-mirror (mismatch-edge toggle, carrier fighter mode)
@@ -181,6 +198,8 @@ final class PilotCommandApplier {
         this.shipGetPhaseCloak = b.shipGetPhaseCloak;
         this.weaponCommandPullBackFighters = b.weaponCommandPullBackFighters;
         this.shipIsPullBackFighters = b.shipIsPullBackFighters;
+        this.shipGetCustomData = b.shipGetCustomData;
+        this.shipSetCustomData = b.shipSetCustomData;
         this.playerShipUseSystem = b.playerShipUseSystem;
         this.systemCanBeActivated = b.systemCanBeActivated;
         this.shipSetFacing = b.shipSetFacing;
@@ -323,6 +342,7 @@ final class PilotCommandApplier {
         // (the engine's own capture/reinject filter law).
         int cancelPressesBefore = state.systemCancelPresses;
         int ventPressesBefore = state.ventsIssued + state.ventRePresses;
+        applyPilotMark(ship, held, state.seatId, state); // pre-advance: a mod's every-frame plugin reads it this tick
         boolean systemActivated = applySystemBit(ship, held, simTick, frame.shipId(), state);
         boolean ventIssued = applyVentBit(ship, held, state);
         // Retreat bit-9 (edge-only drive engage + level re-assert of the flag)
@@ -1794,6 +1814,228 @@ final class PilotCommandApplier {
 
     Object invoke(Method m, Object target, String label, Object... args) {
         return binding.invoke(m, target, label, args);
+    }
+
+    /**
+     * The human-pilot mark's ONE write site, called from {@link #applyPilotIntent} on every APPLIED frame, before
+     * the world advance (so a mod's every-frame plugin reads it the same tick): the seat's own hull carries
+     * {@code customData["cc_client.pilot"] = int[]{seatId, abilityMask, 0, flags}}, {@code abilityMask} = wire
+     * bits 13..20 shifted to 0..7, {@code [2]} = 0 (the serve's own mark; a client's replica writes 1), and
+     * {@code flags} bit 0 = FOLLOW: the serve follows this pilot's MagicLib decision on the hull (the seat's flags
+     * source, read once per tenure at the re-point; the predicate lives in one place, the runtime's
+     * MagicSeamFollow). The serve never applies those bits to the engine; the mark is the whole contract. One array
+     * per hull tenure — put once at the re-point, {@code [1]} rewritten in place after that (no allocation and no
+     * reflection on a steady tick). The first write goes through the hull's own {@code setCustomData} when bound —
+     * the engine's getter hands back a FRESH detached map while the hull's field is still null, so a put into it
+     * would vanish — and is read back by identity: a write the getter does not return counts
+     * {@code pilotMarkLostWrites} and retries next frame, never a silent "written". A re-point (first apply,
+     * refield, re-key, a new session) removes OUR array from the hull the seat left and arms the post-re-key
+     * quarantine: the mask reads 0 until {@link #ABILITY_EDGE_QUARANTINE_CLEAR_FRAMES} consecutive frames carried
+     * no ability bit; each non-zero mask withheld counts {@code abilityEdgeQuarantined}. {@code seatId < 1}
+     * (unknown: probe mains, observers never reach here) or an unbound seam = no mark, latched once in
+     * {@code pilotMarkUnbound}, never a throw. (the 4-slot mark, FOLLOW and
+     * the bound first write)
+     *
+     * <p>Each read-back first write also publishes the player-ship mirror ({@link #mirrorPilotShip}: the hull
+     * answers itself and each of its station modules answers the hull), so the ship-advance window scopes the
+     * hull's own code from the same tick, and every edge that removes the mark unmarks it.
+     *
+     */
+    void applyPilotMark(Object ship, int held, int seatId, PilotApplyState state) {
+        if (seatId < 1 || shipGetCustomData == null) {
+            state.pilotMarkUnbound = true;
+            return;
+        }
+        int mask = (held >>> cc.starsector.server.runtime.PilotIntentFrame.ABILITY_SLOT_SHIFT) & 0xFF;
+        if (state.pilotMarkShip != ship) {
+            java.util.Map<String, Object> customData = customDataOrNull(ship, state);
+            if (customData == null) {
+                return; // unbound latched; retried next frame (pilotMarkShip unchanged)
+            }
+            removePilotMarkFrom(state.pilotMarkShip, state);
+            int flags = state.pilotMarkFlagsSource == null ? 0 : state.pilotMarkFlagsSource.getAsInt() & 0xFF;
+            int[] mark = new int[] {seatId, 0, 0, flags};
+            try {
+                if (shipSetCustomData != null) {
+                    invoke(shipSetCustomData, ship, "ShipAPI.setCustomData(pilot mark)", PILOT_MARK_KEY, mark);
+                } else {
+                    customData.put(PILOT_MARK_KEY, mark);
+                }
+            } catch (RuntimeException putFault) { // a read-only map / a throwing setter: unexpressed, retried next frame
+                countPilotMarkReadError(putFault, state);
+                return;
+            }
+            java.util.Map<String, Object> readBack = customDataOrNull(ship, state);
+            if (readBack == null || readBack.get(PILOT_MARK_KEY) != mark) {
+                countPilotMarkLostWrite(state); // the getter does not hand our array back: retried next frame
+                return;
+            }
+            state.pilotMark = mark;
+            state.pilotMarkShip = ship;
+            state.pilotMarkWrites++;
+            state.abilityQuarantineClear = 0;
+            mirrorPilotShip(ship);
+        }
+        boolean quarantined = state.abilityQuarantineClear < ABILITY_EDGE_QUARANTINE_CLEAR_FRAMES;
+        if (quarantined) {
+            if (mask == 0) {
+                state.abilityQuarantineClear++;
+            } else {
+                state.abilityQuarantineClear = 0; // a set bit restarts the window (the bit-9 law)
+                state.abilityEdgeQuarantined++;
+            }
+        }
+        state.pilotMark[1] = quarantined ? 0 : mask;
+    }
+
+    /**
+     * A seat-leaves-hull edge (hull loss, grace vacate, a new session on the wire id, a transit park, a full
+     * staged clear): remove the mark from the live hull resolved for {@code wireId} AND, when it is a different
+     * object, OUR array from the hull the state last marked (a hulk the engine may still hold). The next applied
+     * frame re-points and re-arms the quarantine. {@code stateOrNull} null = the live hull only (no clear is
+     * counted). Never throws: a failed read latches the state unbound.
+     */
+    public void clearPilotMark(long wireId, PilotApplyState stateOrNull) {
+        if (shipGetCustomData == null) {
+            return;
+        }
+        Object live;
+        try {
+            live = shipForWireIdOrNull(wireId);
+        } catch (RuntimeException resolveFault) {
+            live = null; // the state's own hull ref below still clears
+            countPilotMarkReadError(resolveFault, stateOrNull);
+        }
+        if (live != null) {
+            java.util.Map<String, Object> liveData = customDataOrNull(live, stateOrNull);
+            try {
+                if (liveData != null) {
+                    liveData.remove(PILOT_MARK_KEY);
+                }
+            } catch (RuntimeException removeFault) {
+                countPilotMarkReadError(removeFault, stateOrNull);
+            }
+            PilotShipWindow.unmarkAnswer(live); // the mark is gone (or unreadable): the hull and its modules lose the answer
+        }
+        if (stateOrNull == null) {
+            return;
+        }
+        if (stateOrNull.pilotMarkShip != null && stateOrNull.pilotMarkShip != live) {
+            removePilotMarkFrom(stateOrNull.pilotMarkShip, stateOrNull);
+        }
+        stateOrNull.pilotMarkShip = null;
+        stateOrNull.pilotMarkClears++;
+    }
+
+    /**
+     * Remove OUR array from {@code shipOrNull} — conditional, so a mark another seat wrote since stays, and with
+     * it that hull's player-ship mirror entries; a hull left with no mark (or an unreadable map) is unmarked.
+     */
+    private void removePilotMarkFrom(Object shipOrNull, PilotApplyState state) {
+        if (shipOrNull == null || state.pilotMark == null) {
+            return;
+        }
+        java.util.Map<String, Object> data = customDataOrNull(shipOrNull, state);
+        boolean otherSeatMark = false;
+        try {
+            if (data != null) {
+                data.remove(PILOT_MARK_KEY, state.pilotMark);
+                otherSeatMark = data.get(PILOT_MARK_KEY) != null;
+            }
+        } catch (RuntimeException removeFault) {
+            countPilotMarkReadError(removeFault, state);
+        }
+        if (!otherSeatMark) {
+            PilotShipWindow.unmarkAnswer(shipOrNull);
+        }
+    }
+
+    /**
+     * The player-ship mirror's ONE write site, at a re-point's read-back first write (never per frame): the hull
+     * answers itself, and each station module under it (walked recursively off {@code getChildModulesCopy}, the
+     * same walk {@link SeatHullParts#collect} makes, without its fighters and drones: they keep the engine's
+     * answer) answers the hull, as module code sees the root as the player in single player. A module that
+     * carries a seat's own mark keeps answering itself whichever seat re-pointed last. A failed walk logs once
+     * and counts {@code pilotShipModuleFaults}; the hull's own entry stands. The holder ignores a call off the
+     * bound sim thread.
+     */
+    private void mirrorPilotShip(Object root) {
+        PilotShipWindow.mark(root, root);
+        try {
+            mirrorModules(root, root, 0);
+        } catch (ReflectiveOperationException | RuntimeException walkFault) {
+            if (pilotShipModuleFaults++ == 0) {
+                System.out.println("pilot-ship module_map_error err=" + walkFault.getClass().getSimpleName()
+                        + " (logged once; the hull answers itself, its modules keep the engine's answer)");
+            }
+        }
+    }
+
+    /** Depth-bounded (a station's modules are one level; the bound only stops a malformed cycle). */
+    private void mirrorModules(Object hull, Object root, int depth) throws ReflectiveOperationException {
+        if (depth >= 4) {
+            return;
+        }
+        Method children = shipGetChildModulesCopy;
+        if (children == null || !children.getDeclaringClass().isInstance(hull)) {
+            children = hull.getClass().getMethod("getChildModulesCopy");
+            shipGetChildModulesCopy = children;
+        }
+        Object modules = children.invoke(hull);
+        if (!(modules instanceof List<?> list)) {
+            return;
+        }
+        for (Object module : list) {
+            if (module == null || module == root) {
+                continue;
+            }
+            java.util.Map<String, Object> data = customDataOrNull(module, null);
+            if (data == null || data.get(PILOT_MARK_KEY) == null) {
+                PilotShipWindow.mark(module, root);
+            }
+            mirrorModules(module, root, depth + 1);
+        }
+    }
+
+    /** {@code ship.getCustomData()}, or null (a null / non-map result or a throw latches the state unbound). */
+    @SuppressWarnings("unchecked")
+    private java.util.Map<String, Object> customDataOrNull(Object ship, PilotApplyState stateOrNull) {
+        try {
+            Object data = shipGetCustomData.invoke(ship);
+            if (data instanceof java.util.Map<?, ?> map) {
+                return (java.util.Map<String, Object>) map;
+            }
+            if (stateOrNull != null) {
+                stateOrNull.pilotMarkUnbound = true;
+            }
+            return null;
+        } catch (ReflectiveOperationException | RuntimeException fault) {
+            countPilotMarkReadError(fault, stateOrNull);
+            return null;
+        }
+    }
+
+    /**
+     * A first write the hull's getter did not hand back by identity (the detached-map case: a put into the fresh
+     * map the getter returns while the hull's field is null): counted per state, logged once, never a throw — the
+     * state keeps its old tenure, so the next applied frame retries.
+     */
+    private void countPilotMarkLostWrite(PilotApplyState state) {
+        state.pilotMarkLostWrites++;
+        if (pilotMarkLostWrites++ == 0) {
+            System.out.println("pilot-mark write_lost setter=" + (shipSetCustomData != null ? "bound" : "unbound")
+                    + " (the hull's getter did not return the written mark; retried next frame; logged once)");
+        }
+    }
+
+    private void countPilotMarkReadError(Exception fault, PilotApplyState stateOrNull) {
+        if (stateOrNull != null) {
+            stateOrNull.pilotMarkUnbound = true;
+        }
+        if (pilotMarkReadErrors++ == 0) {
+            System.out.println("pilot-mark read_error err=" + fault.getClass().getSimpleName()
+                    + " (logged once; the mark stays unexpressed where it fails)");
+        }
     }
 
     Object shipForWireIdOrNull(long shipId) {

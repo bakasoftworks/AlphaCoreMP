@@ -72,7 +72,7 @@ import java.util.List;
  * which credential FIELD that is (the flight's lane — never a door's say). This client holds NO version-12 encoder:
  * a run that hears silence times out, it never sends a version-12 HELLO (a downgrade an on-path party could force).
  * {@code --hs13 true} is accepted as a no-op (stage 3 deletes the flag); {@code --hs13 false} and any other value are
- * refused at start-up. The receipt's {@code hs=14} names the version the run spoke. {@code --probe true} is the
+ * refused at start-up. The receipt's {@code hs=} row names the version the run spoke ({@code Handshake13.VERSION}). {@code --probe true} is the
  * version-13 PROBE ({@link #probe()}): a burst of {@code FLAG_PROBE} flights. A value-less {@code --hs13} /
  * {@code --lane} as the LAST argument is refused (never silently skipped). Every flight is {@code abandon()}ed on every
  * exit of its path.
@@ -123,17 +123,21 @@ public final class PilotIntentDatagramClient {
 
     private record Options(String host, int port, long shipId, String clientId, String seatToken,
             String fingerprint, int selectedGroup, int strafeBurst, float brakeBelow, int accelFrom, int ventFrom,
-            int fireFrom, int[] fireWindows, int systemFrom, int declEvery, int maxFrames, int intentHz,
-            int pauseAfterFrames, long pauseMillis, int hardExitAfter, int readDeadlineMillis,
+            int fireFrom, int[] fireWindows, int systemFrom, int abilityFrom, int declEvery, int maxFrames,
+            int intentHz, int pauseAfterFrames, long pauseMillis, int hardExitAfter, int readDeadlineMillis,
             Path receiptPath, String announceName, List<String> chatTexts, boolean probe,
             int probeBurst, int cloakFrom, int chatAfterSent, Path stopFile, int shieldFrom,
             List<Path> vsubFiles, String helloVariant, long awaitVackMillis, List<String> chatAfterVack,
             boolean vsubSerial, Path chatFile, int autofireMask, Handshake13Flight.Lane lane,
-            int connectTimeoutMillis, int team) {
+            int connectTimeoutMillis, int team, int helloFlags, int[] abilityWindow) {
+        // helloFlags: 0 or a subset of 0x18 (the HELLO MagicLib report bits; a drill lever, never a kit sysprop);
+        // abilityWindow: null or {slot 0..7, fromFrame >= 1, toFrame > from} = the held ability bit for one slot
+        // over that frame window (S4b's seam drill rows 19-21 + 23; the hunk = its commit body).
         // lane: never null — the --lane credential FIELD of every version-13 flight (default PASSWORD).
         // connectTimeoutMillis: >= 1, the handshake's HELLO deadline (CONNECT_TIMEOUT_MILLIS unless a drill sets it).
         // team: 0..2, the --team pick the session HELLO carries (0 = the server picks; 1 = South; 2 = North; a probe
         // always sends 0).
+        // abilityFrom: >= 0, the frameSeq from which mod-ability slot 0 is held; 0 = never.
     }
 
     /** Latest applied DOWN world state (written by the reader's SNAP callback, read by the intent
@@ -387,6 +391,8 @@ public final class PilotIntentDatagramClient {
     private int fireEdgeSeq;
     private boolean fireEdgePrevHeld;
     private int fireRisingEdges;
+    /** Frames the --ability-window bit was held (the drill's receipt row ability_window_held=). */
+    private int abilityWindowHeld;
     private int declSent;
     private int declSeq;
     private int startingRoundId;
@@ -439,9 +445,9 @@ public final class PilotIntentDatagramClient {
 
         public static CtrlDemuxProbe create() throws IOException {
             Options options = new Options("127.0.0.1", 1, 1L, "ctrl-demux-probe", "", "", 0, 0,
-                    0f, 0, 0, 0, new int[0], 0, 0, 1, 60, 0, 0L, 0, DEFAULT_READ_DEADLINE_MILLIS,
+                    0f, 0, 0, 0, new int[0], 0, 0, 0, 1, 60, 0, 0L, 0, DEFAULT_READ_DEADLINE_MILLIS,
                     null, "", List.of(), false, 1, 0, 0, null, 0, List.of(), "", 0L, List.of(), false,
-                    null, -1, null, CONNECT_TIMEOUT_MILLIS, 0);
+                    null, -1, null, CONNECT_TIMEOUT_MILLIS, 0, 0, null);
             return new CtrlDemuxProbe(new PilotIntentDatagramClient(options, false));
         }
 
@@ -542,6 +548,9 @@ public final class PilotIntentDatagramClient {
         boolean fireFromSet = false;
         String fireWindowSpec = null;
         int systemFrom = 0;
+        int abilityFrom = 0;
+        int helloFlags = 0;
+        String abilityWindowSpec = null;
         int declEvery = 0;
         int maxFrames = DEFAULT_MAX_FRAMES;
         // The HARNESS client's send cadence defaults to the configured sim tick rate
@@ -627,6 +636,9 @@ public final class PilotIntentDatagramClient {
                 // degenerate unbounded window). Multiple windows = hold/release/re-hold cycles.
                 case "--fire-window" -> fireWindowSpec = args[i + 1];
                 case "--system-from" -> systemFrom = Integer.parseInt(args[i + 1]);
+                case "--ability-from" -> abilityFrom = Integer.parseInt(args[i + 1]);
+                case "--hello-flags" -> helloFlags = Integer.decode(args[i + 1]);
+                case "--ability-window" -> abilityWindowSpec = args[i + 1];
                 case "--decl-every" -> declEvery = Integer.parseInt(args[i + 1]);
                 case "--max-frames" -> maxFrames = Integer.parseInt(args[i + 1]);
                 case "--intent-hz" -> intentHz = Integer.parseInt(args[i + 1]);
@@ -700,18 +712,36 @@ public final class PilotIntentDatagramClient {
             throw new IllegalArgumentException("required: (--host --port | --port-file) --ship-id"
                     + " --receipt [--client-id --seat-token --fingerprint --fingerprint-file --fold-vtab --fold-modset"
                     + " --selected-group --autofire-mask --strafe-burst --brake-below --accel-from --vent-from"
-                    + " --fire-from --fire-window --system-from --cloak-from --shield-from --decl-every --max-frames"
+                    + " --fire-from --fire-window --system-from --ability-from --cloak-from --shield-from --decl-every"
+                    + " --hello-flags --ability-window"
+                    + " --max-frames"
                     + " --intent-hz --pause-after --pause-millis --hard-exit-after"
                     + " --read-deadline-millis --connect-timeout-millis --chat-text --chat-after-sent"
                     + " --stop-file --vsub-file"
                     + " --hello-variant --await-vack-millis --chat-after-vack --vsub-serial"
-                    + " --chat-file --lane --hs13]; every join / --probe true speaks version 14 only; --lane"
+                    + " --chat-file --lane --hs13]; every join / --probe true speaks version " + Handshake13.VERSION + " only; --lane"
                     + " password|token = which credential --seat-token holds (default password); --hs13 true is"
                     + " accepted as a no-op, --hs13 false is refused");
         }
-        if (cloakFrom < 0 || chatAfterSent < 0 || shieldFrom < 0) {
-            throw new IllegalArgumentException("--cloak-from / --chat-after-sent / --shield-from must be >= 0: "
-                    + cloakFrom + " / " + chatAfterSent + " / " + shieldFrom);
+        if (cloakFrom < 0 || chatAfterSent < 0 || shieldFrom < 0 || abilityFrom < 0) {
+            throw new IllegalArgumentException(
+                    "--cloak-from / --chat-after-sent / --shield-from / --ability-from must be >= 0: "
+                    + cloakFrom + " / " + chatAfterSent + " / " + shieldFrom + " / " + abilityFrom);
+        }
+        if ((helloFlags & ~(Handshake13.FLAG_MAGIC_UP | Handshake13.FLAG_MAGIC_REPLICA)) != 0) {
+            throw new IllegalArgumentException("--hello-flags must be 0 or a subset of 0x18 (the MagicLib report"
+                    + " bits): 0x" + Integer.toHexString(helloFlags));
+        }
+        int[] abilityWindow = null;
+        if (abilityWindowSpec != null) {
+            String[] parts = abilityWindowSpec.split(":");
+            if (parts.length != 3) {
+                throw new IllegalArgumentException("--ability-window must be slot:fromFrame:toFrame: " + abilityWindowSpec);
+            }
+            abilityWindow = new int[] {Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2])};
+            if (abilityWindow[0] < 0 || abilityWindow[0] > 7 || abilityWindow[1] < 1 || abilityWindow[2] <= abilityWindow[1]) {
+                throw new IllegalArgumentException("--ability-window: slot 0..7, from >= 1, to > from: " + abilityWindowSpec);
+            }
         }
         if (autofireMask < -1) {
             throw new IllegalArgumentException("--autofire-mask must be >= -1 (-1 = absent): " + autofireMask);
@@ -784,15 +814,15 @@ public final class PilotIntentDatagramClient {
             throw new IllegalArgumentException("--connect-timeout-millis must be >= 1: " + connectTimeoutMillis);
         }
         return new Options(host, port, shipId, clientId, seatToken, fingerprint, selectedGroup,
-                strafeBurst, brakeBelow, accelFrom, ventFrom, fireFrom, fireWindows, systemFrom, declEvery,
+                strafeBurst, brakeBelow, accelFrom, ventFrom, fireFrom, fireWindows, systemFrom, abilityFrom, declEvery,
                 maxFrames, intentHz, pauseAfterFrames, pauseMillis, hardExitAfter, readDeadlineMillis,
                 receiptPath, announceName, List.copyOf(chatTexts), probe, Math.max(1, probeBurst),
                 cloakFrom, chatAfterSent, stopFile, shieldFrom, List.copyOf(vsubFiles), helloVariant,
                 awaitVackMillis, List.copyOf(chatAfterVack), vsubSerial, chatFile, autofireMask,
-                lane, connectTimeoutMillis, team);
+                lane, connectTimeoutMillis, team, helloFlags, abilityWindow);
     }
 
-    /** {@code --hs13}: exactly {@code true} is accepted, as a no-op (version 14 is the only handshake; stage 3 of THE
+    /** {@code --hs13}: exactly {@code true} is accepted, as a no-op (the current version is the only handshake; stage 3 of THE
      * FLIP deletes the flag); {@code false} is refused naming why — this client cannot speak version 12 — and any
      * other value is refused without echoing it (a misplaced argument could be the secret).
      * */
@@ -801,10 +831,10 @@ public final class PilotIntentDatagramClient {
             return;
         }
         if ("false".equals(value)) {
-            throw new IllegalArgumentException("--hs13 false is refused: this client speaks version 14 only (version"
+            throw new IllegalArgumentException("--hs13 false is refused: this client speaks version " + Handshake13.VERSION + " only (version"
                     + " 12 is gone since THE FLIP); omit --hs13, or pass --hs13 true (a no-op)");
         }
-        throw new IllegalArgumentException("--hs13 must be true (a no-op: version 14 is the only handshake)");
+        throw new IllegalArgumentException("--hs13 must be true (a no-op: version " + Handshake13.VERSION + " is the only handshake)");
     }
 
     /** {@code --team}: exactly {@code 0}, {@code 1} or {@code 2}; anything else an IAE naming the flag, the value never
@@ -887,7 +917,8 @@ public final class PilotIntentDatagramClient {
      *
      */
     private void handshake13() throws IOException {
-        Handshake13Flight flight = newFlight(0, options.helloVariant());
+        // the drill's HELLO MagicLib report bits (0 unless --hello-flags; probe flights keep FLAG_PROBE below)
+        Handshake13Flight flight = newFlight(options.helloFlags(), options.helloVariant());
         try {
             long deadline = nowMillis() + options.connectTimeoutMillis();
             socket.setSoTimeout(HELLO_RETRY_MILLIS);
@@ -1123,6 +1154,19 @@ public final class PilotIntentDatagramClient {
         }
         if (options.systemFrom() > 0 && frameSeq >= options.systemFrom()) {
             heldControls |= PilotIntentFrame.USE_SHIP_SYSTEM;
+        }
+        // Mod-ability slot 0, held LEVEL from its start frame onward: the accepted-state bit a kit sends while the
+        // mod's slot-0 subsystem is IN|ACTIVE (0 = never, so every other drill arm sends no bit 13).
+        //
+        if (options.abilityFrom() > 0 && frameSeq >= options.abilityFrom()) {
+            heldControls |= PilotIntentFrame.ABILITY_SLOT_0;
+        }
+        // --ability-window slot:from:to — the slot's ability bit held over [from, to): the seam drill's press (row 19)
+        // and the cleared bit's cancel (row 21) ride this one window.
+        int[] window = options.abilityWindow();
+        if (window != null && frameSeq >= window[1] && frameSeq < window[2]) {
+            heldControls |= PilotIntentFrame.ABILITY_SLOT_0 << window[0];
+            abilityWindowHeld++;
         }
         // The cloak state-mirror bit, held level (the server's applyCloakBit
         // toggles on mismatch, so an engine-forced OUT — overload, vent — re-raises by itself).
@@ -2111,7 +2155,9 @@ public final class PilotIntentDatagramClient {
         lines.add("seat_name_records_received=" + seatNameRecordsReceived);
         lines.add("hello_retransmits=" + helloRetransmits);
         lines.add("cookie_challenges=" + cookieChallenges); // Count only
-        lines.add(hsReceiptRow()); // hs=14
+        lines.add("hello_flags=" + options.helloFlags());
+        lines.add("ability_window_held=" + abilityWindowHeld);
+        lines.add(hsReceiptRow()); // hs=Handshake13.VERSION
         lines.add("welcome_duplicates=" + welcomeDuplicates);
         lines.add("dropped_undecodable=" + droppedUndecodable);
         lines.add("dropped_bad_session=" + droppedBadSession);

@@ -143,6 +143,13 @@ public final class PilotServeSession {
     private FoeAutofireGateSampler afGateSampler;
     private boolean eventLaneOn;
     private Map<Long, Integer> seatIdByWireId;
+    /**
+     * Each seat's latest admitted HELLO flag bits (seat 1..255 -> bits; 0x08 = its game reports its MagicLib states),
+     * written once per NEW session at admission and read by the pilot mark's flags resolver at each hull re-point —
+     * the per-seat record beside the seat resolver, so a re-joined seat is judged on its NEW game. Session-lived (it
+     * survives a round re-mint, like the seats).
+     */
+    private final Map<Integer, Integer> helloMagicBitsBySeat = new java.util.concurrent.ConcurrentHashMap<>();
     private int downEveryTicks;
     private long sessionDeclReceived;
     private String bindHost;
@@ -912,6 +919,11 @@ public final class PilotServeSession {
             opsFile.attachCustomStats(() -> CustomVariantOps.stats(customLaneOrNull, customConfig));
             // The ships.* rows (the console's Hide / Show list), customs on or off.
             opsFile.attachShipStats(() -> hiddenShips.stats(pickableOrNull));
+            // The ops GUI's MagicLib line + per-seat cell - the pilot mark's
+            // own FOLLOW inputs (the live receipt, this match's door, each seat's latest admitted HELLO bits), read
+            // at each compose; the status file judges each seat through MagicSeamFollow, the one predicate.
+            opsFile.attachMagicSeam(() -> new OpsStatusFile.MagicSeam(MagicSeamFollow.receiptOrNull(),
+                    doorFingerprint != null, seat -> helloMagicBitsBySeat.getOrDefault(seat, 0)));
             // The P27 ban rows (bans= + ban.<i>.*).
             // A mapped VIEW: compose reads size() + the first MAX_BAN_ROWS rows only.
             opsFile.attachBans(() -> {
@@ -1174,6 +1186,21 @@ public final class PilotServeSession {
     private void mintRound(PilotIntentDatagramServer door, int round) throws IOException {
         pilotStep = new PilotIntentStep(
                 baseStep, binding, config.retryBudgetTicks(), effectiveTickRate, fireEdgeLatch);
+        // The human-pilot mark needs the seat behind each
+        // wire id. A seat's wire id is FIXED for the match (the same law
+        // CommandTransferServeLane.seatIdForWireIdOrNull reads over the inverse map), so the
+        // lambda reads the session FIELD at call time, never a captured snapshot: a
+        // later-assigned map is still seen. -1 = unknown wire (an AI hull, a null map before the
+        // resolver ran) = no mark, because the applier writes the mark only for seat id >= 1.
+        pilotStep.setSeatIdResolver(wire -> {
+            Integer seat = (seatIdByWireId == null) ? null : seatIdByWireId.get(wire);
+            return seat == null ? -1 : seat;
+        });
+        // The mark's FOLLOW flag, judged at each hull re-point from the live
+        // seam receipt, this match's door, and the seat's latest admitted HELLO bits (the one predicate's home is
+        // MagicSeamFollow). Read at call time, never captured: a later admission is still seen.
+        pilotStep.setPilotMarkFlagsResolver(seat -> MagicSeamFollow.markFlags(MagicSeamFollow.receiptOrNull(),
+                doorFingerprint != null, helloMagicBitsBySeat.getOrDefault(seat, 0)));
         declaredLaneActive = fireLaneDeclared && !heldLaneFallback;
         pilotStep.setDeclaredFireLane(declaredLaneActive);
         if (hooks.finaleCreep() != null) {
@@ -1752,7 +1779,10 @@ public final class PilotServeSession {
                     pilotStep.sumApplyStates(PilotApplyState::cloakDiveFreezeTicks), //
                     pilotStep.sumApplyStates(PilotApplyState::retreatDiveFreezeTicks), // bit-9 apply ticks frozen by a dive
                     pilotStep.sumApplyStates(PilotApplyState::declLockWaitTicks), //
-                    pilotStep.fireLockReadErrors()); // fire-lock reads that threw
+                    pilotStep.fireLockReadErrors(), // fire-lock reads that threw
+                    pilotStep.pilotMarkWrites(), // pilot-mark meters
+                    pilotStep.pilotMarkClears(),
+                    pilotStep.abilityEdgeQuarantined());
             String warmTailDiscarded = DownLaneSeams.roundCounterTail(warmSummary, frameTargetNanos,
                     fanPassMaxNanos, sendSlowestNanos, door, pilotStep,
                     fireLaneDischargeDetector, downComposer, peerGrade,
@@ -2240,7 +2270,10 @@ public final class PilotServeSession {
                     pilotStep.sumApplyStates(PilotApplyState::cloakDiveFreezeTicks), //
                     pilotStep.sumApplyStates(PilotApplyState::retreatDiveFreezeTicks), // bit-9 apply ticks frozen by a dive
                     pilotStep.sumApplyStates(PilotApplyState::declLockWaitTicks), //
-                    pilotStep.fireLockReadErrors()); // fire-lock reads that threw
+                    pilotStep.fireLockReadErrors(), // fire-lock reads that threw
+                    pilotStep.pilotMarkWrites(), // pilot-mark meters
+                    pilotStep.pilotMarkClears(),
+                    pilotStep.abilityEdgeQuarantined());
             worstFrames.flushRound(round); // (104)(d): a truncated round confesses
             // Cause note AFTER the flush — flushRound resets per-tick causes,
             // so a note before it can never reach its own frame's observe().
@@ -2305,6 +2338,26 @@ public final class PilotServeSession {
                     + " baseline_tick=" + baselineTick
                     + " round=" + round + " frame=" + frame
                     + " liveness=" + socketLiveness);
+            // The seat's admission record of its HELLO's MagicLib reports
+            // (bit 0x08 = its game reports its subsystem states, 0x10 = its subsystem class was patched), read
+            // off the admitting F2 per NEW session, so a re-HELLO re-reads it. Bounded tokens only (a seat
+            // number and two bits, never a name); observers (seat 0) have no hull and no row.
+            if (session.seatId() >= 1) {
+                int magicBits = session.helloMagicBits;
+                System.out.println("magic-seat seat=" + session.seatId()
+                        + " up=" + ((magicBits & Handshake13.FLAG_MAGIC_UP) != 0 ? 1 : 0)
+                        + " replica=" + ((magicBits & Handshake13.FLAG_MAGIC_REPLICA) != 0 ? 1 : 0));
+                // Record the bits for the mark's FOLLOW flag (this session's
+                // boundary above already cleared the seat's mark, so the next applied frame re-points and reads
+                // them), and say once per admission why MagicLib abilities will NOT follow this pilot — only
+                // where MagicLib is evidently in the match (the same predicate the mark uses).
+                helloMagicBitsBySeat.put(session.seatId(), magicBits);
+                String receipt = MagicSeamFollow.receiptOrNull();
+                String followWhy = MagicSeamFollow.whyOrNull(receipt, doorFingerprint != null, magicBits);
+                if (followWhy != null && MagicSeamFollow.magicLibEvident(receipt, magicBits)) {
+                    System.out.println("magic-follow seat=" + session.seatId() + " follow=0 why=" + followWhy);
+                }
+            }
             // A new peer re-rides every
             // damaged cell at full redundancy — shared-artifact bytes, legal
             // under encode-once; idempotent, so N joiners in one tick is fine.
@@ -4554,7 +4607,10 @@ public final class PilotServeSession {
                     pilotStep.sumApplyStates(PilotApplyState::cloakDiveFreezeTicks), //
                     pilotStep.sumApplyStates(PilotApplyState::retreatDiveFreezeTicks), // bit-9 apply ticks frozen by a dive
                     pilotStep.sumApplyStates(PilotApplyState::declLockWaitTicks), //
-                    pilotStep.fireLockReadErrors()); // fire-lock reads that threw
+                    pilotStep.fireLockReadErrors(), // fire-lock reads that threw
+                    pilotStep.pilotMarkWrites(), // pilot-mark meters
+                    pilotStep.pilotMarkClears(),
+                    pilotStep.abilityEdgeQuarantined());
         rounds.add(summary);
         lastRoundMatchOver = matchOver;
         // Carry the round's verdict out of round scope for the
@@ -4752,7 +4808,7 @@ public final class PilotServeSession {
             PilotIntentDatagramServer.PeerSession session, String reason, String override, int round) {
         door.recordRow(MatchRecordRows.KIND_SESS, MatchRecordRows.encodeSess(new MatchRecordRows.SessRow(
                 event, session.sessionId(), session.seatId(), session.shipId(),
-                MatchRecordRows.sessFlags(session.observer(), session.admin()), reason, override),
+                MatchRecordRows.sessFlags(session.observer(), session.admin(), session.helloMagicBits), reason, override),
                 MatchRecordRows.BAND_PRE, round), lastSimTick + 1);
     }
 
@@ -5069,6 +5125,10 @@ public final class PilotServeSession {
         // The serve-end send-gap rows, BEFORE the goodbye — every session
         // still tabled (a peer's BYE answer un-lives it); round = the last closed round (closeRound precedes this).
         printSnapSendRows(Math.max(0, rounds.size() - 1), door.liveSessions());
+        // The player-ship window's match meters (windows opened, scoped to a
+        // pilot, deepest nesting, leaks, off-thread calls), once, here at the serve end and never on a frame. The
+        // per-class rewrite rows and counts are the premain's: it prints them itself (a separate unit, unlinked here).
+        System.out.println(cc.starsector.server.transform.PilotShipWindow.metersRow());
         try {
             int byes = door.fanGoodbye();
             System.out.println("npeer-serve goodbye byes=" + byes);
@@ -5231,8 +5291,8 @@ public final class PilotServeSession {
         }
 
         @Override
-        public void mint(long sessionId, int seat, long shipId, boolean observer, boolean admin) {
-            door.replayMint(sessionId, seat, shipId, observer, admin);
+        public void mint(long sessionId, int seat, long shipId, boolean observer, boolean admin, int helloMagicBits) {
+            door.replayMint(sessionId, seat, shipId, observer, admin, helloMagicBits);
         }
 
         @Override

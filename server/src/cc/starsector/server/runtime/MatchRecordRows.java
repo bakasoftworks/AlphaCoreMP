@@ -81,6 +81,12 @@ public final class MatchRecordRows {
     public static final int SESS_DEAD = 2;
     public static final int SESS_FLAG_OBSERVER = 1;
     public static final int SESS_FLAG_ADMIN = 2;
+    /** SESS flag bits 2-3 = the seat's HELLO MagicLib report bits ({@code Handshake13.FLAG_MAGIC_UP} 0x08 → bit 2,
+     *  {@code FLAG_MAGIC_REPLICA} 0x10 → bit 3), recorded so a re-sim re-mints the seat with the bits the mark's
+     *  FOLLOW predicate ({@code MagicSeamFollow}) read live — without them a FOLLOW match re-simmed with FOLLOW off and
+     *  was admitted. An older reel reads 0 = no report, which is what it recorded. */
+    public static final int SESS_FLAG_MAGIC_UP = 4;
+    public static final int SESS_FLAG_MAGIC_REPLICA = 8;
     public static final int FLYIN_HULL_DEPLOY = 1;
     public static final int FLYIN_MODULE_CLAIM = 2;
     public static final int FLYIN_DEFERRED_TRANSFER = 3;
@@ -138,9 +144,21 @@ public final class MatchRecordRows {
         return foldMask != 0 ? TAKE_FOLDED : TAKE_FRESH;
     }
 
-    /** SESS flags: bit0 observer, bit1 admin. */
+    /** SESS flags: bit0 observer, bit1 admin; no HELLO MagicLib report (bits 2-3 clear). */
     public static int sessFlags(boolean observer, boolean admin) {
-        return (observer ? SESS_FLAG_OBSERVER : 0) | (admin ? SESS_FLAG_ADMIN : 0);
+        return sessFlags(observer, admin, 0);
+    }
+
+    /** SESS flags: bit0 observer, bit1 admin, bits 2-3 = {@code helloMagicBits & 0x18 >> 1} (the seat's HELLO 0x08 /
+     *  0x10 reports; every other HELLO bit is dropped here). */
+    public static int sessFlags(boolean observer, boolean admin, int helloMagicBits) {
+        return (observer ? SESS_FLAG_OBSERVER : 0) | (admin ? SESS_FLAG_ADMIN : 0)
+                | ((helloMagicBits & (Handshake13.FLAG_MAGIC_UP | Handshake13.FLAG_MAGIC_REPLICA)) >> 1);
+    }
+
+    /** The HELLO MagicLib report bits (0x08 / 0x10) a SESS row's flags recorded; 0 on an older reel. */
+    public static int sessHelloMagicBits(int sessFlags) {
+        return (sessFlags & (SESS_FLAG_MAGIC_UP | SESS_FLAG_MAGIC_REPLICA)) << 1;
     }
 
     /** The prefix's band byte (0..3) of a row payload. */

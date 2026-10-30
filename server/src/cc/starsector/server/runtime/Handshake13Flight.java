@@ -149,7 +149,7 @@ public final class Handshake13Flight {
     public static final int SEAL_CAP = 2 * SEALS_REMEMBERED;
 
     private static final byte[] EMPTY = new byte[0];
-    private static final int CALLER_FLAGS = Handshake13.FLAG_PROBE | Handshake13.FLAG_OBSERVER;
+    private static final int CALLER_FLAGS = Handshake13.CALLER_FLAGS;
     /** Door shares are 32 B X25519 u-coordinates. */
     private static final int SHARE_BYTES = 32;
     /** The ADMITTED nonce echo is the u64 at payload[2..10). */
@@ -215,7 +215,8 @@ public final class Handshake13Flight {
      *               on the TOKEN lane; zero-length = nothing typed. Copied; the copy is zeroed at the first opened
      *               ADMITTED, at a REJECTED and at {@link #abandon()} — and with it the generator mapped HERE from
      *               the PRS (once per flight; {@code G("")} on the TOKEN lane).
-     * @param flags  a subset of {@code Handshake13.FLAG_PROBE | FLAG_OBSERVER} ({@code NO_SECRET} is the sealer's).
+     * @param flags  a subset of {@code Handshake13.CALLER_FLAGS} = PROBE | OBSERVER | MAGIC_UP | MAGIC_REPLICA
+     *               ({@code NO_SECRET} is the sealer's).
      * @param budget the host's bucket from {@link Handshake13PairBudget#host} (senders: {@code process()}).
      * @param rng    the platform's UNSEEDED {@code SecureRandom} (Handshake13's CALLER LAW: a seeded generator repeats
      *               the scalar and the content key).

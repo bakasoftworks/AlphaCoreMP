@@ -464,6 +464,27 @@ public final class ServerOpsCoreSelftest {
             check(lifeFailure(pointer, 0L) == null, "a pointer off the flight-<stamp> shape = null");
             check(firstExceptionLine(flight.resolve("lives").resolve("life-9.err.log")).isEmpty(),
                     "missing err log = no exception line");
+            // A premain refusal ends the JVM in the agent; its row,
+            // ahead of the JVM's trace, reaches the host in words with the remedy for its family.
+            Path refusedErr = Files.writeString(flight.resolve("lives").resolve("life-2.err.log"),
+                    "[cc-premain] pilotship: ON from=file\n"
+                            + "[cc-premain] pilotship: refused ship_fingerprint; set pilotship.enabled=false to start\n"
+                            + "Exception in thread \"main\" java.lang.reflect.InvocationTargetException\n"
+                            + "java.lang.IllegalStateException: cc-transform launch gate refused\n",
+                    StandardCharsets.UTF_8);
+            Path holderErr = Files.writeString(flight.resolve("lives").resolve("life-3.err.log"),
+                    "[cc-premain] pilotship: refused holder_abi; set pilotship.enabled=false to start\n",
+                    StandardCharsets.UTF_8);
+            Path otherErr = Files.writeString(flight.resolve("lives").resolve("life-4.err.log"),
+                    "[cc-premain] magicseam: refused jar_x; set magicseam.enabled=false\n", StandardCharsets.UTF_8);
+            check(("game version not recognised; a game update needs the matching server package; on an"
+                    + " unchanged game, set pilotship.enabled=false").equals(firstExceptionLine(refusedErr))
+                    && "server files incomplete; reinstall the server package".equals(firstExceptionLine(holderErr))
+                    && "[cc-premain] magicseam: refused jar_x; set magicseam.enabled=false"
+                            .equals(firstExceptionLine(otherErr)),
+                    "premain refusal head: the row reads in host words ahead of a later trace head, the holder"
+                            + " family reads reinstall, another seam's row as printed (flips if the row is skipped,"
+                            + " the later trace head wins, or a family takes the wrong remedy)");
             LaneLaunch pub = LaneLaunch.publicServe(1L, null);
             check(OpsRoots.get().pointer().equals(pub.flightPointer())
                     && LaneLaunch.debugWatch(1L, null).flightPointer() == null,
@@ -2846,10 +2867,11 @@ public final class ServerOpsCoreSelftest {
                 // W15 v0: the custom cell closes the row ("" = stock hull).
                 // + the customs cell (the held-id list, "" here).
                 // + the LAST cidkey cell (this fixture is an
-                // old writer with no seat.1.cidkey line, so "").
+                // old writer with no seat.1.cidkey line, so ""). + the MagicLib pair right after ctrl (no
+                // seat.1.magic lines here, so "" twice).
                 && runJson.contains("[1,\"Dee\",\"mnp-d1\",\"mudskipper2_cc_Hellbore\","
                         + "\"127.0.0.1:58931\",\"live\",\"75.0 KB/s\",\"580 B/s\","
-                        + "\"6.8 MB\",\"52.0 KB\",0,\"\",\"\",\"\"]")
+                        + "\"6.8 MB\",\"52.0 KB\",0,\"\",\"\",\"\",\"\",\"\"]")
                 // The customs card texts + flag + the raw custom.* globals.
                 && runJson.contains("\"customs\":\"" + jsonEscape(customsSummaryText(snap)) + "\"")
                 && runJson.contains("\"customsDetail\":\"" + jsonEscape(customsDetailText(snap)) + "\"")
@@ -2985,6 +3007,8 @@ public final class ServerOpsCoreSelftest {
                 parseDescriptorInfo(Files.readAllLines(flowDir.resolve("match-flow2.txt"), StandardCharsets.UTF_8))
                         .seatCount());
         configRngPinsRows(cfgJson);
+        configMagicSeamRows(cfgJson);
+        configPilotShipRows(cfgJson);
 
         // review wf_0eb7945a: non-finite doubles are not JSON — a foreign/hand-edited ops
         // file carrying util_pct=NaN passes the lenient parse, so the raw block must emit
@@ -3138,7 +3162,7 @@ public final class ServerOpsCoreSelftest {
         Files.createDirectories(kits);
         Files.write(kits.resolve("good.zip"), new byte[] {0x50, 0x4B});
         String md5 = "0123456789abcdef0123456789abcdef";
-        String fp = "jar=" + md5 + ";data=abc;hs=14";
+        String fp = "jar=" + md5 + ";data=abc;hs=15";
         Path manifest = pkg.resolve(ServeLauncher.MANIFEST_FILE);
         check(ServerOpsCore.KitStamps.NONE.equals(packageKitStamps(pkg)),
                 "kit-stamps: no MANIFEST = NONE (flips if an unreadable package throws or invents a stamp)");
@@ -4358,7 +4382,7 @@ public final class ServerOpsCoreSelftest {
      */
     private static void configRngPinsRows(String cfgJson) {
         String row = "config-rngpins";
-        check(cfgJson.contains("\"allSkills\":\"on\",\"rngPins\":\"on\",\"selectedIndex\":"),
+        check(cfgJson.contains("\"allSkills\":\"on\",\"rngPins\":\"on\",\"magicSeam\":"),
                 row + ": an absent row serves rngPins 'on' right after allSkills (flips if the member is dropped,"
                         + " moved, or an absent row stops reading on)");
         Path dir = rigDir(row, "cc-ops-config-rngpins");
@@ -4371,6 +4395,77 @@ public final class ServerOpsCoreSelftest {
             check(off.contains("\"rngPins\":\"off\"") && on.contains("\"rngPins\":\"on\""),
                     row + ": the =false / =true rows serve off / on (flips if the prefill ignores its row or the word"
                             + " map inverts); got " + off.substring(0, Math.min(300, off.length())));
+        } finally {
+            rig(row, () -> {
+                Files.deleteIfExists(props);
+                Files.deleteIfExists(dir);
+            });
+        }
+        System.out.println("  PASS " + row);
+    }
+
+    /**
+     * Row {@code config-magicseam} - {@code /api/config}'s MagicLib prefill:
+     * over the flow props (no {@code magicseam.enabled} row) the member reads {@code "on"} (the serve's compiled
+     * default) right after {@code rngPins}; over a props file holding {@code magicseam.enabled=false} beside
+     * {@code rngpin.enabled=true} it reads {@code "off"} while {@code rngPins} still reads {@code "on"} (each prefill
+     * reads its OWN row), and over the swapped pair the reverse.
+     */
+    private static void configMagicSeamRows(String cfgJson) {
+        String row = "config-magicseam";
+        check(cfgJson.contains("\"rngPins\":\"on\",\"magicSeam\":\"on\",\"pilotShip\":"),
+                row + ": an absent row serves magicSeam 'on' right after rngPins (flips if the member is dropped,"
+                        + " moved, or an absent row stops reading on)");
+        Path dir = rigDir(row, "cc-ops-config-magicseam");
+        Path props = dir.resolve("cc-server.properties");
+        try {
+            rig(row, () -> Files.writeString(props, OpsMatchRows.MAGIC_SEAM_KEY + "=false\n" + OpsMatchRows.RNG_PINS_KEY
+                    + "=true\n", StandardCharsets.UTF_8));
+            String off = named(row, () -> configJson(props, 50.0));
+            rig(row, () -> Files.writeString(props, OpsMatchRows.MAGIC_SEAM_KEY + "=true\n" + OpsMatchRows.RNG_PINS_KEY
+                    + "=false\n", StandardCharsets.UTF_8));
+            String on = named(row, () -> configJson(props, 50.0));
+            check(off.contains("\"rngPins\":\"on\",\"magicSeam\":\"off\"")
+                            && on.contains("\"rngPins\":\"off\",\"magicSeam\":\"on\""),
+                    row + ": the =false / =true rows serve off / on beside the opposite replay-pins word (flips if the"
+                            + " prefill ignores its row, reads the replay-pins row, or the word map inverts); got "
+                            + off.substring(0, Math.min(300, off.length())));
+        } finally {
+            rig(row, () -> {
+                Files.deleteIfExists(props);
+                Files.deleteIfExists(dir);
+            });
+        }
+        System.out.println("  PASS " + row);
+    }
+
+    /**
+     * Row {@code config-pilotship} - {@code /api/config}'s player-ship prefill:
+     * over the flow props (no {@code pilotship.enabled} row) the member reads {@code "off"} (the serve's compiled
+     * default, the OPPOSITE of the MagicLib row's absent default, so a prefill reading the MagicLib row reads on)
+     * right after {@code magicSeam}, before {@code selectedIndex}; over a props file holding
+     * {@code pilotship.enabled=true} beside {@code magicseam.enabled=false} it reads {@code "on"} while
+     * {@code magicSeam} still reads {@code "off"}, and over the swapped pair the reverse.
+     */
+    private static void configPilotShipRows(String cfgJson) {
+        String row = "config-pilotship";
+        check(cfgJson.contains("\"magicSeam\":\"on\",\"pilotShip\":\"off\",\"selectedIndex\":"),
+                row + ": an absent row serves pilotShip 'off' right after magicSeam (flips if the member is dropped,"
+                        + " moved, an absent row stops reading off, or the prefill reads the MagicLib row)");
+        Path dir = rigDir(row, "cc-ops-config-pilotship");
+        Path props = dir.resolve("cc-server.properties");
+        try {
+            rig(row, () -> Files.writeString(props, OpsMatchRows.PILOT_SHIP_KEY + "=true\n"
+                    + OpsMatchRows.MAGIC_SEAM_KEY + "=false\n", StandardCharsets.UTF_8));
+            String on = named(row, () -> configJson(props, 50.0));
+            rig(row, () -> Files.writeString(props, OpsMatchRows.PILOT_SHIP_KEY + "=false\n"
+                    + OpsMatchRows.MAGIC_SEAM_KEY + "=true\n", StandardCharsets.UTF_8));
+            String off = named(row, () -> configJson(props, 50.0));
+            check(on.contains("\"magicSeam\":\"off\",\"pilotShip\":\"on\"")
+                            && off.contains("\"magicSeam\":\"on\",\"pilotShip\":\"off\""),
+                    row + ": the =true / =false rows serve on / off beside the opposite MagicLib word (flips if the"
+                            + " prefill ignores its row, reads the MagicLib row, or the word map inverts); got "
+                            + on.substring(0, Math.min(300, on.length())));
         } finally {
             rig(row, () -> {
                 Files.deleteIfExists(props);

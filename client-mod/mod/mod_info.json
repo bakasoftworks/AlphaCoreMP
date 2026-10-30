@@ -3,7 +3,7 @@
   "name":"AlphaCoreMP",
   "author":"Myscellanea",
   "utility":"true",
-  "version":{"major":0,"minor":1,"patch":2},
+  "version":{"major":0,"minor":2,"patch":0},
   "description":"Client-integration layer for the AlphaCoreMP headless dedicated combat server: renders served matches by running the real local engine for presentation, reconciled against the server's authoritative snapshots, and sends local input up as intents. The client holds NO authority.",
   "gameVersion":"0.98a-RC8",
   "jars":["jars/cc-client-mod.jar"],

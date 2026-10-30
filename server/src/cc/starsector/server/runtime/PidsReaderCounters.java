@@ -210,13 +210,17 @@ public final class PidsReaderCounters {
      *  seats no pilot on one of its sides (or the pick was outside 1..2). {@code teamMemoryFull}: rejoins whose
      *  remembered team had no room, so the door's own pick law placed them. {@code teamMemoryEvicted}: remembered
      *  teams dropped at the memory's bound (a departed player's first; a seated player's never). {@code
-     *  helloV13Bounced}: version-13 HELLOs bounced as an outdated kit (the version-13 rung of the bounce ladder; 0
-     *  while 13 is the current version). Readers: {@code SeatTeamDoorContractRows}, the door line. Delete trigger:
-     *  none (door meters). */
+     *  helloV13Bounced}: version-13 HELLOs bounced as an outdated kit (the version-13 rung of the bounce ladder).
+     *  Readers: {@code SeatTeamDoorContractRows}, the door line. Delete trigger: none (door meters). */
     public volatile long teamIgnored;
     public volatile long teamMemoryFull;
     public volatile long teamMemoryEvicted;
     public volatile long helloV13Bounced;
+    /** version-14 HELLOs bounced as an outdated kit (the version-14 rung of the
+     *  bounce ladder; the rung exists while the door's own version is above 14), never folded into the version-1
+     *  default tally. Written under the door lock. Readers: {@code PidsHello13GuardRows} hs14-f1-bounce, the door
+     *  line's {@code hello_v14_bounced=}. Delete trigger: none (a door meter). */
+    public volatile long helloV14Bounced;
     /** F2s whose secret the wrap proved but whose sealed body did not
      *  decode or authenticate (any body grammar; version-free), each answered {@code handshake_refused}. Expected
      *  0 on a clean door. Written under the door lock. Readers: {@code SeatTeamDoorContractRows}, the door line
@@ -392,6 +396,8 @@ public final class PidsReaderCounters {
                 + " team_memory_full=" + teamMemoryFull
                 + " team_memory_evicted=" + teamMemoryEvicted
                 + " hello_v13_bounced=" + helloV13Bounced
-                + " hello_body_refused=" + helloBodyRefused);
+                + " hello_body_refused=" + helloBodyRefused
+                // Appended LAST (appended-only grammar), a count only
+                + " hello_v14_bounced=" + helloV14Bounced);
     }
 }

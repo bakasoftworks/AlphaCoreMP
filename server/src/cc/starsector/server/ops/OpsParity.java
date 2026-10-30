@@ -71,6 +71,12 @@ public final class OpsParity {
      *  + {@code verb.shipHide} + {@code verb.shipShow} (Hide / Show on a
      *  row of the ships that come with the server), shown in BOTH modes (never package-only); their page twins are
      *  the row template's two buttons, landed with them - 101 in the list.
+     *  + {@code setup.mods.magicSeam} (MagicLib abilities follow the pilot),
+     *  shown in BOTH modes (never package-only), its page twin landed with it - 102 in the list.
+     *  + {@code live.seat.col.magicLib} (the seat table's MagicLib column),
+     *  shown in BOTH modes (never package-only), its page twin landed with it - 103 in the list.
+     *  + {@code setup.mods.pilotShip} (Each pilot's ship counts as the
+     *  player's), shown in BOTH modes (never package-only), its page twin landed with it - 104 in the list.
      *  The {@code WEB_TWIN_PENDING} list (the parity port's hatch: a control that landed before its
      *  page twin was skipped by the twin row) is DELETED
      * - an id listed here without a page twin turns {@code parity-web-twin} red as soon as
@@ -80,7 +86,7 @@ public final class OpsParity {
             "live.seat.pick", "live.seat.col.seat", "live.seat.col.name", "live.seat.col.client",
             "live.seat.col.ship", "live.seat.col.endpoint", "live.seat.col.live",
             "live.seat.col.txRate", "live.seat.col.rxRate", "live.seat.col.txTotal",
-            "live.seat.col.rxTotal", "live.seat.col.ctrl", "live.seat.col.custom",
+            "live.seat.col.rxTotal", "live.seat.col.ctrl", "live.seat.col.magicLib", "live.seat.col.custom",
             "live.seat.col.customs",
             "load.uplink",
             "verb.startServer", "verb.watch", "verb.endRound", "verb.endMatch", "verb.kill", "verb.kickSelected",
@@ -92,6 +98,7 @@ public final class OpsParity {
             "setup.reach", "setup.gameRoot",
             "setup.tickRate", "setup.record",
             "setup.net.seatsPerSource", "setup.officer.allSkills", "setup.replay.rngPins",
+            "setup.mods.magicSeam", "setup.mods.pilotShip",
             "setup.map.half", "setup.map.apply", "setup.map.station", "setup.map.stationApply",
             "setup.map.backdrop", "setup.map.backdropApply", "setup.map.deployCr",
             "setup.map.deployCrApply",

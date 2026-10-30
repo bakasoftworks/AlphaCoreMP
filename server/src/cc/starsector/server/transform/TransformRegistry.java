@@ -73,8 +73,86 @@ public final class TransformRegistry {
          * the walk the engine's own insertion order while every computation stays the engine's.
          * Arms alone: no holder, no seed.
          */
-        NEW_TYPE_SWAP
+        NEW_TYPE_SWAP,
+        /**
+         * A load-time edit of a THIRD-PARTY MOD class (today: MagicLib's
+         * {@code MagicSubsystem}), applied by the premain's {@code MagicSeamApplier} through the shared
+         * {@code cc.starsector.compat.magic.MagicSeamRewriter}. Load-time ONLY and fail-OPEN: a window, probe or
+         * self-check miss writes one row, loads the original class and leaves the contract route live; it never
+         * refuses a launch (engine and JDK targets stay fail-closed). No eager jar gate: the mod jar is never on
+         * {@code java.class.path}, and {@link TransformLaunchGate} refuses an eager caller loud. The entry's one
+         * {@link TargetMethod} carries the canonical WINDOW-token sha256, not a {@code code[]} fingerprint (the
+         * window, not the method, is the gate; the method's other bytes differ across MagicLib builds). Armed by
+         * its host row, never by the enable list alone; kept out of {@link #entries()} (the eager set).
+         */
+        FOREIGN_LOAD_TIME_SEAM,
+        /**
+         * An entry / exit wrap of ONE fingerprinted engine method in place (HOOK-0054: {@code Ship.advance(F)V}
+         * around the holder {@link PilotShipWindow}): a static call at entry, one before every return and a
+         * catch-all handler appended last to the exception table, no frame or local of the original touched.
+         * Engine half: fail-CLOSED (the eager gate refuses a launch on a fingerprint drift, naming the host
+         * row); armed by its host row only; kept out of {@link #entries()}. Main-written.
+         */
+        SCOPED_WINDOW,
+        /**
+         * A load-time swap of EVERY matching interface call in a third-party or vanilla script class for a
+         * static call of the same stack shape (HOOK-0055: {@code CombatEngineAPI.getPlayerShip()} to the typed
+         * target in the probe-api unit), decided per class by a byte classifier with counted exclusion
+         * reasons. Fail-OPEN per class (original bytes + one row), generic (no target class named in the
+         * entry), armed by its host row only; kept out of {@link #entries()}. Main-written.
+         */
+        FOREIGN_CALL_SITE_REDIRECT
     }
+
+    /** The MagicLib seam's host row, sysprop tier (the rngpin.enabled shape). */
+    public static final String MAGIC_SEAM_ENABLED_SYSPROP = "cc.magicseam.enabled";
+    /** The MagicLib seam's host row, env tier. */
+    public static final String MAGIC_SEAM_ENABLED_ENV = "CC_MAGICSEAM_ENABLED";
+    /** The MagicLib seam's host row, config file tier ({@code true|false}; absent = the default, on). */
+    public static final String MAGIC_SEAM_ENABLED_FILE_KEY = "magicseam.enabled";
+    /**
+     * The premain's in-process seam receipt: {@code off | armed | applied:<16 hex> | disarmed:<reason>}; absent =
+     * no premain decided. "The serve's patch applied" == the value starts with {@code applied:}.
+     */
+    public static final String MAGIC_SEAM_RECEIPT_SYSPROP = "cc.magic.seam";
+    /**
+     * The receipt's fixed values — ONE home for the premain (MagicSeamApplier), the META stamp (MatchRecordMeta) and
+     * the re-sim gate (ReplayBoot). The compat rewriter MINTS the applied / disarmed tokens from its own constants
+     * (it compiles against ASM alone); MagicSeamPatchRows row 1 pins the two spellings equal.
+     */
+    public static final String MAGIC_SEAM_RECEIPT_OFF = "off";
+    public static final String MAGIC_SEAM_RECEIPT_ARMED = "armed";
+    /** {@code applied:} + the window sha256's first 16 lower hex. */
+    public static final String MAGIC_SEAM_RECEIPT_APPLIED_PREFIX = "applied:";
+    /** {@code disarmed:} + the reason (the fixed set = the rewriter's {@code REASON_*}). */
+    public static final String MAGIC_SEAM_RECEIPT_DISARMED_PREFIX = "disarmed:";
+
+    /** The player-ship window's host row, sysprop tier (the magicseam.enabled shape; DEFAULT OFF). Main-written. */
+    public static final String PILOT_SHIP_ENABLED_SYSPROP = "cc.pilotship.enabled";
+    /** The player-ship window's host row, env tier. */
+    public static final String PILOT_SHIP_ENABLED_ENV = "CC_PILOTSHIP_ENABLED";
+    /** The player-ship window's host row, config file tier ({@code true|false}; absent = the default, off). */
+    public static final String PILOT_SHIP_ENABLED_FILE_KEY = "pilotship.enabled";
+    /** File-only row: a comma list of mod folder, jar or script package names whose classes stay unchanged. */
+    public static final String PILOT_SHIP_EXCLUDE_FILE_KEY = "pilotship.exclude";
+    /**
+     * The premain's in-process receipt for the player-ship window: {@code off | armed | applied:<classes> |
+     * refused:<reason> | latched:<reason>}; absent = no premain decided. "Live" == starts with {@code applied:}.
+     */
+    public static final String PILOT_SHIP_RECEIPT_SYSPROP = "cc.pilot.ship";
+    public static final String PILOT_SHIP_RECEIPT_OFF = "off";
+    public static final String PILOT_SHIP_RECEIPT_ARMED = "armed";
+    /** {@code applied:} + the count of classes rewritten so far. */
+    public static final String PILOT_SHIP_RECEIPT_APPLIED_PREFIX = "applied:";
+    /**
+     * {@code refused:} + ship_fingerprint | holder_missing | holder_abi | golden_mismatch (the eager gate), or a
+     * load-time window miss's own cause: not_target | self_check | window_repeated | window_absent | class_version |
+     * error:&lt;SimpleName&gt;.
+     */
+    public static final String PILOT_SHIP_RECEIPT_REFUSED_PREFIX = "refused:";
+    /** {@code latched:} + leak | overflow | mirror_overflow (the holder switched itself off for the match). */
+    public static final String PILOT_SHIP_RECEIPT_LATCHED_PREFIX = "latched:";
+    public static final String PILOT_SHIP_RECEIPT_LATCHED_LEAK = PILOT_SHIP_RECEIPT_LATCHED_PREFIX + "leak";
 
     /** The faithful replacement body for a neutralized method ({@link Kind#METHOD_NOOP} only). */
     public enum NoopKind {
@@ -157,7 +235,8 @@ public final class TransformRegistry {
      * its evidence (the records that back it, named in words),
      * and the re-find recipe a game/JDK update runs.
      * {@code targetJarFileName} is null for JDK-site kinds (the target rides the running JVM's
-     * {@code java.base}, not a jar). {@code redirect} is set exactly when the kind is
+     * {@code java.base}, not a jar); a {@link Kind#FOREIGN_CALL_SITE_REDIRECT} entry is generic and names no
+     * target class, jar or method (both null, {@code methods} empty). {@code redirect} is set exactly when the kind is
      * {@link Kind#CALL_SITE_REDIRECT} and {@code typeSwap} exactly when it is
      * {@link Kind#NEW_TYPE_SWAP} (the compact constructor refuses any other pairing).
      */
@@ -465,17 +544,118 @@ public final class TransformRegistry {
                     + "the install-facing registry verifier + the keyed-pin contract rows",
             new TypeSwap("java/util/HashMap", "java/util/LinkedHashMap", "()V", 2));
 
+    /** The MagicLib pilot seam's id (a {@link Kind#FOREIGN_LOAD_TIME_SEAM} entry). */
+    public static final String MAGIC_SEAM_ID = "HOOK-0053";
+    /** The player-ship window's id (a {@link Kind#SCOPED_WINDOW} entry on {@code Ship.advance(F)V}). Main-written. */
+    public static final String PILOT_SHIP_WINDOW_ID = "HOOK-0054";
+    /** The player-ship call-site redirect's id (a {@link Kind#FOREIGN_CALL_SITE_REDIRECT} entry, generic). */
+    public static final String PILOT_SHIP_REDIRECT_ID = "HOOK-0055";
+
+    /**
+     * The MagicLib pilot seam: one guarded branch at the AI
+     * call in {@code MagicSubsystem.advanceInternal(F)V}, so a seat hull's subsystem activation follows the
+     * pilot's key on the serve and on every replica instead of the mod's AI. Class (ii) behavior-correcting,
+     * cleared before registration with the host default ON and an OFF switch. The
+     * {@code sha256} is the canonical token sha of the 23-token fork window, constant by construction across
+     * every recognised build, MagicLib 1.4.5 through 1.5.8-dev14.
+     */
+    private static final Entry HOOK_0053 = new Entry(
+            MAGIC_SEAM_ID,
+            Kind.FOREIGN_LOAD_TIME_SEAM,
+            "org/magiclib/subsystems/MagicSubsystem",
+            "MagicLib.jar",
+            List.of(new TargetMethod("advanceInternal", "(F)V",
+                    "9a850129a0223eaac989200e7211c38ccb7499c44b2997aca95a53a50cf973b4", null)),
+            "ii",
+            "host row " + MAGIC_SEAM_ENABLED_FILE_KEY + " (sysprop " + MAGIC_SEAM_ENABLED_SYSPROP + " > env "
+                    + MAGIC_SEAM_ENABLED_ENV + " > the config file row > true); load-time only, fail-open; receipt "
+                    + MAGIC_SEAM_RECEIPT_SYSPROP,
+            "transform-registry governance decision + the MagicLib seam record (window, golden and verify proof"
+                    + " on Java 17 and 25 for six MagicLib builds; the probe on the real script-loader topology)",
+            "on a MagicLib update: run cc.starsector.compat.magic.MagicSeamRewriter --print-window <MagicLib.jar>"
+                    + " (window found once, counts 1/1/1/1, gated verdict applied) and --golden <MagicLib.jar>;"
+                    + " verify the patched class on Java 17 and 25; add the golden. A build whose 23-token window"
+                    + " matches is PATCHED (the serve passes no allowlist: the plan's choice); only a window MISS"
+                    + " disarms loud and loads the original class");
+
+    /**
+     * HOOK-0054: the player-ship window. While a human-flown hull's own
+     * per-frame code runs inside {@code Ship.advance(F)V}, a redirected {@code getPlayerShip()} (HOOK-0055)
+     * answers that hull, as the pilot's own game does; the wrap is a static enter at entry, an exit before every
+     * return and one catch-all handler appended last to the exception table, no frame or local of the original
+     * touched. Engine half, fail-CLOSED: with the host row on, the eager gate verifies this fingerprint and probes
+     * the holder and the typed target, and a miss refuses the launch naming the row; a load-time drift halts the
+     * JVM the same way. Class (ii) behavior-correcting, default OFF. Fingerprint measured 2026-10-29 against the
+     * install's engine jar (class 134,154 bytes, major 61; code length 5,780) via {@link MethodBytecodeFingerprint}.
+     */
+    private static final Entry HOOK_0054 = new Entry(
+            PILOT_SHIP_WINDOW_ID,
+            Kind.SCOPED_WINDOW,
+            "com/fs/starfarer/combat/entities/Ship",
+            "starfarer_obf.jar",
+            List.of(new TargetMethod("advance", "(F)V",
+                    "9ea0cb5920af7b2ed1a3c0a83844a8d5958cf176a71667bfa5edd22ed65da0b5", null)),
+            "ii",
+            "host row " + PILOT_SHIP_ENABLED_FILE_KEY + " (sysprop " + PILOT_SHIP_ENABLED_SYSPROP + " > env "
+                    + PILOT_SHIP_ENABLED_ENV + " > the config file row > false); ON = the eager gate verifies this"
+                    + " fingerprint and probes the holder and the typed target, a miss refuses the launch naming the"
+                    + " row; never armed by -Dcc.transform.enable alone; receipt " + PILOT_SHIP_RECEIPT_SYSPROP,
+            "transform-registry governance decision + the player-ship design record (the in-place wrap verified"
+                    + " with its negative control; nested advances counted)",
+            "on a game update: disassemble the engine ship class, confirm ONE advance(F)V, no monitor or jsr in it,"
+                    + " a StackMapTable present; recompute its code[] sha256 with MethodBytecodeFingerprint (the window"
+                    + " rewriter's --golden must print the same value); re-verify the wrapped class under"
+                    + " -Xverify:all on Java 17 and 25; update the sha256 here");
+
+    /**
+     * HOOK-0055: the player-ship call-site redirect. In every candidate
+     * class the byte classifier admits, each interface call {@code CombatEngineAPI.getPlayerShip()} becomes a
+     * static call of the same stack shape into the typed target, which answers the window's hull inside an open
+     * window and the engine's own player ship everywhere else. GENERIC: no target class, jar or fingerprint (the
+     * classifier decides per class, with one counted reason per class left unchanged). Fail-OPEN per class:
+     * original bytes plus one row. Armed with HOOK-0054 by the same host row, never alone.
+     */
+    private static final Entry HOOK_0055 = new Entry(
+            PILOT_SHIP_REDIRECT_ID,
+            Kind.FOREIGN_CALL_SITE_REDIRECT,
+            null,
+            null,
+            List.of(),
+            "ii",
+            "host row " + PILOT_SHIP_ENABLED_FILE_KEY + " (with " + PILOT_SHIP_WINDOW_ID + "); load-time only,"
+                    + " fail-open per class; host exclusions " + PILOT_SHIP_EXCLUDE_FILE_KEY + "; receipt "
+                    + PILOT_SHIP_RECEIPT_SYSPROP,
+            "transform-registry governance decision + the player-ship design record (the call-site census and"
+                    + " the exclusion rules)",
+            "on a game or mod update: re-run the redirect rewriter's census over the installed mods; a class whose"
+                    + " shape the classifier cannot admit loads unchanged with its reason, so nothing here pins a"
+                    + " version");
+
     private static final List<Entry> ENTRIES =
             List.of(HOOK_0043, HOOK_0044, HOOK_0048, HOOK_0049, HOOK_0050, HOOK_0051);
 
-    private static final Map<String, Entry> BY_ID =
-            ENTRIES.stream().collect(Collectors.toUnmodifiableMap(Entry::id, e -> e));
+    /** The load-time-only third-party seams: resolvable by {@link #byId}, never in the eager {@link #entries()}. */
+    private static final List<Entry> FOREIGN_SEAMS = List.of(HOOK_0053);
+
+    /** The player-ship pair, armed by its host row only: resolvable by {@link #byId}, never in {@link #entries()}. */
+    private static final List<Entry> PILOT_SHIP_ENTRIES = List.of(HOOK_0054, HOOK_0055);
+
+    private static final Map<String, Entry> BY_ID = java.util.stream.Stream.of(ENTRIES, FOREIGN_SEAMS,
+            PILOT_SHIP_ENTRIES).flatMap(List::stream).collect(Collectors.toUnmodifiableMap(Entry::id, e -> e));
 
     private TransformRegistry() {
     }
 
     public static List<Entry> entries() {
         return ENTRIES;
+    }
+
+    /**
+     * The {@link Kind#FOREIGN_LOAD_TIME_SEAM} entries: load-time only, never
+     * eager-gated, so {@link #entries()} (what the launch gate and the install verifier walk) leaves them out.
+     */
+    public static List<Entry> foreignSeams() {
+        return FOREIGN_SEAMS;
     }
 
     /** The registered entry for the ID, or null — callers refuse on null (unknown ID is a boundary). */

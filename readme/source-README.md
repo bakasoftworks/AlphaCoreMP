@@ -24,14 +24,8 @@ For readers who know their way around - everything here is covered in full below
   (`-SkipClient -ServerFolder -Package -Kit`) and start it with its `ops-web.bat` (Linux: `sh ops-web.sh`); see
   [Host a match on your own build](#host-a-match-on-your-own-build).
 - Where the code is: `server/src` (the server), `client-mod/src` (the mod), `client-mod/web` (the join window and
-  the ship editor). MIT License; the third-party parts keep their own licenses.
-
-Do you need this source?
-
-- **To play:** no. Use the joiner kit the host sends you ([How players join](#how-players-join)).
-- **To host on the released server:** no. Use the server package ([Status](#status)).
-- **To read the code:** start at [What is where](#what-is-where).
-- **To build the mod and the server, or to host on your own build:** yes.
+  the ship editor); start at [What is where](#what-is-where). MIT License; the third-party parts keep their own
+  licenses.
 
 How it works:
 
@@ -179,6 +173,83 @@ This is a pre-release, and a player will still see these:
 - The size cap on the client log is new and has not yet been exercised in a real match.
 - Voice chat works on PC (Windows) only.
 
+## For mod authors: the pilot contract
+
+In a match, the battle runs on the server and each player's game shows it. The server has no local player, so to an
+unmodified mod every ship a player flies there is an AI ship: a mod that gives ships abilities on their own keys runs
+them by its own AI on the server, while the player's own game runs them from the key, and the two can disagree. The
+pilot contract closes that gap with two ship custom-data keys. It needs no AlphaCoreMP code to compile or run: the
+same mod jar runs in single player (where the keys never appear), on the server and in every player's game. Hosts
+set the mod to "required", so the server and every player run the same version.
+
+- Abilities built on MagicLib's subsystems need no change on the server: it changes MagicLib's ability class in
+  memory as it loads, so each pilot's abilities do there what they did on that pilot's own screen. Other players'
+  games still run them by the mod's own AI unless the mod reads `cc_client.pilot` (below). A host can turn this
+  off ("MagicLib abilities follow the pilot").
+- Any other ability mod reads and writes the two keys in its own ability code (for example, a subclass of its
+  ability class).
+
+### The two keys
+
+| Key | Written by | Value |
+| --- | --- | --- |
+| `cc_client.pilot` | AlphaCoreMP: the server, and each player's game | `int[]{seat, mask, role, flags}` on a ship a player flies; absent on an AI-flown ship |
+| `cc_client.abilityLocal` | Your mod, on the player's own ship, each frame | An `Integer` mask |
+
+`cc_client.pilot` (read it each frame; never write it):
+
+- `[0]` seat: the player's seat in the match, 1 or more.
+- `[1]` mask: bit k (k = 0 to 7) is set while the pilot has your ability slot k on (turning on or active) on their
+  own screen. A mask of 0 means a player flies the ship and has nothing on: if your toggle is active, that is the
+  cue to switch it off.
+- `[2]` role: 0 = the server's own mark on the ship it simulates; 1 = a player's game marking its copy of another
+  player's ship. A mod can use 1 to skip a side effect the server already performs, such as spawning something.
+- `[3]` flags: bit 0 = the MagicLib change follows this pilot on this ship; other mods can ignore it.
+
+The server writes the key on every frame it applies the pilot's input, before the battle advances, so an every-frame
+plugin sees it in the same frame, and removes it when the player leaves the ship (the ship is lost, or the player
+takes another one or leaves the match). After a player takes a new ship, the mask stays 0 until five frames in a
+row arrive with no ability on, so a key still held from the old ship does not fire on the new one.
+
+`cc_client.abilityLocal`: write it each frame on the player's own ship (in that player's game, the engine's
+`getPlayerShip()`): an `Integer` whose bit k is set while your ability slot k is on (turning on or active) as your
+mod accepted it - the state, not the raw key. AlphaCoreMP reads it after the battle's plugins ran that frame and
+sends it to the server. A value that is not an `Integer` is ignored, as are bits above 7. Write it with
+`ship.setCustomData(...)`: on a ship that holds no custom data yet, `getCustomData()` returns a map the ship does not
+keep, so a `put` into it is lost.
+
+Slots: number a ship's abilities 0 to 7 the same way on every computer, from something every side shares (the
+ship's own setup), never from a key binding. Eight slots per ship reach the server; give any further ability its
+unmodified behavior.
+
+### A ship a player flies, or the AI
+
+| Where your code runs | A player flies the ship when | AI-flown |
+| --- | --- | --- |
+| The server | `cc_client.pilot` is on it (role 0) | The key is absent |
+| A player's game, that player's own ship | It is `getPlayerShip()`; no key is written on it | - |
+| A player's game, another player's ship | `cc_client.pilot` is on it (role 1) | The key is absent |
+| Single player | It is `getPlayerShip()`, as always | The key never appears |
+
+On the server, `getPlayerShip()` called from a ship's own code (a hullmod's `advanceInCombat`, a ship system script,
+a weapon's every-frame script; not a hit effect) returns that ship, or a module's parent, while a player flies it,
+if the host turned "Each pilot's ship counts as the player's" on (off as shipped). Elsewhere it is never a ship a
+player flies (it can be an AI ship or a station): in plugins that loop over all ships, in classes that read
+`cc_client.pilot` themselves, and in classes that read the keyboard or mouse, draw, or change the battle's time
+multiplier. Check the key there. Keyboard input never reaches the server: an ability on your own hotkey still needs
+the two keys above. A check that works everywhere:
+
+    Object m = ship.getCustomData().get("cc_client.pilot");
+    int[] pilot = m instanceof int[] && ((int[]) m).length >= 2 ? (int[]) m : null;
+    // pilot != null: a player flies this ship; pilot[1] holds their ability slots
+    // pilot == null: run the mod's own logic unchanged (its key on the local player's ship, its AI elsewhere)
+
+### What stays compatible
+
+The two key names stay. `cc_client.pilot` only ever grows at the end: positions 0 to 3 keep their meaning, so a
+reader that uses `[0]` and `[1]` checks `length >= 2`, one that uses `[3]` checks `length >= 4`, and both accept a
+longer array. A missing key, or a value that is not an `int[]`, means the ship is AI-flown.
+
 ## Reference
 
 ### Build options
@@ -209,10 +280,12 @@ details `-ServerFolder`, `-KitZip` and `-KitRuntime`.
 | --- | --- |
 | `server/src` | The dedicated server. |
 | `server/premain` | A Java agent the server JVM loads with `-javaagent`: bytecode transforms at class load. |
+| `server/compat` | The agent's MagicLib class rewrite, built on ASM alone and packed into the agent jar. |
 | `server/probe-api` | Three classes compiled against the game's API, which the server loads by name. |
 | `server/vendor/concentus` | Concentus, the voice chat's audio codec library. Third-party, own `LICENSE` and `README.md`. |
 | `server/native-linux` | The source of `libjawt.so` ([below](#native-libraries-for-the-linux-server)). |
 | `client-mod/src` | The mod's code. |
+| `client-mod/stubs` | Compile-only MagicLib stand-ins the mod's MagicLib support builds against; never in the jar. |
 | `client-mod/mod` | The mod folder as installed: `mod_info.json`, `data/`, `join-cc.bat`, helper scripts, `jars/` after a build. |
 | `client-mod/web` | The join window's pages (`join/`) and the ship editor's. |
 | `client-mod/sound-check` | The sound self-check probe the kit runs, a loose class beside `join-cc.bat`. |

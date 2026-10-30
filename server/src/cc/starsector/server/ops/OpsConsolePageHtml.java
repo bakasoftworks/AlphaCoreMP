@@ -125,6 +125,16 @@ import java.util.List;
  * {@code setup.replay.rngPins}, on | off, hint {@code #hint-rng-pins} + its help row) after All skills, last in
  * {@code #pre-start} - the Start form's {@code rngpin.enabled} row (boot-time: it locks while a server runs).
  *
+ * <p>MagicLib abilities follow the pilot ({@code #f-magic-seam},
+ * {@code setup.mods.magicSeam}, on | off, hint {@code #hint-magic-seam} + its help row) right after the replay pins,
+ * last in {@code #pre-start} - the Start form's {@code magicseam.enabled} row (boot-time: the serve patches MagicLib
+ * while it loads, so it locks while a server runs).
+ *
+ * <p>Each pilot's ship counts as the player's ({@code #f-pilot-ship},
+ * {@code setup.mods.pilotShip}, on | off with OFF selected, hint {@code #hint-pilot-ship} + its help row) right after
+ * the MagicLib select, last in {@code #pre-start} - the Start form's {@code pilotship.enabled} row (boot-time: the serve
+ * changes ship scripts while it loads, so it locks while a server runs).
+ *
  * <p>The page opens dark ({@code color-scheme} meta = {@code dark}
  * alone, so no light canvas paints before {@code ops.css} lands); {@code #theme-toggle} (Light / Dark, help row
  * {@code tip-theme}) follows {@code #help-open} in {@code #nav} with no {@code data-section} and no
@@ -151,6 +161,16 @@ import java.util.List;
  * {@code setup.match.pvp}, Off / On (values {@code off} / {@code on}, the Start parse's two words), hint
  * {@code #hint-pvp} = {@link #PVP_HINT} + its help row. No Apply button: Start switches the picked match file's
  * mode when the select differs from it.
+ *
+ * <p>The seat table's {@code MagicLib} column ({@code live.seat.col.magicLib}
+ * header + its row-template cell, right after ctrl) and an id-only {@code #magic-seam} line in the MATCH cluster,
+ * hidden until the script writes the server's MagicLib sentence into it. The line carries no {@code data-cc}: it is
+ * a read-out the status answer fills, never a control, so the bar's control order is unchanged. The {@code MagicLib
+ * why} seat cell has no template cell (the way {@code cidkey} has none): the script reads it as the title.
+ *
+ * <p>A second id-only line, {@code #pilot-ship}, right after
+ * {@code #magic-seam} in the MATCH cluster (whether each pilot's ship counts as the player's), hidden the same way
+ * and likewise no control: no {@code data-cc}, so neither the bar's control order nor the parity id list moves.
  */
 final class OpsConsolePageHtml {
 
@@ -254,6 +274,8 @@ final class OpsConsolePageHtml {
 <summary>More &#9662;</summary>
 <button type="button" id="btn-kill" data-cc="verb.kill" aria-describedby="tip-kill">Kill (fallback)</button>
 </details>
+<span id="magic-seam" hidden></span>
+<span id="pilot-ship" hidden></span>
 </div>
 <div class="cluster" id="cl-simspeed" role="group" aria-labelledby="cap-simspeed">
 <span class="cap" id="cap-simspeed" data-cc="bar.cluster.simSpeed">SIM-SPEED</span>
@@ -335,6 +357,7 @@ final class OpsConsolePageHtml {
 <th scope="col" class="num" data-cc="live.seat.col.txTotal">tx total</th>
 <th scope="col" class="num" data-cc="live.seat.col.rxTotal">rx total</th>
 <th scope="col" class="num" data-cc="live.seat.col.ctrl">ctrl</th>
+<th scope="col" data-cc="live.seat.col.magicLib">MagicLib</th>
 <th scope="col" data-cc="live.seat.col.custom">custom</th>
 <th scope="col" data-cc="live.seat.col.customs">customs</th>
 </tr>
@@ -342,7 +365,7 @@ final class OpsConsolePageHtml {
 <tbody id="seats-body" data-cc="live.seats.paint"></tbody>
 </table>
 </div>
-<template id="tpl-seat-row"><tr role="row" aria-selected="false"><td role="gridcell" class="num" data-col="seat"></td><td role="gridcell" data-col="name"></td><td role="gridcell" data-col="client"></td><td role="gridcell" data-col="ship"></td><td role="gridcell" data-col="endpoint"></td><td role="gridcell" data-col="live"></td><td role="gridcell" class="num" data-col="tx/s"></td><td role="gridcell" class="num" data-col="rx/s"></td><td role="gridcell" class="num" data-col="tx total"></td><td role="gridcell" class="num" data-col="rx total"></td><td role="gridcell" class="num" data-col="ctrl"></td><td role="gridcell" data-col="custom"></td><td role="gridcell" data-col="customs"></td></tr></template>
+<template id="tpl-seat-row"><tr role="row" aria-selected="false"><td role="gridcell" class="num" data-col="seat"></td><td role="gridcell" data-col="name"></td><td role="gridcell" data-col="client"></td><td role="gridcell" data-col="ship"></td><td role="gridcell" data-col="endpoint"></td><td role="gridcell" data-col="live"></td><td role="gridcell" class="num" data-col="tx/s"></td><td role="gridcell" class="num" data-col="rx/s"></td><td role="gridcell" class="num" data-col="tx total"></td><td role="gridcell" class="num" data-col="rx total"></td><td role="gridcell" class="num" data-col="ctrl"></td><td role="gridcell" data-col="MagicLib"></td><td role="gridcell" data-col="custom"></td><td role="gridcell" data-col="customs"></td></tr></template>
 <p id="seats-empty" class="empty" data-cc="live.seat.empty">no seats - Start server begins a new match</p>
 <section id="bans" aria-labelledby="bans-title">
 <h2 id="bans-title">Bans (<span id="bans-count">0</span>)</h2>
@@ -530,6 +553,16 @@ final class OpsConsolePageHtml {
 <label for="f-rng-pins">Deterministic replay pins (RNG)</label>
 <div class="ctl"><select id="f-rng-pins" data-cc="setup.replay.rngPins" aria-describedby="hint-rng-pins"><option selected>on</option><option>off</option></select></div>
 <p class="hint" id="hint-rng-pins">writes rngpin.enabled; on = random numbers are pinned to a fresh seed each serve, so a recorded match can be replayed and re-simulated; off = no pins (that serve's recording cannot be re-simulated)</p>
+</div>
+<div class="frow">
+<label for="f-magic-seam">MagicLib abilities follow the pilot</label>
+<div class="ctl"><select id="f-magic-seam" data-cc="setup.mods.magicSeam" aria-describedby="hint-magic-seam"><option selected>on</option><option>off</option></select></div>
+<p class="hint" id="hint-magic-seam">writes magicseam.enabled; on = when the server runs MagicLib, each player's MagicLib abilities do on the server what they did on that player's own screen; off = MagicLib runs unchanged and the abilities on players' ships run by the mod's own AI</p>
+</div>
+<div class="frow">
+<label for="f-pilot-ship">Each pilot's ship counts as the player's</label>
+<div class="ctl"><select id="f-pilot-ship" data-cc="setup.mods.pilotShip" aria-describedby="hint-pilot-ship"><option>on</option><option selected>off</option></select></div>
+<p class="hint" id="hint-pilot-ship">writes pilotship.enabled; on = a ship's own scripts (hullmods, ship systems, weapons) treat the ship a player flies as the player's ship, as in single player; off = they run as today</p>
 </div>
 </details>
 </fieldset>
@@ -787,6 +820,8 @@ final class OpsConsolePageHtml {
 <dt>Roster x</dt><dd data-hint="hint-roster-mult"></dd>
 <dt>All skills</dt><dd data-hint="hint-all-skills"></dd>
 <dt>Deterministic replay pins (RNG)</dt><dd data-hint="hint-rng-pins"></dd>
+<dt>MagicLib abilities follow the pilot</dt><dd data-hint="hint-magic-seam"></dd>
+<dt>Each pilot's ship counts as the player's</dt><dd data-hint="hint-pilot-ship"></dd>
 <dt>Wave faction</dt><dd data-hint="hint-wave-category"></dd>
 <dt>Default ship for joiners</dt><dd data-hint="hint-joiner"></dd>
 <dt>Endless</dt><dd data-hint="hint-endless"></dd>

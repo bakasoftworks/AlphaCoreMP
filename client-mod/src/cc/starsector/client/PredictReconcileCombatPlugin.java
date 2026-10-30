@@ -620,6 +620,14 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
      */
     private volatile float ownFacingDeg;
     private volatile int heldControls;
+    /**
+     * The mod-ability slot bits ({@code PilotIntentFrame.ABILITY_SLOTS_MASK}, bits 13..20, else 0) that
+     * {@link AbilityLocalReadLane} publishes each frame from the own ship's mod-written mask; both intent send
+     * sites OR them into {@link #heldControls} at send, and nothing else reads them. Kept apart from
+     * {@code heldControls} because the movement capture rewrites that field whole each frame while the ability
+     * read runs later in the frame (after the mod's library advanced).
+     */
+    volatile int abilityLocalBits;
     volatile boolean fireHeld; // package: this frame's DERIVED held-fire level (mouse-0 post-swallow OR the AI selected-group fold), sampled in processInputPreCoreControls; AutopilotFireLane.heldRecency re-reads it as one input to its LIVE level re-derivation at a discharge instant (not a raw read of the sample)
     /**
      * PINT v3: the aim WORLD POINT this frame — the own ship's live {@code getMouseTarget()}
@@ -1717,6 +1725,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     final ReplicaCompDamageShield compDmgShield = new ReplicaCompDamageShield(foeEngineLane, weaponLane);
     // The god-mode replica mirror (wire FLAG_GOD → cc_godmode mults); own-file.
     final GodMirrorLane godMirror = new GodMirrorLane();
+    /** The serve's pilot mark re-published on every REMOTE body; own-file. */
+    final RemotePilotMarkLane remotePilotMark = new RemotePilotMarkLane();
     /** The BEAM-PRESENTATION lane collaborator (E2 whole-concern extraction,
      *  the missileLane idiom): relay + aim halves,
      *  the whole beam meter family and the v12 beam-meter emitter live in
@@ -3094,8 +3104,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                         applyIntentSourceFrame(); // Recorded values into the four fields; the send below is UNCHANGED
                     }
                     long droppedBefore = session.sendsDropped(); //
-                    session.sendIntent(aimDeg, ownFacingDeg, heldControls, fireHeld, aimWorldX, aimWorldY,
-                            liveSelectedGroup, liveAutofireMask, liveTargetWireId, fireEdgeSeq,
+                    session.sendIntent(aimDeg, ownFacingDeg, heldControls | abilityLocalBits, fireHeld,
+                            aimWorldX, aimWorldY, liveSelectedGroup, liveAutofireMask, liveTargetWireId, fireEdgeSeq,
                             liveActiveTubeOrdinal);
                     if (session.sendsDropped() == droppedBefore) {
                         sent++;
@@ -3307,7 +3317,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                 }
                 ServerSnapshotFrame snap = latestSnapshot;
                 long droppedBefore = s.sendsDropped(); // Count only wire sends
-                s.sendIntent(aimDeg, ownFacingDeg, heldControls, fireHeld, aimWorldX, aimWorldY,
+                s.sendIntent(aimDeg, ownFacingDeg, heldControls | abilityLocalBits, fireHeld, aimWorldX, aimWorldY,
                         liveSelectedGroup, liveAutofireMask, liveTargetWireId, fireEdgeSeq,
                         liveActiveTubeOrdinal, snap != null ? snap.simTick() : -1L);
                 if (s.sendsDropped() != droppedBefore) {
@@ -3683,6 +3693,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // ShipEngineControllerAPI booleans) into the semantic bitmask every active frame (independent of the
         // snapshot), so the net thread always ships the LATEST input up.
         captureOwnCommands(ownShip != null ? ownShip : engine.getPlayerShip(), amount);
+        AbilityLocalReadLane.registerOnce(engine, this); // from advance, never init: the tail position (AbilityLocalReadLane javadoc)
         // The pre-adopt burn-kill WINDOW — every live frame incl. pre-snapshot
         // hold frames (this sits ABOVE the snapshot gate below; the at-sight one-shot left a
         // visible flare because the vanilla deploy engages the drive on its own schedule).
@@ -4624,6 +4635,10 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // hit (axis A); {@link FoeDamageCap} caps a would-be-lethal hit so the foe never dies client-side
         // (axis B, installed in bindShips); and the real death runs only on the authoritative edge below
         // via killFoe (axis C).
+        // The pilot-mark frame brackets the remote walk —
+        // the own adopt (applyStaged) already ran, so an adopted body is skipped and swept here,
+        // before the mod's ship systems read the mark this frame.
+        remotePilotMark.beginFrame(ownShip, engine != null ? engine.getPlayerShip() : null);
         if (registryShape) {
             // Every non-own wire entity gets the proven single-foe treatment, per entity.
             foeState.maintainRemoteEntities(snapshot, foeAlpha, freshSnapshot);
@@ -4669,6 +4684,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             // fresh frames, apply mismatch-edge every frame.
             foeState.maintainFoeFluxFlags(foeShip, foePose, freshSnapshot, snapshot.simTick(), true);
             godMirror.maintain(foeShip, foePose); // the certified 1v1 seat-2 foe
+            remotePilotMark.maintain(foeShip, foePose);
             // The foe AUTOFIRE lane (reticle group rows) — fresh frames, edge-triggered.
             foeState.maintainFoeAutofire(foeShip, foePose, freshSnapshot, snapshot.simTick(), true);
             // The foe SELECTED-GROUP lane ((114)(d) far-aim terminus) — fresh
@@ -4699,6 +4715,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     + " (entities=" + snapshot.entityCount() + ") -> death edge arms on the first"
                     + " foe-bearing frame");
         }
+        remotePilotMark.endFrame(); // Bodies that left the walk lose OUR mark this frame
         // The beam-presentation AIM half — once per frame off the frame's v12 beam
         // records, AFTER the blocks above so hulls sit at this frame's reconciled poses.
         beamPres.maintainBeamAim(snapshot);
@@ -5599,6 +5616,24 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     }
 
     /**
+     * The ship whose mod-written ability mask {@link AbilityLocalReadLane} reads: the SAME reference
+     * {@link #captureOwnCommands} samples ({@code ownShip}, else the engine's player ship), and NULL whenever one of
+     * the movement capture's neutral gates holds. The gates are the law, restated so the two stay one set:
+     * (1) a recorded intent source is configured ({@code INTENT_SOURCE != null}: the recording owns the held bits);
+     * (2) the own seat is in a command-transfer TRANSIT ({@code xfer.ownTransit()}: the source hull is a
+     * wire-slaved observer, its mod state is not this seat's input); (3) the own death is latched
+     * ({@code ownKilled}: the body is a hulk or a removed body, so a level held at death would ride up through the
+     * dead window and press on the refielded hull — the class). A null engine is null too.
+     * Render thread only.
+     */
+    ShipAPI abilityReadOwnOrNull() {
+        if (INTENT_SOURCE != null || engine == null || xfer.ownTransit() || ownKilled) {
+            return null;
+        }
+        return ownShip != null ? ownShip : engine.getPlayerShip();
+    }
+
+    /**
      * Snapshot the own ship's native-control MOVEMENT state into the volatile {@link #heldControls} semantic
      * bitmask the net thread ships UP, and update the capture-timing instrument. Reads the 7 PUBLIC
      * {@link ShipEngineControllerAPI} booleans the engine's own native player control sets each frame
@@ -6209,6 +6244,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             // the expired hold (⇒ the engine-edge spawn below; never a hardcoded loc).
             ServerEntityPose ownPoseR = ownPoseFresh ? ownPoseHold : null;
             godMirror.releaseAll(); // Every carrier, BEFORE the sweep + the unbind loop
+            remotePilotMark.releaseAll(); // No endFrame follows the unbind loop
             try {
                 for (DamagingProjectileAPI proj : new ArrayList<DamagingProjectileAPI>(engine.getProjectiles())) {
                     engine.removeEntity(proj);
@@ -6337,6 +6373,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         ServerEntityPose ownPose = ownPoseFresh ? ownPoseHold : null;
         ServerEntityPose foePose = snapshot != null ? firstOther(snapshot, ownPose) : null;
         godMirror.releaseAll(); // Every carrier, BEFORE the evict-then-remove below
+        remotePilotMark.releaseAll(); // No endFrame follows the evict-then-remove
         try {
             // The server's resetForRedeploy() serves the fresh round from a CLEAN world — mirror that
             // before spawning, or the ending round's leftovers keep dealing client-local damage the
@@ -7961,6 +7998,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         hullLane.logFoeHullReconcileMeter(where); // Foe hull ledger/reconcile line, when the lane meters
         ownDetLane.logMeter(where); // Own det-damage counter line, when the lane meters
         remoteAim.logMeter(where); // AIMP remote-aim fold/apply line, when the lane is on
+        remotePilotMark.logMeter(where); // pilot-mark line, always on (never foeEngineState-gated)
         logFoeFluxFlagsMeter(where); // Foe overload/vent flag line, when the lane is on
         logOwnFluxMeter(where); // Own flux pin + slave + mask-guard line, when on
         logOwnCrMeter(where); // own CR clock pin + gap line, when the lane is on

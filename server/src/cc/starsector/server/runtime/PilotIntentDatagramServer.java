@@ -155,9 +155,16 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
      * {@link cc.starsector.server.client.PilotIntentDatagramClient#EDGE_BIT_MIN_HOLD_FRAMES}
      * producer rule): a press/vent pulse shorter than one sim tick must survive the one-slot
      * latest-wins conflation. LEVEL bits (movement/retreat/shield/cloak) stay pure latest-wins —
-     * stretching those would smear real releases. */
+     * stretching those would smear real releases — with two exceptions that are level bits yet ride
+     * the latch: bit 7 (the system's accepted IN|ACTIVE state), and the eight mod-ability slots
+     * {@link PilotIntentFrame#ABILITY_SLOTS_MASK} (bits 13..20). WHY the ability slots ride it: the
+     * kit cannot see a mod's ability transitions (it has zero linkage to the mod), and a hold-down
+     * dwell in every mod would be a burden on each modder; the latch is generic and server-side, and
+     * its worst case is bit 7's — a toggle cancel landing one deposit-take window (at most one tick)
+     * late, on the sender's own hull. */
     public static final int EDGE_HELD_LATCH_MASK =
-            PilotIntentFrame.USE_SHIP_SYSTEM | PilotIntentFrame.VENT_FLUX;
+            PilotIntentFrame.USE_SHIP_SYSTEM | PilotIntentFrame.VENT_FLUX
+                    | PilotIntentFrame.ABILITY_SLOTS_MASK;
     /** Stamp sentinel: no explicit tick yet — record through the sink's shared tick field. */
     static final long NO_STAMP = Long.MIN_VALUE;
 
@@ -538,6 +545,12 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
          *  ledger GRANTED (u32 in a long, 0..2^32-1; 0 = none yet), advanced before the X25519 ({@code PidsChatVerbs}). */
         byte[] hs13AuthShare;
         long hs13AuthHighest;
+        /** The admitting F2's MagicLib report bits ({@code Handshake13.FLAG_MAGIC_UP | FLAG_MAGIC_REPLICA}, 0x00..0x18;
+         *  0 on a v12 session; a replay session carries the RECORDED seat's bits, {@code PidsReplayDoor.replayMint}):
+         *  set by the hs-13 admit beside the root, before the session is ever handed
+         *  to the serve loop; a re-HELLO is a NEW session carrying its own. NEVER in {@link #copyGateStateFrom}.
+         * */
+        volatile int helloMagicBits;
         final InetSocketAddress peer;
         final String clientId;
         /** The custom-variant AUTHOR key of a cid-keyed door
@@ -1819,8 +1832,9 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         replayDoor.replayStageCommandDeaths(deaths);
     }
 
-    public PeerSession replayMint(long sessionId, int seat, long shipId, boolean observer, boolean admin) {
-        return replayDoor.replayMint(sessionId, seat, shipId, observer, admin);
+    public PeerSession replayMint(long sessionId, int seat, long shipId, boolean observer, boolean admin,
+            int helloMagicBits) {
+        return replayDoor.replayMint(sessionId, seat, shipId, observer, admin, helloMagicBits);
     }
 
     public void replayDie(long sessionId, String departureReason) {
@@ -3191,6 +3205,9 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
             // for a version-13 open counts here; while 13 is the door's own version no such rung exists, so it
             // reads 0.
             case 13 -> readerCounters.helloV13Bounced++;
+            // The version-14 tally (never v1's): the bounce ladder's rung for a
+            // version-14 open counts here; the rung exists while the door's own version is above 14.
+            case 14 -> readerCounters.helloV14Bounced++;
             default -> readerCounters.helloV1Bounced++;
         }
     }

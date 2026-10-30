@@ -114,6 +114,9 @@ public final class RealEngineContentInit {
     private static final String SOUND_PLAYER_API_CLASS = "com.fs.starfarer.api.SoundPlayerAPI";
     private static final String LWJGL_DISPLAY_CLASS = "org.lwjgl.opengl.Display";
     private static final String JSON_OBJECT_CLASS = "org.json.JSONObject";
+    /** MagicLib's mod id and the class its seam rewrites (the belt define, {@link #defineMagicSubsystemBelt}). */
+    private static final String MAGICLIB_MOD_ID = "MagicLib";
+    private static final String MAGIC_SUBSYSTEM_CLASS = "org.magiclib.subsystems.MagicSubsystem";
 
     private static boolean initialized;
     private static boolean displayUpdateNoThrow;
@@ -267,6 +270,7 @@ public final class RealEngineContentInit {
                 throw initMapBoundary(e.getCause() == null ? e : e.getCause(), displayUpdateError);
             }
             textureMapSizeAfter = mapSizeOrMin(textureMapGetter.invoke(null));
+            defineMagicSubsystemBelt(loader);
 
             initialized = true;
         } catch (RealEngineContentInitException e) {
@@ -429,6 +433,44 @@ public final class RealEngineContentInit {
 
         Class<?> modManagerClass = Class.forName(MOD_MANAGER_CLASS, true, loader);
         modManagerClass.getDeclaredMethod("getInstance").invoke(null);
+    }
+
+    /**
+     * The MagicLib seam's BELT define: iff MagicLib is an enabled mod, define
+     * (never initialize) {@code MagicSubsystem} through the script class loader right after the content init, so
+     * the premain's seam verdict (the {@code cc.magic.seam} receipt) is settled before any seat is admitted or
+     * stamped, and its cold probe + rewrite stay off a mid-round fly-in deploy (the frame loop). WHY no init: the
+     * class's static initializer reads MagicLib's text table. The client plugin does the same define on load; this
+     * belt covers a serve where it did not run. ONE row whenever MagicLib is enabled; never a throw, never a refusal.
+     */
+    private static void defineMagicSubsystemBelt(ClassLoader loader) {
+        String result;
+        try {
+            boolean magicLib = false;
+            Class<?> modManagerClass = Class.forName(MOD_MANAGER_CLASS, true, loader);
+            Object modManager = modManagerClass.getMethod("getInstance").invoke(null);
+            for (Object spec : (List<?>) modManagerClass.getMethod("getEnabledMods").invoke(modManager)) {
+                magicLib |= MAGICLIB_MOD_ID.equals(spec.getClass().getMethod("getId").invoke(spec));
+            }
+            if (!magicLib) {
+                return;
+            }
+            Object settings = Class.forName(GLOBAL_CLASS, true, loader).getMethod("getSettings").invoke(null);
+            ClassLoader scripts = (ClassLoader) Class.forName(SETTINGS_API_CLASS, true, loader)
+                    .getMethod("getScriptClassLoader").invoke(settings);
+            Class.forName(MAGIC_SUBSYSTEM_CLASS, false, scripts);
+            result = "defined";
+        } catch (Throwable t) {
+            result = "error:" + unwrap(t).getClass().getSimpleName();
+        }
+        String seam = System.getProperty(cc.starsector.server.transform.TransformRegistry.MAGIC_SEAM_RECEIPT_SYSPROP, "");
+        StringBuilder bounded = new StringBuilder();
+        for (int i = 0; i < seam.length() && i < 64; i++) {
+            char c = seam.charAt(i);
+            bounded.append(c > 0x20 && c < 0x7f ? c : '?');
+        }
+        System.out.println("real-engine-content-init magicseam_define result=" + result + " seam="
+                + (bounded.length() == 0 ? "absent" : bounded));
     }
 
     /**

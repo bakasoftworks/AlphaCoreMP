@@ -53,6 +53,14 @@ package cc.starsector.server.ops;
  * and the typed passwords stay) and notes the answer's {@code detail}. Every package literal stays: a package
  * page never sets {@code repoConsole}. The WATCH lane's Kill question is minted by the server like every
  * confirm.
+ * <p>The seat table's {@code MagicLib} cell carries, as its {@code title},
+ * the seat's {@code MagicLib why} data cell (the server's host words for why a reporting seat is not followed;
+ * no td shows that cell, the way none shows {@code cidkey}); {@code renderMagicSeam} writes the status key
+ * {@code magicSeamLine} into {@code #magic-seam} in the MATCH cluster, hidden while the key reads empty or is
+ * absent (an older server).
+ * <p>{@code renderPilotShip} is its twin for the status key
+ * {@code pilotShipLine} and {@code #pilot-ship} (whether each pilot's ship counts as the player's), with the same
+ * hide rule; no seat cell, the server marks every seat's hull alike.
  */
 final class OpsConsoleJsPlayers {
 
@@ -75,7 +83,7 @@ final class OpsConsoleJsPlayers {
               const EMPTY_WAITING = 'no seats yet - waiting for joiners';
               // the seat cell order when an answer lacks seatColumns (the statusJson column set)
               const COLS = ['seat', 'name', 'client', 'ship', 'endpoint', 'live', 'tx/s', 'rx/s',
-                'tx total', 'rx total', 'ctrl', 'custom', 'customs', 'cidkey'];
+                'tx total', 'rx total', 'ctrl', 'MagicLib', 'MagicLib why', 'custom', 'customs', 'cidkey'];
               const body = CC.el('seats-body');
               const table = CC.el('seats');
               const rowOf = new Map(); // seat id -> its tr, reused so a poll keeps focus and text selection
@@ -112,7 +120,8 @@ final class OpsConsoleJsPlayers {
                 return !!s && ((!!s.launch && !s.launch.terminal) || s.staging === true || s.launcherUp === true);
               };
 
-              // seats: every seat is an array matching s.seatColumns index for index (13 shown + cidkey last);
+              // seats: every seat is an array matching s.seatColumns index for index (14 shown, plus two data
+              // cells no td shows: the MagicLib why, read into the MagicLib cell's title, and cidkey last);
               // seatId = the seat cell (an int, > 0 for a seated player); cidKey = hex or '' (an old writer)
               const seatRows = (s) => {
                 const names = Array.isArray(s.seatColumns) ? s.seatColumns : COLS;
@@ -174,6 +183,13 @@ final class OpsConsoleJsPlayers {
                   used.add(tr);
                   for (const td of tr.children) {
                     put(td, r.cell(td.dataset.col));
+                    // the MagicLib cell's hover says why a reporting seat is not followed ('' = no title)
+                    if (td.dataset.col === 'MagicLib') {
+                      const why = r.cell('MagicLib why');
+                      if (td.title !== why) {
+                        td.title = why;
+                      }
+                    }
                   }
                   tr.classList.toggle('dim', dim);
                   if (body.children[i] !== tr) {
@@ -750,6 +766,20 @@ final class OpsConsoleJsPlayers {
                   box.checked = s.customSubmissions === true;
                 }
               };
+              // the MATCH line's MagicLib sentence (the server words it; '' or absent = no line)
+              const renderMagicSeam = (s) => {
+                const line = typeof s.magicSeamLine === 'string' ? s.magicSeamLine : '';
+                const el = CC.el('magic-seam');
+                put(el, line);
+                CC.show(el, line !== '');
+              };
+              // the MATCH line's player-ship sentence (the server words it; '' or absent = no line)
+              const renderPilotShip = (s) => {
+                const line = typeof s.pilotShipLine === 'string' ? s.pilotShipLine : '';
+                const el = CC.el('pilot-ship');
+                put(el, line);
+                CC.show(el, line !== '');
+              };
 
               CC.register({
                 name: 'players',
@@ -759,6 +789,8 @@ final class OpsConsoleJsPlayers {
                   renderKept(s);
                   renderShips(s);
                   renderCustoms(s);
+                  renderMagicSeam(s);
+                  renderPilotShip(s);
                   noteWatch(s);
                   applyBar();
                 },

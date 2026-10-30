@@ -23,6 +23,20 @@ public final class AwsdSnapshotMessage {
 
     public static final String MESSAGE_ID = "server.world_snapshot.awsd_delta_keyframe";
     /**
+     * v14 = the pilot triple:
+     *the serve's per-hull pilot mark (u8 pilotSeat, 0 = no
+     * mark, seats 1..255; u8 pilotMask = the applied ability bits, slot k = bit k; u8 pilotFlags,
+     * bit 0 = the pilot's MagicLib decision is followed on this hull) on the maneuver record.
+     * KEYFRAME +3 B after fighterRatePct (65 to 68 B); DELTA: the last free section bit becomes
+     * SECTION_EXT = 0x80, followed by ONE u8 extMask whose EXT_PILOT = 0x01 carries all three
+     * ABSOLUTE bytes while the triple differs from the anchor (+4 B on such deltas only;
+     * hold-last otherwise; any other ext bit refused fail-closed; seat 0 with a non-zero mask
+     * or flags refused). Why: a
+     * remote client's copy of a piloted hull must carry the same mark the serve's mod reads, the
+     * very tick it changes, so the mod's per-hull ability behaviour shows on every window;
+     * v13 = the 2-byte pilot pair (seat, mask; EXT_PILOT 2 B), never shipped — the third byte
+     * rides a NEW version number so a pair-reading kit refuses a triple frame by version (the
+     * reader's strict single-version throw) instead of misparsing its records;
      * v12 = the fighter-replacement percent: ONE u8 after the CR block on
      * the KEYFRAME only (0..100 panel-arithmetic percent | 0xFF absent; deltas hold-last;
      * KEYFRAME 64 to 65 B) - the served fighter panel's rate line;
@@ -75,7 +89,7 @@ public final class AwsdSnapshotMessage {
      * migrated (v2/v3 DID ship; their retirement is the same one-kit law, recorded
      * at the golden contract).
      */
-    public static final int SCHEMA_VERSION = 12;
+    public static final int SCHEMA_VERSION = 14;
     public static final String CODEC_OWNER = "server.protocol.awsd_snapshot.codec";
     public static final String VALIDATION_OWNER = "server.protocol.awsd_snapshot.validation";
     /**
@@ -85,7 +99,7 @@ public final class AwsdSnapshotMessage {
      */
     public static final String RELEVANCE_RULE_ID = "awsd_snapshot.owner_visibility_scoped";
     public static final String COMPATIBILITY_PREDICATE_ID =
-            "awsd_snapshot_schema_v12_delta_keyframe_compatible";
+            "awsd_snapshot_schema_v14_delta_keyframe_compatible";
     public static final String FAILURE_CODE = "AWSD_SNAPSHOT_PROTOCOL_REJECTED";
     public static final ProtocolDataClass DATA_CLASS = ProtocolDataClass.REPLACEABLE_SNAPSHOT;
 

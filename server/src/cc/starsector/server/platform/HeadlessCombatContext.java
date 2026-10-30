@@ -2182,7 +2182,7 @@ public final class HeadlessCombatContext implements AutoCloseable {
             throw new HeadlessCombatContextException("CombatUI was already bound; refusing to overwrite");
         }
         Object messageWidget = null;
-        InvocationHandler handler = new DefaultProxyHandler("HeadlessCombatUiProxy", boundaryLabel, true);
+        InvocationHandler handler = new DefaultProxyHandler(DefaultProxyHandler.COMBAT_UI_PROXY_LABEL, boundaryLabel, true);
         if (c.rawMessageWidget != null) {
             messageWidget = seedMessageWidgetFields(c);
             selfCheckMessageWidgetStringPost(messageWidget);
@@ -2749,6 +2749,16 @@ public final class HeadlessCombatContext implements AutoCloseable {
     }
 
     private static final class DefaultProxyHandler implements InvocationHandler {
+        /** The combat-UI proxy's label (the one proxy whose {@code isHideHud()} the HUD-dark rule applies to). */
+        static final String COMBAT_UI_PROXY_LABEL = "HeadlessCombatUiProxy";
+        /**
+         * HUD-dark: the headless serve has no screen, so its combat-UI proxy answers {@code isHideHud()} TRUE and
+         * the engine's {@code isUIShowingHUD()} reads false. WHY: with the proxy's default false, "HUD showing"
+         * was TRUE on the serve and a mod's HUD widgets gated only by "this is the player's ship" would draw on
+         * the sim thread once a human-flown hull counts as the player's. Diagnosis only: {@code -Dcc.hud.show=true}
+         * restores the pre-HUD-dark answer. Main-written (HUD-dark first; measured on the mods proof rig).
+         */
+        static final boolean HUD_HIDDEN = !Boolean.getBoolean("cc.hud.show");
         private final String label;
         private final String boundaryLabel;
         private final boolean listReturnsEmpty;
@@ -2763,6 +2773,9 @@ public final class HeadlessCombatContext implements AutoCloseable {
         public Object invoke(Object proxy, Method method, Object[] args) {
             if (Object.class.equals(method.getDeclaringClass())) {
                 return invokeObject(proxy, method, args);
+            }
+            if (HUD_HIDDEN && COMBAT_UI_PROXY_LABEL.equals(label) && "isHideHud".equals(method.getName())) {
+                return Boolean.TRUE;
             }
             if (listReturnsEmpty && List.class.isAssignableFrom(method.getReturnType())) {
                 return Collections.emptyList();

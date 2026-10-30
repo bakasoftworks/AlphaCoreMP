@@ -113,7 +113,17 @@ public final class OpsSnapshot {
     public record SeatRow(int seatId, String clientId, String endpoint, String ship,
             boolean live, long txBytes, long rxBytes, long txBps, long rxBps, int ctrlDepth,
             String name, String custom, String customHull, int customOp, String customName,
-            String customs, String cidKey) {
+            String customs, String cidKey, String magic, String magicWhy) {
+        /** The pre-MagicLib arity - {@code magic} / {@code magicWhy} read
+         *  {@code ""} (the writer said nothing about MagicLib for this seat). */
+        public SeatRow(int seatId, String clientId, String endpoint, String ship,
+                boolean live, long txBytes, long rxBytes, long txBps, long rxBps, int ctrlDepth,
+                String name, String custom, String customHull, int customOp, String customName,
+                String customs, String cidKey) {
+            this(seatId, clientId, endpoint, ship, live, txBytes, rxBytes, txBps, rxBps,
+                    ctrlDepth, name, custom, customHull, customOp, customName, customs, cidKey, "", "");
+        }
+
         /** The pre-P27-wave-3 arity (no cid key). */
         public SeatRow(int seatId, String clientId, String endpoint, String ship,
                 boolean live, long txBytes, long rxBytes, long txBps, long rxBps, int ctrlDepth,
@@ -331,7 +341,10 @@ public final class OpsSnapshot {
                     // The OPTIONAL accepted-id list (same law).
                     kv.getOrDefault(p + "customs", ""),
                     // The OPTIONAL cid key (same law).
-                    kv.getOrDefault(p + "cidkey", "")));
+                    kv.getOrDefault(p + "cidkey", ""),
+                    // The OPTIONAL MagicLib cell + its reason ("" = absent).
+                    magicToken(kv, p + "magic", MAGIC_CELLS),
+                    magicToken(kv, p + "magic_why", MAGIC_WHYS)));
         }
         return new OpsSnapshot(kv, seats, parseBanRows(kv));
     }
@@ -372,6 +385,45 @@ public final class OpsSnapshot {
     /** P27: the carried {@code ban.<i>} rows (empty for a pre-P27 writer or {@code bans=0}). */
     public List<BanRow> banRows() {
         return banRows;
+    }
+
+    /** The {@code seat.N.magic=} words the writer emits. */
+    private static final java.util.Set<String> MAGIC_CELLS = java.util.Set.of(OpsStatusFile.MAGIC_FOLLOWS,
+            OpsStatusFile.MAGIC_REPORTS, OpsStatusFile.MAGIC_NONE);
+    /** The {@code seat.N.magic_why=} words the writer emits (the predicate's reasons, {@code -} when followed). */
+    private static final java.util.Set<String> MAGIC_WHYS = java.util.Set.of(OpsStatusFile.MAGIC_NONE,
+            cc.starsector.server.runtime.MagicSeamFollow.WHY_HOST_OFF,
+            cc.starsector.server.runtime.MagicSeamFollow.WHY_NOT_APPLIED,
+            cc.starsector.server.runtime.MagicSeamFollow.WHY_DOOR_UNARMED,
+            cc.starsector.server.runtime.MagicSeamFollow.WHY_NO_UP);
+
+    /** An OPTIONAL MagicLib seat word - absent = {@code ""}; a present word
+     *  outside {@code allowed} fails closed (the optional-key law: a malformed value is a half-formed file). */
+    private static String magicToken(Map<String, String> kv, String key, java.util.Set<String> allowed) {
+        String v = kv.get(key);
+        if (v == null) {
+            return "";
+        }
+        if (!allowed.contains(v)) {
+            throw new IllegalArgumentException(key + " is not one of " + new java.util.TreeSet<>(allowed) + ": "
+                    + PeerText.bound(v, 32));
+        }
+        return v;
+    }
+
+    /** {@code magic_seam=} - the serve's MagicLib seam receipt as written
+     *  ({@code off} | {@code armed} | {@code applied:<hex>} | {@code disarmed:<reason>} | {@code unset} = no
+     *  receipt), or {@code ""} when the writer carries no seam rows (a pre-seam serve). */
+    public String magicSeam() {
+        return kv.getOrDefault("magic_seam", "");
+    }
+
+    /** {@code pilot_ship=} - the serve's player-ship receipt as written
+     *  ({@code off} | {@code armed} | {@code applied:<classes>} | {@code refused:<reason>} | {@code latched:<reason>}
+     *  | {@code unset} = no receipt), or {@code ""} when the writer carries no such row (an older serve). Read
+     *  verbatim, the {@link #magicSeam} way: only the MATCH line words it. */
+    public String pilotShip() {
+        return kv.getOrDefault("pilot_ship", "");
     }
 
     /** An OPTIONAL int key: absent = {@code fallback}; present-but-malformed still fails closed. */

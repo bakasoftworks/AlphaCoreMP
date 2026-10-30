@@ -250,6 +250,7 @@ final class PidsHello13 {
                 "", bits, seal.cookie());
         boolean probe = clear.probe();
         Hs13 hs = new Hs13();
+        hs.magicBits = seal.flags() & (Handshake13.FLAG_MAGIC_UP | Handshake13.FLAG_MAGIC_REPLICA);
         DoorGuessLedger.Verdict verdict = null; // assigned below on every path that reaches the open
         boolean rechallenge = false;
         lookup:
@@ -455,6 +456,11 @@ final class PidsHello13 {
          *  door ignores it at the claim). A byte outside 0..2 never lands here: it fails the body decode.
          * */
         int team = 0;
+        /** The F2's MagicLib report bits ({@code FLAG_MAGIC_UP | FLAG_MAGIC_REPLICA} of the parsed flags, 0x00..0x18):
+         *  the joiner's own claims about its game, read from the cleartext head the AEAD binds; copied onto the
+         *  admitted session by {@link #onAdmittedLocked}, never into the cleartext {@code HelloPayload} the reject
+         *  paths share. */
+        int magicBits;
         /** The salt {@link #sealWelcome} drew — kept for {@link #onAdmittedLocked}'s session root. */
         private byte[] doorSalt;
 
@@ -490,6 +496,7 @@ final class PidsHello13 {
             nonces.put(session.helloNonce, session.sessionId, cookieBucket, session.peer); // peer: D3's case (ii)
             session.hs13SessionRoot = Handshake13.sessionRoot(root, doorSalt);
             session.hs13AuthScalar = auth.scalar();
+            session.helloMagicBits = magicBits;
         }
     }
 }

@@ -164,12 +164,22 @@ public final class ServerOpsCore {
     /** The {@link #SEAT_COLUMNS} name of
      *  the cid-key cell (the Swing view + the page skip it; {@link #seatTableRow} fills it LAST). */
     public static final String CIDKEY_COLUMN = "cidkey";
+    /** The {@link #SEAT_COLUMNS} name of the seat's MagicLib cell. */
+    public static final String MAGIC_COLUMN = "MagicLib";
+    /** The {@link #SEAT_COLUMNS} name of the MagicLib cell's why words
+     *  ({@link #magicWhyWords}); model-only like {@link #CIDKEY_COLUMN} - the page shows it as a title. */
+    public static final String MAGIC_WHY_COLUMN = "MagicLib why";
 
     /** Seats-table column set ({@link #seatTableRow} rows match it index-for-index). */
     public static final String[] SEAT_COLUMNS = {
             // "name" = the wire-announced player name (blank = none yet).
             "seat", "name", "client", "ship", "endpoint", "live",
             "tx/s", "rx/s", "tx total", "rx total", "ctrl",
+            // The seat's MagicLib cell (seat.N.magic: follows |
+            // reports | -; "" = a pre-seam writer) and, beside it, the host words for WHY a reporting
+            // seat is not followed ("" otherwise). The why is a DATA column: the page reads it into the
+            // MagicLib cell's title and has no cell of its own for it (its row template carries none).
+            MAGIC_COLUMN, MAGIC_WHY_COLUMN,
             // W15 v0: the seat's FLYING custom id ("" = a stock hull);
             // the ops file's seat.N.custom row verbatim — the id is server-minted, never author text.
             "custom",
@@ -1063,9 +1073,152 @@ public final class ServerOpsCore {
                 bpsText(s.txBps()), bpsText(s.rxBps()),
                 bytesText(s.txBytes()), bytesText(s.rxBytes()),
                 s.ctrlDepth(),
+                s.magic() == null ? "" : s.magic(),
+                magicWhyWords(s.magic(), s.magicWhy()),
                 s.custom() == null ? "" : s.custom(),
                 s.customs() == null ? "" : s.customs(),
                 s.cidKey() == null ? "" : s.cidKey()
+        };
+    }
+
+    /**
+     * The host words for the {@link #MAGIC_WHY_COLUMN} cell - WHY a seat whose
+     * game reports its MagicLib states ({@code magic} = {@link OpsStatusFile#MAGIC_REPORTS}) is not followed, from the
+     * status file's {@code seat.N.magic_why} token (the serve's own FOLLOW predicate wrote it; this only words it).
+     * {@code ""} for a followed seat, a seat that reports nothing, a pre-seam writer, or a token without host words
+     * ({@code no_up} cannot pair with {@code reports}: that seat's game sent no MagicLib flag).
+     */
+    static String magicWhyWords(String magic, String magicWhy) {
+        if (!OpsStatusFile.MAGIC_REPORTS.equals(magic) || magicWhy == null) {
+            return "";
+        }
+        return switch (magicWhy) {
+            case cc.starsector.server.runtime.MagicSeamFollow.WHY_HOST_OFF -> "host switch off";
+            case cc.starsector.server.runtime.MagicSeamFollow.WHY_NOT_APPLIED -> "MagicLib unchanged on the server";
+            case cc.starsector.server.runtime.MagicSeamFollow.WHY_DOOR_UNARMED -> "the mod check is off for this match";
+            default -> "";
+        };
+    }
+
+    /** The MATCH line's shared head ({@link #magicSeamLineText}). */
+    static final String MAGIC_SEAM_LINE_HEAD = "MagicLib abilities follow the pilot: ";
+
+    /**
+     * The ops GUI's MATCH-line sentence from the status file's
+     * {@code magic_seam=} receipt ({@link OpsSnapshot#magicSeam}): {@code applied:<hex>} = on; {@code off} = off
+     * (host switch); {@code disarmed:<reason>} = off, in HOST words ({@link #magicDisarmWords}: the rewriter's token
+     * is a developer receipt, never a sentence a host can act on); {@code armed} /
+     * {@code unset} = off (MagicLib not in this match: the seam never met a MagicLib to change). {@code ""} - no
+     * line - for no snapshot, a pre-seam writer (no key) or a receipt outside that set. WHY the receipt alone: it
+     * is the serve's own record of what happened to MagicLib at its boot; whether each seat is followed is the
+     * per-seat cell's business.
+     */
+    static String magicSeamLineText(OpsSnapshot snap) {
+        String receipt = snap == null ? "" : snap.magicSeam();
+        if (receipt.startsWith(cc.starsector.server.transform.TransformRegistry.MAGIC_SEAM_RECEIPT_APPLIED_PREFIX)) {
+            return MAGIC_SEAM_LINE_HEAD + "on";
+        }
+        if (cc.starsector.server.transform.TransformRegistry.MAGIC_SEAM_RECEIPT_OFF.equals(receipt)) {
+            return MAGIC_SEAM_LINE_HEAD + "off (host switch)";
+        }
+        if (receipt.startsWith(cc.starsector.server.transform.TransformRegistry.MAGIC_SEAM_RECEIPT_DISARMED_PREFIX)) {
+            String reason = receipt.substring(
+                    cc.starsector.server.transform.TransformRegistry.MAGIC_SEAM_RECEIPT_DISARMED_PREFIX.length());
+            return MAGIC_SEAM_LINE_HEAD + "off (" + magicDisarmWords(reason) + ")";
+        }
+        if (cc.starsector.server.transform.TransformRegistry.MAGIC_SEAM_RECEIPT_ARMED.equals(receipt)
+                || OpsStatusFile.MAGIC_SEAM_UNSET.equals(receipt)) {
+            return MAGIC_SEAM_LINE_HEAD + "off (MagicLib not in this match)";
+        }
+        return "";
+    }
+
+    /**
+     * The host words for a {@code disarmed:<reason>} receipt (the MagicLib seam plan's released text, the ops GUI
+     * match line). The rewriter's reasons fall in two families: the
+     * MagicLib build was not one the seam knows ({@code window_absent} / {@code window_repeated} = the fork window
+     * is not where the known builds put it; {@code not_allowlisted} = a build outside the verified set) = "version
+     * not recognised", the host's action is a MagicLib the seam knows; everything else ({@code hook_*},
+     * {@code call_count}, {@code self_check}, {@code error:<X>}) = the serve's own check failed, the token kept
+     * (bounded) because it names the failing step for a bug report. The tokens are literals here, not the rewriter's
+     * {@code MagicSeamRewriter.REASON_*} constants: server/compat is compiled into cc-premain.jar only, never onto the
+     * ops GUI's classpath (server/build.ps1 $CompatClasses); the status-file token is already a string contract the
+     * console selftest pins. Pure - locked by that selftest.
+     */
+    static String magicDisarmWords(String reason) {
+        return switch (reason) {
+            case "window_absent", "window_repeated", "not_allowlisted" -> "MagicLib version not recognised";
+            default -> "the server's MagicLib check failed: " + PeerText.bound(reason, 64);
+        };
+    }
+
+    /** The MATCH line's player-ship head ({@link #pilotShipLineText}). */
+    static final String PILOT_SHIP_LINE_HEAD = "Each pilot's ship counts as the player's: ";
+
+    /**
+     * The ops GUI's second MATCH-line sentence, from the status file's
+     * {@code pilot_ship=} receipt ({@link OpsSnapshot#pilotShip}), the {@link #magicSeamLineText} mirror:
+     * {@code applied:<k>} = on, with k (the script classes the premain redirected so far - vanilla script classes
+     * the redirect rewrites count, the engine's own ship-class wrap does not - a non-negative count; an unreadable
+     * count still reads on, the prefix alone being the receipt's "live" test); {@code armed} = on with no script
+     * class redirected yet; {@code off} = off; {@code refused:<reason>} = off because the start-time check refused
+     * the switch, in host words ({@link #pilotShipRefusedWords}); {@code latched:<reason>} = off because the window
+     * switched itself off after a fault this match (every latch reason reads the same: the host's action is one).
+     * The refused branch is unreachable today - every refusal ends the serve's JVM before it writes a status file
+     * (the start-time gate refuses the launch, the load-time wrap halts) - and stays so a future refusal that
+     * does not halt reads in host words, never a raw token. {@code ""} - no line - for no snapshot, an older
+     * writer (no key), {@code unset} (nothing decided the switch, e.g. a serve without the premain) or a receipt
+     * outside that set. WHY no seat column: the window marks each seat's hull automatically, so the match-level
+     * receipt is the whole story.
+     */
+    static String pilotShipLineText(OpsSnapshot snap) {
+        String receipt = snap == null ? "" : snap.pilotShip();
+        if (receipt.startsWith(cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_RECEIPT_APPLIED_PREFIX)) {
+            String k = receipt.substring(
+                    cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_RECEIPT_APPLIED_PREFIX.length());
+            if (k.isEmpty() || k.length() > 9 || !k.chars().allMatch(c -> c >= '0' && c <= '9')) {
+                return PILOT_SHIP_LINE_HEAD + "on";
+            }
+            int n = Integer.parseInt(k);
+            return PILOT_SHIP_LINE_HEAD + (n == 0 ? "on (no script class yet)"
+                    : n == 1 ? "on (1 script class)" : "on (" + n + " script classes)");
+        }
+        if (cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_RECEIPT_ARMED.equals(receipt)) {
+            return PILOT_SHIP_LINE_HEAD + "on (no script class yet)";
+        }
+        if (cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_RECEIPT_OFF.equals(receipt)) {
+            return PILOT_SHIP_LINE_HEAD + "off";
+        }
+        if (receipt.startsWith(cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_RECEIPT_REFUSED_PREFIX)) {
+            String reason = receipt.substring(
+                    cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_RECEIPT_REFUSED_PREFIX.length());
+            return PILOT_SHIP_LINE_HEAD + "off (the start-time check refused the switch: "
+                    + pilotShipRefusedWords(reason) + ")";
+        }
+        if (receipt.startsWith(cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_RECEIPT_LATCHED_PREFIX)) {
+            return PILOT_SHIP_LINE_HEAD + "off (switched off for this match after a fault)";
+        }
+        return "";
+    }
+
+    /**
+     * The host words for a {@code refused:<reason>} player-ship receipt. The
+     * refusal reasons fall in two families: the engine's ship code is not the one the window was built against
+     * ({@code ship_fingerprint} / {@code golden_mismatch} from the start-time gate; {@code not_target},
+     * {@code self_check}, {@code window_repeated}, {@code window_absent} / {@code class_version} from the load-time
+     * wrap) = "game version not recognised", the host's action is a server that matches the game or the switch off;
+     * the server's own helper classes are absent or the wrong shape ({@code holder_missing} / {@code holder_abi}) =
+     * "server files incomplete", the host's action is a whole server install. Any other token ({@code error:<X>}
+     * from either step included) is kept (bounded) because it names the failing step for a bug report. The tokens
+     * are spelled where the premain publishes them (no constant per token exists to share). Pure - locked by the
+     * console selftest.
+     */
+    static String pilotShipRefusedWords(String reason) {
+        return switch (reason) {
+            case "ship_fingerprint", "golden_mismatch", "not_target", "self_check", "window_repeated",
+                    "window_absent", "class_version" -> "game version not recognised";
+            case "holder_missing", "holder_abi" -> "server files incomplete";
+            default -> PeerText.bound(reason, 64);
         };
     }
 
@@ -2250,6 +2403,11 @@ public final class ServerOpsCore {
         sb.append(",\"customs\":\"").append(jsonEscape(customsSummaryText(snap)))
                 .append("\",\"customsDetail\":\"").append(jsonEscape(customsDetailText(snap)))
                 .append("\",\"customSubmissions\":").append(snap != null && snap.customSubmissions());
+        // The MATCH line's MagicLib sentence ("" = the page shows no line); a
+        // previous server's leftover file says nothing about this match, so it carries none.
+        sb.append(",\"magicSeamLine\":\"").append(jsonEscape(leftover ? "" : magicSeamLineText(snap))).append('"');
+        // The MATCH line's player-ship sentence, the same leftover law.
+        sb.append(",\"pilotShipLine\":\"").append(jsonEscape(leftover ? "" : pilotShipLineText(snap))).append('"');
         // The page's Kept / Exported lists - the status file's kept
         // rows (OpsSnapshot's optional keys: 0 / [] / "-" / false without a snapshot or from a pre-kept writer),
         // every string through jsonEscape; the page renders them as textContent only.
@@ -2381,6 +2539,14 @@ public final class ServerOpsCore {
      * {@code OpsMatchRows.rngPinsFieldPrefill}: an absent row = {@code "on"}, the compiled default). Pinned by
      * {@code config-rngpins}.
      *
+     * <p>{@code magicSeam} follows {@code rngPins}
+     * ({@code OpsMatchRows.magicSeamFieldPrefill}: an absent row = {@code "on"}, the serve's compiled default).
+     * Pinned by {@code config-magicseam}.
+     *
+     * <p>{@code pilotShip} follows {@code magicSeam}
+     * ({@code OpsMatchRows.pilotShipFieldPrefill}: an absent row = {@code "off"}, the serve's compiled default).
+     * Pinned by {@code config-pilotship}.
+     *
      * <p>{@code pvp} = {@link #selectedPvpWord} (on|off of the selected
      * option's shape; no props row), right after {@code uplinkDefault}, before {@code seatsPerSource}. Pinned by
      * {@code web-start-pvp}.
@@ -2445,8 +2611,8 @@ public final class ServerOpsCore {
      */
     public static String configJson(Path propsFile, double uplinkDefault, OpsSetupDraft.Draft draft) {
         String json = configJsonBody(propsFile, uplinkDefault);
-        // the draft members lead the object: every adjacency the config rows pin (allSkills-rngPins-selectedIndex,
-        // the selected facts before options, the closing "}]}") stays byte-identical, and a page reading members
+        // the draft members lead the object: every adjacency the config rows pin
+        // (allSkills-rngPins-magicSeam-pilotShip-selectedIndex, the selected facts before options, the closing "}]}") stays byte-identical, and a page reading members
         // by name is indifferent to the position
         return "{" + OpsSetupDraft.jsonMembers(draft) + "," + json.substring(1);
     }
@@ -2556,6 +2722,8 @@ public final class ServerOpsCore {
                 .append("\",\"seatsPerSource\":\"").append(jsonEscape(OpsMatchRows.seatsPerSourceFieldPrefill(propsLines)))
                 .append("\",\"allSkills\":\"").append(jsonEscape(OpsMatchRows.allSkillsFieldPrefill(propsLines)))
                 .append("\",\"rngPins\":\"").append(jsonEscape(OpsMatchRows.rngPinsFieldPrefill(propsLines)))
+                .append("\",\"magicSeam\":\"").append(jsonEscape(OpsMatchRows.magicSeamFieldPrefill(propsLines)))
+                .append("\",\"pilotShip\":\"").append(jsonEscape(OpsMatchRows.pilotShipFieldPrefill(propsLines)))
                 .append("\",\"selectedIndex\":").append(opts.selectedIndex())
                 .append(',').append(selectedFacts)
                 .append(",\"options\":[").append(options).append("]}");

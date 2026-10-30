@@ -378,6 +378,12 @@ public final class LaneFollow {
      * {@code [cc-transform]} rows never match). */
     private static final Pattern EXCEPTION_LINE =
             Pattern.compile("^[A-Za-z_$][\\w.$]*(Exception|Error)\\b.*");
+    /** A premain seam's refusal row, {@code [cc-premain] <seam>: refused
+     * <token>; ...} (group 1 = the seam, group 2 = the token, maybe empty). A refused seam ends the JVM inside the
+     * agent, and the JVM's own trace then opens with {@code Exception in thread "main"} and a {@code Caused by:}
+     * line, neither of which {@link #EXCEPTION_LINE} matches: this row is the only line that names the cause. */
+    private static final Pattern PREMAIN_REFUSAL_LINE =
+            Pattern.compile("^\\[cc-premain\\] ([a-z]+): refused\\b *([^;\\s]*).*");
 
     /**
      * Pure (selftest-pinned): the receipt rows ({@code run-supervised.ps1} grammar — {@code life=N
@@ -412,17 +418,48 @@ public final class LaneFollow {
         return life > 0 && exit != 0 ? new LifeFailure(life, exit, exhausted, "") : null;
     }
 
-    /** The first stack-trace head line of a life's stderr, as ONE printable ASCII line (≤ 320
-     * chars: the key gate's 253-char line survives whole), reading at most the
-     * file's first 64 KB; none/missing = {@code ""}. */
+    /** The first head line of a life's stderr, as ONE printable ASCII line (≤ 320 chars, so the
+     * key gate's 253-char line survives whole), reading at most the file's first
+     * 64 KB; none/missing = {@code ""}. Two heads count and the first in file order wins: a stack
+     * trace's first line ({@link #EXCEPTION_LINE}) as printed, and a premain seam's refusal row
+     * ({@link #PREMAIN_REFUSAL_LINE}) in host words ({@link #premainRefusalHostLine}). The seam
+     * prints its row and only then throws out of the agent, so a refusal row precedes the trace it
+     * causes: the cause wins over its consequence. */
     public static String firstExceptionLine(Path errLog) {
         for (String line : readHead(errLog, 65_536).lines().toList()) {
             String t = line.trim();
             if (EXCEPTION_LINE.matcher(t).matches()) {
                 return oneLine(t, 320);
             }
+            Matcher refused = PREMAIN_REFUSAL_LINE.matcher(t);
+            if (refused.matches()) {
+                return oneLine(premainRefusalHostLine(refused.group(1), refused.group(2), t), 320);
+            }
         }
         return "";
+    }
+
+    /**
+     * A premain refusal row in host words. The player-ship
+     * seam's token reads through {@link ServerOpsCore#pilotShipRefusedWords}, and the remedy follows
+     * the words' family: a game the window does not recognise needs the server package that
+     * matches it, and on an unchanged game the switch off starts; incomplete server files need a
+     * reinstall; any other token keeps the switch-off remedy the row itself names. Another seam's
+     * row, or a player-ship row with no token, passes through as printed.
+     */
+    private static String premainRefusalHostLine(String seam, String token, String row) {
+        if (!"pilotship".equals(seam) || token.isEmpty()) {
+            return row;
+        }
+        String words = pilotShipRefusedWords(token);
+        String key = cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY;
+        String remedy = switch (words) {
+            case "game version not recognised" -> "; a game update needs the matching server package;"
+                    + " on an unchanged game, set " + key + "=false";
+            case "server files incomplete" -> "; reinstall the server package";
+            default -> "; set " + key + "=false to start";
+        };
+        return words + remedy;
     }
 
     /**

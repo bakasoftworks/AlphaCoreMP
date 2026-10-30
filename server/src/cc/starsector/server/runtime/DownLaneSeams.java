@@ -473,6 +473,12 @@ final class DownLaneSeams {
                 + " posture_rate_drop=" + door.postureEchoRateDropped()
                 // appended field only: PDCLs dropped at a full per-session pending FIFO
                 // (MAX_PENDING_DECLARATIONS) — write-only since birth. Reader = UpDoorLivenessRateRows PF1.
-                + " pdcl_fifo_drop=" + door.declarationsDropped();
+                + " pdcl_fifo_drop=" + door.declarationsDropped()
+                // human-pilot mark arrays written /
+                // removed, and ability-bit frames absorbed by the post-re-point edge quarantine, summed
+                // across owned ships (per-round, >= 0).
+                + " pilot_mark_writes=" + summary.pilotMarkWrites()
+                + " pilot_mark_clears=" + summary.pilotMarkClears()
+                + " ability_edge_quarantined=" + summary.abilityEdgeQuarantined();
     }
 }

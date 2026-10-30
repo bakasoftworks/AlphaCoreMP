@@ -100,9 +100,11 @@ public record PilotIntentFrame(
         int activeTubeOrdinal) {
 
     /**
-     * Widest valid {@link #heldControls} bit range (bits 0..12: the 7 movement bits 0..6 + the {@link #USE_SHIP_SYSTEM}
+     * Widest valid {@link #heldControls} bit range (bits 0..20: the 7 movement bits 0..6 + the {@link #USE_SHIP_SYSTEM}
      * bit 7 + the {@link #VENT_FLUX} bit 8 + the {@link #RETREATING} bit 9 + the {@link #SHIELD_ON} bit 10 + the
-     * {@link #PHASE_CLOAK} bit 11 + the {@link #PULL_BACK_FIGHTERS} bit 12). The low
+     * {@link #PHASE_CLOAK} bit 11 + the {@link #PULL_BACK_FIGHTERS} bit 12 + the eight mod-ability slots
+     * {@link #ABILITY_SLOTS_MASK} bits 13..20). Bit 21 and above are refused by the record constructor, so a decode
+     * of a frame carrying one fails (the serve drops that session as corrupt, never a crash). The low
      * 7 bits carry one of two
      * lane-specific MOVEMENT meanings, BOTH of which fit in bits 0..6:
      * <ul>
@@ -119,7 +121,7 @@ public record PilotIntentFrame(
      * Both lanes share this wire shape byte-for-byte; only the consuming code differs, so every off-engine
      * byte-identity proof still holds. The two never mix at runtime (different mission/gate/plugin).
      */
-    public static final int HELD_CONTROLS_MASK = 0x1FFF; // bits 0..12 (7 movement ordinals + ship-system + vent-flux + retreating + shield + phase-cloak + pull-back-fighters)
+    public static final int HELD_CONTROLS_MASK = 0x1FFFFF; // bits 0..20 (7 movement ordinals + ship-system + vent-flux + retreating + shield + phase-cloak + pull-back-fighters + 8 ability slots)
 
     /**
      * The ship-system ACTIVATION bit (bit 7), carried on {@code heldControls} ABOVE the
@@ -263,6 +265,54 @@ public record PilotIntentFrame(
     public static final int PULL_BACK_FIGHTERS = 1 << 12; // 0x1000
 
     /**
+     * The eight MOD-ABILITY slot bits (bits 13..20; slot K = {@code ABILITY_SLOT_0 << K}), carried on
+     * {@code heldControls} above {@link #PULL_BACK_FIGHTERS} by the same bit-7..12 precedent: a new SET of valid
+     * {@code heldControls} values, not a new field — zero wire bytes, schema/CRC/frame-width unchanged.
+     *
+     * <p><b>Accepted-state law</b> (the {@link #USE_SHIP_SYSTEM} law, one owner removed): slot K is a LEVEL bit that
+     * is set while a mod's own ability K is IN or ACTIVE on the client's native-flown own ship, as that MOD already
+     * accepted it — the client never sets it from a keypress. The kit learns it two ways, ORed at send as
+     * {@code (mask & 0xFF) << 13}: an adopting mod writes an {@code Integer} mask into its own ship's
+     * {@code customData["cc_client.abilityLocal"]} each frame and the kit reads that key after the mod's plugins
+     * advanced; for a NON-adopting MagicLib ability the kit's own reader ({@code MagicLocalStateReader.bitsFor})
+     * reads the ability's state through MagicLib's public methods.
+     *
+     * <p><b>Mod-side meaning</b>: the serve NEVER applies these bits to the engine. It copies the slot mask into the
+     * seat's OWN hull as {@code customData["cc_client.pilot"] = int[]{seatId, abilityMask, 0, flags}} (role 0 = the
+     * serve's own mark; flags bit 0 = FOLLOW, {@code MagicSeamFollow}; {@code PilotCommandApplier} is the one write
+     * site) on every applied intent
+     * frame (before the engine advances, so a mod's every-frame plugin sees it the same tick), and removes that key
+     * on every edge the seat leaves the hull; a mod's own subclass reads it to drive its ability for a human pilot,
+     * and its ABSENCE means the hull is AI-flown. After a hull change the mask reads 0 until five consecutive applied
+     * frames carried no ability bit (the post-re-key edge quarantine, the {@link #RETREATING} precedent).
+     *
+     * <p><b>Latch</b>: a one-frame pulse would be lost when several frames arrive inside one deposit-take window, so
+     * the serve's ingest OR-latch stretches these bits exactly as it does bit 7 — the worst case is a cancel arriving
+     * one take window (at most one tick) late, on the sender's OWN hull only.
+     *
+     * <p><b>Handshake gate</b>: a serve whose {@link #HELD_CONTROLS_MASK} stops at bit 12 refuses these bits at
+     * decode and drops the session as corrupt, so the bits ride handshake version 15: an older kit meets the
+     * {@code kit_outdated} rejection at HELLO instead.
+     */
+    public static final int ABILITY_SLOT_SHIFT = 13;
+    public static final int ABILITY_SLOT_COUNT = 8;
+    public static final int ABILITY_SLOT_0 = 1 << ABILITY_SLOT_SHIFT; // 0x2000
+    public static final int ABILITY_SLOTS_MASK = 0xFF << ABILITY_SLOT_SHIFT; // 0x1FE000
+
+    /**
+     * The send-side fold of a mod's {@code customData["cc_client.abilityLocal"]} value into the
+     * {@link #ABILITY_SLOTS_MASK} bits: an {@code Integer} contributes its low eight bits shifted to bit 13
+     * (anything above bit 7 of the mod's mask is dropped, never smeared into bit 21 and up), and every other value
+     * (null = the mod wrote nothing, or a non-{@code Integer} the mod mistyped) folds to 0, so a bad value can
+     * never put an unaccepted bit on the wire. WHY here: this class ships in the client kit as well, so the one
+     * pure fold is shared by the kit's reader and the server's contract rows; the caller counts the non-Integer
+     * case itself. Pure, never throws.
+     */
+    public static int foldAbilityLocal(Object value) {
+        return value instanceof Integer ? (((Integer) value) & 0xFF) << ABILITY_SLOT_SHIFT : 0;
+    }
+
+    /**
      * The {@link #targetWireId} sentinels (negatives are free — the {@code shipId >= 0}
      * invariant holds for every real wire id): {@link #TARGET_ABSENT} = legacy/synthetic producer
      * that never samples targets (the {@link #of} default — server skips designation entirely);
@@ -339,7 +389,7 @@ public record PilotIntentFrame(
         }
         if ((heldControls & ~HELD_CONTROLS_MASK) != 0) {
             throw new IllegalArgumentException(
-                    "heldControls has bits outside the valid range (0..11): " + heldControls);
+                    "heldControls has bits outside the valid range (0..20): " + heldControls);
         }
         if (selectedWeaponGroup < 0 && selectedWeaponGroup != SELECTED_GROUP_DESELECTED) {
             throw new IllegalArgumentException(

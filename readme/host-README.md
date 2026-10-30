@@ -18,7 +18,7 @@ Problems or questions: open an issue at https://github.com/bakasoftworks/AlphaCo
 
 ## What this is
 
-This folder runs an AlphaCoreMP server: it hosts multiplayer matches for players who use the AlphaCoreMP joiner kit, running the game engine headlessly from your own Starsector install. It brings its own Java runtime (the `jre` folder), so there is nothing else to install. The server has an ops GUI, the ops GUI, which you open with `ops-web.bat` (Windows) or `ops-web.sh` (Linux); it can also be reached over an SSH tunnel (see [The ops GUI](#the-ops-gui)) and is used for server configuration and management. AlphaCoreMP's own code is under the MIT License (see [Licenses](#licenses) at the end of this file).
+This folder runs an AlphaCoreMP server: it hosts multiplayer matches for players who use the AlphaCoreMP joiner kit, running the game engine headlessly from your own Starsector install. It brings its own Java runtime (the `jre` folder), so there is nothing else to install. The server has a browser page, the ops GUI, which you open with `ops-web.bat` (Windows) or `ops-web.sh` (Linux); it can also be reached over an SSH tunnel (see [The ops GUI](#the-ops-gui)) and is used for server configuration and management. AlphaCoreMP's own code is under the MIT License (see [Licenses](#licenses) at the end of this file).
 
 ## Contents
 
@@ -161,12 +161,43 @@ Players never need a match file: their join windows fetch the match from the ser
 
 ## Mods
 
-Mods: the server runs the same mods as the players and checks the list when they join. Looks-only and client-side mods work as they are. Mods that give ships extra abilities on their own hotkeys are not synced yet: the server fires those abilities by the mod's automatic logic instead of your key, so the two sides can disagree until a compatibility update lands.
+Mods: the server runs the same mods as the players and checks the list when they join. Most mods work as they are. The one thing to know: in a match a mod's battle code runs twice, on the server (whose result counts) and in each player's own game (which shows it). What that means, mod by mod, is under [Which mods work](#which-mods-work); MagicLib, LazyLib and LunaLib are under [LazyLib, LunaLib and MagicLib](#lazylib-lunalib-and-magiclib).
 
 - Extract each mod's folder into `serve-mods\` (Linux: `serve-mods/`), next to `CC_Client`, the server's own mod. The "Mods" tab lists what is there: set a mod to "required" (the server loads it; every player must have it), "optional" (players may run it; the server does not load it, for graphics-only mods such as GraphicsLib) or "off", then press "Start server". Without the ops GUI, write the ids into `cc-server.properties` (`mods.enabled=id1,id2` and `mods.optional=id3`; the id is the "id" in the mod's `mod_info.json`) and start `serve.bat` (Linux: `sh serve.sh`).
 - "Remove" sets the mod to off; to take it off the list, delete its folder from `serve-mods` while the server is stopped. Nothing in `serve-mods` is ever deleted by the server.
 - At every start the launcher enables the required mods together with the mods they declare as dependencies, writes `serve-mods\enabled_mods.json` (Linux: `serve-mods/enabled_mods.json`) and copies in any mod you added from another folder ("Add folder" in the "Mods" tab). A required mod missing from the searched folders refuses the start and names it (reason "mods").
 - Players need the same mods at the same version in their own `mods` folder: the joiner kit compares against the server's list before the game starts and tells them what is missing, and the server turns away a mismatched set. A mod that needs the game's graphics cannot be required: the server runs without a window.
+
+### Which mods work
+
+How a mod runs in a match: the server runs the real game without a window, so every mod script runs there (a weapon's on-hit effect, a missile's script, a hullmod, an every-frame plugin), and that run is the one that counts. Each player's game runs the same scripts again to show the battle. Ship hull, armor, flux, position and death always come from the server, so a scripted hit lands where the server says, and missiles and shots the server has are sent to players too. The two runs can differ only where a script depends on something the two computers do not share.
+
+Work as they are, once set to "required":
+
+- New ships, weapons, loadouts and factions, and mods that change ship stats or how the AI fights.
+- New ship systems: abilities on the game's own ship-system key.
+- Scripted weapons, missiles and effects that use the game's own damage, spawning and physics, even ones the base game has nothing like: the server runs the script and syncs its results. Untested mod by mod; a thing a script spawns (a drone, a sub-munition, a mine) may show twice on a player's screen for a moment, once from the server and once from that player's own run of the script.
+- LazyLib, and LunaLib and MagicLib as described below.
+
+Looks-only and client-side mods (graphics, sound, the screen layout) can be "optional": players may run them, and the server does not load them.
+
+Need care, and what each gets today:
+
+- "The player's ship": on the server, a mod's "player's ship" is an AI ship or a station, never the ship a player flies, so an effect a mod gives only the player's ship can differ between the server and the player's screen. "Each pilot's ship counts as the player's" (off as shipped; "Setup", "Before start", "Advanced"; `pilotship.enabled`) fixes this inside a ship's own hullmods, ship system and weapon every-frame scripts, but not in hit effects, battle-wide scripts, or scripts that read the keyboard or mouse, draw, or change the battle's speed. `pilotship.exclude=<mod folder, jar or script package names>` leaves those mods unchanged. MagicLib abilities have their own switch (below).
+- Hotkeys and the keyboard: on the server no key is ever down. An ability on a mod's own hotkey runs on the server by the mod's own AI, while each player's own screen runs it from the key; MagicLib-based ones follow the pilot instead. Reading keyboard events one by one, or the mouse, is not supported on the server.
+- Counters a mod keeps for itself (charges, cooldowns, timers) and random rolls: not sent to players; each run keeps its own, which can differ from the server's.
+- Mods that change the speed of the whole battle: not supported. The server keeps one clock for every player.
+- Campaign parts of a mod (the sector, markets, quests, its own missions): a match is a standalone battle, so they do nothing in it. A battle effect that depends on campaign progress is untested.
+
+### LazyLib, LunaLib and MagicLib
+
+- LazyLib: works on the server and in the players' games; nothing to do.
+- LunaLib: loads and runs on the server and in the players' games, and in a match it does nothing by itself. Two things to know:
+  - At every server start, LunaLib's version checker contacts GitHub and the update address of each enabled mod, from the server computer: outgoing HTTPS requests that read version files (LunaLib's own version-check setting does not stop them). If that matters to you, block outgoing HTTPS (TCP port 443) for this package's `jre\bin\java.exe` in your firewall (Linux: see [Linux](#linux-x86-64)).
+  - A mod's LunaLib settings are kept per install and are not checked when players join. If a mod reads such a setting during a battle and the server's value differs from a player's, the two sides can disagree, until a later version sends the server's settings to players.
+- MagicLib: with "MagicLib abilities follow the pilot" on (as shipped; "Setup", "Before start", "Advanced"; `magicseam.enabled`), the server changes MagicLib's ability code in memory as it loads, never on disk, so each player's MagicLib abilities do on the server what they did on that player's own screen; other players' screens still run them by the mod's own AI, until a later version. Off, or with a MagicLib build the server does not recognize (checked: 1.4.5 to the 1.5.8 development builds), MagicLib runs unchanged; the server still starts.
+
+Mod authors: how a mod tells a ship a player flies from an AI-flown one, and makes its own abilities follow the pilot, is in the section "For mod authors: the pilot contract" of the source README (`readme/source-README.md`, in the same GitHub project as the issues link at the top of this file).
 
 ## Custom ships
 
@@ -330,6 +361,8 @@ This package runs on x86-64 only (its `jre` folder and the game's native librari
 6. Ops GUI: `sh ops-web.sh` (it makes `serve.sh`'s checks, the graphics library included, before it starts, since the server it starts needs them; it opens no browser: on a host without a screen, reach its page through the ssh tunnel under [The ops GUI](#the-ops-gui)). Without it: `sh serve.sh` starts (it starts a virtual screen and restores the execute bits the zip drops), `sh stop.sh` stops. `serve.sh`'s own exit codes: 2 = this computer is not x86-64, a tool or graphics library is missing, or this folder's path has a space or a colon; 3 = the `jre` folder is incomplete or cannot be made executable.
 
 "Join from this PC" and "Launch debug WATCH" are Windows only: join from a Windows PC with the "Copy join brick" code. "Fill from ProtonVPN" on Linux fills the addresses only: type the forwarded port and keep it open as ProtonVPN's Linux guide describes (untested so far).
+
+If you serve mods that use LunaLib, it contacts GitHub and each enabled mod's update address from this computer at every server start (see [LazyLib, LunaLib and MagicLib](#lazylib-lunalib-and-magiclib)): block outgoing HTTPS (TCP port 443) for the account that runs the server if that matters to you.
 
 ## What the server writes
 

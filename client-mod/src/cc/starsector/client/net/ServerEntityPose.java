@@ -77,6 +77,16 @@ public final class ServerEntityPose {
     public static final int UNKNOWN_MANEUVER_MASK = -1;
 
     /**
+     * Sentinel {@link #pilotSeat()} / {@link #pilotMask()}
+     * for a pose whose frame carried no pilot triple (an AWSS-decoded pose — that family has no
+     * pilot tier). Real values come from the AWSD v14 keyframe / {@code EXT_PILOT} delta: seat
+     * {@code 0} = no human pilot, {@code 1..255} = the piloting seat; mask = the pilot's held
+     * ability bits u8. A consumer that sees UNKNOWN must HOLD what it last wrote — UNKNOWN never
+     * means "unpiloted" (that is seat {@code 0}).
+     */
+    public static final int PILOT_UNKNOWN = -1;
+
+    /**
      * Sentinel {@link #systemStateCode()} for a pose decoded from a frame that does not carry the
      * schema-v8 ship-system state tier (a pre-v8 server frame, or a v8 frame with no record for
      * this entity — e.g. a ship with no system). The real codes are the server's PROJECT-OWNED
@@ -237,6 +247,9 @@ public final class ServerEntityPose {
     private final float crPeakSec;
     private final float armorFrac;
     private final int fighterReplacementPct;
+    private final int pilotSeat;
+    private final int pilotMask;
+    private final int pilotFlags;
 
     /**
      * Back-compat constructor (pre-v5 callers / kinematics-only poses): the combat-side
@@ -329,6 +342,9 @@ public final class ServerEntityPose {
         this.crPeakSec = b.crPeakSec;
         this.armorFrac = b.armorFrac;
         this.fighterReplacementPct = b.fighterReplacementPct;
+        this.pilotSeat = b.pilotSeat;
+        this.pilotMask = b.pilotMask;
+        this.pilotFlags = b.pilotFlags;
     }
 
     /**
@@ -341,7 +357,8 @@ public final class ServerEntityPose {
      * {@link #UNKNOWN_SYSTEM_STATE} (v8) and phase-cloak state
      * {@link #UNKNOWN_PHASE_CLOAK_STATE} (v10), each with effect/cooldown {@code 0}
      * and ammo {@code -1}; the CR clock {@link #UNKNOWN_CR} with deployed/peak {@code 0}
-     * (v14); the armor fraction {@link #UNKNOWN_ARMOR} (AWSD v10)
+     * (v14); the armor fraction {@link #UNKNOWN_ARMOR} (AWSD v10);
+     * the pilot seat + mask {@link #PILOT_UNKNOWN} (AWSD v14, so every AWSS pose holds)
      * — exactly the defaults the pre-extraction telescoping constructor chain threaded.
      */
     public static Builder builder() {
@@ -399,6 +416,9 @@ public final class ServerEntityPose {
         private float crPeakSec;
         private float armorFrac = UNKNOWN_ARMOR;
         private int fighterReplacementPct = UNKNOWN_FIGHTER_REPLACEMENT_PCT;
+        private int pilotSeat = PILOT_UNKNOWN;
+        private int pilotMask = PILOT_UNKNOWN;
+        private int pilotFlags; // 0 unless an AWSD v14 frame carried the triple's third byte
 
         public Builder entityId(long entityId) {
             this.entityId = entityId;
@@ -587,6 +607,21 @@ public final class ServerEntityPose {
             return this;
         }
 
+        public Builder pilotSeat(int pilotSeat) {
+            this.pilotSeat = pilotSeat;
+            return this;
+        }
+
+        public Builder pilotMask(int pilotMask) {
+            this.pilotMask = pilotMask;
+            return this;
+        }
+
+        public Builder pilotFlags(int pilotFlags) {
+            this.pilotFlags = pilotFlags;
+            return this;
+        }
+
         /** The one all-fields construction site (assignment lives in the private constructor). */
         public ServerEntityPose build() {
             return new ServerEntityPose(this);
@@ -636,7 +671,10 @@ public final class ServerEntityPose {
                 .crDepSec(crDepSec)
                 .crPeakSec(crPeakSec)
                 .armorFrac(armorFrac)
-                .fighterReplacementPct(fighterReplacementPct);
+                .fighterReplacementPct(fighterReplacementPct)
+                .pilotSeat(pilotSeat)
+                .pilotMask(pilotMask)
+                .pilotFlags(pilotFlags);
     }
 
     public long entityId() {
@@ -1037,6 +1075,36 @@ public final class ServerEntityPose {
     /** True when this pose carries the AWSD v12 fighter-replacement percent. */
     public boolean hasFighterReplacementPct() {
         return fighterReplacementPct >= 0;
+    }
+
+    /**
+     * The server's pilot seat for this hull (AWSD v14
+     * keyframe u8, hold-last on deltas, ABSOLUTE in an {@code EXT_PILOT} delta): {@code 0} = no
+     * human pilot, {@code 1..255} = the piloting seat, {@link #PILOT_UNKNOWN} when the frame
+     * family carries no pilot tier (AWSS). Consumed by the remote pilot-mark lane, which
+     * re-publishes the serve's mark on the replica so an unchanged mod reads the same pilot.
+     */
+    public int pilotSeat() {
+        return pilotSeat;
+    }
+
+    /** The pilot's held ability bits u8 (meaningful only while {@link #pilotSeat()} ≥ 1). */
+    public int pilotMask() {
+        return pilotMask;
+    }
+
+    /**
+     * The serve's mark flags u8 (meaningful only while {@link #pilotSeat()} ≥ 1): bit 0 = the serve
+     * follows the pilot's MagicLib decision on this hull, so the replica mark tells this window's
+     * MagicLib hook to do the same. 0 for an AWSS pose.
+     */
+    public int pilotFlags() {
+        return pilotFlags;
+    }
+
+    /** True when this pose carries the AWSD v14 pilot triple (never true for an AWSS pose). */
+    public boolean hasPilot() {
+        return pilotSeat >= 0;
     }
 
     /**

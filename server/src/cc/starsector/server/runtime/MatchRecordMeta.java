@@ -47,6 +47,32 @@ public final class MatchRecordMeta {
     public static final String RNG_SEED_UNPINNED = cc.starsector.server.transform.RngPinKnobs.UNPINNED;
 
     /**
+     * The MagicLib seam's receipt as the premain publishes it: absent = no decision (recorded as
+     * {@link #MAGIC_SEAM_UNSET}); {@code off} (the host row false); {@link #MAGIC_SEAM_ARMED} (the row
+     * true, MagicSubsystem not defined yet); {@link #MAGIC_SEAM_APPLIED_PREFIX} + the window sha256 (16
+     * lower hex) once the patch applied; {@code disarmed:<reason>} when it left MagicLib unchanged. Only
+     * the applied state changes sim outcomes, so the recording stamps it and the re-simulation gate
+     * ({@link ReplayBoot}) compares it. Aliased to the registry's one home
+     * in the RNG_SEED_* shape above. {@code unset} is THIS stamp's rendering of an absent receipt, not a premain value.
+     */
+    public static final String MAGIC_SEAM_SYSPROP = cc.starsector.server.transform.TransformRegistry.MAGIC_SEAM_RECEIPT_SYSPROP;
+    public static final String MAGIC_SEAM_UNSET = "unset";
+    public static final String MAGIC_SEAM_ARMED = cc.starsector.server.transform.TransformRegistry.MAGIC_SEAM_RECEIPT_ARMED;
+    public static final String MAGIC_SEAM_APPLIED_PREFIX =
+            cc.starsector.server.transform.TransformRegistry.MAGIC_SEAM_RECEIPT_APPLIED_PREFIX;
+
+    /**
+     * The player-ship receipt as the premain (and, on a step-guard leak, the window holder) publishes it:
+     * absent = no premain decided (recorded as {@link #PILOT_SHIP_UNSET}); {@code off}; {@code armed} (ON, no
+     * class rewritten yet); {@code applied:<k>}; {@code refused:<reason>}; {@code latched:<reason>}. Only an
+     * applied or latched receipt means the ship-advance window ran, so the recording stamps the receipt and the
+     * re-simulation gate ({@link ReplayBoot}) compares its class. {@code unset} is THIS stamp's rendering of an
+     * absent receipt, not a premain value.
+     */
+    public static final String PILOT_SHIP_SYSPROP = cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_RECEIPT_SYSPROP;
+    public static final String PILOT_SHIP_UNSET = "unset";
+
+    /**
      * playedMatchId middle component: the JVM boot second — two serves of the same
      * descriptor in different boots mint distinct ids with no cross-boot persistence.
      */
@@ -235,7 +261,9 @@ public final class MatchRecordMeta {
      * hash the gate-verified sha; the two call-site redirects ({@code hook.0049.*} / {@code hook.0050.*})
      * and the threat-map insertion-order swap ({@code hook.0051.*}) are "armed" when the premain armed
      * them and "applied" once their target class was rewritten at load — a JVM without the premain
-     * records "false" / "unset", never a guess); the warm-up pass count (-1 never ran, 0 OFF: round 0 then
+     * records "false" / "unset", never a guess); the MagicLib seam receipt ({@code magic.seam}, "unset"
+     * without one, and {@code magic.seam.sha}, "none" unless applied); the player-ship receipt
+     * ({@code pilot.ship}, "unset" without one); the warm-up pass count (-1 never ran, 0 OFF: round 0 then
      * fields the pre-arm roster) and its tick total {@code warmup.ticks} (same -1 / 0 markers; a
      * re-simulation asserts its forced warm-up ran as many); the serve's wave / asteroid /
      * born-growth inputs from {@code ctx}; this build's PvP predicates over the shape
@@ -278,6 +306,16 @@ public final class MatchRecordMeta {
         meta.put("hook.0049.applied", Boolean.toString(System.getProperty("cc.transform.applied.HOOK-0049") != null));
         meta.put("hook.0050.applied", Boolean.toString(System.getProperty("cc.transform.applied.HOOK-0050") != null));
         meta.put("hook.0051.applied", Boolean.toString(System.getProperty("cc.transform.applied.HOOK-0051") != null));
+        // The MagicLib seam receipt as read at the sink open (after
+        // the boot's define, so an applying serve reads applied:<sha>), and its window sha alone.
+        String seam = System.getProperty(MAGIC_SEAM_SYSPROP);
+        meta.put("magic.seam", seam == null ? MAGIC_SEAM_UNSET : seam);
+        meta.put("magic.seam.sha", seam != null && seam.startsWith(MAGIC_SEAM_APPLIED_PREFIX)
+                ? seam.substring(MAGIC_SEAM_APPLIED_PREFIX.length()) : "none");
+        // The player-ship receipt as read at the sink open (after the
+        // boot's defines, so an ON serve reads applied:<k>; a leak latched before the open reads latched:leak).
+        String pilotShip = System.getProperty(PILOT_SHIP_SYSPROP);
+        meta.put("pilot.ship", pilotShip == null ? PILOT_SHIP_UNSET : pilotShip);
         meta.put("warmup.passes", Integer.toString(ServeWarmupRound.lastPassesOrNeg()));
         meta.put("warmup.ticks", Integer.toString(ServeWarmupRound.lastTicksOrNeg()));
         meta.put("wave.seed.effective", Long.toString(ctx.waveSeedEffective()));

@@ -43,6 +43,7 @@ import cc.starsector.server.platform.ActivationGate;
 import cc.starsector.server.runtime.MatchDocPreflight;
 import cc.starsector.server.runtime.PostureRegistry;
 import cc.starsector.server.runtime.SimTickRate;
+import cc.starsector.server.transform.TransformRegistry;
 
 /**
  * The release package's PowerShell-free server launcher (the package ships NO PowerShell).
@@ -379,7 +380,11 @@ public final class ServeLauncher {
             "sim.stallStackMs", "serve.canisterProbe",
             // the Mods tab's rows: read by this launcher on a packed server (PackageModSync) and by the owner-mode
             // stage library; mods.optional is a registered knob
-            OpsMatchRows.MODS_ENABLED_KEY, InstalledModScan.MODS_ROOTS_KEY);
+            OpsMatchRows.MODS_ENABLED_KEY, InstalledModScan.MODS_ROOTS_KEY,
+            // the player-ship exclusions: a FILE-only row the PREMAIN reads from the config file
+            // (PilotShipApplier.parseExclude) - no sysprop / env tier, so no registry knob; without this entry a host
+            // who lists a mod here is told the row is ignored while the premain honours it
+            TransformRegistry.PILOT_SHIP_EXCLUDE_FILE_KEY);
     private static final int MAX_CONSOLE_TOKEN_CHARS = 200;
     /**
      * The running-serve guard reads at most this much of {@code run/ops/ops-status.txt}; its
@@ -607,7 +612,11 @@ public final class ServeLauncher {
                 // the record row as read in either mode; blank only if the rows were never reached
                 "record=" + (c.record == null ? "" : c.record.row()),
                 // the replay-pins row as read (absent = on, the compiled default); never a seed
-                "rngpin=" + (c.rngPins == null ? "" : c.rngPins)), out);
+                "rngpin=" + (c.rngPins == null ? "" : c.rngPins),
+                // the MagicLib seam row as read (absent = on, the default); never the serve's receipt
+                "magicseam=" + (c.magicSeam == null ? "" : c.magicSeam),
+                // the player-ship row as read (absent = off, the default); never the premain's receipt
+                "pilotship=" + (c.pilotShip == null ? "" : c.pilotShip)), out);
         if (!c.doorArmed) {
             say(out, DOOR_UNARMED_LINE);
         }
@@ -655,6 +664,12 @@ public final class ServeLauncher {
         /** The replay-pins row as read, {@code on|off}, for the
          * {@code launch.txt} receipt ({@link #rngPinsStamp}); null = the rows were never reached. */
         String rngPins;
+        /** The MagicLib seam row as read, {@code on|off}, for {@code launch.txt}
+         * ({@link #magicSeamStamp}); null = the rows were never reached. */
+        String magicSeam;
+        /** The player-ship row as read, {@code on|off}, for {@code launch.txt} ({@link #pilotShipStamp}); null = the
+         * rows were never reached. */
+        String pilotShip;
     }
 
     /**
@@ -668,6 +683,27 @@ public final class ServeLauncher {
      */
     static String rngPinsStamp(Properties props) {
         return "false".equals(row(props, OpsMatchRows.RNG_PINS_KEY)) ? "off" : "on";
+    }
+
+    /**
+     * The MagicLib seam receipt word for {@code launch.txt}, in the replay-pins
+     * shape: {@code off} for a {@code false} row, else {@code on} (absent or blank = the default, on). The row as the
+     * serve's premain will read it, never the serve's own verdict ({@code cc.magic.seam}, set inside that JVM).
+     * Called only after {@link #checkRows} passed, so the row is blank, {@code true} or {@code false}.
+     */
+    static String magicSeamStamp(Properties props) {
+        return "false".equals(row(props, TransformRegistry.MAGIC_SEAM_ENABLED_FILE_KEY)) ? "off" : "on";
+    }
+
+    /**
+     * The player-ship receipt word for {@code launch.txt}: {@code on} for a {@code true} row, else {@code off} (absent
+     * or blank = the default, off — the OPPOSITE default of the MagicLib row's, so the two stamps never share a
+     * helper). The row as the serve's premain will read it, never the premain's own verdict ({@code cc.pilot.ship}).
+     * Called only after {@link #checkRows} passed, so the row is blank, {@code true} or {@code false}.
+     *
+     */
+    static String pilotShipStamp(Properties props) {
+        return "true".equals(row(props, TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY)) ? "on" : "off";
     }
 
     /** The pre-checks in the vocabulary's order; the FIRST failure is returned, null = all pass. */
@@ -903,6 +939,8 @@ public final class ServeLauncher {
             return rowProblem;
         }
         c.rngPins = rngPinsStamp(props);
+        c.magicSeam = magicSeamStamp(props);
+        c.pilotShip = pilotShipStamp(props);
         // Port: a non-blank bind.port BOX row WINS (an
         // invalid one refuses even beside a valid config row); a blank one leaves the config row's rule unchanged
         String boxPort = box.getOrDefault(ROW_BIND_PORT, "").trim();
@@ -1191,8 +1229,13 @@ public final class ServeLauncher {
         // exact "true"|"false" switch, so a loose "on" would pass here and stop the serve at boot.
         // The replay-pins row joins it for the same reason - its
         // one reader (the serve JVM's startup) is the exact switch; the launcher only validates.
+        // The MagicLib seam row joins it - its one reader (the premain) refuses
+        // anything but exact true / false, so a loose value is refused here, before the launch, not at the serve's boot
+        // Main-written: the player-ship row too - the premain's resolveStrictSwitch is the
+        // same exact switch
         for (String key : List.of("net.doorFingerprint", "server.engineBornGrowth", OpsMatchRows.ALL_SKILLS_KEY,
-                OpsMatchRows.RNG_PINS_KEY)) {
+                OpsMatchRows.RNG_PINS_KEY, TransformRegistry.MAGIC_SEAM_ENABLED_FILE_KEY,
+                TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY)) {
             String v = row(props, key);
             if (!v.isEmpty() && !v.equals("true") && !v.equals("false")) {
                 return rowRefusal(key, "must be true or false, got '" + v + "'");

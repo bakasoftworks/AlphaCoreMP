@@ -1266,6 +1266,16 @@ public final class ServerOpsLaunch {
      * only WRITTEN here; the serve JVM's startup reads the file and decides, so no launch argument
      * is composed from it ({@code serve.argv} stays as packed).
      *
+     *
+     * <p>{@code magicSeamText} — the same law for the MagicLib row
+     * ({@link OpsMatchRows#MAGIC_SEAM_KEY}, {@link OpsMatchRows#parseMagicSeam} on|off): parsed
+     * before any write, upserted in the ONE props write, read only by the serve JVM's startup.
+     *
+     *
+     * <p>{@code pilotShipText} — the same law for the player-ship row
+     * ({@link OpsMatchRows#PILOT_SHIP_KEY}, {@link OpsMatchRows#parsePilotShip} on|off): parsed
+     * before any write, upserted in the ONE props write, read only by the serve JVM's startup.
+     *
      */
     public static boolean runStartFlow(Ui ui, SpawnFn spawn, Path propsFile,
             OpsWindowModel.StartFields f) {
@@ -1346,6 +1356,8 @@ public final class ServerOpsLaunch {
         Integer seatsPerSource; // null = no field here (the row untouched)
         String allSkills; // "true" | "false"; null = no control here (the row untouched)
         String rngPins; // "true" | "false"; null = no control here (the row untouched)
+        String magicSeam; // "true" | "false"; null = no control here (the row untouched)
+        String pilotShip; // "true" | "false"; null = no control here (the row untouched)
         Boolean pvpWant; // the PvP select; null = no control here (the picked file's mode stands)
         try {
             validateBind(bindHost, bindPort);
@@ -1454,6 +1466,8 @@ public final class ServerOpsLaunch {
             seatsPerSource = f.seatsPerSourceText() == null ? null : parseSeatsPerSource(f.seatsPerSourceText());
             allSkills = f.allSkillsText() == null ? null : parseAllSkills(f.allSkillsText());
             rngPins = f.rngPinsText() == null ? null : parseRngPins(f.rngPinsText());
+            magicSeam = f.magicSeamText() == null ? null : parseMagicSeam(f.magicSeamText());
+            pilotShip = f.pilotShipText() == null ? null : parsePilotShip(f.pilotShipText());
             // PvP mode (on|off), thrown BEFORE any write like its neighbours
             pvpWant = f.pvpText() == null ? null : OpsMatchApply.parsePvpMode(f.pvpText());
         } catch (IllegalArgumentException bad) {
@@ -1586,6 +1600,8 @@ public final class ServerOpsLaunch {
                 seatsPerSource == null ? null : Integer.toString(seatsPerSource), SEATS_PER_SOURCE_COMMENT);
         propsWant = upsertRow(propsWant, ALL_SKILLS_KEY, allSkills, ALL_SKILLS_COMMENT);
         propsWant = upsertRow(propsWant, RNG_PINS_KEY, rngPins, RNG_PINS_COMMENT);
+        propsWant = upsertRow(propsWant, MAGIC_SEAM_KEY, magicSeam, MAGIC_SEAM_COMMENT);
+        propsWant = upsertRow(propsWant, PILOT_SHIP_KEY, pilotShip, PILOT_SHIP_COMMENT);
         // The debug-watch posture row rides the SAME single write,
         // ALWAYS, in both modes: a plain Start writes false, so no later serve life inherits a debug watch's
         // true (Kill, then this write, then the spawn). The serve reads it from this file as its own config

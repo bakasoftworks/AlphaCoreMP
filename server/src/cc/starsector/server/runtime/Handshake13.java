@@ -52,12 +52,30 @@ public final class Handshake13 {
      * (0 = none, the door picks; 1 = side 0; 2 = side 1). The key-schedule LABELS keep their {@code hs13} names; the
      * byte enters ADa and every message head, so a version-13 kit meets the door's {@code kit_outdated} rung.
      *
+     * 15 = the version-14 bytes unchanged; the bump gates the PINT ability bits 13..20, which a version-14 serve
+     * refuses at decode (it would drop an ability-sending kit as corrupt at its first press, so the version byte
+     * turns that into a readable {@code kit_outdated} at HELLO instead).
      */
-    public static final int VERSION = 14;
+    public static final int VERSION = 15;
     /** The highest lawful {@code team} byte; a sealed 3..255 opens as {@code bodyOk == false}. */
     public static final int TEAM_MAX = 2;
     public static final int FLAG_PROBE = HandshakeCodec.HELLO_FLAG_PROBE, FLAG_OBSERVER = HandshakeCodec.HELLO_FLAG_OBSERVER,
-            FLAG_NO_SECRET = 0x04, FLAGS_DEFINED = FLAG_PROBE | FLAG_OBSERVER | FLAG_NO_SECRET;
+            FLAG_NO_SECRET = 0x04;
+    /**
+     * {@code 0x08} = this game reports its MagicLib subsystem states: a REPORT the sender makes about its own game, set
+     * only after the kit's guarded MagicLib probe passed. The serve folds it into the seat's FOLLOW flag on the hull
+     * mark; a false bit hands the liar's OWN hull the pilot's held bits and reaches no other seat.
+     * {@code 0x10} = this game's MagicLib subsystem class was patched: a report only (the host's view of a
+     * client-side disarm), no serve behaviour keys on it. Both fold into hs {@link #VERSION} 15 in place (no
+     * released kit sends 15); bits {@code 0x20..0x80} stay undefined and every decoder refuses them.
+     *
+     */
+    public static final int FLAG_MAGIC_UP = 0x08, FLAG_MAGIC_REPLICA = 0x10;
+    public static final int FLAGS_DEFINED = FLAG_PROBE | FLAG_OBSERVER | FLAG_NO_SECRET | FLAG_MAGIC_UP
+            | FLAG_MAGIC_REPLICA;
+    /** The bits a CALLER may hand the F2 sealer and the flight: every defined bit but {@link #FLAG_NO_SECRET},
+     *  which only the sealer sets (from an empty secret). */
+    public static final int CALLER_FLAGS = FLAGS_DEFINED & ~FLAG_NO_SECRET;
     public static final int COOKIE_MAX_BYTES = HandshakeCodec.HELLO_COOKIE_MAX_BYTES, SALT_BYTES = 16, HANDLE_BYTES = 16,
             WRAP_BYTES = 48;
     public static final int CID_MAX = 64, PRINT_MAX = 128, VARIANT_MAX = 64;
@@ -521,7 +539,7 @@ public final class Handshake13 {
      * {@link #sealHelloOrNull(long, int, Cookie13, String, String, long, String, int, byte[], byte[], SecureRandom)}. {@link #FLAG_NO_SECRET} is set HERE iff {@code prs} and {@code mix} are both empty (the
      * envelope is still complete, sealed on {@code G("")}). Returns {@code null} when
      * {@link #sealWrapsOrNull} does (a door share the JDK refuses = abort the envelope).
-     * {@code IllegalArgumentException} (naming the field): {@code flags} outside {@code PROBE | OBSERVER} (the
+     * {@code IllegalArgumentException} (naming the field): {@code flags} outside {@link #CALLER_FLAGS} (the
      * {@code NO_SECRET} bit included), a null / malformed {@code cookie}, a {@code print} / {@code cid} /
      * {@code variantId} that is not an A-string of its cap, a negative {@code desiredShipId}, a null
      * {@code prs} / {@code mix} / {@code rng}. Maps {@code prs} on EVERY call; the join flight seals through
@@ -587,7 +605,7 @@ public final class Handshake13 {
     /** The seal entries' shared checks, in their historic order (flags, cookie, print, cid, variant, ship), then team. */
     private static void requireHelloArgs(int flags, Cookie13 cookie, String print, String cid, String variantId,
             long desiredShipId, int team) {
-        if ((flags & ~(FLAG_PROBE | FLAG_OBSERVER)) != 0) {
+        if ((flags & ~CALLER_FLAGS) != 0) {
             throw new IllegalArgumentException("flags");
         }
         if (cookie == null) {
@@ -678,7 +696,7 @@ public final class Handshake13 {
      * The door's FIRST step: a fixed-layout parse of an F2 payload, NO crypto and no allocation proportional
      * to anything but the payload — so the door can run its own checks (cookie, ledger, print) before it pays for an
      * open. {@code null} unless: length 184..{@value #SEAL_PAYLOAD_MAX_BYTES}, {@code [0] == VERSION}, flags within
-     * {@link #FLAGS_DEFINED} (all three bits accepted), cookieLen 1..32 (so an F1, whose {@code [10]} is 0, never
+     * {@link #FLAGS_DEFINED} (all five bits accepted), cookieLen 1..32 (so an F1, whose {@code [10]} is 0, never
      * parses here), the print an A-string(128), and a sealed body of 27..155 B (an 11..139 B body + its tag).
      */
     public static Seal13 parseSealOrNull(byte[] payload) {

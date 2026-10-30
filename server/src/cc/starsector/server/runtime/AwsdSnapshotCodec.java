@@ -109,13 +109,15 @@ public final class AwsdSnapshotCodec {
      * 5-B CR block (crU8 + depHalfSecU16 + peakHalfSecU16) + the v7 maxHp
      * u16→i32 widen (station3 base carries 160000 HP) + the v10 armorFrac
      * u8 + the v11 always-present cell-section runCount u8 + the v12
-     * fighterRatePct u8 after the CR block: 65 B + 12/mount + cell-run bytes). */
-    public static final int KEYFRAME_BASE_BYTES = 65;
+     * fighterRatePct u8 after the CR block + the v14 pilotSeat u8 +
+     * pilotMask u8 + pilotFlags u8 after fighterRatePct: 68 B
+     * + 12/mount + cell-run bytes). */
+    public static final int KEYFRAME_BASE_BYTES = 68;
     /** Per-mount KEYFRAME bytes. */
     public static final int KEYFRAME_MOUNT_BYTES = 12;
 
-    // DELTA section bits — the ServerFragmentMarker tier vocabulary + POSE;
-    // sections serialize in ASCENDING bit order.
+    // DELTA section bits — the ServerFragmentMarker tier vocabulary + POSE + the v14
+    // EXT section; sections serialize in ASCENDING bit order.
     public static final int SECTION_FLUX = ShipFragmentMarkerSnapshot.TIER_FLUX;
     public static final int SECTION_MOUNT = ShipFragmentMarkerSnapshot.TIER_WEAPON_MOUNT;
     public static final int SECTION_ALLEGIANCE = ShipFragmentMarkerSnapshot.TIER_ALLEGIANCE;
@@ -123,7 +125,28 @@ public final class AwsdSnapshotCodec {
     public static final int SECTION_MANEUVER = ShipFragmentMarkerSnapshot.TIER_MANEUVER;
     public static final int SECTION_SYSTEM = ShipFragmentMarkerSnapshot.TIER_SYSTEM_STATE;
     public static final int SECTION_POSE = 64;
-    private static final int ALL_SECTION_BITS = 0x7F;
+    /**
+     * v14: the LAST free u8 section bit becomes an
+     * EXTENSION section — when set, ONE u8 {@code extMask} follows the POSE section's bytes
+     * (ascending bit order), and each set ext bit carries its own fields. Future fields grow
+     * through new ext bits instead of a wider section mask; an unknown ext bit is refused
+     * fail-closed on encode and decode (the stream position past it is unknowable).
+     */
+    public static final int SECTION_EXT = 0x80;
+    private static final int ALL_SECTION_BITS = 0xFF;
+
+    /**
+     * Ext bit: the hull's pilot triple ({@code pilotSeat} u8, {@code pilotMask} u8,
+     * {@code pilotFlags} u8), ABSOLUTE, present while the triple differs from the anchor's —
+     * cumulative against the anchor, so it repeats every delta until the next keyframe
+     * re-anchors (self-healing under loss, no added latency); hold-last when absent. The third
+     * byte is the mark's flags (bit 0 = the pilot's MagicLib decision is followed on this hull),
+     * so a remote copy of the hull gates its subsystem the way the serve does. Canonical: seat 0
+     * (no mark) carries mask 0 AND flags 0.
+     */
+    public static final int EXT_PILOT = 0x01;
+    /** Every ext bit this schema defines; any other is refused. */
+    public static final int ALL_EXT_BITS = 0x01;
 
     // Per-section field-mask bits (fields serialize in ascending bit order).
     public static final int POSE_X = 1;
@@ -434,11 +457,33 @@ public final class AwsdSnapshotCodec {
             int sysStateCode,
             int sysEffectLevel,
             int sysCdSteps,
-            int sysAmmoWire) {
+            int sysAmmoWire,
+            int extMask,
+            int pilotSeat,
+            int pilotMask,
+            int pilotFlags) {
         public AwsdDelta {
             if ((sectionMask & ~ALL_SECTION_BITS) != 0) {
                 throw new IllegalArgumentException(
-                        "sectionMask carries bits above 0x7f: 0x" + Integer.toHexString(sectionMask));
+                        "sectionMask carries bits above 0xff: 0x" + Integer.toHexString(sectionMask));
+            }
+            if ((extMask & ~ALL_EXT_BITS) != 0
+                    || ((sectionMask & SECTION_EXT) == 0 && extMask != 0)) {
+                throw new IllegalArgumentException(
+                        "extMask carries unknown bits (or rides without SECTION_EXT): 0x"
+                                + Integer.toHexString(extMask));
+            }
+            if ((extMask & EXT_PILOT) != 0) {
+                if (pilotSeat < 0 || pilotSeat > 0xFF || pilotMask < 0 || pilotMask > 0xFF
+                        || pilotFlags < 0 || pilotFlags > 0xFF
+                        || (pilotSeat == AwsdEntityBaseline.PILOT_SEAT_NONE_WIRE
+                                && (pilotMask != 0 || pilotFlags != 0))) {
+                    throw new IllegalArgumentException("pilot triple outside u8 or non-canonical: "
+                            + pilotSeat + "/0x" + Integer.toHexString(pilotMask)
+                            + "/0x" + Integer.toHexString(pilotFlags));
+                }
+            } else if (pilotSeat != 0 || pilotMask != 0 || pilotFlags != 0) {
+                throw new IllegalArgumentException("pilot triple set without EXT_PILOT");
             }
             if ((poseFieldMask & ~POSE_FIELD_BITS) != 0
                     || (fluxFieldMask & ~FLUX_FIELD_BITS) != 0
@@ -762,6 +807,9 @@ public final class AwsdSnapshotCodec {
                 depHalfSecU16,
                 peakHalfSecU16,
                 fighterRatePct,
+                maneuver.pilotSeat(),
+                maneuver.pilotMask(),
+                maneuver.pilotFlags(),
                 qMounts);
     }
 
@@ -808,8 +856,9 @@ public final class AwsdSnapshotCodec {
 
     /** Encode one KEYFRAME record ({@link #KEYFRAME_BASE_BYTES} + 12/mount): the wire field
      * order with the v3 5-B cloak block (state u8 + effectFrac u8 + qCd u16 + ammo u8)
-     * between sysAmmoWire and mountCount. This no-runs signature writes a v11 cell
-     * section with runCount 0. */
+     * between sysAmmoWire and mountCount, then the v6 CR block, the v12 fighterRatePct u8
+     * and the v14 pilot triple (pilotSeat u8 + pilotMask u8 + pilotFlags u8) right before mountCount. This
+     * no-runs signature writes a v11 cell section with runCount 0. */
     public static byte[] encodeKeyframe(AwsdEntityBaseline baseline) {
         return encodeKeyframe(baseline, List.of());
     }
@@ -858,6 +907,9 @@ public final class AwsdSnapshotCodec {
             data.writeShort(baseline.depHalfSecU16());
             data.writeShort(baseline.peakHalfSecU16());
             data.writeByte(baseline.fighterRatePct());
+            data.writeByte(baseline.pilotSeat());
+            data.writeByte(baseline.pilotMask());
+            data.writeByte(baseline.pilotFlags());
             data.writeByte(baseline.mounts().size());
             for (AwsdEntityBaseline.Mount mount : baseline.mounts()) {
                 data.writeByte(mount.mountIndex());
@@ -948,6 +1000,16 @@ public final class AwsdSnapshotCodec {
                 | maskBit(cur.maneuverMask() != anchor.maneuverMask(), SECTION_MANEUVER)
                 | maskBit(sysFieldMask != 0, SECTION_SYSTEM)
                 | maskBit(poseFieldMask != 0, SECTION_POSE);
+        // v14 ext section: the pilot triple rides ABSOLUTE while it differs from the anchor —
+        // so it repeats on every delta until a keyframe re-anchors (a lost datagram never
+        // loses the mark), and the edge rides the very tick it happens.
+        int extMask = maskBit(cur.pilotSeat() != anchor.pilotSeat()
+                || cur.pilotMask() != anchor.pilotMask()
+                || cur.pilotFlags() != anchor.pilotFlags(), EXT_PILOT);
+        if ((extMask & ~ALL_EXT_BITS) != 0) {
+            throw new IllegalArgumentException("extMask carries unknown bits: 0x" + Integer.toHexString(extMask));
+        }
+        sectionMask |= maskBit(extMask != 0, SECTION_EXT);
 
         ByteArrayOutputStream bytes = new ByteArrayOutputStream(32);
         DataOutputStream data = new DataOutputStream(bytes);
@@ -1048,6 +1110,14 @@ public final class AwsdSnapshotCodec {
                 }
                 if ((poseFieldMask & POSE_ARMOR_FRAC) != 0) {
                     data.writeByte(cur.armorFrac());
+                }
+            }
+            if ((sectionMask & SECTION_EXT) != 0) {
+                data.writeByte(extMask);
+                if ((extMask & EXT_PILOT) != 0) {
+                    data.writeByte(cur.pilotSeat());
+                    data.writeByte(cur.pilotMask());
+                    data.writeByte(cur.pilotFlags());
                 }
             }
             writeCellSection(data, cellRuns);
@@ -1242,6 +1312,9 @@ public final class AwsdSnapshotCodec {
         int depHalfSecU16 = data.readUnsignedShort();
         int peakHalfSecU16 = data.readUnsignedShort();
         int fighterRatePct = data.readUnsignedByte();
+        int pilotSeat = data.readUnsignedByte();
+        int pilotMask = data.readUnsignedByte();
+        int pilotFlags = data.readUnsignedByte();
         int mountCount = data.readUnsignedByte();
         List<AwsdEntityBaseline.Mount> mounts = new ArrayList<>(mountCount);
         try {
@@ -1264,7 +1337,8 @@ public final class AwsdSnapshotCodec {
                     engineDisabledMask, enginePermDisabledMask, engineControllerState,
                     maneuverMask, sysStateCode, sysEffectLevel, qSysCd, sysAmmoWire,
                     cloakStateWire, cloakEffectFrac, qCloakCd, cloakAmmoWire,
-                    crU8, depHalfSecU16, peakHalfSecU16, fighterRatePct, mounts);
+                    crU8, depHalfSecU16, peakHalfSecU16, fighterRatePct, pilotSeat, pilotMask, pilotFlags,
+                    mounts);
         } catch (IllegalArgumentException corrupt) {
             throw new IOException(
                     "AWSD keyframe for entity " + entityId + " failed wire validation", corrupt);
@@ -1391,6 +1465,28 @@ public final class AwsdSnapshotCodec {
                 armorFrac = data.readUnsignedByte();
             }
         }
+        int extMask = 0;
+        int pilotSeat = 0;
+        int pilotMask = 0;
+        int pilotFlags = 0;
+        if ((sectionMask & SECTION_EXT) != 0) {
+            extMask = data.readUnsignedByte();
+            if ((extMask & ~ALL_EXT_BITS) != 0) {
+                // An unknown ext bit's field width is unknowable: the stream position past it
+                // is lost, so the whole frame is refused (fail-closed, never skipped).
+                throw new IOException("AWSD delta extMask carries unknown bits: 0x"
+                        + Integer.toHexString(extMask));
+            }
+            if ((extMask & EXT_PILOT) != 0) {
+                pilotSeat = data.readUnsignedByte();
+                pilotMask = data.readUnsignedByte();
+                pilotFlags = data.readUnsignedByte();
+                if (pilotSeat == AwsdEntityBaseline.PILOT_SEAT_NONE_WIRE && (pilotMask != 0 || pilotFlags != 0)) {
+                    throw new IOException("AWSD delta pilot triple non-canonical: seat 0 with mask 0x"
+                            + Integer.toHexString(pilotMask) + " flags 0x" + Integer.toHexString(pilotFlags));
+                }
+            }
+        }
         return new AwsdDelta(
                 sectionMask,
                 poseFieldMask, dxSteps, dySteps, dvxSteps, dvySteps, dFacingSteps, dAngVelSteps,
@@ -1401,7 +1497,8 @@ public final class AwsdSnapshotCodec {
                 fleetSide,
                 engineFieldMask, engineDisabledMask, enginePermDisabledMask, engineControllerState,
                 maneuverMask,
-                sysFieldMask, sysStateCode, sysEffectLevel, sysCdSteps, sysAmmoWire);
+                sysFieldMask, sysStateCode, sysEffectLevel, sysCdSteps, sysAmmoWire,
+                extMask, pilotSeat, pilotMask, pilotFlags);
     }
 
     // ------------------------------------------------------------------ apply/resolve
@@ -1467,6 +1564,7 @@ public final class AwsdSnapshotCodec {
         boolean flux = (sectionMask & SECTION_FLUX) != 0;
         boolean engine = (sectionMask & SECTION_ENGINE) != 0;
         boolean system = (sectionMask & SECTION_SYSTEM) != 0;
+        boolean pilot = (sectionMask & SECTION_EXT) != 0 && (delta.extMask() & EXT_PILOT) != 0;
         return new AwsdEntityBaseline(
                 anchor.entityId(),
                 anchor.epoch(),
@@ -1516,7 +1614,7 @@ public final class AwsdSnapshotCodec {
                         ? anchor.qSysCd() + delta.sysCdSteps() : anchor.qSysCd(),
                 system && (delta.sysFieldMask() & SYS_AMMO) != 0
                         ? delta.sysAmmoWire() : anchor.sysAmmoWire(),
-                // v3 cloak block: NO delta section exists (section bit 7 stays free) — a
+                // v3 cloak block: NO delta section exists (no section bit carries it) — a
                 // delta always carries the anchor's cloak fields through unchanged; cloak
                 // freshness = keyframe cadence (the hold-last law).
                 anchor.cloakStateWire(),
@@ -1529,6 +1627,11 @@ public final class AwsdSnapshotCodec {
                 anchor.depHalfSecU16(),
                 anchor.peakHalfSecU16(),
                 anchor.fighterRatePct(),
+                // v14 pilot triple: ABSOLUTE when the ext section carries EXT_PILOT, else the
+                // anchor's (hold-last).
+                pilot ? delta.pilotSeat() : anchor.pilotSeat(),
+                pilot ? delta.pilotMask() : anchor.pilotMask(),
+                pilot ? delta.pilotFlags() : anchor.pilotFlags(),
                 mounts);
     }
 
@@ -1613,10 +1716,11 @@ public final class AwsdSnapshotCodec {
                 baseline.engineControllerState());
     }
 
-    /** Mint the maneuver-command tier. */
+    /** Mint the maneuver-command tier, with the v14 pilot triple. */
     public static ShipManeuverCommandSnapshot resolveManeuver(AwsdEntityBaseline baseline) {
         Objects.requireNonNull(baseline, "baseline");
-        return ShipManeuverCommandSnapshot.fromWire(baseline.entityId(), baseline.maneuverMask());
+        return ShipManeuverCommandSnapshot.fromWire(baseline.entityId(), baseline.maneuverMask(),
+                baseline.pilotSeat(), baseline.pilotMask(), baseline.pilotFlags());
     }
 
     /**

@@ -789,7 +789,8 @@ public final class OpsConsolePageSelftest {
                 "setup.map.half", "setup.map.apply", "setup.map.station", "setup.map.stationApply", "setup.map.backdrop",
                 "setup.map.backdropApply", "setup.map.deployCr", "setup.map.deployCrApply", "setup.shapeNew",
                 "setup.fortress.dp", "setup.fortress.hint", "setup.wave.scale", "setup.wave.hint", "setup.wave.rosterDp",
-                "setup.wave.rosterMultiplier", "setup.officer.allSkills", "setup.replay.rngPins"));
+                "setup.wave.rosterMultiplier", "setup.officer.allSkills", "setup.replay.rngPins",
+                "setup.mods.magicSeam", "setup.mods.pilotShip"));
         want.put("fold setup-live", List.of("setup.fold.live", "setup.wave.category", "setup.wave.categoryLive",
                 "setup.joiner.default", "setup.joiner.defaultLive", "setup.joiner.hint", "setup.joiner.endless",
                 "setup.joiner.endlessLive", "setup.fortress.terrain", "setup.fortress.terrainLevel",

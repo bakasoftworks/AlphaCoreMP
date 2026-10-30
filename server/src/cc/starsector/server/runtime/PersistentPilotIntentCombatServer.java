@@ -804,7 +804,15 @@ public final class PersistentPilotIntentCombatServer {
             // each answered unlocked) — fire_lock_read_errors= on both round lines. SESSION-
             // cumulative (the binding is the session's, PilotServeSession; nothing drains it per
             // round). Reader = the same R-LOCK INFO row; deleted with the token above.
-            int fireLockReadErrors) {
+            int fireLockReadErrors,
+            // tail-appended human-pilot mark meters summed
+            // across owned ships — mark arrays written / removed, and ability-bit frames absorbed
+            // by the post-re-point edge quarantine. Printed as pilot_mark_writes=,
+            // pilot_mark_clears=, ability_edge_quarantined= on the round line.
+            //
+            int pilotMarkWrites,
+            int pilotMarkClears,
+            int abilityEdgeQuarantined) {
 
         /** Worst single-frame overrun this round, in milliseconds (derived from {@link #overrunMaxNanos()}). */
         public double overrunMaxMillis() {
@@ -974,7 +982,7 @@ public final class PersistentPilotIntentCombatServer {
     /** F1: the compiled default when {@code match.endless} is absent (owner: default ON). */
     public static final boolean MATCH_ENDLESS_DEFAULT = true;
 
-    /** The owner's finale creep speed ("40su is better"), su/s. */
+    /** The finale creep speed, su/s: 40 graded better than the first value on the 2026-09-02 derelict flight. */
     public static final float FINALE_CREEP_SU_DEFAULT = 40.0f;
 
     /**
@@ -2301,6 +2309,49 @@ public final class PersistentPilotIntentCombatServer {
             this.finaleCreep = hookOrNull;
         }
 
+        /**
+         * The seat a wire id belongs to (the seat's FIXED wire id inverse; -1 = not a seat), read ONCE per apply
+         * state when it is minted, so the apply path can write the human-pilot mark {@code int[]{seatId, mask}}
+         * into that seat's own hull. Unset (null) = every state stays -1 = no mark (every row and probe that never
+         * binds one). Install it right after the step is minted, before the first apply.
+         *
+         */
+        private java.util.function.LongToIntFunction seatIdForWireId;
+
+        void setSeatIdResolver(java.util.function.LongToIntFunction resolverOrNull) {
+            this.seatIdForWireId = resolverOrNull;
+        }
+
+        /**
+         * The pilot mark's flags for a seat ({@code [3]}; bit 0 = the serve follows that pilot's MagicLib decision),
+         * evaluated by the session at call time from its own per-seat facts. Each apply state with a seat gets a
+         * source over it when minted; the applier reads it once per hull tenure. Unset (null) = flags 0. Installed
+         * beside {@link #setSeatIdResolver}.
+         */
+        private java.util.function.IntUnaryOperator pilotMarkFlagsForSeat;
+
+        void setPilotMarkFlagsResolver(java.util.function.IntUnaryOperator resolverOrNull) {
+            this.pilotMarkFlagsForSeat = resolverOrNull;
+        }
+
+        private int pilotMarkFlagsOrZero(int seatId) {
+            java.util.function.IntUnaryOperator resolver = pilotMarkFlagsForSeat;
+            return resolver == null ? 0 : resolver.applyAsInt(seatId);
+        }
+
+        /** Pilot-mark meters summed across this round's apply states (the round-line feed). */
+        int pilotMarkWrites() {
+            return sumApplyStates(PilotApplyState::pilotMarkWrites);
+        }
+
+        int pilotMarkClears() {
+            return sumApplyStates(PilotApplyState::pilotMarkClears);
+        }
+
+        int abilityEdgeQuarantined() {
+            return sumApplyStates(PilotApplyState::abilityEdgeQuarantined);
+        }
+
         // The advance sub-stamps come from the engine-backed base step; without
         // this delegation the interface defaults (0) reach the stall row (the first proof flight
         // printed adv_eng=0.00 while adv=9.63 — this decorator was the missing hop).
@@ -2333,6 +2384,10 @@ public final class PersistentPilotIntentCombatServer {
         void stage(PilotIntentFrame frame) {
             if (frame == null) {
                 stagedByShipId.clear();
+                // Nothing applies next step, so no seat flies its hull: every human-pilot mark goes.
+                for (Map.Entry<Long, PilotApplyState> e : applyStateByShipId.entrySet()) {
+                    binding.clearPilotMark(e.getKey(), e.getValue());
+                }
                 return;
             }
             stagedByShipId.put(frame.shipId(), frame);
@@ -2496,6 +2551,7 @@ public final class PersistentPilotIntentCombatServer {
                 // fresh at its own repoint (edge-driven arm, never a carried level).
                 state.clearMaskStalenessGate();
             }
+            binding.clearPilotMark(shipId, state); // the seat left this hull: its human-pilot mark goes
             return dropped;
         }
 
@@ -2525,6 +2581,8 @@ public final class PersistentPilotIntentCombatServer {
          * possible reclaim. Returns whether a frame was actually dropped (grace_enter log field).
          */
         boolean clearStagedIntentOnGraceVacate(long shipId) {
+            // The hull lives on under the grace AI: a stale human-pilot mark would idle a mod's AI branch.
+            binding.clearPilotMark(shipId, applyStateByShipId.get(shipId));
             return stagedByShipId.remove(shipId) != null;
         }
 
@@ -2544,6 +2602,8 @@ public final class PersistentPilotIntentCombatServer {
         void onSessionBoundary(long shipId, long sessionId) {
             boolean stagedDropped = stagedByShipId.remove(shipId) != null;
             PilotApplyState state = applyStateByShipId.get(shipId);
+            // The old session's mark dies BEFORE the new session's first frame (which re-points + quarantines).
+            binding.clearPilotMark(shipId, state);
             if (state == null && !stagedDropped) {
                 return;
             }
@@ -2564,6 +2624,8 @@ public final class PersistentPilotIntentCombatServer {
         /** Transit-park the seat's staged application (serve lane's park engage). */
         void parkTransit(long shipId) {
             transitParkedWireIds.add(shipId);
+            // The pod flies and the source hull is AI-flown: a stale human-pilot mark would idle its abilities.
+            binding.clearPilotMark(shipId, applyStateByShipId.get(shipId));
         }
 
         /** End the seat's transit park (abort restore / commit re-key). */
@@ -2622,6 +2684,23 @@ public final class PersistentPilotIntentCombatServer {
             }
         }
 
+        private int seatIdForWireIdOrMinusOne(long wireId) {
+            if (seatIdForWireId == null) {
+                return -1;
+            }
+            try {
+                return seatIdForWireId.applyAsInt(wireId);
+            } catch (RuntimeException fault) {
+                if (seatIdResolveErrors++ == 0) {
+                    System.out.println("npeer-serve pilot_mark seat_resolve_error err="
+                            + fault.getClass().getSimpleName() + " (logged once; that state carries no mark)");
+                }
+                return -1;
+            }
+        }
+
+        private int seatIdResolveErrors;
+
         private PilotApplyState applyStateFor(long shipId) {
             return applyStateByShipId.computeIfAbsent(shipId, id -> {
                 PilotApplyState state =
@@ -2629,6 +2708,12 @@ public final class PersistentPilotIntentCombatServer {
                 state.useDeclaredFireLane(declaredFireLane);
                 state.fireEdgeLatch(fireEdgeLatchEnabled);
                 state.declPad().enabled(declPadEnabled); //
+                // The human-pilot mark's seat, resolved once (the wire id is the seat's FIXED id); -1 = no mark.
+                state.seatId(seatIdForWireIdOrMinusOne(id));
+                int markSeat = state.seatId();
+                if (markSeat >= 1) { // the mark's flags, re-read per hull tenure through the step's live resolver
+                    state.pilotMarkFlagsSource(() -> pilotMarkFlagsOrZero(markSeat));
+                }
                 // The declared serve's press gate — cache-free live reads, so
                 // one install covers every hull tenure on this wire id (no repoint rebind needed).
                 // On fake bindings every read fails open to "press", today's path verbatim.

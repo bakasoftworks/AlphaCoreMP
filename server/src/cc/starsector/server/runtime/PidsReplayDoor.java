@@ -100,7 +100,7 @@ final class PidsReplayDoor {
      * seat), and a claim that is not {@code SEATED} ({@code ALREADY_SEATED} = a previous tenure still holds the seat
      * — the record's DEAD row must be fed first; never papered over).
      */
-    PeerSession replayMint(long sessionId, int seat, long shipId, boolean observer, boolean admin) {
+    PeerSession replayMint(long sessionId, int seat, long shipId, boolean observer, boolean admin, int helloMagicBits) {
         synchronized (door.lock) {
             requireReplayDoor("replayMint");
             if (door.closed) {
@@ -141,11 +141,14 @@ final class PidsReplayDoor {
                     shipId, admin, observer, true);
             session.reachedTwoWay = true;
             session.provisioned = true;
+            // The recorded HELLO MagicLib reports (SESS flag bits 2-3): the admission block copies them per seat for the
+            // mark's FOLLOW predicate exactly as it does for a live HELLO.
+            session.helloMagicBits = helloMagicBits & (Handshake13.FLAG_MAGIC_UP | Handshake13.FLAG_MAGIC_REPLICA);
             session.lastValidArrivalMillis = PilotIntentDatagramServer.nowMillis();
             door.sessionsById.put(sessionId, session);
             door.lock.notifyAll();
             System.out.println("replay-door mint session=" + sessionId + " seat=" + seat + " ship=" + shipId
-                    + " observer=" + observer);
+                    + " observer=" + observer + " magic=" + session.helloMagicBits);
             return session;
         }
     }

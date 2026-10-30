@@ -218,6 +218,14 @@ public final class PostureRegistry {
             // LITERALS, never RngPinKnobs' constants: run-real-pilot-server.ps1's
             // posture census regex reads this file as TEXT and fails closed on an unparsed row.
             new Knob("cc.rngpin.enabled", "CC_RNGPIN_ENABLED", "rngpin.enabled", KnobClass.BEHAVIOR),
+            // The host's MagicLib seam switch, HOOK-0053, decided by the premain
+            // through the SAME tier walk as rngpin.enabled (default ON; the FILE row false = the OFF lever). BEHAVIOR:
+            // an applied seam changes which MagicLib abilities fire on a piloted hull, so the behavior hash carries it.
+            // LITERALS, never TransformRegistry's constants (the posture census regex reads this file as TEXT).
+            new Knob("cc.magicseam.enabled", "CC_MAGICSEAM_ENABLED", "magicseam.enabled", KnobClass.BEHAVIOR),
+            // the player-ship window's host row (DEFAULT OFF): registered BEFORE its premain lands, so no postured
+            // serve refuses it as an unknown sysprop (the magicseam row's first merged build did exactly that)
+            new Knob("cc.pilotship.enabled", "CC_PILOTSHIP_ENABLED", "pilotship.enabled", KnobClass.BEHAVIOR),
             // The Math.random() caller census window (sim ticks) — premain-read
             // (sysprop / env, no file tier), a diagnostic re-sim delta; the stream is untouched.
             new Knob("cc.rngpin.census", "CC_RNGPIN_CENSUS", null, KnobClass.INSTRUMENT),
@@ -426,8 +434,15 @@ public final class PostureRegistry {
      */
     private static final List<String> EXEMPT_SYSPROP_PREFIXES =
             List.of("cc.posture.", "cc.transform.jar.", "cc.transform.sha.", "cc.transform.applied.", "cc.predict.");
+    // cc.magic.seam: the premain's MagicLib seam RECEIPT (off | armed | applied:<sha> |
+    // disarmed:<reason>), set on EVERY postured boot before this census runs — a receipt, never a knob (the knob is
+    // cc.magicseam.enabled above). The first merged stage-1 build refused every postured serve here (S1a's HAZARD S1).
+    // cc.pilot.ship: the premain's player-ship RECEIPT (off | armed | applied:<k> | refused:<reason> |
+    // latched:leak), set on EVERY postured boot too (the row defaults OFF, so the receipt reads "off") — the same S1a hazard
+    // caught at the pre-mint read, before the fleet merged (the knob is cc.pilotship.enabled above).
     private static final java.util.Set<String> EXEMPT_SYSPROPS =
-            java.util.Set.of("cc.premain.jar", "cc.debug.serverHullBar", "cc.transform.armed", "cc.transform.rngpin");
+            java.util.Set.of("cc.premain.jar", "cc.debug.serverHullBar", "cc.transform.armed", "cc.transform.rngpin",
+                    "cc.magic.seam", "cc.pilot.ship");
     // CC_CLIENT_ (widening an earlier single-name exemption): the arm's CLIENT-ONLY ferries
     // (CC_CLIENT_JVM_FLAGS, CC_CLIENT_JRE_CC) — window launchers read them, the serve never
     // does, yet the detached armer's env reaches this JVM too. The first -ClientJfr arm AND

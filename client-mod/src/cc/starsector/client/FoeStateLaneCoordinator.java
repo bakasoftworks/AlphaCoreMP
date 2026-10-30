@@ -316,6 +316,7 @@ final class FoeStateLaneCoordinator {
                     continue;
                 }
                 plugin.godMirror.maintain(re.ship, pose); // The wire bit alone gates
+                plugin.remotePilotMark.maintain(re.ship, pose); // The pose's pilot pair alone gates
                 if (!re.stationModule) {
                     // A station MODULE is never pose-reconciled and never
                     // engine-driven — CombatEngine.updateStationModuleLocations
@@ -380,6 +381,7 @@ final class FoeStateLaneCoordinator {
                 // raced stamp + a post-clear partial view killed the ALIVE Aurora (W5-D4). A
                 // true death inside the window presents at the bounded expiry — the
                 // trade, remote flavor. sightEpoch==epoch in the row below = the race recurred.
+                plugin.remotePilotMark.hold(re.ship); // A held absence keeps the mark
                 if (plugin.reAdmitHoldRemoteSkipLogs < 4) {
                     plugin.reAdmitHoldRemoteSkipLogs++;
                     PilotWatchLog.info("predict reconnect-hold: entity " + re.entityId
@@ -470,10 +472,12 @@ final class FoeStateLaneCoordinator {
                         + " the mount re-key gap — holding for first pose (max "
                         + PredictReconcileCombatPlugin.MOUNT_REKEY_POSE_HOLD_TICKS
                         + " ticks) tick=" + simTick);
+                plugin.remotePilotMark.hold(re.ship); // The held body keeps its mark
                 return;
             }
             if (simTick - re.rekeyHoldSinceTick
                     <= PredictReconcileCombatPlugin.MOUNT_REKEY_POSE_HOLD_TICKS) {
+                plugin.remotePilotMark.hold(re.ship);
                 return;
             }
             re.rekeyPoseHold = false;

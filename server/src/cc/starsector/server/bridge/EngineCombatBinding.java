@@ -25,6 +25,7 @@ import cc.starsector.server.runtime.MissileSplitEventDetector;
 import cc.starsector.server.runtime.ParityAuditWalker;
 import cc.starsector.server.runtime.RosterCombatOutcome;
 import cc.starsector.server.runtime.ShipNetworkIdRegistry;
+import cc.starsector.server.transform.PilotShipWindow;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -205,6 +206,7 @@ public final class EngineCombatBinding {
     private final Method shipGetPhaseCloak; // nullable: the phase guard unavailable => shield lane FAILS CLOSED (same verb toggles the cloak)
     private final Method shipIsPhased; // nullable: the phased truth unavailable => phase-cloak state tier unavailable
     private final Method shipGetCurrentCR; // nullable: the CR tier unavailable
+    private final Method shipGetCustomData; // nullable: the pilot-mark read for the AWSD maneuver record (0, 0 when unbound)
     private final Method shipGetSharedFighterReplacementRate; // nullable: the fighter-rate read unbound => CR records carry NO_FIGHTER_REPLACEMENT_PCT
     private final Method shipGetTimeDeployedForCR; // nullable: the CR tier unavailable
     private final Method statsGetPeakCRDuration; // nullable: the CR tier unavailable (StatBonus off MutableShipStatsAPI)
@@ -240,6 +242,7 @@ public final class EngineCombatBinding {
     final OrbitDroneDrive orbitDroneDrive = new OrbitDroneDrive(); // pkg-private: PilotCommandApplier
     // B2: log the tolerated headless retreat-report NPE once, not every frame.
     private volatile boolean headlessRetreatNpeReported;
+    private boolean pilotShipLeakReported; // the step guard's one leak row (sim thread only)
     // The motion lane fails closed by design (any per-ship read failure nulls
     // the WHOLE list), which left the V7 probe's no_motion_lane verdict causeless. Name the first
     // failure once, then stay silent (serve-cadence lane).
@@ -389,6 +392,7 @@ public final class EngineCombatBinding {
         this.weaponCommandVent = b.weaponCommandVent;
         this.shipGetPhaseCloak = b.shipGetPhaseCloak;
         this.shipIsPhased = b.shipIsPhased;
+        this.shipGetCustomData = b.shipGetCustomData;
         this.shipGetCurrentCR = b.shipGetCurrentCR;
         this.shipGetSharedFighterReplacementRate = b.shipGetSharedFighterReplacementRate;
         this.shipGetTimeDeployedForCR = b.shipGetTimeDeployedForCR;
@@ -480,9 +484,13 @@ public final class EngineCombatBinding {
         if (!Float.isFinite(effectiveAmount)) {
             throw new IllegalArgumentException("effectiveAmount must be finite; got " + effectiveAmount);
         }
+        if (!PilotShipWindow.threadBound()) { // the step thread is the one thread the player-ship window answers on
+            PilotShipWindow.bindSimThread(Thread.currentThread());
+        }
         try {
             advanceInner.invoke(engine, effectiveAmount, stepAmountArg);
             lastEffectiveStepAmount = effectiveAmount;
+            guardPilotShipWindows();
         } catch (InvocationTargetException e) {
             Throwable cause = e.getCause() != null ? e.getCause() : e;
             if (isHeadlessRetreatReportNpe(cause)) {
@@ -495,6 +503,7 @@ public final class EngineCombatBinding {
                 // kill the serve loop — fail soft and continue (the step's advance already ran up to
                 // the retreat-report; B1's deploy-CR fix keeps the demo ships from retreating at all).
                 lastEffectiveStepAmount = effectiveAmount;
+                guardPilotShipWindows();
                 if (!headlessRetreatNpeReported) {
                     headlessRetreatNpeReported = true;
                     System.out.println("EngineCombatBinding: tolerated headless retreat-report"
@@ -506,6 +515,20 @@ public final class EngineCombatBinding {
             throw new EngineBindingException("advanceInner threw: " + describe(cause), cause);
         } catch (ReflectiveOperationException e) {
             throw new EngineBindingException("advanceInner invocation failed: " + describe(e), e);
+        }
+    }
+
+    /**
+     * The player-ship step guard, after every completed engine step (the tolerated retreat-report step
+     * included): every ship-advance window the step opened must have closed. A leak (a window left open) is
+     * reset, latched off for the rest of the process by the holder (receipt {@code latched:leak}) and said in
+     * ONE row; the redirected readers then get the engine's own answer again. Steady cost = one static read,
+     * no allocation.
+     */
+    private void guardPilotShipWindows() {
+        if (!PilotShipWindow.checkBalanced() && !pilotShipLeakReported) {
+            pilotShipLeakReported = true;
+            System.out.println("pilotship: window leak latched the feature off for this match");
         }
     }
 
@@ -4191,7 +4214,9 @@ public final class EngineCombatBinding {
                 if (readEngineFlareFlag(controller)) {
                     maneuverMask |= 1 << ShipManeuverCommandView.BIT_ENGINE_FLARE;
                 }
-                commands.add(new EngineBackedShipManeuverCommandView(shipId++, maneuverMask));
+                int pilotTriple = readPilotMarkTriple(ship);
+                commands.add(new EngineBackedShipManeuverCommandView(shipId++, maneuverMask,
+                        pilotTriple >>> 16, (pilotTriple >>> 8) & 0xFF, pilotTriple & 0xFF));
             }
             return commands;
         } catch (ReflectiveOperationException | RuntimeException e) {
@@ -4253,6 +4278,78 @@ public final class EngineCombatBinding {
         } catch (ReflectiveOperationException | RuntimeException e) {
             return false;
         }
+    }
+
+    private boolean pilotMarkFaultLogged; // one log line for the first malformed / unreadable pilot mark
+
+    /**
+     * Read one hull's
+     * pilot mark for the AWSD maneuver record, packed {@code (seat << 16) | (mask << 8) | flags}:
+     * the {@code int[]} the pilot applier writes on the hull's own custom data under
+     * {@link PilotCommandApplier#PILOT_MARK_KEY} before the step, i.e. exactly what the serve's
+     * mod reads this tick (one source, no second bookkeeping). {@code [0]} in 1..255 is the seat;
+     * {@code [1] & 0xFF} the applied ability bits (the mod reads the low byte only);
+     * {@code [3] & 0xFF} the flags when the mark is at least 4 long (bit 0 = the pilot's MagicLib
+     * decision is followed), else 0 (a pair-shaped mark is append-compatible and simply unflagged).
+     * ANY other case — handle unbound, the get throws, no map, key absent, another type, length
+     * below 2, seat outside 1..255 — reads 0 = NO MARK, so the canonical (0, 0, 0) shape is the
+     * only absent shape minted and this read can never null the maneuver tier (its own try, the
+     * flare idiom). A present-but-malformed mark or a throwing get logs ONCE (bounded tokens: a
+     * class SimpleName and a length, never the contents). Cost: one reflective get, one
+     * {@code Map.get}, one {@code instanceof} per ship per tick on the sim thread (the minimum
+     * coherent read); an unmarked hull whose custom data field is still null gets a fresh empty
+     * map from the engine's getter on every call.
+     */
+    private int readPilotMarkTriple(Object ship) {
+        if (shipGetCustomData == null) {
+            return 0;
+        }
+        Object data;
+        try {
+            data = shipGetCustomData.invoke(ship);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            logPilotMarkFaultOnce("get-failed " + e.getClass().getSimpleName());
+            return 0;
+        }
+        if (!(data instanceof Map<?, ?> map)) {
+            if (data != null) {
+                logPilotMarkFaultOnce("data-not-map " + data.getClass().getSimpleName());
+            }
+            return 0;
+        }
+        Object mark;
+        try {
+            mark = map.get(PilotCommandApplier.PILOT_MARK_KEY);
+        } catch (RuntimeException e) {
+            logPilotMarkFaultOnce("map-get-failed " + e.getClass().getSimpleName());
+            return 0;
+        }
+        if (mark == null) {
+            return 0;
+        }
+        if (!(mark instanceof int[] pair)) {
+            logPilotMarkFaultOnce("mark-not-int-array " + mark.getClass().getSimpleName());
+            return 0;
+        }
+        if (pair.length < 2) {
+            logPilotMarkFaultOnce("mark-short length=" + pair.length);
+            return 0;
+        }
+        int seat = pair[0];
+        if (seat < 1 || seat > 0xFF) {
+            logPilotMarkFaultOnce("mark-seat-out-of-range length=" + pair.length);
+            return 0;
+        }
+        int flags = pair.length >= 4 ? pair[3] & 0xFF : 0;
+        return (seat << 16) | ((pair[1] & ShipManeuverCommandView.PILOT_MASK_BITS) << 8) | flags;
+    }
+
+    private void logPilotMarkFaultOnce(String token) {
+        if (pilotMarkFaultLogged) {
+            return;
+        }
+        pilotMarkFaultLogged = true;
+        System.out.println("maneuver-pilot-mark read fault (one-shot; that hull reads unmarked): " + token);
     }
 
     /**
@@ -4392,6 +4489,11 @@ public final class EngineCombatBinding {
     public PilotApplyResult applyPilotIntent(
             cc.starsector.server.runtime.PilotIntentFrame frame, long simTick, PilotApplyState state) {
         return pilotCommands.applyPilotIntent(frame, simTick, state);
+    }
+
+    /** @see PilotCommandApplier#clearPilotMark */
+    public void clearPilotMark(long wireId, PilotApplyState state) {
+        pilotCommands.clearPilotMark(wireId, state);
     }
 
     /** @see PilotCommandApplier#groupIdentitySnapshotForShip */
@@ -5961,6 +6063,8 @@ public final class EngineCombatBinding {
         Method shipGetPhaseCloak;
         Object weaponCommandPullBackFighters;
         Method shipIsPullBackFighters;
+        Method shipGetCustomData; // nullable: the human-pilot mark seam (no mark when unbound)
+        Method shipSetCustomData; // nullable: the mark's first write per tenure (null = put into the getter's map)
         private Method shipIsPhased;
         private Method shipGetCurrentCR;
         private Method shipGetSharedFighterReplacementRate;
@@ -6579,6 +6683,29 @@ public final class EngineCombatBinding {
         public Builder playerShipPullBackFighters(Object pullBackCommand, Method isPullBackFighters) {
             this.weaponCommandPullBackFighters = pullBackCommand;
             this.shipIsPullBackFighters = isPullBackFighters;
+            return this;
+        }
+
+        /**
+         * The public {@code ShipAPI.getCustomData()} read the human-pilot mark writes through
+         * ({@link PilotCommandApplier#applyPilotIntent}). Null (every fake binding that never calls
+         * this) leaves the mark unexpressed: no write, counted once per apply state, never a throw.
+         *
+         */
+        public Builder shipCustomDataRead(Method getCustomData) {
+            this.shipGetCustomData = getCustomData;
+            return this;
+        }
+
+        /**
+         * The public {@code ShipAPI.setCustomData(String, Object)} write the human-pilot mark's FIRST write per hull
+         * tenure goes through. WHY a setter beside the getter: the engine's getter returns a FRESH detached map
+         * while the hull's own field is still null, so a put into it is lost; the setter creates the hull's map.
+         * Null (every fake binding that never calls this) keeps the put into the getter's map, still checked by
+         * an identity read-back.
+         */
+        public Builder shipCustomDataWrite(Method setCustomData) {
+            this.shipSetCustomData = setCustomData;
             return this;
         }
 

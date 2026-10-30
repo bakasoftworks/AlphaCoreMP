@@ -25,6 +25,12 @@ public final class TransformLaunchGate {
      * one named boundary line per failure.
      */
     public static List<String> verify(TransformRegistry.Entry entry, byte[] classBytes) {
+        if (entry.kind() == TransformRegistry.Kind.FOREIGN_LOAD_TIME_SEAM) {
+            // A third-party seam has no code[] fingerprint to verify and no
+            // jar on java.class.path; an eager caller is a wiring error, refused loud rather than passed or failed
+            throw new IllegalStateException(entry.id() + " is a " + TransformRegistry.Kind.FOREIGN_LOAD_TIME_SEAM
+                    + " entry: load-time only and fail-open, never verified by the eager launch gate");
+        }
         if (entry.kind() == TransformRegistry.Kind.RNG_KEYED_CTOR_PIN) {
             return verifyAnyOf(entry, classBytes);
         }

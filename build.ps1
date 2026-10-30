@@ -5,10 +5,12 @@
 #
 # OUTPUTS (the same relative paths the maintainer's internal build writes, so the two can be compared file by file):
 #   server/classes                          the server, the vendored Concentus audio codec, the game-API probe classes
-#   server/premain/classes + cc-premain.jar the class-transform agent, with the ASM library copied into it
+#   server/compat/classes                   the agent's MagicLib class rewrite (compiled against ASM alone)
+#   server/premain/classes + cc-premain.jar the class-transform agent, with the ASM library and the compat classes in it
 #   server/premain/cc-rngpin-holder.jar     the random-pin holder classes, packed a second time on their own (the
 #                                           agent adds this jar to the boot class path when the pin is armed)
 #   client-mod/build/classes                the client mod's classes plus the server classes it shares
+#   client-mod/build/stub-classes           the MagicLib compile-only stubs (on the client compile class path, never jarred)
 #   client-mod/mod/jars/cc-client-mod.jar   the client mod jar
 #   client-mod/mod/SoundProbe.class         the mod kit's stand-alone sound self-check (a loose class, not in the jar)
 #   build/kit-stage, build/kit-entries.txt  -KitZip only: the joiner kit's staged files and the entry list packed
@@ -218,13 +220,21 @@ if ($probeSources.Count -gt 0) {
     Write-Host "server probe-api: $($probeSources.Count) sources -> server/classes"
 }
 
-# 3. premain: the transform agent, compiled against ASM, then every org/objectweb/asm class copied in (the jar's
+# 3. compat: the agent's MagicLib class rewrite, its own unit compiled against ASM alone (no server class can creep
+# in); the premain links it and cc-premain.jar carries it.
+$compatClasses = Join-Path $server 'compat/classes'
+Reset-Dir $compatClasses
+$compatSources = @(Get-ChildItem -LiteralPath (Join-Path $server 'compat/src') -Recurse -Filter '*.java')
+Invoke-Javac 'server compat' $javac @('--release', '17', '-cp', $asmJar, '-d', $compatClasses) @($compatSources.FullName)
+Write-Host "server compat: $($compatSources.Count) sources -> server/compat/classes"
+
+# 3b. premain: the transform agent, compiled against ASM, then every org/objectweb/asm class copied in (the jar's
 # module-info.class and META-INF are left out), so the agent jar runs on any JDK 17 or newer with no extra jar.
 $premain = Join-Path $server 'premain'
 $premainClasses = Join-Path $premain 'classes'
 Reset-Dir $premainClasses
 $premainSources = @(Get-ChildItem -LiteralPath (Join-Path $premain 'src') -Recurse -Filter '*.java')
-Invoke-Javac 'server premain' $javac @('--release', '17', '-cp', "$classes$cpSep$asmJar", '-d', $premainClasses) @($premainSources.FullName)
+Invoke-Javac 'server premain' $javac @('--release', '17', '-cp', "$classes$cpSep$compatClasses$cpSep$asmJar", '-d', $premainClasses) @($premainSources.FullName)
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead($asmJar)
 $shaded = 0
@@ -242,11 +252,11 @@ if ($shaded -lt 30) { throw "server premain: only $shaded ASM class(es) in $asmJ
 Write-Host "server premain: $($premainSources.Count) sources + $shaded ASM classes -> server/premain/classes"
 
 # 4. the two agent-side jars. cc-premain.jar = the agent + ASM + the product unit's transform package (the registry
-# classes the agent reads); cc-rngpin-holder.jar = the product unit's rngpin package alone.
+# classes the agent reads) + the compat unit; cc-rngpin-holder.jar = the product unit's rngpin package alone.
 $premainJar = Join-Path $premain 'cc-premain.jar'
 $holderJar = Join-Path $premain 'cc-rngpin-holder.jar'
 foreach ($j in @($premainJar, $holderJar)) { if (Test-Path -LiteralPath $j) { Remove-Item -LiteralPath $j -Force } }
-& $jar --create --file $premainJar --manifest (Join-Path $premain 'MANIFEST.MF') -C $premainClasses . -C $classes cc/starsector/server/transform
+& $jar --create --file $premainJar --manifest (Join-Path $premain 'MANIFEST.MF') -C $premainClasses . -C $classes cc/starsector/server/transform -C $compatClasses cc/starsector/compat
 Assert-Exit 'cc-premain.jar'
 & $jar --create --file $holderJar -C $classes cc/starsector/server/rngpin
 Assert-Exit 'cc-rngpin-holder.jar'
@@ -292,7 +302,15 @@ if ($ffmSrcFiles.Count -eq 0 -or @($bridgeSrcFiles | Where-Object { -not (Test-P
 Assert-Exit 'client pass A (voice/ffm, JDK 25)'
 & $javac25 -encoding UTF-8 --release 17 -XDstringConcat=inline -Xlint:all -sourcepath $clientSrc -implicit:none -cp $out -d $out $bridgeSrcFiles
 Assert-Exit 'client pass B (voice factories, JDK 25)'
-Invoke-Javac 'client main' $javac @('--release', '17', '-XDstringConcat=inline', '-Xlint:all', '-cp', "$cp$cpSep$out", '-d', $out) $srcFiles
+# The MagicLib compile-only stubs (client-mod/stubs: the exact descriptors of the members the client's magic package
+# names, from the MagicLib build it was written against) compile into their own tree, which rides the main pass's class
+# path and never the jar: in game the real MagicLib resolves through the game's own mod-jar loader.
+$stubOut = Join-Path $client 'build/stub-classes'
+Reset-Dir $stubOut
+$stubSrc = @(Get-ChildItem -LiteralPath (Join-Path $client 'stubs') -Recurse -Filter '*.java' | ForEach-Object { $_.FullName })
+if ($stubSrc.Count -lt 2) { throw "client: the MagicLib compile stubs are missing under client-mod/stubs (found $($stubSrc.Count), need MagicSubsystem + MagicSubsystemsManager)" }
+Invoke-Javac 'client stubs' $javac @('--release', '17', '-Xlint:all', '-cp', (Join-Path $core 'starfarer.api.jar'), '-d', $stubOut) $stubSrc
+Invoke-Javac 'client main' $javac @('--release', '17', '-XDstringConcat=inline', '-Xlint:all', '-cp', "$cp$cpSep$out$cpSep$stubOut", '-d', $out) $srcFiles
 Write-Host "client: $($ffmSrcFiles.Count) + $($bridgeSrcFiles.Count) + $($srcFiles.Count) sources -> client-mod/build/classes"
 
 # 7. the sound self-check probe: --release 8 so both the game's Java 17 and newer runtimes run it.

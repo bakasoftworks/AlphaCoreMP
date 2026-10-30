@@ -21,7 +21,7 @@ import org.json.JSONObject;
 
 /**
  * The server-side {@code /ship} pickable-variant allowlist —
- * a ROOT-only scan of one mod {@code data/variants} folder (subfolders drop naturally, so the
+ * a ROOT-only scan of each enabled mod's {@code data/variants} folder, first root wins (subfolders drop naturally, so the
  * {@code npc/} split is enforced by construction — W7d) intersected with an INJECTED
  * resolvability predicate (the engine-registry check stays the caller's; this class is pure
  * runtime, game-free and contract-testable). Fail-closed per file: a candidate that fails the
@@ -159,40 +159,107 @@ public final class PickableVariants {
      */
     public static PickableVariants scan(File root, Predicate<String> resolvable) {
         Objects.requireNonNull(root, "root");
+        return scan(List.of(root), resolvable);
+    }
+
+    /** The kit's own mod id ({@code mod_info.json} "id"; its display NAME is "AlphaCoreMP"). */
+    public static final String KIT_MOD_ID = "cc_client";
+
+    /**
+     * The kit's root FIRST, by mod ID. WHY: the launcher sorts enabled mods by
+     * display NAME ({@code ModManager} sorts {@code availableMods} on {@code getName()}), so the kit's root led
+     * the walk only because "AlphaCoreMP" happens to sort first — a mod whose name sorts earlier would have become
+     * root 0 = the wire catalog's root and the dup-stem winner. {@code ids.get(i)} is the mod id of
+     * {@code roots.get(i)}; no kit id among them = the list as given plus ONE loud line (root 0 is then NOT the
+     * kit). Pure, game-free, contract-tested (PICK-ROOTS-KIT).
+     */
+    public static List<File> kitRootFirst(List<String> ids, List<File> roots) {
+        Objects.requireNonNull(ids, "ids");
+        Objects.requireNonNull(roots, "roots");
+        if (ids.size() != roots.size()) {
+            throw new IllegalArgumentException("ids/roots size mismatch: " + ids.size() + " vs " + roots.size());
+        }
+        int kit = ids.indexOf(KIT_MOD_ID);
+        if (kit < 0) {
+            System.out.println("pickable-variants kit_root_missing id=" + KIT_MOD_ID + " roots=" + roots.size());
+            return new ArrayList<File>(roots);
+        }
+        List<File> ordered = new ArrayList<File>(roots.size());
+        ordered.add(roots.get(kit));
+        for (int i = 0; i < roots.size(); i++) {
+            if (i != kit) {
+                ordered.add(roots.get(i));
+            }
+        }
+        return ordered;
+    }
+
+    /**
+     * Scan EVERY enabled {@code data/variants} root, in the order given
+     * (root 0 = the kit's own, placed first BY MOD ID through {@link #kitRootFirst} — the launcher's own order is
+     * by display name), each under the single-root per-file laws above. WHY first root wins: a stem
+     * whose fold an EARLIER root already supplied is skipped loud ({@code skip_dup_stem}), so the kit's own
+     * files outrank a mod's and a later mod can never re-point a listed id. The display name and hull are read
+     * from the file of the root that supplied the stem. One {@code scan} line per listed root, then ONE
+     * {@code scan_total} line; no listable root at all = {@link #empty()}.
+     */
+    public static PickableVariants scan(List<File> roots, Predicate<String> resolvable) {
+        Objects.requireNonNull(roots, "roots");
         Objects.requireNonNull(resolvable, "resolvable");
-        File[] children = root.listFiles();
-        if (children == null) {
-            System.out.println("pickable-variants scan_root_unlistable root=" + root);
+        List<String> stems = new ArrayList<String>();
+        Map<String, File> rootByStem = new HashMap<String, File>();
+        Set<String> earlierFolds = new HashSet<String>();
+        int listedRoots = 0;
+        for (File root : roots) {
+            Objects.requireNonNull(root, "root");
+            File[] children = root.listFiles();
+            if (children == null) {
+                System.out.println("pickable-variants scan_root_unlistable root=" + root);
+                continue;
+            }
+            listedRoots++;
+            Set<String> rootFolds = new HashSet<String>();
+            for (File child : children) {
+                if (!child.isFile()) {
+                    continue; // npc/ + any other subfolder: not pickable by construction (W7d)
+                }
+                String name = child.getName();
+                if (!name.endsWith(".variant")) {
+                    continue;
+                }
+                String stem = name.substring(0, name.length() - ".variant".length());
+                if (!stemLawful(stem)) {
+                    System.out.println("pickable-variants skip_bad_stem file=" + name);
+                    continue;
+                }
+                if (isReservedCustomId(stem)) {
+                    // The server-minted id space is reserved —
+                    // a kit file wearing it would collide with a live custom after pick folding.
+                    System.out.println("pickable-variants skip_reserved_prefix file=" + name);
+                    continue;
+                }
+                if (earlierFolds.contains(ChatCommands.asciiLower(stem))) {
+                    System.out.println("pickable-variants skip_dup_stem file=" + name + " root=" + root);
+                    continue;
+                }
+                if (!resolvable.test(stem)) {
+                    System.out.println("pickable-variants skip_unresolvable id=" + stem);
+                    continue;
+                }
+                stems.add(stem);
+                rootByStem.put(stem, root);
+                rootFolds.add(ChatCommands.asciiLower(stem));
+            }
+            // Distinct folds = what fold() lists from this root alone (a same-root case collision lists once).
+            System.out.println("pickable-variants scan root=" + root + " pickable=" + rootFolds.size());
+            earlierFolds.addAll(rootFolds);
+        }
+        if (listedRoots == 0) {
             return empty();
         }
-        List<String> stems = new ArrayList<String>();
-        for (File child : children) {
-            if (!child.isFile()) {
-                continue; // npc/ + any other subfolder: not pickable by construction (W7d)
-            }
-            String name = child.getName();
-            if (!name.endsWith(".variant")) {
-                continue;
-            }
-            String stem = name.substring(0, name.length() - ".variant".length());
-            if (!stemLawful(stem)) {
-                System.out.println("pickable-variants skip_bad_stem file=" + name);
-                continue;
-            }
-            if (isReservedCustomId(stem)) {
-                // The server-minted id space is reserved —
-                // a kit file wearing it would collide with a live custom after pick folding.
-                System.out.println("pickable-variants skip_reserved_prefix file=" + name);
-                continue;
-            }
-            if (!resolvable.test(stem)) {
-                System.out.println("pickable-variants skip_unresolvable id=" + stem);
-                continue;
-            }
-            stems.add(stem);
-        }
         View scanned = fold(stems);
-        System.out.println("pickable-variants scan root=" + root + " pickable=" + scanned.ids().size());
+        System.out.println("pickable-variants scan_total roots=" + roots.size()
+                + " pickable=" + scanned.ids().size());
         PickableVariants scannedVariants = new PickableVariants(scanned);
         // Each LISTED stem's displayName, read from its own local file
         // under a byte cap; an unreadable or unparsable file = no name, counted into ONE line per scan.
@@ -201,7 +268,7 @@ public final class PickableVariants {
         int unread = 0;
         int hullUnread = 0;
         for (String id : scanned.ids()) {
-            String[] labels = readNameAndHullOrNull(new File(root, id + ".variant"));
+            String[] labels = readNameAndHullOrNull(new File(rootByStem.get(id), id + ".variant"));
             String name = labels == null ? null : labels[0];
             String hull = labels == null ? null : labels[1];
             if (hull == null) {

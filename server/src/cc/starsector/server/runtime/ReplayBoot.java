@@ -68,7 +68,19 @@ import java.util.Set;
  * {@code cc.net.sinkPath} normalizing to the reel itself (the re-run's own recording would truncate its input); (17)
  * {@code wave.seed.effective} absent or not a long (the force below would have no source); (18)
  * {@code match.pvp} / {@code wave.pausedAtStart} unequal to THIS build's predicates over the served
- * descriptor's shape (an absent key reads false: a reel older than the keys).
+ * descriptor's shape (an absent key reads false: a reel older than the keys); (19) {@code magic.seam}
+ * where the outcome is already certain before the engine boot ({@link #magicSeamPreBootRefuses}); (20)
+ * {@code pilot.ship} whose class (the ship-advance window ran, or not) differs from this JVM's
+ * ({@link #pilotShipPreBootRefuses}).
+ *
+ * <p>The MagicLib seam is checked in two legs because its sim effect (MagicLib's ability AI call
+ * replaced on player ships) exists only once MagicSubsystem is defined, DURING the engine boot: a
+ * pre-boot read of the {@value MatchRecordMeta#MAGIC_SEAM_SYSPROP} receipt says {@code armed} on a
+ * serve that will apply. Two reels replay equal only when both applied the same window sha or neither
+ * applied ({@code off}, {@code armed}, {@code disarmed:*}, {@code unset} and an absent key all mean
+ * MagicLib ran unchanged). The boot leg (19) refuses what can no longer change; the post-boot leg
+ * {@link #magicSeamRefusalOrNull} refuses the rest once the define has run, through the same one
+ * refusal exit as the id-tables belt.
  *
  * <p>WARN only ({@code replay-boot WARN key=<k> reel=<v> jvm=<v>}): {@code git.head} unequal (a
  * different build may still replay equal; the differ grades the result); {@code end.reason}
@@ -143,7 +155,33 @@ public final class ReplayBoot {
     public record JvmFacts(String behaviorHash, String descriptorMd5, String rngSeed, boolean rngKeyed,
             String transformArmed, String hook0044Sha, String javaRuntimeVersion, String modsetHash,
             String contentFingerprint, String engineBuild, String gitHead, int tickHz,
-            String sinkPathOrEmpty, String descriptorShapeOrNull) {
+            String sinkPathOrEmpty, String descriptorShapeOrNull, String magicSeam, String pilotShip) {
+
+        /**
+         * The facts without a player-ship receipt: {@code unset}, the value of a JVM whose premain never
+         * decided the player-ship switch (no window, no redirect).
+         */
+        public JvmFacts(String behaviorHash, String descriptorMd5, String rngSeed, boolean rngKeyed,
+                String transformArmed, String hook0044Sha, String javaRuntimeVersion, String modsetHash,
+                String contentFingerprint, String engineBuild, String gitHead, int tickHz,
+                String sinkPathOrEmpty, String descriptorShapeOrNull, String magicSeam) {
+            this(behaviorHash, descriptorMd5, rngSeed, rngKeyed, transformArmed, hook0044Sha,
+                    javaRuntimeVersion, modsetHash, contentFingerprint, engineBuild, gitHead, tickHz,
+                    sinkPathOrEmpty, descriptorShapeOrNull, magicSeam, MatchRecordMeta.PILOT_SHIP_UNSET);
+        }
+
+        /**
+         * The facts without a MagicLib seam receipt: {@code unset}, the value of a JVM whose premain
+         * never decided the seam (MagicLib then runs unchanged).
+         */
+        public JvmFacts(String behaviorHash, String descriptorMd5, String rngSeed, boolean rngKeyed,
+                String transformArmed, String hook0044Sha, String javaRuntimeVersion, String modsetHash,
+                String contentFingerprint, String engineBuild, String gitHead, int tickHz,
+                String sinkPathOrEmpty, String descriptorShapeOrNull) {
+            this(behaviorHash, descriptorMd5, rngSeed, rngKeyed, transformArmed, hook0044Sha,
+                    javaRuntimeVersion, modsetHash, contentFingerprint, engineBuild, gitHead, tickHz,
+                    sinkPathOrEmpty, descriptorShapeOrNull, MatchRecordMeta.MAGIC_SEAM_UNSET);
+        }
 
         /**
          * The facts without a descriptor shape (null): this build's PvP predicates then read false,
@@ -164,6 +202,10 @@ public final class ReplayBoot {
          * {@code tickHz} is the EFFECTIVE rate {@code round(1 / fixedDt)} the serve will step at.
          * The descriptor digest is the serve's own bind recipe, the one shared method (the md5 of
          * the raw descriptor file bytes; {@code unreadable} when the file cannot be read).
+         * {@code magicSeam} is the seam receipt as the premain left it BEFORE the boot ({@code armed} on
+         * a serve that will apply; {@code unset} without a receipt), so the boot leg compares only what
+         * is already certain. {@code pilotShip} is the player-ship receipt read at the same moment
+         * ({@code armed} on an ON serve before the boot rewrites a class; {@code unset} without one).
          */
         public static JvmFacts current(float fixedDt) {
             return new JvmFacts(
@@ -182,7 +224,9 @@ public final class ReplayBoot {
                     ServerConfig.resolve("cc.git.head", "CC_GIT_HEAD", "git.head", "unknown"),
                     (int) Math.round(1.0 / fixedDt),
                     ServerConfig.resolvePath("cc.net.sinkPath", "CC_NET_SINK_PATH", "net.sinkPath", ""),
-                    launchedDescriptorShapeOrNull());
+                    launchedDescriptorShapeOrNull(),
+                    System.getProperty(MatchRecordMeta.MAGIC_SEAM_SYSPROP, MatchRecordMeta.MAGIC_SEAM_UNSET),
+                    System.getProperty(MatchRecordMeta.PILOT_SHIP_SYSPROP, MatchRecordMeta.PILOT_SHIP_UNSET));
         }
 
         /**
@@ -360,6 +404,16 @@ public final class ReplayBoot {
         String shape = jvm.descriptorShapeOrNull();
         predicate("match.pvp", cc.starsector.server.match.MatchDescriptors.isPvpShape(shape));
         predicate("wave.pausedAtStart", cc.starsector.server.match.WaveSchedule.startsPaused(shape));
+        // (19) the MagicLib seam, where already certain (the post-boot leg is magicSeamRefusalOrNull).
+        String seam = meta("magic.seam");
+        if (magicSeamPreBootRefuses(seam, jvm.magicSeam())) {
+            refuse("magic.seam", seam, jvm.magicSeam());
+        }
+        // (20) the player-ship window: whether it ran is a sim input; certain before the boot (pilotShipPreBootRefuses).
+        String pilotShip = meta("pilot.ship");
+        if (pilotShipPreBootRefuses(pilotShip, jvm.pilotShip())) {
+            refuse("pilot.ship", pilotShip, jvm.pilotShip());
+        }
         // WARN only: provenance of the build, a cut recording, an older reel without the tick count.
         if (!Objects.equals(meta("git.head"), jvm.gitHead())) {
             warn("git.head", meta("git.head"), jvm.gitHead());
@@ -420,6 +474,71 @@ public final class ReplayBoot {
         String reelVtab = recorded == null ? "unset" : recorded;
         String jvmVtab = jvmVtabOrNull == null ? "unset" : jvmVtabOrNull;
         return reelVtab.equals(jvmVtab) ? null : refusedLine("idtables.vtab", reelVtab, jvmVtab);
+    }
+
+    /**
+     * The MagicLib seam's post-boot leg, evaluated AFTER the engine boot defined MagicSubsystem (the
+     * forced early define in the content init), with {@code jvmSeamNowOrNull} = the
+     * {@value MatchRecordMeta#MAGIC_SEAM_SYSPROP} receipt read then (null = {@code unset}): the
+     * {@code REFUSED key=magic.seam} line when the reel and this JVM differ in whether the seam applied,
+     * or both applied over different window shas; else null. A reel without the key ran MagicLib
+     * unchanged. Like {@link #vtabRefusalOrNull} the line never joins {@link #refusals}: the caller throws
+     * a {@link ReplayRefusedException} carrying it.
+     */
+    public String magicSeamRefusalOrNull(String jvmSeamNowOrNull) {
+        String recorded = meta("magic.seam");
+        String now = jvmSeamNowOrNull == null ? MatchRecordMeta.MAGIC_SEAM_UNSET : jvmSeamNowOrNull;
+        boolean equal = seamApplied(recorded) ? recorded.equals(now) : !seamApplied(now);
+        return equal ? null : refusedLine("magic.seam", recorded, now);
+    }
+
+    /**
+     * The boot leg (19): true only when the post-boot outcome is already certain to differ - the reel
+     * applied and this JVM can no longer apply (its receipt is neither {@code armed} nor {@code applied:*}),
+     * or this JVM already applied and the reel did not apply the same window. A reel that did not apply
+     * against an {@code armed} JVM is left to {@link #magicSeamRefusalOrNull}: whether MagicLib loads at
+     * all is decided by the boot.
+     */
+    static boolean magicSeamPreBootRefuses(String recordedOrNull, String jvmPreBoot) {
+        if (seamApplied(jvmPreBoot)) {
+            return !jvmPreBoot.equals(recordedOrNull);
+        }
+        return seamApplied(recordedOrNull) && !MatchRecordMeta.MAGIC_SEAM_ARMED.equals(jvmPreBoot);
+    }
+
+    private static boolean seamApplied(String receiptOrNull) {
+        return receiptOrNull != null && receiptOrNull.startsWith(MatchRecordMeta.MAGIC_SEAM_APPLIED_PREFIX);
+    }
+
+    /**
+     * The boot leg (20): true when the reel and this JVM differ in whether the ship-advance window ran. ONE
+     * class rule judges both sides ({@link #pilotShipLive}): live for {@code applied:*} / {@code latched:*}
+     * (the window ran, latched or not) AND for {@code armed}; not live for {@code off}, {@code refused:*},
+     * {@code unset} and an absent key (a reel older than the key ran without it). {@code armed} is live on
+     * either side because the window entry is fail-closed (an ON premain whose ship-advance fingerprint
+     * mismatches refuses the launch, a load-time miss halts the JVM) and the ship class loads in every engine
+     * boot: an armed JVM is certain to apply, and a reel stamped {@code armed} (its sink opened before any class
+     * was rewritten) came from a JVM that went on to apply - unlike the MagicLib seam, no post-boot leg is
+     * needed. Only the class is compared: the applied count grows as foreign classes load and is no sim fact.
+     *
+     */
+    static boolean pilotShipPreBootRefuses(String recordedOrNull, String jvmPreBoot) {
+        return pilotShipLive(recordedOrNull) != pilotShipLive(jvmPreBoot);
+    }
+
+    /**
+     * Live = the window ran or is certain to: {@code applied:*}, {@code latched:*} or {@code armed}.
+     *
+     */
+    private static boolean pilotShipLive(String receiptOrNull) {
+        return pilotShipRan(receiptOrNull)
+                || cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_RECEIPT_ARMED.equals(receiptOrNull);
+    }
+
+    private static boolean pilotShipRan(String receiptOrNull) {
+        return receiptOrNull != null
+                && (receiptOrNull.startsWith(cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_RECEIPT_APPLIED_PREFIX)
+                || receiptOrNull.startsWith(cc.starsector.server.transform.TransformRegistry.PILOT_SHIP_RECEIPT_LATCHED_PREFIX));
     }
 
     public void throwIfRefused() {

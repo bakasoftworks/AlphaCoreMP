@@ -76,6 +76,7 @@ public class CcClientModPlugin extends BaseModPlugin {
         // game's own ModManagerAPI) the HELLO fingerprint folds beside vtab; the server mints the
         // same set from the launcher's list, so a joiner whose mods differ is refused at the door.
         ClientModSetBoot.snapshotAtApplicationLoad();
+        magicSeamAtApplicationLoad();
         // Watch-socket placement: the legacy faithful-pilot watch
         // socket opens HERE at application load and PilotIntentCombatPlugin only consumes it. The
         // original reason ("combat's SecurityManager denies socket opens") was a misread — the
@@ -200,6 +201,74 @@ public class CcClientModPlugin extends BaseModPlugin {
                 serverClient.start();
             }
         }
+    }
+
+    /** MagicLib's mod id (its {@code mod_info.json}). */
+    static final String MAGICLIB_MOD_ID = "MagicLib";
+    /** The MagicLib class a load-time patch rewrites; defined here, never initialized. */
+    static final String MAGIC_SUBSYSTEM_CLASS = "org.magiclib.subsystems.MagicSubsystem";
+
+    /**
+     * The MagicLib seam's application-load step. It runs on BOTH JVMs: this plugin also loads on the server, in its
+     * boot's plugin loop, long before any door opens. Only when MagicLib is enabled, in this order:
+     * <ol>
+     *   <li>the FORCED DEFINE: {@code Class.forName(MagicSubsystem, false, scriptLoader)} defines MagicLib's
+     *       subsystem class WITHOUT running its static initializer (that reads MagicLib's text table). A load-time
+     *       patch of that class runs at this define, off the frame, so its receipt is settled before any HELLO and
+     *       before any mark is written; a roster with no MagicLib hull would otherwise never define it;</li>
+     *   <li>the reader's guarded probe ({@link cc.starsector.client.magic.MagicLocalStateReader#probe()}): arms the
+     *       per-frame report and the HELLO {@code 0x08} claim, or neither;</li>
+     *   <li>the hook PRE-TOUCH: loads and initializes the hook (and its slot law), so the first armed call on the
+     *       sim thread pays no class load;</li>
+     *   <li>the ADOPTER SET mint ({@link cc.starsector.client.magic.MagicAdopters}): one read of every enabled mod
+     *       jar, so the hook's adopter test never does I/O on the sim thread.</li>
+     * </ol>
+     * Each step is guarded on its own (a failure is its SimpleName in the row; the next step still runs) and the
+     * whole method never throws. ONE row, bounded tokens only (no path, no mod text).
+     *
+     */
+    private static void magicSeamAtApplicationLoad() {
+        long t0 = System.nanoTime();
+        String lib = "absent";
+        String define = "skipped";
+        String probe = "skipped";
+        String hook = "skipped";
+        String adopters = "adopters=0";
+        boolean applied = false;
+        try {
+            if (Global.getSettings().getModManager().isModEnabled(MAGICLIB_MOD_ID)) {
+                lib = "enabled";
+                try {
+                    Class.forName(MAGIC_SUBSYSTEM_CLASS, false, Global.getSettings().getScriptClassLoader());
+                    define = "defined";
+                } catch (Throwable t) {
+                    define = t.getClass().getSimpleName();
+                }
+                try {
+                    probe = cc.starsector.client.magic.MagicLocalStateReader.probe();
+                } catch (Throwable t) {
+                    probe = t.getClass().getSimpleName();
+                }
+                try {
+                    cc.starsector.client.magic.CcMagicSeam.describe();
+                    hook = "pretouched";
+                } catch (Throwable t) {
+                    hook = t.getClass().getSimpleName();
+                }
+                try {
+                    adopters = cc.starsector.client.magic.MagicAdopters.mintFromJars(
+                            cc.starsector.client.magic.CcMagicSeam.class.getClassLoader());
+                } catch (Throwable t) {
+                    adopters = "adopters=0 mint=" + t.getClass().getSimpleName();
+                }
+            }
+            applied = cc.starsector.client.magic.MagicCapabilities.seamApplied();
+        } catch (Throwable t) {
+            lib = "error:" + t.getClass().getSimpleName();
+        }
+        PilotWatchLog.info("onApplicationLoad: magic seam MagicLib=" + lib + " define=" + define + " probe=" + probe
+                + " hook=" + hook + " " + adopters + " seam_applied=" + applied
+                + " ms=" + ((System.nanoTime() - t0) / 1_000_000L));
     }
 
     /** Reentrancy guard for {@link #pickWeaponAutofireAI}: the vanilla-acquire below re-invokes

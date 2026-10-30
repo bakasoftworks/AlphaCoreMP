@@ -160,6 +160,37 @@ public final class PilotApplyState {
     int retreatRearmSkips; // held-TRUE bit-9 frames ignored while retreatRearmPending (round meter retreat_rearm_skips=; 0 = no stale-held retreat level hit a refield)
     int retreatEdgeQuarantineFalseLeft; // post-re-key edge quarantine — rising edges may not engage until this many CONSECUTIVE bit-false frames arrive (a TRUE frame restarts it); armed with retreatRearmPending
     int retreatEdgeQuarantined; // TRUE bit-9 frames absorbed inside the quarantine window (round meter retreat_edge_quarantined=; 0 = no spurious post-re-key retreat level) — LOUD by design, never silent suppression
+    /**
+     * The human-pilot mark: the serve writes {@code customData["cc_client.pilot"] = int[]{seatId, abilityMask, 0, flags}}
+     * into the seat's OWN hull so a mod's subclass can tell a human-flown hull from an AI one (ABSENT = AI) and
+     * read the pilot's mod-ability slots (wire bits 13..20 shifted down to 0..7). WHY one array per hull tenure,
+     * updated in place: zero allocation on the tick path, and a mod that cached the reference keeps reading live
+     * values. {@code seatId} = the match seat (&gt;= 1) resolved once when the serve mints this state, -1 = unknown
+     * (probe mains, rows that never set it) = no mark ever. {@code pilotMarkShip} = the hull the array sits in
+     * (null = none), so a re-point (refield, re-key) removes the key from the hull the seat left. After every
+     * re-point the mask reads 0 until {@link PilotCommandApplier#ABILITY_EDGE_QUARANTINE_CLEAR_FRAMES}
+     * consecutive applied frames carried no ability bit (the bit-9 post-re-key quarantine's reason: a client's
+     * stale sample from its previous body must not fire an ability on the fresh one); each non-zero mask
+     * withheld counts {@code abilityEdgeQuarantined} (LOUD, never silent). {@code pilotMarkUnbound} latches once
+     * when the mark cannot be expressed (no seat, no {@code getCustomData} seam, a null map or a throwing read).
+     *
+     */
+    int seatId = -1;
+    /**
+     * The mark's flags source for this state's seat ({@code [3]}: bit 0 = the serve follows the pilot's MagicLib
+     * decision on this hull), read ONCE per hull tenure at the re-point — a seat's flags change only with a new
+     * session, and every new session on the wire id clears the mark, so the next applied frame re-points and
+     * re-reads. Null = flags 0 (rows, probes and any serve that never wires it).
+     */
+    java.util.function.IntSupplier pilotMarkFlagsSource;
+    int[] pilotMark;
+    Object pilotMarkShip;
+    int pilotMarkWrites; // fresh arrays put into a hull AND read back by identity (one per hull tenure)
+    int pilotMarkLostWrites; // first writes the hull's getter did not hand back (the detached-map case; retried next frame)
+    int pilotMarkClears; // removal edges that reached clearPilotMark
+    int abilityEdgeQuarantined; // non-zero ability masks withheld inside the post-re-key quarantine
+    int abilityQuarantineClear; // consecutive applied frames with no ability bit since the last re-point
+    boolean pilotMarkUnbound;
     boolean diveOwnsRetreat; // pkg-private: EngineCombatBinding reads it (former nestmate) // emergency-dive latch — the whole bit-9 lane freezes (engine owns retreat state for a committed dive); set at the F4c dive-start edge, cleared at hull loss
     int retreatDiveFreezeTicks; // bit-9 apply ticks frozen while diveOwnsRetreat (proof the gate ENGAGED, vs "no fight happened")
     int cloakDiveFreezeTicks; // bit-11 cloak toggles WITHHELD while diveOwnsRetreat (the sibling; counts mismatched ticks only = proof the gate ENGAGED)
@@ -2199,5 +2230,52 @@ public final class PilotApplyState {
     /** Meter: active-tube pointer conforms (the re-select class healed). */
     public int tubeOrdinalConformed() {
         return tubeOrdinalConformed;
+    }
+
+    /**
+     * Bind this state to its match seat ({@code seatId} &gt;= 1) so the apply path writes the human-pilot mark;
+     * any value &lt; 1 stores -1 (unknown = no mark). The serve sets it once, when it mints the state.
+     *
+     */
+    public void seatId(int seatId) {
+        this.seatId = seatId >= 1 ? seatId : -1;
+    }
+
+    /** The match seat this state marks hulls for ({@code >= 1}), or -1 = unknown = no mark. */
+    public int seatId() {
+        return seatId;
+    }
+
+    /**
+     * Install the source of this seat's mark flags (null = flags 0); the serve sets it once, when it mints the
+     * state, beside {@link #seatId(int)}.
+     */
+    public void pilotMarkFlagsSource(java.util.function.IntSupplier sourceOrNull) {
+        this.pilotMarkFlagsSource = sourceOrNull;
+    }
+
+    /** Pilot-mark meter: fresh {@code int[]{seatId, mask, 0, flags}} arrays put into a hull (one per hull tenure). */
+    public int pilotMarkWrites() {
+        return pilotMarkWrites;
+    }
+
+    /** Pilot-mark meter: first writes the hull's getter did not read back by identity (each retried next frame). */
+    public int pilotMarkLostWrites() {
+        return pilotMarkLostWrites;
+    }
+
+    /** Pilot-mark meter: seat-leaves-hull edges that reached the mark clear. */
+    public int pilotMarkClears() {
+        return pilotMarkClears;
+    }
+
+    /** Pilot-mark meter: non-zero ability masks withheld inside the post-re-key quarantine. */
+    public int abilityEdgeQuarantined() {
+        return abilityEdgeQuarantined;
+    }
+
+    /** Whether the mark could not be expressed for this state (latched once: no seat, no seam, a null map, a throw). */
+    public boolean pilotMarkUnbound() {
+        return pilotMarkUnbound;
     }
 }

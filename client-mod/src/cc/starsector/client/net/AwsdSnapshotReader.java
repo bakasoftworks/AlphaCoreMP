@@ -50,6 +50,15 @@ public final class AwsdSnapshotReader {
     /**
      * The current schema — strict single-version by design (see class doc).
      * Mirrors {@code AwsdSnapshotMessage.SCHEMA_VERSION}.
+     * v14 = the pilot triple:
+     *{@code pilotSeat u8 + pilotMask u8 + pilotFlags u8}
+     * (flags bit 0 = the serve follows the pilot's MagicLib decision on that hull)
+     * after {@code fighterRatePct} on the KEYFRAME (65→68 B), and the last free delta section bit
+     * {@link #SECTION_EXT} (0x80) = ONE u8 {@code extMask} after the POSE section, whose
+     * {@link #EXT_PILOT} bit carries the triple ABSOLUTE (hold-last when absent); an unknown ext
+     * bit and the non-canonical triple (seat 0 with mask ≠ 0 or flags ≠ 0) fail the frame closed;
+     * v13 = the 2-byte pilot pair, never shipped — the triple took a new number so a pair-reading
+     * kit at a triple serve gets the strict-version throw, never a misparse;
      * v12 = the fighter-replacement percent: ONE u8 after the CR block on
      * the KEYFRAME only (0..100 | 0xFF absent; deltas hold-last) - the served fighter
      * panel's rate line ({@code ServerEntityPose.fighterReplacementPct()});
@@ -85,7 +94,7 @@ public final class AwsdSnapshotReader {
      * cloak block, KEYFRAME 49→54 B; deltas hold-last); v2 = the
      * pose-grid widen.
      */
-    public static final int SCHEMA_VERSION = 12;
+    public static final int SCHEMA_VERSION = 14;
     public static final int HEADER_BYTES = 16;
     /** Body bytes preceding the records: simTick u64 + recordCount u16 + simSpeedPermille u16. */
     public static final int BODY_PREFIX_BYTES = 12;
@@ -130,7 +139,21 @@ public final class AwsdSnapshotReader {
     public static final int SECTION_MANEUVER = 1 << 4;
     public static final int SECTION_SYSTEM = 1 << 5;
     public static final int SECTION_POSE = 1 << 6;
-    private static final int ALL_SECTION_BITS = 0x7F;
+    /**
+     * v14 extension section — mirrors
+     * {@code AwsdSnapshotCodec.SECTION_EXT}: when set, ONE u8 {@code extMask} follows the POSE
+     * section's bytes (ascending bit order) and each set ext bit carries its own fields. An
+     * unknown ext bit fails the frame closed: its field width is unknowable, so the stream
+     * position past it is lost.
+     */
+    public static final int SECTION_EXT = 1 << 7;
+    private static final int ALL_SECTION_BITS = 0xFF;
+    /** Ext bit: the pilot triple ({@code pilotSeat u8, pilotMask u8, pilotFlags u8}), ABSOLUTE; hold-last when absent. */
+    public static final int EXT_PILOT = 0x01;
+    /** Every ext bit this schema defines; any other is refused. */
+    public static final int ALL_EXT_BITS = 0x01;
+    /** The wire's "no human pilot" seat (mirrors {@code AwsdEntityBaseline.PILOT_SEAT_NONE_WIRE}). */
+    public static final int PILOT_SEAT_NONE_WIRE = 0;
 
     // Per-section field-mask bits (fields serialize in ascending bit order).
     public static final int POSE_X = 1;
@@ -349,6 +372,11 @@ public final class AwsdSnapshotReader {
         int depHalfSecU16 = WireBytes.readUnsignedShort(data);
         int peakHalfSecU16 = WireBytes.readUnsignedShort(data);
         int fighterRatePct = WireBytes.readUnsignedByte(data);
+        // v14: the pilot triple rides between fighterRatePct and mountCount; seat 0 with a
+        // non-zero mask or flags fails the AwsdKeyframe ctor below = IOException via the catch.
+        int pilotSeat = WireBytes.readUnsignedByte(data);
+        int pilotMask = WireBytes.readUnsignedByte(data);
+        int pilotFlags = WireBytes.readUnsignedByte(data);
         int mountCount = WireBytes.readUnsignedByte(data);
         List<AwsdKeyframe.Mount> mounts = new ArrayList<>(mountCount);
         try {
@@ -371,7 +399,8 @@ public final class AwsdSnapshotReader {
                     engineDisabledMask, enginePermDisabledMask, engineControllerState,
                     maneuverMask, sysStateCode, sysEffectLevel, qSysCd, sysAmmoWire,
                     cloakStateWire, cloakEffectFrac, qCloakCd, cloakAmmoWire,
-                    crU8, depHalfSecU16, peakHalfSecU16, fighterRatePct, mounts);
+                    crU8, depHalfSecU16, peakHalfSecU16, fighterRatePct, pilotSeat, pilotMask, pilotFlags,
+                    mounts);
         } catch (IllegalArgumentException corrupt) {
             throw new IOException(
                     "AWSD keyframe for entity " + entityId + " failed wire validation", corrupt);
@@ -498,6 +527,30 @@ public final class AwsdSnapshotReader {
                 armorFrac = WireBytes.readUnsignedByte(data);
             }
         }
+        // v14 ext section: after POSE (ascending bit order), before the cell
+        // section the caller reads next.
+        int extMask = 0;
+        int pilotSeat = 0;
+        int pilotMask = 0;
+        int pilotFlags = 0;
+        if ((sectionMask & SECTION_EXT) != 0) {
+            extMask = WireBytes.readUnsignedByte(data);
+            if ((extMask & ~ALL_EXT_BITS) != 0) {
+                // An unknown ext bit's field width is unknowable: the stream position past it
+                // is lost, so the whole frame is refused (fail-closed, never skipped).
+                throw new IOException("AWSD delta extMask carries unknown bits: 0x"
+                        + Integer.toHexString(extMask));
+            }
+            if ((extMask & EXT_PILOT) != 0) {
+                pilotSeat = WireBytes.readUnsignedByte(data);
+                pilotMask = WireBytes.readUnsignedByte(data);
+                pilotFlags = WireBytes.readUnsignedByte(data);
+                if (pilotSeat == PILOT_SEAT_NONE_WIRE && (pilotMask != 0 || pilotFlags != 0)) {
+                    throw new IOException("AWSD delta pilot triple non-canonical: seat 0 with mask 0x"
+                            + Integer.toHexString(pilotMask) + " flags 0x" + Integer.toHexString(pilotFlags));
+                }
+            }
+        }
         return new AwsdDelta(
                 sectionMask,
                 poseFieldMask, dxSteps, dySteps, dvxSteps, dvySteps, dFacingSteps, dAngVelSteps,
@@ -508,7 +561,8 @@ public final class AwsdSnapshotReader {
                 fleetSide,
                 engineFieldMask, engineDisabledMask, enginePermDisabledMask, engineControllerState,
                 maneuverMask,
-                sysFieldMask, sysStateCode, sysEffectLevel, sysCdSteps, sysAmmoWire);
+                sysFieldMask, sysStateCode, sysEffectLevel, sysCdSteps, sysAmmoWire,
+                extMask, pilotSeat, pilotMask, pilotFlags);
     }
 
     /**
@@ -611,6 +665,7 @@ public final class AwsdSnapshotReader {
         boolean flux = (sectionMask & SECTION_FLUX) != 0;
         boolean engine = (sectionMask & SECTION_ENGINE) != 0;
         boolean system = (sectionMask & SECTION_SYSTEM) != 0;
+        boolean pilot = (sectionMask & SECTION_EXT) != 0 && (delta.extMask() & EXT_PILOT) != 0;
         return new AwsdKeyframe(
                 anchor.entityId(),
                 anchor.epoch(),
@@ -672,6 +727,11 @@ public final class AwsdSnapshotReader {
                 anchor.depHalfSecU16(),
                 anchor.peakHalfSecU16(),
                 anchor.fighterRatePct(),
+                // v14 pilot triple: ABSOLUTE when the ext section carries EXT_PILOT, else the
+                // anchor's (hold-last).
+                pilot ? delta.pilotSeat() : anchor.pilotSeat(),
+                pilot ? delta.pilotMask() : anchor.pilotMask(),
+                pilot ? delta.pilotFlags() : anchor.pilotFlags(),
                 mounts);
     }
 
@@ -755,6 +815,9 @@ public final class AwsdSnapshotReader {
         if (kf.fighterRatePct() != AwsdKeyframe.FIGHTER_RATE_NONE_WIRE) {
             pose.fighterReplacementPct(kf.fighterRatePct());
         }
+        // v14: every keyframe carries the pilot triple, so an AWSD pose ALWAYS
+        // mints it (seat 0 = no human pilot); only an AWSS pose reads PILOT_UNKNOWN.
+        pose.pilotSeat(kf.pilotSeat()).pilotMask(kf.pilotMask()).pilotFlags(kf.pilotFlags());
         return pose.build();
     }
 
@@ -978,6 +1041,9 @@ public final class AwsdSnapshotReader {
             int depHalfSecU16,
             int peakHalfSecU16,
             int fighterRatePct,
+            int pilotSeat,
+            int pilotMask,
+            int pilotFlags,
             List<Mount> mounts) {
 
         /** v12 {@code fighterRatePct} absent sentinel (mirrors the server's
@@ -1069,6 +1135,15 @@ public final class AwsdSnapshotReader {
                 throw new IllegalArgumentException(
                         "fighterRatePct outside 0..100 | 0xFF: " + fighterRatePct);
             }
+            requireU8("pilotSeat", pilotSeat);
+            requireU8("pilotMask", pilotMask);
+            requireU8("pilotFlags", pilotFlags);
+            if (pilotSeat == PILOT_SEAT_NONE_WIRE && (pilotMask != 0 || pilotFlags != 0)) {
+                // One bit pattern per meaning: "no pilot" rides mask 0 and flags 0 (the server
+                // baseline ctor enforces the same law).
+                throw new IllegalArgumentException("pilot triple non-canonical: seat 0 with mask 0x"
+                        + Integer.toHexString(pilotMask) + " flags 0x" + Integer.toHexString(pilotFlags));
+            }
             if (sysStateCode == SYS_NONE_WIRE) {
                 // Canonical absent shape (one bit pattern per meaning) — the server
                 // baseline ctor enforces the same law (v8 sparse system tier).
@@ -1145,11 +1220,32 @@ public final class AwsdSnapshotReader {
             int sysStateCode,
             int sysEffectLevel,
             int sysCdSteps,
-            int sysAmmoWire) {
+            int sysAmmoWire,
+            int extMask,
+            int pilotSeat,
+            int pilotMask,
+            int pilotFlags) {
         public AwsdDelta {
             if ((sectionMask & ~ALL_SECTION_BITS) != 0) {
                 throw new IllegalArgumentException(
-                        "sectionMask carries bits above 0x7f: 0x" + Integer.toHexString(sectionMask));
+                        "sectionMask carries bits above 0xff: 0x" + Integer.toHexString(sectionMask));
+            }
+            if ((extMask & ~ALL_EXT_BITS) != 0
+                    || ((sectionMask & SECTION_EXT) == 0 && extMask != 0)) {
+                throw new IllegalArgumentException(
+                        "extMask carries unknown bits (or rides without SECTION_EXT): 0x"
+                                + Integer.toHexString(extMask));
+            }
+            if ((extMask & EXT_PILOT) != 0) {
+                if (pilotSeat < 0 || pilotSeat > 0xFF || pilotMask < 0 || pilotMask > 0xFF
+                        || pilotFlags < 0 || pilotFlags > 0xFF
+                        || (pilotSeat == PILOT_SEAT_NONE_WIRE && (pilotMask != 0 || pilotFlags != 0))) {
+                    throw new IllegalArgumentException("pilot triple outside u8 or non-canonical: "
+                            + pilotSeat + "/0x" + Integer.toHexString(pilotMask)
+                            + "/0x" + Integer.toHexString(pilotFlags));
+                }
+            } else if (pilotSeat != 0 || pilotMask != 0 || pilotFlags != 0) {
+                throw new IllegalArgumentException("pilot triple set without EXT_PILOT");
             }
             if ((poseFieldMask & ~POSE_FIELD_BITS) != 0
                     || (fluxFieldMask & ~FLUX_FIELD_BITS) != 0

@@ -77,7 +77,8 @@ import java.util.List;
  *
  *
  * <p>VALUE-DOMAIN: {@code shipId >= 0} (0 = AUTO / observer); the generation stamp counts up from 0 and is compared
- * for equality only; flags = {@code 0} or {@code Handshake13.FLAG_OBSERVER}.
+ * for equality only; the held flags = {@code 0} or {@code Handshake13.FLAG_OBSERVER}, each build ORs in the MagicLib
+ * report bits ({@code MagicCapabilities.helloFlagBits()}, a subset of 0x18).
  *
  *
  */
@@ -364,7 +365,10 @@ final class Hs13ReHelloFlights {
     Handshake13Flight build(Step step) {
         byte[] secret = Handshake13.secretBytes(seatToken);
         try {
-            Handshake13Flight flight = new Handshake13Flight(lane, secret, flags, print, cid, shipId, variantId, 0,
+            // The MagicLib report bits are read at EVERY build, never held from
+            // construction, so a re-HELLO reports what the memo says now.
+            int helloFlags = flags | cc.starsector.client.magic.MagicCapabilities.helloFlagBits();
+            Handshake13Flight flight = new Handshake13Flight(lane, secret, helloFlags, print, cid, shipId, variantId, 0,
                     Handshake13PairBudget.process().host(PredictDatagramDial.budgetHostKey(server)), rng);
             if (step.unit != null) {
                 try {
