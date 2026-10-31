@@ -120,6 +120,10 @@ public final class PilotIntentDatagramClient {
     /** wire-contract note: minimum consecutive frames an UP edge bit must be held. */
     public static final int EDGE_BIT_MIN_HOLD_FRAMES = 5;
     private static final int RECEIVE_BUFFER_BYTES = 2_048;
+    /** Most windows ONE level flag ({@code --key-window} / {@code --mouse-window} / {@code --control-window}) takes; four
+     * key windows hold at most four codes, so a packed key set never reaches the frame's eight-slot cap.
+     * */
+    static final int LEVEL_WINDOWS_MAX = 4;
 
     private record Options(String host, int port, long shipId, String clientId, String seatToken,
             String fingerprint, int selectedGroup, int strafeBurst, float brakeBelow, int accelFrom, int ventFrom,
@@ -129,7 +133,15 @@ public final class PilotIntentDatagramClient {
             int probeBurst, int cloakFrom, int chatAfterSent, Path stopFile, int shieldFrom,
             List<Path> vsubFiles, String helloVariant, long awaitVackMillis, List<String> chatAfterVack,
             boolean vsubSerial, Path chatFile, int autofireMask, Handshake13Flight.Lane lane,
-            int connectTimeoutMillis, int team, int helloFlags, int[] abilityWindow) {
+            int connectTimeoutMillis, int team, int helloFlags, int[] abilityWindow, int[] keyWindows,
+            int[] mouseWindows, int[] controlWindows, byte[] keymap) {
+        // keymap: null (no --keymap: the HELLO seals 16 zeros = the serve's own control map answers) or the 16 lawful
+        // --keymap bytes in CONTROL_KEY_NAMES order (0 unmapped, 1..0xDF a key code, 0xF0..0xF7 a mouse button),
+        // sealed on the session HELLO only (a probe never carries one).
+        // keyWindows / mouseWindows / controlWindows: never null, flattened {value, fromFrame >= 1, toFrame > from}
+        // triples, at most LEVEL_WINDOWS_MAX each (empty = that level never held): an LWJGL key code 1..255, a mouse
+        // button 0..7, a CONTROL_KEY_NAMES bit 0..15, each held over [from, to) in frameSeq space; windows OR.
+        //
         // helloFlags: 0 or a subset of 0x18 (the HELLO MagicLib report bits; a drill lever, never a kit sysprop);
         // abilityWindow: null or {slot 0..7, fromFrame >= 1, toFrame > from} = the held ability bit for one slot
         // over that frame window (S4b's seam drill rows 19-21 + 23; the hunk = its commit body).
@@ -393,6 +405,11 @@ public final class PilotIntentDatagramClient {
     private int fireRisingEdges;
     /** Frames the --ability-window bit was held (the drill's receipt row ability_window_held=). */
     private int abilityWindowHeld;
+    /** Frames that carried a non-empty key set / mouse byte / control-key mask from the level windows (the receipt rows
+     * key_window_held= / mouse_window_held= / control_window_held=; main thread only). */
+    private int keyWindowHeld;
+    private int mouseWindowHeld;
+    private int controlWindowHeld;
     private int declSent;
     private int declSeq;
     private int startingRoundId;
@@ -447,7 +464,7 @@ public final class PilotIntentDatagramClient {
             Options options = new Options("127.0.0.1", 1, 1L, "ctrl-demux-probe", "", "", 0, 0,
                     0f, 0, 0, 0, new int[0], 0, 0, 0, 1, 60, 0, 0L, 0, DEFAULT_READ_DEADLINE_MILLIS,
                     null, "", List.of(), false, 1, 0, 0, null, 0, List.of(), "", 0L, List.of(), false,
-                    null, -1, null, CONNECT_TIMEOUT_MILLIS, 0, 0, null);
+                    null, -1, null, CONNECT_TIMEOUT_MILLIS, 0, 0, null, new int[0], new int[0], new int[0], null);
             return new CtrlDemuxProbe(new PilotIntentDatagramClient(options, false));
         }
 
@@ -551,6 +568,9 @@ public final class PilotIntentDatagramClient {
         int abilityFrom = 0;
         int helloFlags = 0;
         String abilityWindowSpec = null;
+        List<String> keyWindowSpecs = new ArrayList<>();
+        List<String> mouseWindowSpecs = new ArrayList<>();
+        List<String> controlWindowSpecs = new ArrayList<>();
         int declEvery = 0;
         int maxFrames = DEFAULT_MAX_FRAMES;
         // The HARNESS client's send cadence defaults to the configured sim tick rate
@@ -595,10 +615,13 @@ public final class PilotIntentDatagramClient {
         // --team 0|1|2, the session HELLO's team pick (0 = the server
         // picks, the default); any other text is refused naming the flag, never clamped to a team
         int team = 0;
+        // --keymap <32 hex>, the session HELLO's 16 keymap bytes (null = absent =
+        // 16 zeros sealed); a malformed value is refused naming the flag (keymapOf), never truncated or padded
+        byte[] keymap = null;
         // The loop below never visits a trailing key, so a
         // value-less --hs13 / --lane would be silently skipped (a dangling --lane = the default lane) — refused,
         // naming the flag (never a value).
-        if (args.length % 2 == 1 && List.of("--hs13", "--lane", "--team").contains(args[args.length - 1])) {
+        if (args.length % 2 == 1 && List.of("--hs13", "--lane", "--team", "--keymap").contains(args[args.length - 1])) {
             throw new IllegalArgumentException(args[args.length - 1] + " needs a value (a trailing flag is never skipped)");
         }
         for (int i = 0; i + 1 < args.length; i += 2) {
@@ -639,6 +662,11 @@ public final class PilotIntentDatagramClient {
                 case "--ability-from" -> abilityFrom = Integer.parseInt(args[i + 1]);
                 case "--hello-flags" -> helloFlags = Integer.decode(args[i + 1]);
                 case "--ability-window" -> abilityWindowSpec = args[i + 1];
+                // The raw input levels a real kit samples (REPEATABLE, windows OR): an LWJGL key code, a mouse button,
+                // or a control-name bit held over [from, to) frameSeq ticks.
+                case "--key-window" -> keyWindowSpecs.add(args[i + 1]);
+                case "--mouse-window" -> mouseWindowSpecs.add(args[i + 1]);
+                case "--control-window" -> controlWindowSpecs.add(args[i + 1]);
                 case "--decl-every" -> declEvery = Integer.parseInt(args[i + 1]);
                 case "--max-frames" -> maxFrames = Integer.parseInt(args[i + 1]);
                 case "--intent-hz" -> intentHz = Integer.parseInt(args[i + 1]);
@@ -668,6 +696,7 @@ public final class PilotIntentDatagramClient {
                 case "--hs13" -> requireHs13NoOp(args[i + 1]);
                 case "--lane" -> lane = laneOf(args[i + 1]);
                 case "--team" -> team = teamOf(args[i + 1]);
+                case "--keymap" -> keymap = keymapOf(args[i + 1]);
                 case "--cloak-from" -> cloakFrom = Integer.parseInt(args[i + 1]);
                 case "--shield-from" -> shieldFrom = Integer.parseInt(args[i + 1]);
                 case "--chat-after-sent" -> chatAfterSent = Integer.parseInt(args[i + 1]);
@@ -713,13 +742,13 @@ public final class PilotIntentDatagramClient {
                     + " --receipt [--client-id --seat-token --fingerprint --fingerprint-file --fold-vtab --fold-modset"
                     + " --selected-group --autofire-mask --strafe-burst --brake-below --accel-from --vent-from"
                     + " --fire-from --fire-window --system-from --ability-from --cloak-from --shield-from --decl-every"
-                    + " --hello-flags --ability-window"
+                    + " --hello-flags --ability-window --key-window --mouse-window --control-window"
                     + " --max-frames"
                     + " --intent-hz --pause-after --pause-millis --hard-exit-after"
                     + " --read-deadline-millis --connect-timeout-millis --chat-text --chat-after-sent"
                     + " --stop-file --vsub-file"
                     + " --hello-variant --await-vack-millis --chat-after-vack --vsub-serial"
-                    + " --chat-file --lane --hs13]; every join / --probe true speaks version " + Handshake13.VERSION + " only; --lane"
+                    + " --chat-file --lane --team --keymap --hs13]; every join / --probe true speaks version " + Handshake13.VERSION + " only; --lane"
                     + " password|token = which credential --seat-token holds (default password); --hs13 true is"
                     + " accepted as a no-op, --hs13 false is refused");
         }
@@ -743,6 +772,10 @@ public final class PilotIntentDatagramClient {
                 throw new IllegalArgumentException("--ability-window: slot 0..7, from >= 1, to > from: " + abilityWindowSpec);
             }
         }
+        int[] keyWindows = parseLevelWindows("--key-window", keyWindowSpecs, 1, 255);
+        int[] mouseWindows = parseLevelWindows("--mouse-window", mouseWindowSpecs, 0, 7);
+        int[] controlWindows = parseLevelWindows("--control-window", controlWindowSpecs, 0,
+                PilotIntentFrame.CONTROL_KEY_NAMES.length - 1);
         if (autofireMask < -1) {
             throw new IllegalArgumentException("--autofire-mask must be >= -1 (-1 = absent): " + autofireMask);
         }
@@ -819,7 +852,79 @@ public final class PilotIntentDatagramClient {
                 receiptPath, announceName, List.copyOf(chatTexts), probe, Math.max(1, probeBurst),
                 cloakFrom, chatAfterSent, stopFile, shieldFrom, List.copyOf(vsubFiles), helloVariant,
                 awaitVackMillis, List.copyOf(chatAfterVack), vsubSerial, chatFile, autofireMask,
-                lane, connectTimeoutMillis, team, helloFlags, abilityWindow);
+                lane, connectTimeoutMillis, team, helloFlags, abilityWindow, keyWindows, mouseWindows, controlWindows,
+                keymap);
+    }
+
+    /**
+     * One level flag's windows, each {@code value:fromFrame:toFrame}, flattened to {@code {value, from, to}} triples
+     * (empty = none given). Refused, naming the flag: more than {@link #LEVEL_WINDOWS_MAX} windows, a value outside
+     * {@code [minValue, maxValue]}, {@code from < 1} or {@code to <= from}; never clamped. Pure.
+     *
+     */
+    static int[] parseLevelWindows(String flag, List<String> specs, int minValue, int maxValue) {
+        if (specs.size() > LEVEL_WINDOWS_MAX) {
+            throw new IllegalArgumentException(flag + " repeats at most " + LEVEL_WINDOWS_MAX + " times; got "
+                    + specs.size());
+        }
+        int[] windows = new int[specs.size() * 3];
+        for (int w = 0; w < specs.size(); w++) {
+            String spec = specs.get(w);
+            String[] parts = spec.split(":");
+            if (parts.length != 3) {
+                throw new IllegalArgumentException(flag + " must be value:fromFrame:toFrame: " + spec);
+            }
+            int value = Integer.parseInt(parts[0].trim());
+            int from = Integer.parseInt(parts[1].trim());
+            int to = Integer.parseInt(parts[2].trim());
+            if (value < minValue || value > maxValue || from < 1 || to <= from) {
+                throw new IllegalArgumentException(flag + ": value " + minValue + ".." + maxValue
+                        + ", from >= 1, to > from: " + spec);
+            }
+            windows[w * 3] = value;
+            windows[w * 3 + 1] = from;
+            windows[w * 3 + 2] = to;
+        }
+        return windows;
+    }
+
+    /**
+     * The packed key set held at {@code frameSeq}: every {@code --key-window} code whose {@code [from, to)} holds it,
+     * in strictly ascending code order with a repeated code once, zero-padded — the frame's canonical form. At most
+     * {@link #LEVEL_WINDOWS_MAX} windows, so never past the frame's eight slots. Pure, no allocation.
+     *
+     */
+    static long heldKeyCodes(int[] windows, int frameSeq) {
+        long packed = PilotIntentFrame.KEYS_EMPTY;
+        int slot = 0;
+        int prev = 0;
+        while (slot < PilotIntentFrame.KEY_SLOTS) {
+            int next = Integer.MAX_VALUE;
+            for (int w = 0; w + 2 < windows.length; w += 3) {
+                int code = windows[w];
+                if (frameSeq >= windows[w + 1] && frameSeq < windows[w + 2] && code > prev && code < next) {
+                    next = code;
+                }
+            }
+            if (next == Integer.MAX_VALUE) {
+                break;
+            }
+            packed = PilotIntentFrame.withKeyCode(packed, slot++, next);
+            prev = next;
+        }
+        return packed;
+    }
+
+    /** The OR of {@code 1 << value} over the windows holding {@code frameSeq} (a mouse byte or a control-key mask).
+     * Pure. */
+    static int heldLevelBits(int[] windows, int frameSeq) {
+        int bits = 0;
+        for (int w = 0; w + 2 < windows.length; w += 3) {
+            if (frameSeq >= windows[w + 1] && frameSeq < windows[w + 2]) {
+                bits |= 1 << windows[w];
+            }
+        }
+        return bits;
     }
 
     /** {@code --hs13}: exactly {@code true} is accepted, as a no-op (the current version is the only handshake; stage 3 of THE
@@ -844,6 +949,57 @@ public final class PilotIntentDatagramClient {
             return value.charAt(0) - '0';
         }
         throw new IllegalArgumentException("--team must be 0, 1 or 2 (0 = the server picks)");
+    }
+
+    /**
+     * {@code --keymap}: exactly {@code 2 * Handshake13.KEYMAP_BYTES} ASCII hex digits (either case), byte i = the
+     * pilot's binding for {@link PilotIntentFrame#CONTROL_KEY_NAMES}{@code [i]}, every byte lawful
+     * ({@link Handshake13#keymapLawful}: 0 unmapped, 1..0xDF an LWJGL key code, 0xF0..0xF7 a mouse button). Anything
+     * else is an IAE naming the flag, the value never echoed (a misplaced argument could be the secret); never
+     * truncated, padded or clamped. Pure; returns a fresh array.
+     *
+     */
+    static byte[] keymapOf(String value) {
+        if (value != null && value.length() == 2 * Handshake13.KEYMAP_BYTES) {
+            byte[] keymap = new byte[Handshake13.KEYMAP_BYTES];
+            boolean hex = true;
+            for (int i = 0; i < keymap.length && hex; i++) {
+                int high = asciiHexDigit(value.charAt(2 * i));
+                int low = asciiHexDigit(value.charAt(2 * i + 1));
+                hex = high >= 0 && low >= 0;
+                keymap[i] = (byte) ((high << 4) | low);
+            }
+            if (hex && Handshake13.keymapLawful(keymap)) {
+                return keymap;
+            }
+        }
+        throw new IllegalArgumentException("--keymap must be " + 2 * Handshake13.KEYMAP_BYTES + " hex digits = "
+                + Handshake13.KEYMAP_BYTES + " lawful bytes (00 unmapped, 01..DF a key code, F0..F7 a mouse button)");
+    }
+
+    /** The receipt's {@code hello_keymap=} token: {@code none} without {@code --keymap}, else the 32 lower-case hex digits
+     * the session HELLO seals (bounded, never player text). Pure. */
+    static String keymapReceiptToken(byte[] keymapOrNull) {
+        if (keymapOrNull == null) {
+            return "none";
+        }
+        StringBuilder hex = new StringBuilder(2 * keymapOrNull.length);
+        for (byte b : keymapOrNull) {
+            hex.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+        }
+        return hex.toString();
+    }
+
+    /** One ASCII hex digit's value 0..15; -1 for anything else, the non-ASCII digits {@link Character#digit} accepts too.
+     * */
+    private static int asciiHexDigit(char c) {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        return c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
     }
 
     /** {@code --lane}: the credential FIELD {@code --seat-token} fills. The value is never echoed — a misplaced
@@ -986,10 +1142,12 @@ public final class PilotIntentDatagramClient {
     private Handshake13Flight newFlight(int flags, String variantId) {
         byte[] secret = Handshake13.secretBytes(options.seatToken());
         try {
-            // a probe never carries a team pick; the session HELLO carries --team
+            // a probe never carries a team pick or a keymap; the session HELLO carries --team and --keymap (null = absent)
+            boolean probeFlight = (flags & Handshake13.FLAG_PROBE) != 0;
             return new Handshake13Flight(options.lane(), secret, flags, options.fingerprint(),
                     options.clientId(), options.shipId(), variantId,
-                    (flags & Handshake13.FLAG_PROBE) != 0 ? 0 : options.team(),
+                    probeFlight ? 0 : options.team(),
+                    probeFlight ? null : options.keymap(),
                     Handshake13PairBudget.process().host(
                             Handshake13PairBudget.hostKey(server.getHostString(), server.getPort())),
                     new SecureRandom());
@@ -1189,10 +1347,24 @@ public final class PilotIntentDatagramClient {
             fireRisingEdges++;
         }
         fireEdgePrevHeld = fireHeld;
+        // The raw input levels a kit samples, from the level windows (absent flags = KEYS_EMPTY / 0 / 0, so every other
+        // drill arm sends what it sent before).
+        long keyCodes = heldKeyCodes(options.keyWindows(), frameSeq);
+        int mouseButtons = heldLevelBits(options.mouseWindows(), frameSeq);
+        int controlKeys = heldLevelBits(options.controlWindows(), frameSeq);
+        if (keyCodes != PilotIntentFrame.KEYS_EMPTY) {
+            keyWindowHeld++;
+        }
+        if (mouseButtons != 0) {
+            mouseWindowHeld++;
+        }
+        if (controlKeys != 0) {
+            controlWindowHeld++;
+        }
         PilotIntentFrame intent = new PilotIntentFrame(options.shipId(), frameSeq, aimDeg,
                 heldControls, fireHeld, options.selectedGroup(), aimDeg, 0f, 0f,
                 options.autofireMask(), PilotIntentFrame.TARGET_ABSENT, fireEdgeSeq,
-                PilotIntentFrame.TUBE_ORDINAL_ABSENT);
+                PilotIntentFrame.TUBE_ORDINAL_ABSENT, keyCodes, mouseButtons, controlKeys);
         ByteArrayOutputStream frameBytes = new ByteArrayOutputStream(PilotIntentWireCodec.FRAME_BYTES);
         PilotIntentWireCodec.writeFrame(frameBytes, intent);
         byte[] bytes = frameBytes.toByteArray();
@@ -2157,6 +2329,10 @@ public final class PilotIntentDatagramClient {
         lines.add("cookie_challenges=" + cookieChallenges); // Count only
         lines.add("hello_flags=" + options.helloFlags());
         lines.add("ability_window_held=" + abilityWindowHeld);
+        lines.add("key_window_held=" + keyWindowHeld);
+        lines.add("mouse_window_held=" + mouseWindowHeld);
+        lines.add("control_window_held=" + controlWindowHeld);
+        lines.add("hello_keymap=" + keymapReceiptToken(options.keymap()));
         lines.add(hsReceiptRow()); // hs=Handshake13.VERSION
         lines.add("welcome_duplicates=" + welcomeDuplicates);
         lines.add("dropped_undecodable=" + droppedUndecodable);

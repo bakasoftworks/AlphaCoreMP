@@ -64,8 +64,11 @@ public final class ReplayFeed implements Closeable {
     public interface SessionDoor {
         /** Admit a session under its RECORDED (signed) id; observers carry seat 0 and ship 0; {@code helloMagicBits}
          *  = the seat's recorded HELLO 0x08 / 0x10 reports ({@link MatchRecordRows#sessHelloMagicBits}), so the
-         *  re-sim's mark FOLLOW predicate reads what the live serve read. */
-        void mint(long sessionId, int seat, long shipId, boolean observer, boolean admin, int helloMagicBits);
+         *  re-sim's mark FOLLOW predicate reads what the live serve read; {@code keymapLo} /
+         *  {@code keymapHi} = the seat's recorded HELLO keymap packed ({@code SessRow.keymapLo/Hi}; 0/0 on an older
+         *  reel), so the re-sim answers the seat's redirected key reads as the live serve did. */
+        void mint(long sessionId, int seat, long shipId, boolean observer, boolean admin, int helloMagicBits,
+                long keymapLo, long keymapHi);
 
         /** End a live session with its recorded departure reason (a server token). */
         void die(long sessionId, String departureReason);
@@ -1281,7 +1284,8 @@ public final class ReplayFeed implements Closeable {
 
     private void mintRecorded(SessionDoor door, MatchRecordRows.SessRow s) {
         door.mint(s.sessionId(), s.seat(), s.shipId(), (s.flags() & MatchRecordRows.SESS_FLAG_OBSERVER) != 0,
-                (s.flags() & MatchRecordRows.SESS_FLAG_ADMIN) != 0, MatchRecordRows.sessHelloMagicBits(s.flags()));
+                (s.flags() & MatchRecordRows.SESS_FLAG_ADMIN) != 0, MatchRecordRows.sessHelloMagicBits(s.flags()),
+                s.keymapLo(), s.keymapHi());
         seatBySession.put(s.sessionId(), s.seat());
         mintedPerSeat[s.seat()]++;
     }

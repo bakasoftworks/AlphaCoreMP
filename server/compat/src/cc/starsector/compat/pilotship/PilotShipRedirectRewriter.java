@@ -28,6 +28,7 @@ import org.objectweb.asm.Opcodes;
 
 import cc.starsector.compat.magic.MagicSeamRewriter;
 import cc.starsector.compat.pilotship.PilotShipClassifier.JarIndex;
+import cc.starsector.compat.pilotship.PilotShipClassifier.Twin;
 import cc.starsector.compat.pilotship.PilotShipClassifier.Verdict;
 
 /**
@@ -45,10 +46,15 @@ import cc.starsector.compat.pilotship.PilotShipClassifier.Verdict;
  * before any parse; every other class returns a {@link Result} and never throws. An unchanged class carries ONE reason
  * (the classifier's, {@link #REASON_SELF_CHECK}, or {@code error:<SimpleName>}); the caller loads the original bytes.
  *
+ * <p>The same pass swaps the LWJGL keyboard / mouse family: each {@code INVOKESTATIC Keyboard|Mouse.<row>} becomes
+ * {@code INVOKESTATIC PilotShipCall.<twin>} with the SAME descriptor (a static call for a static call). Every site of
+ * either family comes from ONE table, {@link PilotShipClassifier#TWINS}.
+ *
  * <p>The self-check re-reads the output independently: replaced calls == the classifier's sites; the method set, the
  * class header and every method without a site byte-identical; each site method's instruction stream (frames, try
- * ranges, lines and maxs included) equal to the input's with exactly the sites swapped; the input constant pool an
- * untouched prefix of the output's, the appended entries only the target's Methodref / Class / NameAndType / Utf8s.
+ * ranges, lines and maxs included) equal to the input's with exactly the sites swapped to their table twins; the input
+ * constant pool an untouched prefix of the output's, the appended entries only the typed target's Class and the
+ * Methodref / NameAndType / Utf8s of twin-table rows, each at most once.
  *
  *
  */
@@ -70,15 +76,22 @@ public final class PilotShipRedirectRewriter {
         private final byte[] patched;
         private final String reason;
         private final int sites;
+        private final int keySites;
         private final String detail;
         final Map<String, Integer> siteMethods;
 
-        Result(byte[] patched, String reason, int sites, String detail, Map<String, Integer> siteMethods) {
+        Result(byte[] patched, String reason, Verdict v, String detail) {
             this.patched = patched;
             this.reason = reason;
-            this.sites = sites;
+            this.sites = v.sites();
+            this.keySites = v.keySites();
             this.detail = PilotShipClassifier.bounded(detail);
-            this.siteMethods = siteMethods;
+            this.siteMethods = v.siteMethods();
+        }
+
+        /** Of {@link #sites()}, the LWJGL keyboard / mouse sites (0 <= keySites <= sites). */
+        public int keySites() {
+            return keySites;
         }
 
         /** True when {@link #patched()} holds the rewritten class. */
@@ -91,7 +104,7 @@ public final class PilotShipRedirectRewriter {
             return patched;
         }
 
-        /** Redirect sites in the class (>= 0); when applied, every one of them was swapped. */
+        /** Redirect sites of both families in the class (>= 0); when applied, every one of them was swapped. */
         public int sites() {
             return sites;
         }
@@ -118,26 +131,28 @@ public final class PilotShipRedirectRewriter {
             return null;
         }
         if (v.reason() != null) {
-            return new Result(null, v.reason(), v.sites(), v.detail(), v.siteMethods());
+            return new Result(null, v.reason(), v, v.detail());
         }
         try {
             int[] replaced = {0};
             byte[] out = swap(bytes, v.siteMethods().keySet(), replaced);
             if (replaced[0] != v.sites()) {
-                return new Result(null, REASON_SELF_CHECK, v.sites(), "replaced=" + replaced[0], v.siteMethods());
+                return new Result(null, REASON_SELF_CHECK, v, "replaced=" + replaced[0]);
             }
             String miss = selfCheck(bytes, out, v.siteMethods());
             if (miss != null) {
-                return new Result(null, REASON_SELF_CHECK, v.sites(), miss, v.siteMethods());
+                return new Result(null, REASON_SELF_CHECK, v, miss);
             }
-            return new Result(out, null, v.sites(), "", v.siteMethods());
+            return new Result(out, null, v, "");
         } catch (Throwable t) {
-            return new Result(null, PilotShipClassifier.REASON_ERROR_PREFIX + MagicSeamRewriter.simpleName(t),
-                    v.sites(), "", v.siteMethods());
+            return new Result(null, PilotShipClassifier.REASON_ERROR_PREFIX + MagicSeamRewriter.simpleName(t), v, "");
         }
     }
 
-    /** The swap itself, only inside {@code siteMethods}; {@code replaced[0]} counts the swapped calls. */
+    /**
+     * The swap itself, only inside {@code siteMethods} (methods with a site of either family); each site becomes its
+     * table twin; {@code replaced[0]} counts the swapped calls.
+     */
     static byte[] swap(byte[] bytes, Set<String> siteMethods, int[] replaced) {
         ClassReader reader = new ClassReader(bytes);
         ClassWriter writer = new ClassWriter(reader, 0);
@@ -152,9 +167,10 @@ public final class PilotShipRedirectRewriter {
                 return new MethodVisitor(Opcodes.ASM9, mv) {
                     @Override
                     public void visitMethodInsn(int op, String owner, String n, String d, boolean itf) {
-                        if (PilotShipClassifier.isSite(op, owner, n, d)) {
+                        Twin t = PilotShipClassifier.siteTwin(op, owner, n, d);
+                        if (t != null) {
                             replaced[0]++;
-                            super.visitMethodInsn(Opcodes.INVOKESTATIC, TARGET_OWNER, TARGET_NAME, TARGET_DESC, false);
+                            super.visitMethodInsn(Opcodes.INVOKESTATIC, TARGET_OWNER, t.twin(), t.twinDesc(), false);
                         } else {
                             super.visitMethodInsn(op, owner, n, d, itf);
                         }
@@ -212,7 +228,7 @@ public final class PilotShipRedirectRewriter {
         return null;
     }
 
-    /** The input pool must be an untouched prefix of the output pool; appended entries only the target's own. */
+    /** The input pool must be an untouched prefix of the output pool; appended entries only the twin table's own. */
     private static String poolDelta(byte[] in, byte[] out) {
         int[] pi = PilotShipClassifier.poolOffsets(in);
         int[] po = PilotShipClassifier.poolOffsets(out);
@@ -257,11 +273,17 @@ public final class PilotShipRedirectRewriter {
     }
 
     /**
-     * The allowed appended entry at {@code k} as a short name, or {@code null} for anything else. Besides the target's
-     * own entries, an InvokeDynamic / Dynamic entry over a NameAndType the input already held is allowed: when a
-     * bootstrap method's arguments repeat a constant (some compilers emit duplicate MethodType entries), ASM re-keys the
-     * bootstrap method on re-emit and appends a value-identical call-site entry; the token pass proves the
-     * invokedynamic's name, descriptor, bootstrap handle and arguments unchanged by value.
+     * The allowed appended entry at {@code k} as a short name (the row it resolves to), or {@code null} for anything
+     * else: the typed target's Class and Utf8 name; a Utf8 equal to a twin-table row's twin name or twin descriptor; a
+     * NameAndType or a Methodref (on the typed target) of a twin-table row. The caller refuses a repeated short name,
+     * so each resolves at most once. Besides those, an InvokeDynamic / Dynamic entry over a NameAndType the input
+     * already held is allowed: when a bootstrap method's arguments repeat a constant (some compilers emit duplicate
+     * MethodType entries), ASM re-keys the bootstrap method on re-emit and appends a value-identical call-site entry;
+     * the token pass proves the invokedynamic's name, descriptor, bootstrap handle and arguments unchanged by value.
+     * A loosened check (the Class delta alone) would pass a wrong twin descriptor, which throws NoSuchMethodError
+     * inside a hull's update.
+     *
+     *
      */
     private static String entry(byte[] b, int[] off, int k, int inputCount) {
         int p = off[k];
@@ -275,25 +297,51 @@ public final class PilotShipRedirectRewriter {
                 int nat = PilotShipClassifier.u2(b, p + 3);
                 return nat > 0 && nat < inputCount ? "callsite:" + k : null;
             }
-            case 1:
-                return utf8Is(b, p, TARGET_OWNER) ? "u_owner" : utf8Is(b, p, TARGET_NAME) ? "u_name"
-                        : utf8Is(b, p, TARGET_DESC) ? "u_desc" : null;
+            case 1: {
+                String s = utf8(b, p);
+                if (TARGET_OWNER.equals(s)) {
+                    return "u_owner";
+                }
+                for (Twin t : PilotShipClassifier.TWINS) {
+                    if (t.twin().equals(s)) {
+                        return "u_name:" + s;
+                    }
+                    if (t.twinDesc().equals(s)) {
+                        return "u_desc:" + s;
+                    }
+                }
+                return null;
+            }
             case 7:
-                return utf8Is(b, at(b, off, p + 1), TARGET_OWNER) ? "class" : null;
-            case 12:
-                return utf8Is(b, at(b, off, p + 1), TARGET_NAME) && utf8Is(b, at(b, off, p + 3), TARGET_DESC)
-                        ? "nat" : null;
+                return TARGET_OWNER.equals(utf8(b, at(b, off, p + 1))) ? "class" : null;
+            case 12: {
+                Twin t = twinByTarget(utf8(b, at(b, off, p + 1)), utf8(b, at(b, off, p + 3)));
+                return t == null ? null : "nat:" + t.twin() + t.twinDesc();
+            }
             case 10: {
                 int cls = at(b, off, p + 1);
                 int nat = at(b, off, p + 3);
-                boolean ok = cls >= 0 && (b[cls] & 0xff) == 7 && utf8Is(b, at(b, off, cls + 1), TARGET_OWNER)
-                        && nat >= 0 && (b[nat] & 0xff) == 12 && utf8Is(b, at(b, off, nat + 1), TARGET_NAME)
-                        && utf8Is(b, at(b, off, nat + 3), TARGET_DESC);
-                return ok ? "methodref" : null;
+                boolean owner = cls >= 0 && (b[cls] & 0xff) == 7 && TARGET_OWNER.equals(utf8(b, at(b, off, cls + 1)));
+                Twin t = owner && nat >= 0 && (b[nat] & 0xff) == 12
+                        ? twinByTarget(utf8(b, at(b, off, nat + 1)), utf8(b, at(b, off, nat + 3))) : null;
+                return t == null ? null : "methodref:" + t.twin() + t.twinDesc();
             }
             default:
                 return null;
         }
+    }
+
+    /** The twin-table row whose typed-target twin is {@code name + desc}; {@code null} for none (or a null part). */
+    static Twin twinByTarget(String name, String desc) {
+        if (name == null || desc == null) {
+            return null;
+        }
+        for (Twin t : PilotShipClassifier.TWINS) {
+            if (t.twin().equals(name) && t.twinDesc().equals(desc)) {
+                return t;
+            }
+        }
+        return null;
     }
 
     private static int at(byte[] b, int[] off, int p) {
@@ -301,9 +349,12 @@ public final class PilotShipRedirectRewriter {
         return idx > 0 && idx < off.length - 1 ? off[idx] : -1;
     }
 
-    private static boolean utf8Is(byte[] b, int p, String s) {
-        return p >= 0 && (b[p] & 0xff) == 1
-                && PilotShipClassifier.utf8Equals(b, p, s.getBytes(StandardCharsets.US_ASCII));
+    /** The Utf8 entry at offset {@code p} as Latin-1 text (an ASCII name compares exactly); null when not a Utf8. */
+    private static String utf8(byte[] b, int p) {
+        if (p < 0 || (b[p] & 0xff) != 1) {
+            return null;
+        }
+        return new String(b, p + 3, PilotShipClassifier.u2(b, p + 1), StandardCharsets.ISO_8859_1);
     }
 
     /** A raw classfile walk: the header after the pool, and each method's code[] and maxs by name + descriptor. */
@@ -435,15 +486,16 @@ public final class PilotShipRedirectRewriter {
 
         @Override
         public void visitMethodInsn(int opcode, String owner, String name, String descriptor, boolean itf) {
-            if (substitute && PilotShipClassifier.isSite(opcode, owner, name, descriptor)) {
+            Twin site = substitute ? PilotShipClassifier.siteTwin(opcode, owner, name, descriptor) : null;
+            if (site != null) {
                 count[0]++;
                 opcode = Opcodes.INVOKESTATIC;
                 owner = TARGET_OWNER;
-                name = TARGET_NAME;
-                descriptor = TARGET_DESC;
+                name = site.twin();
+                descriptor = site.twinDesc();
                 itf = false;
             } else if (!substitute && opcode == Opcodes.INVOKESTATIC && TARGET_OWNER.equals(owner)
-                    && TARGET_NAME.equals(name) && TARGET_DESC.equals(descriptor)) {
+                    && twinByTarget(name, descriptor) != null) {
                 count[0]++;
             }
             t.add(opcode + " " + owner + "." + name + " " + descriptor + " " + itf);
@@ -515,8 +567,9 @@ public final class PilotShipRedirectRewriter {
 
     /**
      * {@code --census <jar...>}: one csv row per redirect site in every class of the given jars (jar, class, method,
-     * kind, verdict = kept | unchanged, reason, detail), then summary rows: kept vs unchanged classes and sites per
-     * reason, the sites in non-candidate classes, the elapsed time. Pass the API jar too: it resolves the kinds.
+     * kind, twin = the typed target's method the site becomes: {@code playerShip} for a ship site, any other for a key
+     * site, verdict = kept | unchanged, reason, detail), then summary rows: kept vs unchanged classes, sites and key
+     * sites per reason, the sites in non-candidate classes, the elapsed time. Pass the API jar too: it resolves the kinds.
      * {@code --golden <jar>}: per class the input and output sha256 and the verdict. {@code --selftest}: the
      * hand-built fixtures, one per reason and per hard shape. Exit 0 / 1 / 2 = done / a selftest failed / bad arguments.
      */
@@ -566,21 +619,21 @@ public final class PilotShipRedirectRewriter {
             all.add(JarIndex.forLocation(j));
         }
         Map<String, int[]> unchanged = new TreeMap<>();
-        int[] kept = new int[2];
+        int[] kept = new int[3];
         int[] outside = new int[2];
         int scanned = 0;
         System.out.println("# verdict kept = the class is rewritten (its sites follow the pilot); unchanged = the class"
-                + " keeps its bytes for <reason>");
-        System.out.println("jar,class,method,kind,verdict,reason,detail");
+                + " keeps its bytes for <reason>; twin playerShip = a ship site, any other twin = a key site");
+        System.out.println("jar,class,method,kind,twin,verdict,reason,detail");
         for (String j : jars) {
             String label = MagicSeamRewriter.jarLabel(Path.of(j).getFileName().toString());
             JarIndex idx = JarIndex.forLocation(j);
-            int[] jk = new int[2];
-            int[] ju = new int[2];
+            int[] jk = new int[3];
+            int[] ju = new int[3];
             scanned += eachClass(j, (name, bytes) -> {
                 Result r = rewrite(name, bytes, idx, Set.of(), j);
                 if (r == null) {
-                    if (!PilotShipClassifier.isCandidate(name) && PilotShipClassifier.mentionsGetPlayerShip(bytes)) {
+                    if (!PilotShipClassifier.isCandidate(name) && PilotShipClassifier.siteNameMask(bytes) != 0) {
                         int s = countSites(bytes);
                         outside[0] += s > 0 ? 1 : 0;
                         outside[1] += s;
@@ -588,31 +641,30 @@ public final class PilotShipRedirectRewriter {
                     return;
                 }
                 if (r.sites() == 0 && PilotShipClassifier.REASON_NO_SITES.equals(r.reason())) {
-                    unchanged.computeIfAbsent(r.reason(), k -> new int[2])[0]++;
+                    unchanged.computeIfAbsent(r.reason(), k -> new int[3])[0]++;
                     return;
                 }
                 String kind = kind(name, all);
                 String verdict = r.applied() ? "kept" : "unchanged";
-                for (Map.Entry<String, Integer> e : r.siteMethods.entrySet()) {
-                    for (int k = 0; k < e.getValue(); k++) {
-                        System.out.println(label + "," + name + "," + e.getKey() + "," + kind + "," + verdict + ","
-                                + (r.applied() ? "-" : r.reason()) + "," + r.detail().replace(',', ';'));
-                    }
+                for (String[] site : siteTwins(bytes)) {
+                    System.out.println(label + "," + name + "," + site[0] + "," + kind + "," + site[1] + "," + verdict
+                            + "," + (r.applied() ? "-" : r.reason()) + "," + r.detail().replace(',', ';'));
                 }
-                int[] bucket = r.applied() ? kept : unchanged.computeIfAbsent(r.reason(), k -> new int[2]);
-                bucket[0]++;
-                bucket[1] += r.sites();
-                int[] jb = r.applied() ? jk : ju;
-                jb[0]++;
-                jb[1] += r.sites();
+                for (int[] b : new int[][] {r.applied() ? kept : unchanged.computeIfAbsent(r.reason(),
+                        k -> new int[3]), r.applied() ? jk : ju}) {
+                    b[0]++;
+                    b[1] += r.sites();
+                    b[2] += r.keySites();
+                }
             });
             System.out.println("# jar " + label + " kept_classes=" + jk[0] + " kept_sites=" + jk[1]
-                    + " unchanged_classes=" + ju[0] + " unchanged_sites=" + ju[1]);
+                    + " kept_key_sites=" + jk[2] + " unchanged_classes=" + ju[0] + " unchanged_sites=" + ju[1]
+                    + " unchanged_key_sites=" + ju[2]);
         }
-        System.out.println("summary kept classes=" + kept[0] + " sites=" + kept[1]);
+        System.out.println("summary kept classes=" + kept[0] + " sites=" + kept[1] + " key_sites=" + kept[2]);
         for (Map.Entry<String, int[]> e : unchanged.entrySet()) {
             System.out.println("summary unchanged reason=" + e.getKey() + " classes=" + e.getValue()[0] + " sites="
-                    + e.getValue()[1]);
+                    + e.getValue()[1] + " key_sites=" + e.getValue()[2]);
         }
         System.out.println("summary outside_candidates classes=" + outside[0] + " sites=" + outside[1]);
         System.out.println("summary jars=" + jars.size() + " classes_scanned=" + scanned + " index_errors="
@@ -633,6 +685,33 @@ public final class PilotShipRedirectRewriter {
             }
         });
         JarIndex.closeAll();
+    }
+
+    /**
+     * Census only: every redirect site in class order as {@code {method name+desc, twin name}}; empty for a class ASM
+     * cannot read.
+     */
+    static List<String[]> siteTwins(byte[] bytes) {
+        List<String[]> out = new ArrayList<>();
+        try {
+            new ClassReader(bytes).accept(new ClassVisitor(Opcodes.ASM9) {
+                @Override
+                public MethodVisitor visitMethod(int a, String nm, String d, String s, String[] e) {
+                    return new MethodVisitor(Opcodes.ASM9) {
+                        @Override
+                        public void visitMethodInsn(int op, String owner, String name, String desc, boolean itf) {
+                            String twin = PilotShipClassifier.twinFor(op, owner, name, desc);
+                            if (twin != null) {
+                                out.add(new String[] {nm + d, twin});
+                            }
+                        }
+                    };
+                }
+            }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+        } catch (RuntimeException e) {
+            out.clear(); // census only: the verdict row above already names the class's error
+        }
+        return out;
     }
 
     static int countSites(byte[] bytes) {
@@ -853,11 +932,21 @@ public final class PilotShipRedirectRewriter {
                 m.visitInsn(Opcodes.ACONST_NULL);
                 call(m, Opcodes.INVOKEINTERFACE, CE, "setPlayerShipExternal", "(Lcom/fs/starfarer/api/combat/ShipAPI;)V");
             }), null, null, "control_transfer");
-            check("keys", "fx/Keys", site("fx/Keys", null, m -> {
+            // the key family: a held-key poll is a twin site, the pointer and the event feed are not
+            check("keys_twin_site", "fx/Keys", site("fx/Keys", null, m -> {
                 m.visitInsn(Opcodes.ICONST_0);
                 call(m, Opcodes.INVOKESTATIC, "org/lwjgl/input/Keyboard", "isKeyDown", "(I)Z");
                 m.visitInsn(Opcodes.POP);
-            }), null, null, "keys_or_mouse");
+            }), null, null, "applied");
+            check("local_cursor", "fx/Cursor", site("fx/Cursor", null, m -> {
+                call(m, Opcodes.INVOKESTATIC, "org/lwjgl/input/Mouse", "getX", "()I");
+                m.visitInsn(Opcodes.POP);
+            }), null, null, "local_cursor");
+            check("input_events", "fx/Events", site("fx/Events", null, m -> {
+                m.visitInsn(Opcodes.ACONST_NULL);
+                call(m, Opcodes.INVOKEINTERFACE, "com/fs/starfarer/api/input/InputEventAPI", "isConsumed", "()Z");
+                m.visitInsn(Opcodes.POP);
+            }), null, null, "input_events");
             ClassWriter dw = new ClassWriter(new ClassReader(site("fx/Dangling", null, m -> { })), 0);
             new ClassReader(JAR.get("fx/Dangling")).accept(dw, 0);
             dw.newClass(GL11);

@@ -55,10 +55,20 @@ public final class Handshake13 {
      * 15 = the version-14 bytes unchanged; the bump gates the PINT ability bits 13..20, which a version-14 serve
      * refuses at decode (it would drop an ability-sending kit as corrupt at its first press, so the version byte
      * turns that into a readable {@code kit_outdated} at HELLO instead).
+     * 16 = the version-15 bytes unchanged; the bump gates PINT schema 7 (the pilot's raw input levels, 74 B frames),
+     * whose 63 B schema-6 frame a version-16 serve refuses at decode, so a version-15 kit meets {@code kit_outdated}
+     * at HELLO instead of a drop at its first frame.
+     * In place at 16 (unshipped): + the pilot's 16-byte control keymap closing the sealed F2 body.
+     *
+     * A bump re-mints the {@code Handshake13KatRows} K0..K7 goldens in the SAME commit (two temporary hex-print
+     * passes, never committed): the byte heads every frozen message, so the 15 and 16 bumps both went red on it.
+     *
      */
-    public static final int VERSION = 15;
+    public static final int VERSION = 16;
     /** The highest lawful {@code team} byte; a sealed 3..255 opens as {@code bodyOk == false}. */
     public static final int TEAM_MAX = 2;
+    /** The sealed F2 body's trailing pilot keymap: one byte per {@link PilotIntentFrame#CONTROL_KEY_NAMES} entry. */
+    public static final int KEYMAP_BYTES = 16;
     public static final int FLAG_PROBE = HandshakeCodec.HELLO_FLAG_PROBE, FLAG_OBSERVER = HandshakeCodec.HELLO_FLAG_OBSERVER,
             FLAG_NO_SECRET = 0x04;
     /**
@@ -66,8 +76,8 @@ public final class Handshake13 {
      * only after the kit's guarded MagicLib probe passed. The serve folds it into the seat's FOLLOW flag on the hull
      * mark; a false bit hands the liar's OWN hull the pilot's held bits and reaches no other seat.
      * {@code 0x10} = this game's MagicLib subsystem class was patched: a report only (the host's view of a
-     * client-side disarm), no serve behaviour keys on it. Both fold into hs {@link #VERSION} 15 in place (no
-     * released kit sends 15); bits {@code 0x20..0x80} stay undefined and every decoder refuses them.
+     * client-side disarm), no serve behaviour keys on it. Both folded into hs 15 in place (no kit released before
+     * them sent 15) and stay defined since; bits {@code 0x20..0x80} stay undefined and every decoder refuses them.
      *
      */
     public static final int FLAG_MAGIC_UP = 0x08, FLAG_MAGIC_REPLICA = 0x10;
@@ -79,7 +89,7 @@ public final class Handshake13 {
     public static final int COOKIE_MAX_BYTES = HandshakeCodec.HELLO_COOKIE_MAX_BYTES, SALT_BYTES = 16, HANDLE_BYTES = 16,
             WRAP_BYTES = 48;
     public static final int CID_MAX = 64, PRINT_MAX = 128, VARIANT_MAX = 64;
-    public static final int OPEN_PAYLOAD_BYTES = 123, SEAL_PAYLOAD_MAX_BYTES = 471, ADMITTED_PLAIN_BYTES = 65;
+    public static final int OPEN_PAYLOAD_BYTES = 123, SEAL_PAYLOAD_MAX_BYTES = 487, ADMITTED_PLAIN_BYTES = 65;
     public static final int KIND_MATCH = 'm', KIND_ADMIN = 'a';
 
     private static final int STATUS_ADMITTED = HandshakeCodec.WELCOME_ADMITTED;
@@ -91,10 +101,13 @@ public final class Handshake13 {
     private static final int OPEN_HEAD_BYTES = 11;
     /** COOKIE13 / ADb fixed tail after the cookie: {@code YbM ‖ YbA ‖ laneSalt}. */
     private static final int COOKIE_TAIL_BYTES = 2 * 32 + 16;
-    /** F2 body plain = {@code A-string(64) ‖ u64 ‖ A-string(64) ‖ u8 team}: 11..139 B. */
-    private static final int BODY_MIN_BYTES = 1 + 8 + 1 + 1, BODY_MAX_BYTES = 1 + CID_MAX + 8 + 1 + VARIANT_MAX + 1;
-    /** F2 at the 1 B cookie and every string empty (the low end of F2's 184..471 B). */
-    private static final int SEAL_PAYLOAD_MIN_BYTES = 184;
+    /** F2 body plain = {@code A-string(64) ‖ u64 ‖ A-string(64) ‖ u8 team ‖ keymap[16]}: 27..155 B.
+     * */
+    private static final int BODY_MIN_BYTES = 1 + 8 + 1 + 1 + KEYMAP_BYTES,
+            BODY_MAX_BYTES = 1 + CID_MAX + 8 + 1 + VARIANT_MAX + 1 + KEYMAP_BYTES;
+    /** F2 at the 1 B cookie and every string empty (the low end of F2's 200..487 B).
+     * */
+    private static final int SEAL_PAYLOAD_MIN_BYTES = 200;
     /** ADa's purpose byte: ASCII {@code H} (VCHK uses {@code V}, lane iii). */
     private static final byte AD_PURPOSE_HELLO = 0x48;
     /** WELCOME13: {@code u8 VERSION ‖ u8 0 ‖ u64 nonceEcho ‖ doorSalt[16]} = the AAD, then {@code sealed[81]}. */
@@ -532,10 +545,11 @@ public final class Handshake13 {
 
     /**
      * The client's F2 = {@code u8 VERSION ‖ u64 nonce ‖ u8 flags ‖ u8 cookieLen ‖ cookie ‖ handle[16] ‖
-     * A-string(128) print ‖ Ya ‖ wrapM ‖ wrapA ‖ sealedBody}, 184..471 B. {@code H} = the bytes before {@code Ya};
+     * A-string(128) print ‖ Ya ‖ wrapM ‖ wrapA ‖ sealedBody}, 200..487 B. {@code H} = the bytes before {@code Ya};
      * {@code ADa = 0x48 ‖ H}; ADb = {@link #adb} of the cookie's own fields; the body {@code A-string(64) cid ‖ u64
-     * desiredShipId ‖ A-string(64) variant ‖ u8 team} is sealed under {@link #sealBody} at {@code seq} 0 with every
-     * payload byte before it as AAD. This entry seals {@code team} 0 (none: the door picks); the team pick is
+     * desiredShipId ‖ A-string(64) variant ‖ u8 team ‖ keymap[16]} is sealed under {@link #sealBody} at {@code seq} 0
+     * with every payload byte before it as AAD. This entry seals {@code team} 0 (none: the door picks) and no keymap
+     * (16 zeros); the team pick is
      * {@link #sealHelloOrNull(long, int, Cookie13, String, String, long, String, int, byte[], byte[], SecureRandom)}. {@link #FLAG_NO_SECRET} is set HERE iff {@code prs} and {@code mix} are both empty (the
      * envelope is still complete, sealed on {@code G("")}). Returns {@code null} when
      * {@link #sealWrapsOrNull} does (a door share the JDK refuses = abort the envelope).
@@ -558,14 +572,28 @@ public final class Handshake13 {
      */
     public static ClientSeal sealHelloOrNull(long nonce, int flags, Cookie13 cookie, String print, String cid,
             long desiredShipId, String variantId, int team, byte[] prs, byte[] mix, SecureRandom rng) {
-        requireHelloArgs(flags, cookie, print, cid, variantId, desiredShipId, team);
+        return sealHelloOrNull(nonce, flags, cookie, print, cid, desiredShipId, variantId, team, null, prs, mix, rng);
+    }
+
+    /**
+     * The F2 sealer with the pilot's 16-byte control keymap closing the sealed body after the team byte:
+     * {@code keymapOrNull} = one byte per {@link PilotIntentFrame#CONTROL_KEY_NAMES} entry (0 unmapped, 1..0xDF an
+     * LWJGL key code, 0xF0..0xF7 a mouse button), null = 16 zeros (no map: the serve's own table answers);
+     * {@code IllegalArgumentException} "keymap" on a non-null array that is not 16 lawful bytes, after the team check.
+     * Same returns and other {@code IllegalArgumentException}s as the team entry above. Main-written
+     */
+    public static ClientSeal sealHelloOrNull(long nonce, int flags, Cookie13 cookie, String print, String cid,
+            long desiredShipId, String variantId, int team, byte[] keymapOrNull, byte[] prs, byte[] mix,
+            SecureRandom rng) {
+        requireHelloArgs(flags, cookie, print, cid, variantId, desiredShipId, team, keymapOrNull);
         requireNonNull(prs, "prs");
         requireNonNull(mix, "mix");
         if (rng == null) {
             throw new IllegalArgumentException("rng");
         }
         return sealHelloChecked(nonce, flags, cookie, print, cid, desiredShipId, variantId, team,
-                HandshakeCrypto.generator(prs, CI), prs.length == 0, mix, rng);
+                keymapOrNull == null ? keymapNone() : keymapOrNull.clone(), HandshakeCrypto.generator(prs, CI),
+                prs.length == 0, mix, rng);
     }
 
     /**
@@ -592,19 +620,68 @@ public final class Handshake13 {
     public static ClientSeal sealHelloOnGeneratorOrNull(long nonce, int flags, Cookie13 cookie, String print, String cid,
             long desiredShipId, String variantId, int team, byte[] generator, boolean prsEmpty, byte[] mix,
             SecureRandom rng) {
-        requireHelloArgs(flags, cookie, print, cid, variantId, desiredShipId, team);
+        return sealHelloOnGeneratorOrNull(nonce, flags, cookie, print, cid, desiredShipId, variantId, team, null,
+                generator, prsEmpty, mix, rng);
+    }
+
+    /**
+     * {@link #sealHelloOnGeneratorOrNull} with the pilot's keymap after the team byte (the keymap law of the
+     * {@link #sealHelloOrNull} keymap form: null = 16 zeros, "keymap" on a non-null array that is not 16 lawful bytes)
+     * — the join flight's one sealer. Main-written
+     */
+    public static ClientSeal sealHelloOnGeneratorOrNull(long nonce, int flags, Cookie13 cookie, String print, String cid,
+            long desiredShipId, String variantId, int team, byte[] keymapOrNull, byte[] generator, boolean prsEmpty,
+            byte[] mix, SecureRandom rng) {
+        requireHelloArgs(flags, cookie, print, cid, variantId, desiredShipId, team, keymapOrNull);
         requireLen(generator, HandshakeCrypto.POINT_BYTES, "generator");
         requireNonNull(mix, "mix");
         if (rng == null) {
             throw new IllegalArgumentException("rng");
         }
-        return sealHelloChecked(nonce, flags, cookie, print, cid, desiredShipId, variantId, team, generator, prsEmpty,
-                mix, rng);
+        return sealHelloChecked(nonce, flags, cookie, print, cid, desiredShipId, variantId, team,
+                keymapOrNull == null ? keymapNone() : keymapOrNull.clone(), generator, prsEmpty, mix, rng);
     }
 
-    /** The seal entries' shared checks, in their historic order (flags, cookie, print, cid, variant, ship), then team. */
+    /** 16 zero bytes = no map (the serve's own table answers). */
+    public static byte[] keymapNone() {
+        return new byte[KEYMAP_BYTES];
+    }
+
+    /** 16 bytes, each in {0, 1..0xDF, 0xF0..0xF7}; false for null or any other length. */
+    public static boolean keymapLawful(byte[] km) {
+        if (km == null || km.length != KEYMAP_BYTES) {
+            return false;
+        }
+        for (byte b : km) {
+            if (!PilotControlNames.lawful(b & 0xFF)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Bytes 0..7 packed little-end (byte i at bits {@code (i << 3)..+7}); 0 for null. */
+    public static long keymapLo(byte[] km) {
+        return km == null ? 0L : pack(km, 0);
+    }
+
+    /** Bytes 8..15 packed little-end; 0 for null. */
+    public static long keymapHi(byte[] km) {
+        return km == null ? 0L : pack(km, 8);
+    }
+
+    private static long pack(byte[] km, int from) {
+        long v = 0L;
+        for (int i = 0; i < 8; i++) {
+            v |= (km[from + i] & 0xFFL) << (i << 3);
+        }
+        return v;
+    }
+
+    /** The seal entries' shared checks, in their historic order (flags, cookie, print, cid, variant, ship), then team,
+     *  then the keymap (null = none; a non-null array must be 16 lawful bytes). */
     private static void requireHelloArgs(int flags, Cookie13 cookie, String print, String cid, String variantId,
-            long desiredShipId, int team) {
+            long desiredShipId, int team, byte[] keymapOrNull) {
         if ((flags & ~CALLER_FLAGS) != 0) {
             throw new IllegalArgumentException("flags");
         }
@@ -620,15 +697,20 @@ public final class Handshake13 {
         if (team < 0 || team > TEAM_MAX) {
             throw new IllegalArgumentException("team");
         }
+        if (keymapOrNull != null && !keymapLawful(keymapOrNull)) {
+            throw new IllegalArgumentException("keymap");
+        }
     }
 
     /**
      * The one F2 body both seal entries share, past their checks: {@code g} = the mapped generator, {@code prsEmpty}
-     * = the mapped {@code prs} was zero-length; {@code team} closes the sealed body (+ W).
+     * = the mapped {@code prs} was zero-length; {@code team} then the 16-byte {@code keymap} (a private copy, lawful)
+     * close the sealed body.
      *
      */
     private static ClientSeal sealHelloChecked(long nonce, int flags, Cookie13 cookie, String print, String cid,
-            long desiredShipId, String variantId, int team, byte[] g, boolean prsEmpty, byte[] mix, SecureRandom rng) {
+            long desiredShipId, String variantId, int team, byte[] keymap, byte[] g, boolean prsEmpty, byte[] mix,
+            SecureRandom rng) {
         byte[] adb = adb(cookie.cookie(), cookie.ybM(), cookie.ybA(), cookie.laneSalt());
         byte[] handle = laneHandle(cookie.laneSalt(), cid);
         byte[] cookieBytes = cookie.cookie();
@@ -646,10 +728,12 @@ public final class Handshake13 {
         if (wraps == null) {
             return null;
         }
-        byte[] body = new byte[1 + cid.length() + 8 + 1 + variantId.length() + 1];
+        byte[] body = new byte[1 + cid.length() + 8 + 1 + variantId.length() + 1 + KEYMAP_BYTES];
         int at = putAString(body, 0, cid);
         DatagramFrameCodec.putU64(body, at, desiredShipId);
-        body[putAString(body, at + 8, variantId)] = (byte) team;
+        int t = putAString(body, at + 8, variantId);
+        body[t] = (byte) team;
+        System.arraycopy(keymap, 0, body, t + 1, KEYMAP_BYTES);
         byte[] prefix = HandshakeCrypto.concat(h, wraps.ya, wraps.wrapM, wraps.wrapA);
         byte[] sealedBody = sealBody(wraps.ck, 0L, prefix, body);
         return new ClientSeal(HandshakeCrypto.concat(prefix, sealedBody), wraps.rootM, wraps.rootA);
@@ -741,7 +825,7 @@ public final class Handshake13 {
 
     /**
      * The door's verdict on one F2: the kind and token index that opened, the root (the WELCOME13 key's input), and
-     * — only when {@link #bodyOk()} — the sealed body's four fields (the team byte included).
+     * — only when {@link #bodyOk()} — the sealed body's five fields (the team byte and the keymap included).
      */
     public static final class Opened {
         private final int kind, mixIndex;
@@ -750,9 +834,10 @@ public final class Handshake13 {
         private final String cid, variantId;
         private final long desiredShipId;
         private final int team;
+        private final byte[] keymap;
 
         private Opened(int kind, int mixIndex, byte[] root, boolean bodyOk, String cid, long desiredShipId,
-                String variantId, int team) {
+                String variantId, int team, byte[] keymap) {
             this.kind = kind;
             this.mixIndex = mixIndex;
             this.root = root;
@@ -761,6 +846,7 @@ public final class Handshake13 {
             this.desiredShipId = desiredShipId;
             this.variantId = variantId;
             this.team = team;
+            this.keymap = keymap;
         }
 
         public int kind() {
@@ -801,6 +887,12 @@ public final class Handshake13 {
             return team;
         }
 
+        /** The sealed 16-byte pilot keymap (0 unmapped, 1..0xDF a key code, 0xF0..0xF7 a mouse button; all zeros
+         *  = no map), a fresh copy; {@code null} when {@code !bodyOk}. Main-written */
+        public byte[] keymap() {
+            return keymap == null ? null : keymap.clone();
+        }
+
         /** Never prints the root or the body's player-side text. */
         @Override
         public String toString() {
@@ -815,8 +907,9 @@ public final class Handshake13 {
      * {@code scalarMult} included — a small-order {@code Ya}) or when {@code seal} is null / not parser-shaped; a
      * non-null {@link Opened} with {@code bodyOk == false} when a wrap opened but the body's tag or decode failed,
      * so the door can tell "wrong secret" from "right secret, bad body". The body decode refuses a
-     * non-A-string cid / variant, a negative desiredShipId, a missing or out-of-range (3..255) team byte and trailing
-     * bytes; a refused team byte is never surfaced (the caller sees only {@code bodyOk == false}). The door's own arguments throw
+     * non-A-string cid / variant, a negative desiredShipId, a missing or out-of-range (3..255) team byte, a short keymap,
+     * an out-of-domain keymap byte and trailing bytes; a refused team or keymap byte is never surfaced (the caller
+     * sees only {@code bodyOk == false}). The door's own arguments throw
      * {@code IllegalArgumentException} as in {@link #openWrapsOrNull} (+ a salt not 16 B).
      */
     public static Opened openHelloOrNull(Seal13 seal, byte[] bM, byte[] bA, byte[] ybM, byte[] ybA, byte[] laneSalt,
@@ -840,14 +933,17 @@ public final class Handshake13 {
                 long desiredShipId = in.readU64();
                 String variantId = readAStringOrNull(in, VARIANT_MAX);
                 int team = in.readU8();
-                if (cid != null && variantId != null && desiredShipId >= 0L && team <= TEAM_MAX && in.remaining() == 0) {
-                    return new Opened(wraps.kind, wraps.mixIndex, wraps.root, true, cid, desiredShipId, variantId, team);
+                byte[] km = in.readBytes(KEYMAP_BYTES);
+                if (cid != null && variantId != null && desiredShipId >= 0L && team <= TEAM_MAX && keymapLawful(km)
+                        && in.remaining() == 0) {
+                    return new Opened(wraps.kind, wraps.mixIndex, wraps.root, true, cid, desiredShipId, variantId, team,
+                            km);
                 }
             } catch (IOException truncated) {
                 // falls through to the bodyOk == false verdict below, which the caller counts (class javadoc)
             }
         }
-        return new Opened(wraps.kind, wraps.mixIndex, wraps.root, false, null, -1L, null, -1);
+        return new Opened(wraps.kind, wraps.mixIndex, wraps.root, false, null, -1L, null, -1, null);
     }
 
     // --- WELCOME13 ADMITTED -----------------------------------------------------------------------

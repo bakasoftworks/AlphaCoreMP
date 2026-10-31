@@ -183,6 +183,14 @@ public final class PilotApplyState {
      * re-reads. Null = flags 0 (rows, probes and any serve that never wires it).
      */
     java.util.function.IntSupplier pilotMarkFlagsSource;
+    /**
+     * The seat's HELLO keymap sources (packed: {@code lo} = control bytes 0..7, {@code hi} = 8..15), read ONCE per
+     * hull tenure at the re-point beside the flags into {@link #pilotKeymapLo} / {@link #pilotKeymapHi} and pushed
+     * with every applied frame's held state; null = 0 = the serve's own map (rows, probes, any serve that never wires
+     * it, an older reel). Main-written
+     */
+    java.util.function.LongSupplier pilotKeymapLoSource, pilotKeymapHiSource;
+    long pilotKeymapLo, pilotKeymapHi;
     int[] pilotMark;
     Object pilotMarkShip;
     int pilotMarkWrites; // fresh arrays put into a hull AND read back by identity (one per hull tenure)
@@ -2252,6 +2260,15 @@ public final class PilotApplyState {
      */
     public void pilotMarkFlagsSource(java.util.function.IntSupplier sourceOrNull) {
         this.pilotMarkFlagsSource = sourceOrNull;
+    }
+
+    /**
+     * Install the sources of this seat's packed HELLO keymap (null = 0 = the serve's own map); the serve sets them
+     * once, when it mints the state, beside {@link #pilotMarkFlagsSource}. Main-written
+     */
+    public void pilotKeymapSources(java.util.function.LongSupplier loOrNull, java.util.function.LongSupplier hiOrNull) {
+        this.pilotKeymapLoSource = loOrNull;
+        this.pilotKeymapHiSource = hiOrNull;
     }
 
     /** Pilot-mark meter: fresh {@code int[]{seatId, mask, 0, flags}} arrays put into a hull (one per hull tenure). */

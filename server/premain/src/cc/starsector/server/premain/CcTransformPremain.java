@@ -308,7 +308,8 @@ public final class CcTransformPremain {
 
     /**
      * The player-ship window's host row {@code pilotship.enabled} (sysprop
-     * {@code cc.pilotship.enabled} &gt; env {@code CC_PILOTSHIP_ENABLED} &gt; the config file's row &gt; FALSE):
+     * {@code cc.pilotship.enabled} &gt; env {@code CC_PILOTSHIP_ENABLED} &gt; the config file's row &gt; TRUE;
+     * FALSE while new):
      * OFF registers nothing and sets the receipt {@code cc.pilot.ship=off}, so every class loads as shipped. ON
      * runs the eager gate first, fail-closed because the wrap edits an engine method: the ship-advance fingerprint
      * on the engine jar ({@link #eagerJarGate}), then the holder and typed-target probe; a miss sets
@@ -316,17 +317,27 @@ public final class CcTransformPremain {
      * {@link PilotShipApplier} with the file-only {@code pilotship.exclude} list and sets {@code armed}. Decided
      * here, never by a launch argument, so the frozen serve command line stays unchanged. The switch's own rows
      * (ON / OFF, refused) carry the {@code [cc-premain] pilotship} prefix, on stderr beside the launch decisions.
+     * <p>The shipped default is ON, and the default tier arms only a JVM that CARRIES the
+     * engine jar (on java.class.path or the explicit override): a JVM without one has no ship advance to wrap — a
+     * contract child, a tool JVM — so the window stays OFF with its own row and receipt, never a refusal the
+     * host did not ask for. An EXPLICIT {@code true} tier keeps the refusal (the host asked; the gate is the law).
      */
     private static SwitchRow armPilotShip(java.util.Properties file, Instrumentation instrumentation) {
         SwitchRow row = resolveStrictSwitch(TransformRegistry.PILOT_SHIP_ENABLED_SYSPROP,
-                TransformRegistry.PILOT_SHIP_ENABLED_ENV, TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY, file, false,
+                TransformRegistry.PILOT_SHIP_ENABLED_ENV, TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY, file, true,
                 "player-ship switch");
+        TransformRegistry.Entry window = TransformRegistry.byId(TransformRegistry.PILOT_SHIP_WINDOW_ID);
+        if (row.on() && "default".equals(row.from()) && findTargetJar(window) == null) {
+            System.err.println("[cc-premain] pilotship: OFF from=default (no " + window.targetJarFileName()
+                    + " on this JVM; the shipped default arms only a serve that carries the engine)");
+            System.setProperty(TransformRegistry.PILOT_SHIP_RECEIPT_SYSPROP, TransformRegistry.PILOT_SHIP_RECEIPT_OFF);
+            return new SwitchRow(false, row.from());
+        }
         System.err.println("[cc-premain] pilotship: " + (row.on() ? "ON" : "OFF") + " from=" + row.from());
         if (!row.on()) {
             System.setProperty(TransformRegistry.PILOT_SHIP_RECEIPT_SYSPROP, TransformRegistry.PILOT_SHIP_RECEIPT_OFF);
             return row;
         }
-        TransformRegistry.Entry window = TransformRegistry.byId(TransformRegistry.PILOT_SHIP_WINDOW_ID);
         try {
             eagerJarGate(window);
         } catch (IllegalStateException gateRefused) {
@@ -732,8 +743,22 @@ public final class CcTransformPremain {
         return ids;
     }
 
-    /** Explicit {@code -Dcc.transform.jar.<ID>} override, else the matching java.class.path entry. */
+    /** Explicit {@code -Dcc.transform.jar.<ID>} override, else the matching java.class.path entry; else refuses. */
     private static Path resolveTargetJar(TransformRegistry.Entry entry) {
+        Path jar = findTargetJar(entry);
+        if (jar == null) {
+            refuse(List.of(entry.id() + ": cannot resolve target jar '" + entry.targetJarFileName()
+                    + "' on java.class.path — pass -Dcc.transform.jar." + entry.id() + "=<path>"));
+        }
+        return jar;
+    }
+
+    /**
+     * The non-refusing half of {@link #resolveTargetJar}: the explicit override (a missing file there still refuses:
+     * the operator named it), else the first java.class.path entry named like the target jar, else null (the
+     * player-ship default tier reads null as "not a serve").
+     */
+    private static Path findTargetJar(TransformRegistry.Entry entry) {
         String override = System.getProperty("cc.transform.jar." + entry.id());
         if (override != null && !override.isBlank()) {
             Path jar = Path.of(override.trim());
@@ -755,9 +780,7 @@ public final class CcTransformPremain {
                 return candidate;
             }
         }
-        refuse(List.of(entry.id() + ": cannot resolve target jar '" + entry.targetJarFileName()
-                + "' on java.class.path — pass -Dcc.transform.jar." + entry.id() + "=<path>"));
-        throw new AssertionError("unreachable");
+        return null;
     }
 
     private static byte[] readTargetClassBytes(TransformRegistry.Entry entry, Path jar) {

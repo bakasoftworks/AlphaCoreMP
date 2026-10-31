@@ -428,8 +428,8 @@ public final class OpsMatchRows {
      * (no launch argument is composed from it anywhere) and refuses anything but exactly
      * {@code true|false}, so the window writes exactly those two words. Its companion row
      * {@code pilotship.exclude} is file-only (no control). Label: {@link #PILOT_SHIP_LABEL}. The
-     * {@link #MAGIC_SEAM_KEY} row's twin, field for field, except the default.
-     *
+     * {@link #MAGIC_SEAM_KEY} row's twin, field for field, the on default included —
+     * off while new.
      */
     public static final String PILOT_SHIP_KEY = TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY;
     /** The control's label on the ops GUI. */
@@ -437,7 +437,7 @@ public final class OpsMatchRows {
     /** The comment a file without the row gets above it when Start appends it. */
     public static final String PILOT_SHIP_COMMENT =
             "# true = each pilot's ship counts as the player's (a ship's own scripts treat the ship a player"
-                    + " flies as the player's ship, as in single player); false = they run as today";
+                    + " flies as the player's ship, as in single player); false = they treat it as an AI ship";
     /** The refusal's stem; the message appends the typed text. */
     public static final String R_PILOT_SHIP = PILOT_SHIP_LABEL + " must be on or off";
 
@@ -455,12 +455,12 @@ public final class OpsMatchRows {
         throw new IllegalArgumentException(R_PILOT_SHIP + " (got '" + echo(trimmed) + "').");
     }
 
-    /** Player-ship combo prefill: {@code on} for an explicit {@code true} row, else {@code off}. An
-     * ABSENT row reads {@code off} here AND in the serve: the serve's compiled default is false and
-     * the shipped template says {@code false} - the feature stays off until a host turns it on.
-     * */
+    /** Player-ship combo prefill: {@code off} for an explicit {@code false} row, else {@code on}. An
+     * ABSENT row reads {@code on} here AND in the serve: the serve's compiled default is true,
+     * the shipped template says {@code true}, and the launcher's receipt stamps
+     * an absent row as on - three places that agree. */
     public static String pilotShipFieldPrefill(List<String> lines) {
-        return "true".equals(fieldPrefill(lines, PILOT_SHIP_KEY, "false")) ? "on" : "off";
+        return "false".equals(fieldPrefill(lines, PILOT_SHIP_KEY, "true")) ? "off" : "on";
     }
 
     // ---------------------------------------------- fortress wave scale

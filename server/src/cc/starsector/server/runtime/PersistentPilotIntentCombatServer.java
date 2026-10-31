@@ -2339,6 +2339,26 @@ public final class PersistentPilotIntentCombatServer {
             return resolver == null ? 0 : resolver.applyAsInt(seatId);
         }
 
+        /**
+         * The seat's admitted HELLO keymap pair ({@code {lo, hi}}: control bytes 0..7 / 8..15 packed, any sign; null
+         * = none recorded), looked up by the session at call time from its per-seat store; the pair is never mutated.
+         * Each apply state with a seat gets two sources over it when minted
+         * ({@code PilotApplyState.pilotKeymapSources}, whose javadoc names when they are read). Unset (null) = 0/0 =
+         * the serve's own table answers. Installed beside {@link #setPilotMarkFlagsResolver}.
+         */
+        private java.util.function.IntFunction<long[]> pilotKeymapForSeat;
+
+        void setPilotKeymapResolver(java.util.function.IntFunction<long[]> resolverOrNull) {
+            this.pilotKeymapForSeat = resolverOrNull;
+        }
+
+        /** Half {@code half} (0 = lo, 1 = hi) of the seat's keymap pair; 0 with no resolver or no pair. */
+        private long pilotKeymapHalfOrZero(int seatId, int half) {
+            java.util.function.IntFunction<long[]> resolver = pilotKeymapForSeat;
+            long[] pair = resolver == null ? null : resolver.apply(seatId);
+            return pair == null ? 0L : pair[half];
+        }
+
         /** Pilot-mark meters summed across this round's apply states (the round-line feed). */
         int pilotMarkWrites() {
             return sumApplyStates(PilotApplyState::pilotMarkWrites);
@@ -2713,6 +2733,8 @@ public final class PersistentPilotIntentCombatServer {
                 int markSeat = state.seatId();
                 if (markSeat >= 1) { // the mark's flags, re-read per hull tenure through the step's live resolver
                     state.pilotMarkFlagsSource(() -> pilotMarkFlagsOrZero(markSeat));
+                    state.pilotKeymapSources(() -> pilotKeymapHalfOrZero(markSeat, 0),
+                            () -> pilotKeymapHalfOrZero(markSeat, 1)); // the HELLO keymap, read the same way
                 }
                 // The declared serve's press gate — cache-free live reads, so
                 // one install covers every hull tenure on this wire id (no repoint rebind needed).

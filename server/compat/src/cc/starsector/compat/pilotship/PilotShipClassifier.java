@@ -43,16 +43,25 @@ import cc.starsector.compat.magic.MagicSeamRewriter;
  * <p>WHY a classifier: the redirect makes a player branch run for every human-flown hull inside that hull's own
  * update. That is right for per-ship gameplay (a system's cursor target, a hullmod's own-hull bonus) and wrong where
  * the branch reaches beyond the ship or into hardware the server lacks: the battle clock (ONE engine-global stat), the
- * local keyboard and mouse (zero-seeded / never created on the server), immediate-mode drawing, a hand-over of the
- * engine's one player ship, and a side-wide bonus that must not stack once per human. Such classes keep today's answer.
+ * input event feed (empty on the server) and the local pointer (frozen there), immediate-mode drawing, a hand-over of
+ * the engine's one player ship, and a side-wide bonus that must not stack once per human. Such classes keep today's
+ * answer.
+ *
+ * <p>Two redirect families share ONE table ({@link #TWINS}): the engine's {@code getPlayerShip()} and the LWJGL
+ * keyboard / mouse statics a key poller calls (held keys and buttons, polls, the event queue, the pointer's warp). A
+ * class whose LWJGL use is only those rows and the pure table getters ({@link #PURE_GETTERS}) is a candidate; its
+ * LWJGL sites are rewritten with its {@code getPlayerShip} sites, so inside a hull's window a key read answers that
+ * hull's pilot, and outside every window it reads up instead of throwing (the server has no display).
  *
  * <p>The reasons, first match wins ({@link #REASON_ORDER}): a fixed {@link #DENY_LIST} entry; the host's exclude row;
  * an adopter (the pool holds {@link #PILOT_MARK}: the class already follows the pilot itself); IS-A
- * {@link #MAGIC_SUBSYSTEM} through the same-jar superclass chain (a mere reference is no reason); then four USE
+ * {@link #MAGIC_SUBSYSTEM} through the same-jar superclass chain (a mere reference is no reason); then five USE
  * reasons, each from the class's OWN code or from one same-jar hop: control transfer
- * ({@code setPlayerShipExternal} / {@code reFanOutShipInfo}), keyboard / mouse / input events, drawing (OpenGL or the
- * libraries' draw helpers), and a battle-clock WRITER; then a class another load-time transform already owns; then a
- * class whose pool names {@code getPlayerShip} but holds no redirect site.
+ * ({@code setPlayerShipExternal} / {@code reFanOutShipInfo}), input events (any {@code InputEventAPI} use), the local
+ * cursor (any other Keyboard / Mouse member: the pointer, wheel, event readers, grabbing, device life), drawing (OpenGL
+ * or the libraries' draw helpers), and a battle-clock WRITER; then a class another load-time transform already owns;
+ * then a class whose pool names {@code getPlayerShip} but holds no redirect site. A class that never names
+ * {@code getPlayerShip} and holds no LWJGL redirect site is no subject at all ({@link #classify} answers null).
  *
  * <p>A USE is an instruction, a field or method descriptor, a catch type, an invokedynamic handle or an ldc constant;
  * a constant-pool Class entry nothing uses (an inlined constant's leftover) and a generic-signature mention are no use.
@@ -86,6 +95,10 @@ public final class PilotShipClassifier {
     static final String GET_TIME_MULT = "getTimeMult";
     static final String KEYBOARD = "org/lwjgl/input/Keyboard";
     static final String MOUSE = "org/lwjgl/input/Mouse";
+    /** The tenth twin's owner: the engine's settings interface, whose control-string getter a hull's code may ask. */
+    public static final String SETTINGS_API = "com/fs/starfarer/api/SettingsAPI";
+    public static final String GET_CONTROL_STRING = "getControlStringForEnumName";
+    public static final String GET_CONTROL_STRING_DESC = "(Ljava/lang/String;)Ljava/lang/String;";
     static final String INPUT_EVENT = "com/fs/starfarer/api/input/InputEventAPI";
     static final String GL_PACKAGE = "org/lwjgl/opengl/";
     static final String KOTLIN_INTRINSICS = "kotlin/jvm/internal/Intrinsics";
@@ -104,7 +117,10 @@ public final class PilotShipClassifier {
     public static final String REASON_ADOPTER = "adopter";
     public static final String REASON_MAGIC_SUBSYSTEM = "magic_subsystem";
     public static final String REASON_CONTROL_TRANSFER = "control_transfer";
-    public static final String REASON_KEYS_OR_MOUSE = "keys_or_mouse";
+    /** An {@code InputEventAPI} use: the engine's event feed is empty on the server, so the branch keeps the AI's. */
+    public static final String REASON_INPUT_EVENTS = "input_events";
+    /** A Keyboard / Mouse member that is neither a redirect row nor a pure table getter (the pointer, the wheel, ...). */
+    public static final String REASON_LOCAL_CURSOR = "local_cursor";
     public static final String REASON_DRAWING = "drawing";
     public static final String REASON_BATTLE_SPEED = "battle_speed";
     public static final String REASON_REGISTRY_ENTRY = "registry_entry";
@@ -113,8 +129,71 @@ public final class PilotShipClassifier {
     public static final String REASON_ERROR_PREFIX = "error:";
     /** Every fixed reason, in the order they are tried (one counted reason per unchanged class). */
     public static final List<String> REASON_ORDER = List.of(REASON_DENY_LIST, REASON_HOST_EXCLUDE, REASON_ADOPTER,
-            REASON_MAGIC_SUBSYSTEM, REASON_CONTROL_TRANSFER, REASON_KEYS_OR_MOUSE, REASON_DRAWING, REASON_BATTLE_SPEED,
-            REASON_REGISTRY_ENTRY, REASON_NO_SITES);
+            REASON_MAGIC_SUBSYSTEM, REASON_CONTROL_TRANSFER, REASON_INPUT_EVENTS, REASON_LOCAL_CURSOR, REASON_DRAWING,
+            REASON_BATTLE_SPEED, REASON_REGISTRY_ENTRY, REASON_NO_SITES);
+
+    /**
+     * One redirect row: a call (opcode + owner + name + descriptor, all four keyed) and the typed target's twin it
+     * becomes ({@code INVOKESTATIC} on {@link PilotShipRedirectRewriter#TARGET_OWNER}). An LWJGL row's twin keeps the
+     * original's descriptor (a static call for a static call: same stack effect); the {@code getPlayerShip} row's twin
+     * takes the engine as its argument (the interface call's receiver), as the {@code getControlStringForEnumName}
+     * row's twin takes the settings. {@link #key()} = an LWJGL keyboard / mouse row.
+     */
+    public record Twin(int opcode, String owner, String name, String desc, String twin, String twinDesc) {
+        /** True for an LWJGL keyboard / mouse row (a key site); false for the {@code getPlayerShip} row and the
+         *  {@code getControlStringForEnumName} row (an interface call with a receiver, counted as a site, not a key
+         *  site). */
+        public boolean key() {
+            return owner.startsWith(LWJGL_INPUT_PREFIX);
+        }
+    }
+
+    /**
+     * THE twin table: the only source for {@link #isSite}, the rewriter's swap, its self-check (the token pass, the
+     * site counts, the appended pool entries) and the premain's arm-time probe of the typed target. The LWJGL rows
+     * are the statics that throw or read a frozen device on a server with no display; each twin answers the window's
+     * pilot (held keys, held buttons) or the empty answer (no poll, no event, the pointer outside the window).
+     *
+     *
+     */
+    public static final List<Twin> TWINS = List.of(
+            new Twin(Opcodes.INVOKEINTERFACE, ENGINE_API, GET_PLAYER_SHIP, GET_PLAYER_SHIP_DESC,
+                    PilotShipRedirectRewriter.TARGET_NAME, PilotShipRedirectRewriter.TARGET_DESC),
+            new Twin(Opcodes.INVOKESTATIC, KEYBOARD, "isKeyDown", "(I)Z", "isKeyDown", "(I)Z"),
+            new Twin(Opcodes.INVOKESTATIC, KEYBOARD, "poll", "()V", "pollKeyboard", "()V"),
+            new Twin(Opcodes.INVOKESTATIC, KEYBOARD, "next", "()Z", "nextKeyboard", "()Z"),
+            new Twin(Opcodes.INVOKESTATIC, KEYBOARD, "getNumKeyboardEvents", "()I", "numKeyboardEvents", "()I"),
+            new Twin(Opcodes.INVOKESTATIC, MOUSE, "isButtonDown", "(I)Z", "isButtonDown", "(I)Z"),
+            new Twin(Opcodes.INVOKESTATIC, MOUSE, "poll", "()V", "pollMouse", "()V"),
+            new Twin(Opcodes.INVOKESTATIC, MOUSE, "next", "()Z", "nextMouse", "()Z"),
+            new Twin(Opcodes.INVOKESTATIC, MOUSE, "setCursorPosition", "(II)V", "setCursorPosition", "(II)V"),
+            new Twin(Opcodes.INVOKESTATIC, MOUSE, "isInsideWindow", "()Z", "isInsideWindow", "()Z"),
+            // The tenth twin: a by-name control read answers the window's pilot's own binding.
+            new Twin(Opcodes.INVOKEINTERFACE, SETTINGS_API, GET_CONTROL_STRING, GET_CONTROL_STRING_DESC,
+                    "controlStringForEnumName", "(L" + SETTINGS_API + ";Ljava/lang/String;)Ljava/lang/String;"));
+
+    /** {@link #TWINS} by {@code owner.name+desc} (the opcode is checked on lookup). */
+    private static final Map<String, Twin> TWIN_INDEX;
+
+    static {
+        Map<String, Twin> m = new HashMap<>();
+        for (Twin t : TWINS) {
+            m.put(t.owner() + '.' + t.name() + t.desc(), t);
+        }
+        TWIN_INDEX = Collections.unmodifiableMap(m);
+    }
+
+    /**
+     * Keyboard / Mouse members that read a fixed table and never touch the device (no throw on a server with no
+     * display): never a reason and never rewritten. Every public static FIELD of both classes is an int constant
+     * ({@code KEYBOARD_SIZE}, the {@code KEY_*} codes, {@code EVENT_SIZE}, {@code CHAR_NONE}), so a GETSTATIC on
+     * either is the same pure read (a compiler that does not inline them emits one).
+     */
+    public static final Set<String> PURE_GETTERS = Set.of(
+            KEYBOARD + ".getKeyIndex(Ljava/lang/String;)I", KEYBOARD + ".getKeyName(I)Ljava/lang/String;",
+            KEYBOARD + ".getKeyCount()I", KEYBOARD + ".isCreated()Z",
+            MOUSE + ".getButtonIndex(Ljava/lang/String;)I", MOUSE + ".getButtonName(I)Ljava/lang/String;",
+            MOUSE + ".getButtonCount()I", MOUSE + ".isCreated()Z");
 
     /**
      * Fixed entries that keep today's answer whatever their code says. OperationsCenter and Knights of Ludd's
@@ -146,15 +225,16 @@ public final class PilotShipClassifier {
     static final String SCRIPT_PREFIX = "com/fs/starfarer/api/impl/";
 
     static final int B_CONTROL = 1;
-    static final int B_KEYS = 2;
+    static final int B_INPUT_EVENTS = 2;
     static final int B_GL = 4;
     static final int B_CLOCK_WRITE = 8;
     static final int B_CLOCK_READ = 16;
+    static final int B_LOCAL_CURSOR = 32;
     /** The use bits that make a reason, in reason order, with their reasons. */
-    static final int[] USE_BITS = {B_CONTROL, B_KEYS, B_GL, B_CLOCK_WRITE};
-    static final String[] USE_REASONS = {REASON_CONTROL_TRANSFER, REASON_KEYS_OR_MOUSE, REASON_DRAWING,
-            REASON_BATTLE_SPEED};
-    static final int B_REASONS = B_CONTROL | B_KEYS | B_GL | B_CLOCK_WRITE;
+    static final int[] USE_BITS = {B_CONTROL, B_INPUT_EVENTS, B_LOCAL_CURSOR, B_GL, B_CLOCK_WRITE};
+    static final String[] USE_REASONS = {REASON_CONTROL_TRANSFER, REASON_INPUT_EVENTS, REASON_LOCAL_CURSOR,
+            REASON_DRAWING, REASON_BATTLE_SPEED};
+    static final int B_REASONS = B_CONTROL | B_INPUT_EVENTS | B_LOCAL_CURSOR | B_GL | B_CLOCK_WRITE;
 
     /** A hop closure wider than this many methods falls back to the declaring class's whole own uses. */
     static final int MAX_REACH = 512;
@@ -163,6 +243,17 @@ public final class PilotShipClassifier {
 
     private static final byte[] GPS_BYTES = GET_PLAYER_SHIP.getBytes(StandardCharsets.US_ASCII);
     private static final byte[] MARK_BYTES = PILOT_MARK.getBytes(StandardCharsets.US_ASCII);
+    /** The LWJGL input package as a pool Utf8 prefix (the class entries of Keyboard / Mouse start with it). */
+    public static final String LWJGL_INPUT_PREFIX = "org/lwjgl/input/";
+    private static final byte[] LWJGL_INPUT_BYTES = LWJGL_INPUT_PREFIX.getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] GCS_BYTES = GET_CONTROL_STRING.getBytes(StandardCharsets.US_ASCII);
+    /** {@link #siteNameMask} bits: the pool names {@code getPlayerShip}; the pool names the LWJGL input package; the
+     *  pool names {@code getControlStringForEnumName} (the tenth twin, treated as the LWJGL bit is: admits the class,
+     *  no site = null). */
+    public static final int NAMES_PLAYER_SHIP = 1;
+    public static final int NAMES_LWJGL_INPUT = 2;
+    public static final int NAMES_CONTROL_NAME = 4;
+    private static final int NAMES_ALL = NAMES_PLAYER_SHIP | NAMES_LWJGL_INPUT | NAMES_CONTROL_NAME;
 
     // ---------------------------------------------------------------- the verdict
 
@@ -170,12 +261,14 @@ public final class PilotShipClassifier {
     public static final class Verdict {
         private final String reason;
         private final int sites;
+        private final int keySites;
         private final String detail;
         private final Map<String, Integer> siteMethods;
 
-        Verdict(String reason, int sites, String detail, Map<String, Integer> siteMethods) {
+        Verdict(String reason, int sites, int keySites, String detail, Map<String, Integer> siteMethods) {
             this.reason = reason;
             this.sites = sites;
+            this.keySites = keySites;
             this.detail = bounded(detail);
             this.siteMethods = Collections.unmodifiableMap(siteMethods);
         }
@@ -185,9 +278,14 @@ public final class PilotShipClassifier {
             return reason;
         }
 
-        /** Redirect sites in the class (>= 0; 0 for an error before the parse finished). */
+        /** Redirect sites in the class, both families (>= 0; 0 for an error before the parse finished). */
         public int sites() {
             return sites;
+        }
+
+        /** Of {@link #sites()}, the LWJGL keyboard / mouse sites (0 <= keySites <= sites). */
+        public int keySites() {
+            return keySites;
         }
 
         /** Where the reason came from ({@code self}, {@code via <Class>.<method>}, ...), printable ASCII, <= 64 chars. */
@@ -195,10 +293,28 @@ public final class PilotShipClassifier {
             return detail;
         }
 
-        /** Sites per method (name + descriptor), in name order; empty when none were counted. */
+        /** Sites of either family per method (name + descriptor), in name order; empty when none were counted. */
         public Map<String, Integer> siteMethods() {
             return siteMethods;
         }
+    }
+
+    /**
+     * The twin row of a call, or {@code null} when the call is no redirect site (owner + name + descriptor + opcode,
+     * all four: a mod's own {@code getPlayerShip(String)} or an instance {@code poll()} is no site).
+     */
+    public static Twin siteTwin(int opcode, String owner, String name, String descriptor) {
+        if (owner == null || name == null || descriptor == null) {
+            return null;
+        }
+        Twin t = TWIN_INDEX.get(owner + '.' + name + descriptor);
+        return t != null && t.opcode() == opcode ? t : null;
+    }
+
+    /** The twin's name a site becomes on the typed target; {@code null} = not a site. */
+    public static String twinFor(int opcode, String owner, String name, String descriptor) {
+        Twin t = siteTwin(opcode, owner, name, descriptor);
+        return t == null ? null : t.twin();
     }
 
     /** True for a class the redirect may touch (by internal name alone; see the prefix tables). */
@@ -214,10 +330,9 @@ public final class PilotShipClassifier {
         return !internalName.startsWith(ENGINE_PREFIX) || internalName.startsWith(SCRIPT_PREFIX);
     }
 
-    /** True when {@code site} is the redirected call (owner + name + descriptor + the interface opcode). */
+    /** True when the call is a redirect site of either family ({@link #siteTwin} answers its row). */
     public static boolean isSite(int opcode, String owner, String name, String descriptor) {
-        return opcode == Opcodes.INVOKEINTERFACE && ENGINE_API.equals(owner) && GET_PLAYER_SHIP.equals(name)
-                && GET_PLAYER_SHIP_DESC.equals(descriptor);
+        return siteTwin(opcode, owner, name, descriptor) != null;
     }
 
     /**
@@ -225,87 +340,114 @@ public final class PilotShipClassifier {
      * or unknown pool reads {@code true}, so the full parse decides and reports {@code error:<SimpleName>} once.
      */
     public static boolean mentionsGetPlayerShip(byte[] b) {
-        if (b == null || b.length < 10 || (b[0] & 0xff) != 0xCA || (b[1] & 0xff) != 0xFE) {
-            return false;
-        }
-        int[] off = poolOffsets(b);
-        if (off == null) {
-            return true;
-        }
-        for (int i = 1; i < off.length - 1; i++) {
-            if (off[i] > 0 && b[off[i]] == 1 && utf8Equals(b, off[i], GPS_BYTES)) {
-                return true;
-            }
-        }
-        return false;
+        return (siteNameMask(b) & NAMES_PLAYER_SHIP) != 0;
     }
 
     /**
-     * The decision. {@code null} when the class is no candidate or its pool never names {@code getPlayerShip} (no
-     * parse); else a {@link Verdict} that never throws. {@code jar} = the defining code source's index for the hop and
-     * the IS-A chain ({@code null} = no hop); {@code hostExclude} = the host's exclude entries ({@code null} = none);
+     * The pre-filter of both families in one pool walk: {@link #NAMES_PLAYER_SHIP} when a Utf8 equals
+     * {@code getPlayerShip}, {@link #NAMES_LWJGL_INPUT} when a Utf8 starts with {@link #LWJGL_INPUT_PREFIX},
+     * {@link #NAMES_CONTROL_NAME} when a Utf8 equals {@code getControlStringForEnumName}; 0 for none or for bytes that
+     * are no class file. A truncated or unknown pool answers every bit, so the full parse decides and reports
+     * {@code error:<SimpleName>} once. The third bit
+     */
+    public static int siteNameMask(byte[] b) {
+        if (b == null || b.length < 10 || (b[0] & 0xff) != 0xCA || (b[1] & 0xff) != 0xFE) {
+            return 0;
+        }
+        int[] off = poolOffsets(b);
+        if (off == null) {
+            return NAMES_ALL;
+        }
+        int mask = 0;
+        for (int i = 1; i < off.length - 1 && mask != NAMES_ALL; i++) {
+            if (off[i] <= 0 || b[off[i]] != 1) {
+                continue;
+            }
+            if (utf8Equals(b, off[i], GPS_BYTES)) {
+                mask |= NAMES_PLAYER_SHIP;
+            } else if (utf8StartsWith(b, off[i], LWJGL_INPUT_BYTES)) {
+                mask |= NAMES_LWJGL_INPUT;
+            } else if (utf8Equals(b, off[i], GCS_BYTES)) {
+                mask |= NAMES_CONTROL_NAME;
+            }
+        }
+        return mask;
+    }
+
+    /**
+     * The decision. {@code null} when the class is no candidate, its pool names neither {@code getPlayerShip} nor the
+     * LWJGL input package (no parse), or it names only the input package and holds no redirect site (no subject);
+     * else a {@link Verdict} that never throws. {@code jar} = the defining code source's index for the hop and the
+     * IS-A chain ({@code null} = no hop); {@code hostExclude} = the host's exclude entries ({@code null} = none);
      * {@code codeSourcePath} = the code source location as a path or a {@code file:} URL ({@code null} = unknown).
      */
     public static Verdict classify(String internalName, byte[] bytes, JarIndex jar, Set<String> hostExclude,
             String codeSourcePath) {
-        if (!isCandidate(internalName) || !mentionsGetPlayerShip(bytes)) {
+        int names = isCandidate(internalName) ? siteNameMask(bytes) : 0;
+        if (names == 0) {
             return null;
         }
         try {
-            return decide(internalName, bytes, jar, hostExclude, codeSourcePath);
+            return decide(internalName, bytes, jar, hostExclude, codeSourcePath,
+                    (names & NAMES_PLAYER_SHIP) != 0);
         } catch (Throwable t) {
             // Fail-OPEN per class: the reason row is the count; the caller loads the original bytes.
-            return new Verdict(REASON_ERROR_PREFIX + MagicSeamRewriter.simpleName(t), 0, "", Map.of());
+            return new Verdict(REASON_ERROR_PREFIX + MagicSeamRewriter.simpleName(t), 0, 0, "", Map.of());
         }
     }
 
     /**
      * The verdict ladder behind {@link #classify}. LIMIT: with no jar index (a loose script the game compiles from a
      * mod's source files at load has no code source location) no helper hop is walked, so a same-mod helper
-     * that alone carries a use reason (control transfer, keyboard or mouse, drawing, clock write) leaves the class
-     * rewritten unless the host excludes it.
+     * that alone carries a use reason (control transfer, input events, the local cursor, drawing, clock write) leaves
+     * the class rewritten unless the host excludes it.
      *
      *
      */
     private static Verdict decide(String internalName, byte[] bytes, JarIndex jar, Set<String> hostExclude,
-            String codeSourcePath) {
+            String codeSourcePath, boolean namesPlayerShip) {
         ClassModel c = model(bytes);
+        if (c.sites == 0 && !namesPlayerShip) {
+            return null; // the input package named, no site of either family: nothing to redirect, nothing to count
+        }
+        int s = c.sites;
+        int k = c.keySites;
         if (!internalName.equals(c.name)) {
-            return new Verdict(REASON_ERROR_PREFIX + "name_mismatch", c.sites, "", c.siteMethods());
+            return new Verdict(REASON_ERROR_PREFIX + "name_mismatch", s, k, "", c.siteMethods());
         }
         Map<String, Integer> sm = c.siteMethods();
         if (DENY_LIST.contains(c.name)) {
-            return new Verdict(REASON_DENY_LIST, c.sites, "fixed entry", sm);
+            return new Verdict(REASON_DENY_LIST, s, k, "fixed entry", sm);
         }
         if (hostExcluded(hostExclude, codeSourcePath, c.name)) {
-            return new Verdict(REASON_HOST_EXCLUDE, c.sites, "host row", sm);
+            return new Verdict(REASON_HOST_EXCLUDE, s, k, "host row", sm);
         }
         if (c.pilotMark) {
-            return new Verdict(REASON_ADOPTER, c.sites, "self", sm);
+            return new Verdict(REASON_ADOPTER, s, k, "self", sm);
         }
         String[] via = new String[USE_BITS.length];
         int hop;
         synchronized (jar == null ? c : jar) {
             if (isMagicSubsystem(c, jar)) {
-                return new Verdict(REASON_MAGIC_SUBSYSTEM, c.sites, "is-a", sm);
+                return new Verdict(REASON_MAGIC_SUBSYSTEM, s, k, "is-a", sm);
             }
             hop = jar == null ? 0 : hop(c, jar, via);
         }
-        for (int k = 0; k < USE_BITS.length; k++) {
-            if ((c.ownBits & USE_BITS[k]) != 0) {
-                return new Verdict(USE_REASONS[k], c.sites, "self", sm);
+        for (int u = 0; u < USE_BITS.length; u++) {
+            if ((c.ownBits & USE_BITS[u]) != 0) {
+                return new Verdict(USE_REASONS[u], s, k, "self", sm);
             }
-            if ((hop & USE_BITS[k]) != 0) {
-                return new Verdict(USE_REASONS[k], c.sites, via[k], sm);
+            if ((hop & USE_BITS[u]) != 0) {
+                return new Verdict(USE_REASONS[u], s, k, via[u], sm);
             }
         }
         if (REGISTRY_ENTRY_CLASSES.contains(c.name)) {
-            return new Verdict(REASON_REGISTRY_ENTRY, c.sites, "registry entry", sm);
+            return new Verdict(REASON_REGISTRY_ENTRY, s, k, "registry entry", sm);
         }
-        if (c.sites == 0) {
-            return new Verdict(REASON_NO_SITES, 0, "", sm);
+        if (s == 0) {
+            return new Verdict(REASON_NO_SITES, 0, 0, "", sm);
         }
-        return new Verdict(null, c.sites, "", sm);
+        return new Verdict(null, s, k, "", sm);
     }
 
     // ---------------------------------------------------------------- host exclude row
@@ -329,7 +471,7 @@ public final class PilotShipClassifier {
     }
 
     /**
-     * True when an entry names the class's mod, case-insensitive: the location's jar FILE NAME (with or without
+     * True when an entry names the class's mod or package, case-insensitive: the location's jar FILE NAME (with or without
      * {@code .jar}) or any PATH SEGMENT equals it, so a mod's folder name matches as well as its jar; or, read as a
      * package prefix (dots as slashes, trailing slashes trimmed), the internal name equals it or starts with it plus
      * {@code /}, so a mod shipped as loose scripts (no code source location) is reachable too and
@@ -411,6 +553,7 @@ public final class PilotShipClassifier {
         final int access;
         int bits;
         int sites;
+        int keySites;
         final List<String[]> calls = new ArrayList<>();
         /** Memo of the hop closure's bits; -1 = not computed. */
         int reach = -1;
@@ -430,6 +573,7 @@ public final class PilotShipClassifier {
         int ownBits;
         boolean pilotMark;
         int sites;
+        int keySites;
 
         Map<String, Integer> siteMethods() {
             Map<String, Integer> out = new TreeMap<>();
@@ -453,6 +597,7 @@ public final class PilotShipClassifier {
         for (MethodModel m : c.methods.values()) {
             c.ownBits |= m.bits;
             c.sites += m.sites;
+            c.keySites += m.keySites;
         }
         return c;
     }
@@ -528,15 +673,18 @@ public final class PilotShipClassifier {
 
         @Override
         public void visitFieldInsn(int opcode, String owner, String name, String descriptor) {
-            m.bits |= typeBits(owner) | descBits(descriptor);
+            m.bits |= isLwjglInput(owner) ? (opcode == Opcodes.GETSTATIC ? 0 : B_LOCAL_CURSOR) | descBits(descriptor)
+                    : typeBits(owner) | descBits(descriptor);
             ins.add(new Insn(opcode, owner, name, descriptor, null, 0, null, null));
         }
 
         @Override
         public void visitMethodInsn(int opcode, String owner, String name, String descriptor, boolean itf) {
             m.bits |= callBits(owner, name, descriptor);
-            if (isSite(opcode, owner, name, descriptor)) {
+            Twin t = siteTwin(opcode, owner, name, descriptor);
+            if (t != null) {
                 m.sites++;
+                m.keySites += t.key() ? 1 : 0;
             }
             if (isClockCall(owner, name)) {
                 clock = true;
@@ -625,8 +773,11 @@ public final class PilotShipClassifier {
         if (i > 0 && t.startsWith("L") && t.endsWith(";")) {
             t = t.substring(1, t.length() - 1);
         }
-        if (t.equals(KEYBOARD) || t.equals(MOUSE) || t.equals(INPUT_EVENT)) {
-            return B_KEYS;
+        if (t.equals(INPUT_EVENT)) {
+            return B_INPUT_EVENTS;
+        }
+        if (isLwjglInput(t)) {
+            return B_LOCAL_CURSOR; // a type-level use (a cast, a catch, an array): no member to judge, fail-safe
         }
         return t.startsWith(GL_PACKAGE) ? B_GL : 0;
     }
@@ -636,8 +787,11 @@ public final class PilotShipClassifier {
             return 0;
         }
         int b = 0;
-        if (d.contains("L" + KEYBOARD + ";") || d.contains("L" + MOUSE + ";") || d.contains("L" + INPUT_EVENT + ";")) {
-            b |= B_KEYS;
+        if (d.contains("L" + INPUT_EVENT + ";")) {
+            b |= B_INPUT_EVENTS;
+        }
+        if (d.contains("L" + KEYBOARD + ";") || d.contains("L" + MOUSE + ";")) {
+            b |= B_LOCAL_CURSOR;
         }
         if (d.contains("L" + GL_PACKAGE)) {
             b |= B_GL;
@@ -645,8 +799,24 @@ public final class PilotShipClassifier {
         return b;
     }
 
+    /** True for LWJGL's Keyboard or Mouse (the two classes the key family's rows and getters live on). */
+    static boolean isLwjglInput(String owner) {
+        return KEYBOARD.equals(owner) || MOUSE.equals(owner);
+    }
+
+    /**
+     * A method call's use bits. A Keyboard / Mouse member is judged by MEMBER: a redirect row or a pure table getter is
+     * no use; any other member (the pointer, the wheel, the event readers, grabbing, create / destroy) is
+     * {@link #B_LOCAL_CURSOR}. Every other owner is judged by its type, as before the key family.
+     */
     static int callBits(String owner, String name, String desc) {
-        int b = typeBits(owner) | descBits(desc);
+        int b;
+        if (isLwjglInput(owner)) {
+            String key = owner + '.' + name + desc;
+            b = (TWIN_INDEX.containsKey(key) || PURE_GETTERS.contains(key) ? 0 : B_LOCAL_CURSOR) | descBits(desc);
+        } else {
+            b = typeBits(owner) | descBits(desc);
+        }
         if (CONTROL_TRANSFER_CALLS.contains(name)) {
             b |= B_CONTROL;
         }
@@ -666,9 +836,16 @@ public final class PilotShipClassifier {
                 || owner.equals("org/dark/shaders/post/PostProcessShader");
     }
 
-    /** A method handle as a use; a handle to the engine clock escapes the stat, so it counts as a writer. */
+    /**
+     * A method handle as a use; a handle to the engine clock escapes the stat, so it counts as a writer. A handle to an
+     * LWJGL redirect row is never swapped (the rewrite swaps call instructions only), so the raw device call would run
+     * through it: {@link #B_LOCAL_CURSOR}, the class keeps today's bytes.
+     */
     static int handleBits(Handle h) {
         int b = callBits(h.getOwner(), h.getName(), h.getDesc());
+        if (isLwjglInput(h.getOwner()) && TWIN_INDEX.containsKey(h.getOwner() + '.' + h.getName() + h.getDesc())) {
+            b |= B_LOCAL_CURSOR;
+        }
         return isClockCall(h.getOwner(), h.getName()) ? b | B_CLOCK_WRITE : b;
     }
 
@@ -1477,6 +1654,20 @@ public final class PilotShipClassifier {
         }
         for (int k = 0; k < len; k++) {
             if (b[off + 3 + k] != want[k]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** True when the Utf8 entry at {@code off} starts with {@code prefix} (ASCII). */
+    static boolean utf8StartsWith(byte[] b, int off, byte[] prefix) {
+        int len = u2(b, off + 1);
+        if (len < prefix.length) {
+            return false;
+        }
+        for (int k = 0; k < prefix.length; k++) {
+            if (b[off + 3 + k] != prefix[k]) {
                 return false;
             }
         }

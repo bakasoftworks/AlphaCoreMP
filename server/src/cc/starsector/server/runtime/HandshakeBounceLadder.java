@@ -45,13 +45,18 @@ public final class HandshakeBounceLadder {
 
     /**
      * Classify a HELLO payload that is not the door's own version ({@link Handshake13#VERSION}) as
-     * the newest legacy grammar it fully matches — version 14 first ({@link #classifyV14OrNull}), then
+     * the newest legacy grammar it fully matches — version 15 first ({@link #classifyV15OrNull}), then
+     * 14 ({@link #classifyV14OrNull}), then
      * 13 ({@link #classifyV13OrNull}), then 12 ({@link #classifyV12OrNull}, wired here by THE FLIP),
      * then 11..1 — or
      * {@code null} for garbage (silent drop). Newest-first so a payload is always attributed to the
      * highest version whose complete grammar it satisfies.
      */
     public static StaleHello classifyOrNull(byte[] payload) {
+        StaleHello v15 = classifyV15OrNull(payload);
+        if (v15 != null) {
+            return v15;
+        }
         StaleHello v14 = classifyV14OrNull(payload);
         if (v14 != null) {
             return v14;
@@ -141,7 +146,7 @@ public final class HandshakeBounceLadder {
      *
      */
     public static StaleHello classifyV13OrNull(byte[] payload) {
-        return classifyOpenOrNull(payload, V13);
+        return classifyOpenOrNull(payload, V13, V13_FLAGS_DEFINED);
     }
 
     /**
@@ -153,14 +158,32 @@ public final class HandshakeBounceLadder {
      * its first ability press.
      */
     public static StaleHello classifyV14OrNull(byte[] payload) {
-        return classifyOpenOrNull(payload, V14);
+        return classifyOpenOrNull(payload, V14, V13_FLAGS_DEFINED);
     }
 
-    /** The shared F1 grammar of the v13 and v14 rungs at one literal version byte (the body of the v13 rung,
-     * moved verbatim when the v14 rung joined). */
-    private static StaleHello classifyOpenOrNull(byte[] payload, int version) {
+    /**
+     * A version-15 kit's own F1 flag set, frozen: the version-14 three plus the two MagicLib report bits
+     * ({@code 0x08}, {@code 0x10}) that came in place with 15 — so a later flag bit never widens this rung.
+     */
+    private static final int V15 = 15, V15_FLAGS_DEFINED = 0x1F;
+
+    /**
+     * The v15 rung: a WELL-FORMED version-15 F1. The version-16 bump changed no F1 byte (it gates the 74 B
+     * schema-7 pilot frame and grows the sealed F2 body by the 16-byte pilot keymap); the F1 is
+     * the version-14 grammar at byte 0 = the literal 15 with that kit's
+     * flag set ({@link #V15_FLAGS_DEFINED}) → {@code StaleHello(15, nonce)}, else {@code null}. A version-15 kit
+     * at a version-16 door meets this rung instead of being admitted and then dropped at its first 63 B frame.
+     *
+     */
+    public static StaleHello classifyV15OrNull(byte[] payload) {
+        return classifyOpenOrNull(payload, V15, V15_FLAGS_DEFINED);
+    }
+
+    /** The shared F1 grammar of the v13..v15 rungs at one literal version byte and that version's frozen flag set
+     * (the body of the v13 rung, moved verbatim when the v14 rung joined). */
+    private static StaleHello classifyOpenOrNull(byte[] payload, int version, int flagsDefined) {
         if (payload == null || payload.length != Handshake13.OPEN_PAYLOAD_BYTES || (payload[0] & 0xFF) != version
-                || payload[10] != 0 || (payload[9] & ~V13_FLAGS_DEFINED) != 0) {
+                || payload[10] != 0 || (payload[9] & ~flagsDefined) != 0) {
             return null;
         }
         for (int i = V13_OPEN_HEAD_BYTES; i < payload.length; i++) {
@@ -200,6 +223,8 @@ public final class HandshakeBounceLadder {
     public static byte[] encodeReject(StaleHello stale, int startingRoundId, int tickRate,
             long serverLife) {
         return switch (stale.version()) {
+            case 15 -> HandshakeCodec.WelcomePayload.encodeRejectedKitOutdatedV15(
+                    stale.nonce(), startingRoundId, tickRate, serverLife);
             case 14 -> HandshakeCodec.WelcomePayload.encodeRejectedKitOutdatedV14(
                     stale.nonce(), startingRoundId, tickRate, serverLife);
             case 13 -> HandshakeCodec.WelcomePayload.encodeRejectedKitOutdatedV13(

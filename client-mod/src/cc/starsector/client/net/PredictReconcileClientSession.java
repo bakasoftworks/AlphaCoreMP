@@ -342,10 +342,12 @@ public final class PredictReconcileClientSession implements PredictSession {
      */
     public void sendIntent(float cursorFacingDeg, float ownShipFacingDeg, int heldControls, boolean fireHeld,
             float aimWorldX, float aimWorldY, int selectedWeaponGroup, int autofireGroupsMask,
-            long targetWireId, int fireEdgeSeq, int activeTubeOrdinal)
+            long targetWireId, int fireEdgeSeq, int activeTubeOrdinal,
+            long keyCodes, int mouseButtons, int controlKeys)
             throws IOException {
         sendIntent(cursorFacingDeg, ownShipFacingDeg, heldControls, fireHeld, aimWorldX, aimWorldY,
                 selectedWeaponGroup, autofireGroupsMask, targetWireId, fireEdgeSeq, activeTubeOrdinal,
+                keyCodes, mouseButtons, controlKeys,
                 lastSnapshot != null ? lastSnapshot.simTick() : -1L);
     }
 
@@ -357,10 +359,13 @@ public final class PredictReconcileClientSession implements PredictSession {
      * {@code echoTick} is the no-snapshot-yet sentinel and sends frameSeq 0, exactly as the welded
      * overload does before the first read (the server's round-start barrier accepts it:
      * {@code 0 <= latestDepositedTick}). The welded overload delegates here, byte-identical.
+     * {@code keyCodes}/{@code mouseButtons}/{@code controlKeys} (PINT v7) ride into the frame verbatim
+     * ({@link PredictSession} states their domains; a non-canonical key pack throws from the frame constructor).
      */
     public void sendIntent(float cursorFacingDeg, float ownShipFacingDeg, int heldControls, boolean fireHeld,
             float aimWorldX, float aimWorldY, int selectedWeaponGroup, int autofireGroupsMask,
-            long targetWireId, int fireEdgeSeq, int activeTubeOrdinal, long echoTick)
+            long targetWireId, int fireEdgeSeq, int activeTubeOrdinal,
+            long keyCodes, int mouseButtons, int controlKeys, long echoTick)
             throws IOException {
         int frameSeq = echoTick >= 0L ? (int) (echoTick & 0x7fffffff) : 0;
         // Live-sampled group < 0 (no selected group resolvable this frame) falls back to the
@@ -372,7 +377,8 @@ public final class PredictReconcileClientSession implements PredictSession {
                 targetWireId, fireEdgeSeq,
                 // -1 (ABSENT) passes through wire-valid like the target lane's
                 // sentinels — no connect-time fallback exists for a tube pointer.
-                activeTubeOrdinal);
+                activeTubeOrdinal,
+                keyCodes, mouseButtons, controlKeys);
         byte[] bytes = PilotIntentWireCodec.encodeFrame(intent);
         out.write(bytes);
         out.flush();

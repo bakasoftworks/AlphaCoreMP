@@ -223,7 +223,7 @@ public final class PostureRegistry {
             // an applied seam changes which MagicLib abilities fire on a piloted hull, so the behavior hash carries it.
             // LITERALS, never TransformRegistry's constants (the posture census regex reads this file as TEXT).
             new Knob("cc.magicseam.enabled", "CC_MAGICSEAM_ENABLED", "magicseam.enabled", KnobClass.BEHAVIOR),
-            // the player-ship window's host row (DEFAULT OFF): registered BEFORE its premain lands, so no postured
+            // the player-ship window's host row (DEFAULT ON; OFF while new): registered BEFORE its premain landed, so no postured
             // serve refuses it as an unknown sysprop (the magicseam row's first merged build did exactly that)
             new Knob("cc.pilotship.enabled", "CC_PILOTSHIP_ENABLED", "pilotship.enabled", KnobClass.BEHAVIOR),
             // The Math.random() caller census window (sim ticks) — premain-read

@@ -4441,17 +4441,17 @@ public final class ServerOpsCoreSelftest {
 
     /**
      * Row {@code config-pilotship} - {@code /api/config}'s player-ship prefill:
-     * over the flow props (no {@code pilotship.enabled} row) the member reads {@code "off"} (the serve's compiled
-     * default, the OPPOSITE of the MagicLib row's absent default, so a prefill reading the MagicLib row reads on)
-     * right after {@code magicSeam}, before {@code selectedIndex}; over a props file holding
+     * over the flow props (no {@code pilotship.enabled} row) the member reads {@code "on"} (the serve's compiled
+     * default; off while new) right after {@code magicSeam}, before
+     * {@code selectedIndex}; over a props file holding
      * {@code pilotship.enabled=true} beside {@code magicseam.enabled=false} it reads {@code "on"} while
      * {@code magicSeam} still reads {@code "off"}, and over the swapped pair the reverse.
      */
     private static void configPilotShipRows(String cfgJson) {
         String row = "config-pilotship";
-        check(cfgJson.contains("\"magicSeam\":\"on\",\"pilotShip\":\"off\",\"selectedIndex\":"),
-                row + ": an absent row serves pilotShip 'off' right after magicSeam (flips if the member is dropped,"
-                        + " moved, an absent row stops reading off, or the prefill reads the MagicLib row)");
+        check(cfgJson.contains("\"magicSeam\":\"on\",\"pilotShip\":\"on\",\"selectedIndex\":"),
+                row + ": an absent row serves pilotShip 'on' right after magicSeam (flips if the member is dropped,"
+                        + " moved, or an absent row stops reading on, the shipped default)");
         Path dir = rigDir(row, "cc-ops-config-pilotship");
         Path props = dir.resolve("cc-server.properties");
         try {

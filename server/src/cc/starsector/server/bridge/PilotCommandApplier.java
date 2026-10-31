@@ -240,7 +240,9 @@ final class PilotCommandApplier {
      * the bitmask fan-out, and the edge logic stay
      * behind this boundary; the runtime serve loop makes ONE call per owned ship per tick and owns the
      * {@link PilotApplyState}. Rejects (no engine touch) when {@code simTick<0}, the frame's ship is not
-     * owned, the command sink is unbound, or the ship cannot be resolved.
+     * owned, the command sink is unbound, or the ship cannot be resolved. Every APPLIED frame (past the refield
+     * gate) also pushes the pilot's held keys, mouse buttons and control keys into the player-ship holder for the
+     * hull's redirected key polls; a rejected or gated frame pushes nothing.
      */
     public PilotApplyResult applyPilotIntent(
             cc.starsector.server.runtime.PilotIntentFrame frame, long simTick, PilotApplyState state) {
@@ -343,6 +345,12 @@ final class PilotCommandApplier {
         int cancelPressesBefore = state.systemCancelPresses;
         int ventPressesBefore = state.ventsIssued + state.ventRePresses;
         applyPilotMark(ship, held, state.seatId, state); // pre-advance: a mod's every-frame plugin reads it this tick
+        // The pilot's held keys, mouse buttons and control keys, AFTER the mark
+        // (its first write publishes the mirror entry this lands in), so the hull's own redirected key polls hear
+        // this frame's input inside this tick's advance window; the mark's clear edges drop it with the entry. The
+        // seat's keymap (read once per hull tenure at the mark's re-point) rides with it.
+        PilotShipWindow.pushPilotState(ship, frame.keyCodes(), frame.mouseButtons(), frame.controlKeys(),
+                state.pilotKeymapLo, state.pilotKeymapHi);
         boolean systemActivated = applySystemBit(ship, held, simTick, frame.shipId(), state);
         boolean ventIssued = applyVentBit(ship, held, state);
         // Retreat bit-9 (edge-only drive engage + level re-assert of the flag)
@@ -1854,6 +1862,10 @@ final class PilotCommandApplier {
             }
             removePilotMarkFrom(state.pilotMarkShip, state);
             int flags = state.pilotMarkFlagsSource == null ? 0 : state.pilotMarkFlagsSource.getAsInt() & 0xFF;
+            // The seat's HELLO keymap, read here beside the flags and never per
+            // frame (a null source = 0 = the serve's own map); every applied frame's held-state push carries it.
+            state.pilotKeymapLo = state.pilotKeymapLoSource == null ? 0L : state.pilotKeymapLoSource.getAsLong();
+            state.pilotKeymapHi = state.pilotKeymapHiSource == null ? 0L : state.pilotKeymapHiSource.getAsLong();
             int[] mark = new int[] {seatId, 0, 0, flags};
             try {
                 if (shipSetCustomData != null) {

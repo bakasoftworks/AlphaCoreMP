@@ -609,7 +609,7 @@ public final class PredictReconcileDatagramSession implements PredictSession {
             DatagramSocket socket, InetSocketAddress server, long sessionId, int startingRoundId,
             String clientId, String seatToken, Handshake13Flight.Lane lane, int handshakeVersion,
             SecureRandom rng, String fingerprint, String variantId,
-            int readDeadlineMillis, boolean observer) {
+            int readDeadlineMillis, boolean observer, byte[] keymapOrNull) {
         this.shipId = shipId;
         this.observer = observer;
         this.selectedWeaponGroup = selectedWeaponGroup;
@@ -626,8 +626,9 @@ public final class PredictReconcileDatagramSession implements PredictSession {
         this.readDeadlineMillis = readDeadlineMillis;
         // Always built - handshakeVersion stays on the ctor (the dial already refused
         // anything but 13; the parameter's drop is parked) and picks nothing here
+        // the dial's keymap rides every re-HELLO (Hs13ReHelloFlights keeps its own copy)
         this.hs13 = new Hs13ReHelloFlights(this, lane,
-                seatToken, observer, fingerprint, clientId, shipId, variantId, server, rng);
+                seatToken, observer, fingerprint, clientId, shipId, variantId, keymapOrNull, server, rng);
         boolean snapTickConflate =
                 resolveLeverKnob("cc.predict.snapTickConflate", "CC_PREDICT_SNAP_TICK_CONFLATE");
         // Composition law: staleFold requires tickConflate — a stale payload must never
@@ -784,7 +785,7 @@ public final class PredictReconcileDatagramSession implements PredictSession {
             String variantId, int readDeadlineMillis, boolean observer) throws IOException {
         return PredictDatagramDial.connect(host, port, shipId, selectedWeaponGroup, clientId, seatToken, lane,
                 handshakeVersion, fingerprint,
-                variantId, readDeadlineMillis, observer, CONNECT_TIMEOUT_MILLIS);
+                variantId, readDeadlineMillis, observer, CONNECT_TIMEOUT_MILLIS, null);
     }
 
     /** The CLICK-dial entry — the in-game silence deadline
@@ -798,9 +799,22 @@ public final class PredictReconcileDatagramSession implements PredictSession {
             int selectedWeaponGroup, String clientId, String seatToken, Handshake13Flight.Lane lane,
             int handshakeVersion, String fingerprint,
             String variantId, boolean observer, int helloTimeoutMillis) throws IOException {
+        return connect(host, port, shipId, selectedWeaponGroup, clientId, seatToken, lane,
+                handshakeVersion, fingerprint, variantId, observer, helloTimeoutMillis, null);
+    }
+
+    /** The CLICK-dial entry carrying the pilot's control keymap: {@code keymapOrNull} = the 16 bytes the HELLO seals
+     * after the team byte (each 0 = unbound, 1..0xDF a key code, 0xF0..0xF7 a mouse button; null = 16 zeros = the
+     * serve's own bindings answer). Read by the caller on the GAME thread; the session keeps a copy so every re-HELLO
+     * re-seals the same map. An out-of-domain byte is the flight's IAE before any datagram.
+     * */
+    public static PredictReconcileDatagramSession connect(String host, int port, long shipId,
+            int selectedWeaponGroup, String clientId, String seatToken, Handshake13Flight.Lane lane,
+            int handshakeVersion, String fingerprint,
+            String variantId, boolean observer, int helloTimeoutMillis, byte[] keymapOrNull) throws IOException {
         return PredictDatagramDial.connect(host, port, shipId, selectedWeaponGroup, clientId, seatToken, lane,
                 handshakeVersion, fingerprint,
-                variantId, resolveSilenceDeadlineMillis(), observer, helloTimeoutMillis);
+                variantId, resolveSilenceDeadlineMillis(), observer, helloTimeoutMillis, keymapOrNull);
     }
 
     // ------------------------------------------------------------------ receive (consumer thread)
@@ -1883,18 +1897,22 @@ public final class PredictReconcileDatagramSession implements PredictSession {
     @Override
     public void sendIntent(float cursorFacingDeg, float ownShipFacingDeg, int heldControls,
             boolean fireHeld, float aimWorldX, float aimWorldY, int selectedWeaponGroup,
-            int autofireGroupsMask, long targetWireId, int fireEdgeSeq, int activeTubeOrdinal)
+            int autofireGroupsMask, long targetWireId, int fireEdgeSeq, int activeTubeOrdinal,
+            long keyCodes, int mouseButtons, int controlKeys)
             throws IOException {
         sendIntent(cursorFacingDeg, ownShipFacingDeg, heldControls, fireHeld, aimWorldX, aimWorldY,
                 selectedWeaponGroup, autofireGroupsMask, targetWireId, fireEdgeSeq, activeTubeOrdinal,
+                keyCodes, mouseButtons, controlKeys,
                 lastSnapshot != null ? lastSnapshot.simTick() : -1L);
     }
 
+    /** The intent send both pumps reach; {@code keyCodes}/{@code mouseButtons}/{@code controlKeys} (PINT v7) ride
+     * into the frame verbatim ({@link PredictSession} states their domains). */
     @Override
     public void sendIntent(float cursorFacingDeg, float ownShipFacingDeg, int heldControls,
             boolean fireHeld, float aimWorldX, float aimWorldY, int selectedWeaponGroup,
             int autofireGroupsMask, long targetWireId, int fireEdgeSeq, int activeTubeOrdinal,
-            long echoTick)
+            long keyCodes, int mouseButtons, int controlKeys, long echoTick)
             throws IOException {
         throwIfDeadOrClosed(); // a datagram send cannot fail on a dead peer the way a TCP write
                                // does — surface reader deaths here so the writer loop ends too
@@ -1940,7 +1958,8 @@ public final class PredictReconcileDatagramSession implements PredictSession {
                 targetWireId, fireEdgeSeq,
                 // -1 (ABSENT) passes through wire-valid like the target lane's
                 // sentinels — no connect-time fallback exists for a tube pointer.
-                activeTubeOrdinal);
+                activeTubeOrdinal,
+                keyCodes, mouseButtons, controlKeys);
         byte[] bytes = PilotIntentWireCodec.encodeFrame(intent);
         reliability.snapSend(bytes, nowMillis()); // UP = latest-wins SNAP; conflation is the contract
         framesSent++;
@@ -3335,6 +3354,13 @@ public final class PredictReconcileDatagramSession implements PredictSession {
             sendEnvelopeOnly(DatagramFrameCodec.WireChannel.BYE);
         }
         return false;
+    }
+
+    /** The game thread's init-time keymap → {@link Hs13ReHelloFlights#setKeymap} (the holder every re-HELLO builds
+     *  from); the predict plugin's init calls it BEFORE {@link #armReAdmission}. Main-written */
+    @Override
+    public void setPilotKeymap(byte[] keymapOrNull) {
+        hs13.setKeymap(keymapOrNull);
     }
 
     /** Deliberate fresh-nonce re-HELLO at mission re-acquisition of a LIVE

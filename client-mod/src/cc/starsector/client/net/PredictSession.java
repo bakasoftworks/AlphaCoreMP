@@ -435,17 +435,28 @@ public interface PredictSession extends AutoCloseable {
      * active-tube pointer as a {@code getWeaponsCopy()} ordinal ({@code TUBE_ORDINAL_ABSENT} -1 =
      * never sampled / selection not ALTERNATING — the server's tube mirror skips entirely;
      * wire-valid as-is, no fallback substitution — unlike {@code selectedWeaponGroup} there is no
-     * connect-time default to fall back to). */
+     * connect-time default to fall back to).
+     * PINT v7: the pilot's raw input LEVELS, sampled on the render thread and passed through verbatim —
+     * {@code keyCodes} = up to 8 held key codes packed ascending then zero pad
+     * ({@code PilotIntentFrame.KEYS_EMPTY} 0 = nothing held; a non-canonical pack throws
+     * {@link IllegalArgumentException} from the frame constructor), {@code mouseButtons} = u8 (bit b = button
+     * b held), {@code controlKeys} = u16 (bit i = the pilot's own key for
+     * {@code PilotIntentFrame.CONTROL_KEY_NAMES[i]} held). A producer with no keyboard passes 0L, 0, 0.
+     * Levels only, never text; the frame's contract ({@code PilotIntentFrame}) says what the server does with them.
+     * */
     void sendIntent(float cursorFacingDeg, float ownShipFacingDeg, int heldControls, boolean fireHeld,
             float aimWorldX, float aimWorldY, int selectedWeaponGroup, int autofireGroupsMask,
-            long targetWireId, int fireEdgeSeq, int activeTubeOrdinal)
+            long targetWireId, int fireEdgeSeq, int activeTubeOrdinal,
+            long keyCodes, int mouseButtons, int controlKeys)
             throws IOException;
 
     /** The explicit-echo-tick send the duplex WRITER thread uses — the writer
-     * must not read {@link #lastSnapshot()} (reader-thread state); negative = no-snapshot-yet. */
+     * must not read {@link #lastSnapshot()} (reader-thread state); negative = no-snapshot-yet. The three
+     * input-level arguments are the welded overload's, verbatim. */
     void sendIntent(float cursorFacingDeg, float ownShipFacingDeg, int heldControls, boolean fireHeld,
             float aimWorldX, float aimWorldY, int selectedWeaponGroup, int autofireGroupsMask,
-            long targetWireId, int fireEdgeSeq, int activeTubeOrdinal, long echoTick) throws IOException;
+            long targetWireId, int fireEdgeSeq, int activeTubeOrdinal,
+            long keyCodes, int mouseButtons, int controlKeys, long echoTick) throws IOException;
 
     /** One {@code PDCL} declared-discharge frame UP (rides directly after this tick's
      * {@link #sendIntent} on TCP; the datagram sibling carries it on its reliable CTRL lane).
@@ -741,6 +752,14 @@ public interface PredictSession extends AutoCloseable {
      * calls this at its one-shot fresh-world adopt ({@code adoptInitialWorld}), after which own
      * intents are client-authoritative again. Default no-op (no hold to release). */
     default void resumeOwnAuthority() {
+    }
+
+    /** The pilot's 16-byte control keymap as resolved at THIS combat init on the game thread ({@code null} = none):
+     *  the map every later re-HELLO seals, handed over BEFORE {@link #armReAdmission} so the kept-open takeover
+     *  re-HELLO carries the bindings the sampler polls, never the dial-time ones. Default no-op: a
+     *  transport without the version-13 re-HELLO pump (the retired TCP twin) seals no keymap.
+     *  Main-written */
+    default void setPilotKeymap(byte[] keymapOrNull) {
     }
 
     /** The most recent snapshot received, or {@code null} before the first read. */

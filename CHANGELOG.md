@@ -2,6 +2,15 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.3.0 - 2026-10-30
+
+- Every player needs the 0.3.0 kit. An older kit is refused when it joins and the join window says the kit is outdated.
+- Mod hotkey abilities follow the pilot without MagicLib: players' held keys and mouse buttons reach the server, and the pilot's ship reads them in its own scripts (hullmods, ship system, weapon every-frame scripts), whatever keys the player bound. Not covered: the mouse pointer, one-by-one keyboard events, and battle-wide combat plugins. Details in the host README's Mods section.
+- "Each pilot's ship counts as the player's" now ships on (it was off in 0.2.0); it is what lets those abilities follow the pilot. The host can turn it off in the ops GUI before Start ("Setup", "Before start", "Advanced").
+- Known limit: a game control rebound during a match keeps its old key on the server for mod abilities until the next match starts. Set your keys before the match.
+- Host: the ops GUI's "Players" table now sizes to its seats; with three or more players it showed two rows and a scrollbar.
+- Host, Windows: with a "Second game folder" set, "Launch debug WATCH" joins its second window through the VPN's public address, as a remote player would, when the server is bound to the VPN address; the first window joins on this computer.
+
 ## 0.2.0 - 2026-10-30
 
 - Every player needs the 0.2.0 kit. A 0.1.x kit is refused when it joins and the join window says the kit is outdated.

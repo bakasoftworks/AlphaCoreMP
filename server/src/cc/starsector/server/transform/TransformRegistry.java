@@ -127,26 +127,34 @@ public final class TransformRegistry {
     /** {@code disarmed:} + the reason (the fixed set = the rewriter's {@code REASON_*}). */
     public static final String MAGIC_SEAM_RECEIPT_DISARMED_PREFIX = "disarmed:";
 
-    /** The player-ship window's host row, sysprop tier (the magicseam.enabled shape; DEFAULT OFF). Main-written. */
+    /**
+     * The player-ship window's host row, sysprop tier (the magicseam.enabled shape). DEFAULT ON;
+     * OFF while new. Main-written.
+     */
     public static final String PILOT_SHIP_ENABLED_SYSPROP = "cc.pilotship.enabled";
     /** The player-ship window's host row, env tier. */
     public static final String PILOT_SHIP_ENABLED_ENV = "CC_PILOTSHIP_ENABLED";
-    /** The player-ship window's host row, config file tier ({@code true|false}; absent = the default, off). */
+    /** The player-ship window's host row, config file tier ({@code true|false}; absent = the default, on). */
     public static final String PILOT_SHIP_ENABLED_FILE_KEY = "pilotship.enabled";
     /** File-only row: a comma list of mod folder, jar or script package names whose classes stay unchanged. */
     public static final String PILOT_SHIP_EXCLUDE_FILE_KEY = "pilotship.exclude";
     /**
-     * The premain's in-process receipt for the player-ship window: {@code off | armed | applied:<classes> |
-     * refused:<reason> | latched:<reason>}; absent = no premain decided. "Live" == starts with {@code applied:}.
+     * The premain's in-process receipt for the player-ship window: {@code off | armed | applied:<k> |
+     * refused:<reason> | latched:<reason>}; absent = no premain decided. "Live" == {@code armed}, or starts with
+     * {@code applied:} or {@code latched:} - the one class rule the replay boot check applies to both sides.
      */
     public static final String PILOT_SHIP_RECEIPT_SYSPROP = "cc.pilot.ship";
     public static final String PILOT_SHIP_RECEIPT_OFF = "off";
     public static final String PILOT_SHIP_RECEIPT_ARMED = "armed";
-    /** {@code applied:} + the count of classes rewritten so far. */
+    /**
+     * {@code applied:} + k: set once the window is live or a script class is redirected; k = the script classes
+     * redirected so far (the window wrap itself is uncounted, so {@code applied:0} = the window live, no script yet).
+     */
     public static final String PILOT_SHIP_RECEIPT_APPLIED_PREFIX = "applied:";
     /**
-     * {@code refused:} + ship_fingerprint | holder_missing | holder_abi | golden_mismatch (the eager gate), or a
-     * load-time window miss's own cause: not_target | self_check | window_repeated | window_absent | class_version |
+     * {@code refused:} + ship_fingerprint | holder_missing | holder_abi | golden_mismatch (the eager gate), or the
+     * load-time window wrap's own cause (the JVM then halts): ship_fingerprint (the loaded bytes drifted from the
+     * verified jar) | not_target | self_check | window_repeated | window_absent | class_version |
      * error:&lt;SimpleName&gt;.
      */
     public static final String PILOT_SHIP_RECEIPT_REFUSED_PREFIX = "refused:";
@@ -550,6 +558,8 @@ public final class TransformRegistry {
     public static final String PILOT_SHIP_WINDOW_ID = "HOOK-0054";
     /** The player-ship call-site redirect's id (a {@link Kind#FOREIGN_CALL_SITE_REDIRECT} entry, generic). */
     public static final String PILOT_SHIP_REDIRECT_ID = "HOOK-0055";
+    /** The pilot-keys call-site redirect's id: the LWJGL keyboard / mouse family, armed with the player-ship pair. */
+    public static final String PILOT_SHIP_KEYS_ID = "HOOK-0056";
 
     /**
      * The MagicLib pilot seam: one guarded branch at the AI
@@ -597,7 +607,7 @@ public final class TransformRegistry {
                     "9ea0cb5920af7b2ed1a3c0a83844a8d5958cf176a71667bfa5edd22ed65da0b5", null)),
             "ii",
             "host row " + PILOT_SHIP_ENABLED_FILE_KEY + " (sysprop " + PILOT_SHIP_ENABLED_SYSPROP + " > env "
-                    + PILOT_SHIP_ENABLED_ENV + " > the config file row > false); ON = the eager gate verifies this"
+                    + PILOT_SHIP_ENABLED_ENV + " > the config file row > true); ON = the eager gate verifies this"
                     + " fingerprint and probes the holder and the typed target, a miss refuses the launch naming the"
                     + " row; never armed by -Dcc.transform.enable alone; receipt " + PILOT_SHIP_RECEIPT_SYSPROP,
             "transform-registry governance decision + the player-ship design record (the in-place wrap verified"
@@ -631,14 +641,49 @@ public final class TransformRegistry {
                     + " shape the classifier cannot admit loads unchanged with its reason, so nothing here pins a"
                     + " version");
 
+    /**
+     * HOOK-0056: the pilot-keys call-site redirect, the LWJGL family beside
+     * HOOK-0055 in the same pass. In every class the classifier admits, each static call of the nine LWJGL
+     * keyboard / mouse methods a hull's own code may poll ({@code Keyboard.isKeyDown}, {@code poll}, {@code next},
+     * {@code getNumKeyboardEvents}; {@code Mouse.isButtonDown}, {@code poll}, {@code next},
+     * {@code setCursorPosition}, {@code isInsideWindow}) becomes a static call of the same descriptor into the typed
+     * target's twin, and the one {@code SettingsAPI.getControlStringForEnumName} interface call becomes the
+     * receiver-first static of the tenth twin (inside the window the pilot's own binding, sent at HELLO, as the
+     * engine names it): inside an open window the answer is that hull's pilot's held keys and buttons (the
+     * holder's pilot state, written by every applied pilot frame), everywhere else no key is down, a poll does
+     * nothing and the event queue is empty — never the throw the display-less originals give. Pure table getters (key and
+     * button names and indices, counts, {@code isCreated}) stay; a class touching any other keyboard or mouse member
+     * (the pointer, events) or reading input events is left unchanged with its reason, and keeps its raw polls.
+     * GENERIC, fail-OPEN per class, armed with HOOK-0054 / HOOK-0055 by the same host row, never alone.
+     */
+    private static final Entry HOOK_0056 = new Entry(
+            PILOT_SHIP_KEYS_ID,
+            Kind.FOREIGN_CALL_SITE_REDIRECT,
+            null,
+            null,
+            List.of(),
+            "ii",
+            "host row " + PILOT_SHIP_ENABLED_FILE_KEY + " (with " + PILOT_SHIP_WINDOW_ID + " and "
+                    + PILOT_SHIP_REDIRECT_ID + "); load-time only, fail-open per class; host exclusions "
+                    + PILOT_SHIP_EXCLUDE_FILE_KEY + "; receipt " + PILOT_SHIP_RECEIPT_SYSPROP,
+            "transform-registry governance decision + the pilot-keys design record (the twin table, the pilot"
+                    + " state beside the mirror, the classifier split of keyboard and mouse use)",
+            "on a game or LWJGL update: confirm the ten twins' originals keep their names and descriptors (the nine"
+                    + " keyboard / mouse statics: read the install's lwjgl jar; the control-string getter: the API"
+                    + " jar) and that the typed target's twins match them; a class whose"
+                    + " shape the classifier cannot admit loads unchanged with its reason");
+
     private static final List<Entry> ENTRIES =
             List.of(HOOK_0043, HOOK_0044, HOOK_0048, HOOK_0049, HOOK_0050, HOOK_0051);
 
     /** The load-time-only third-party seams: resolvable by {@link #byId}, never in the eager {@link #entries()}. */
     private static final List<Entry> FOREIGN_SEAMS = List.of(HOOK_0053);
 
-    /** The player-ship pair, armed by its host row only: resolvable by {@link #byId}, never in {@link #entries()}. */
-    private static final List<Entry> PILOT_SHIP_ENTRIES = List.of(HOOK_0054, HOOK_0055);
+    /**
+     * The player-ship family (the window, the call-site redirect, the pilot-keys redirect), armed by its host row
+     * only: resolvable by {@link #byId}, never in {@link #entries()}.
+     */
+    private static final List<Entry> PILOT_SHIP_ENTRIES = List.of(HOOK_0054, HOOK_0055, HOOK_0056);
 
     private static final Map<String, Entry> BY_ID = java.util.stream.Stream.of(ENTRIES, FOREIGN_SEAMS,
             PILOT_SHIP_ENTRIES).flatMap(List::stream).collect(Collectors.toUnmodifiableMap(Entry::id, e -> e));

@@ -193,6 +193,7 @@ final class OpsJoinSelfSelftest {
         try {
             row(failed, "join-install", r -> joinInstall(r, dir.resolve("install")));
             row(failed, "join-dial", OpsJoinSelfSelftest::joinDial);
+            row(failed, "join-watch-dial", r -> joinWatchDial(r, dir.resolve("watchdial")));
             row(failed, "join-merge", OpsJoinSelfSelftest::joinMerge);
             row(failed, "join-spawn-shape", r -> joinSpawnShape(r, dir.resolve("spawn")));
             row(failed, "join-client-diag", r -> joinClientDiag(r, dir.resolve("diag")));
@@ -388,6 +389,36 @@ final class OpsJoinSelfSelftest {
         check(r, "10.2.0.9:46337".equals(OpsJoinSelf.dial(tunLive, noMode, null)),
                 "no advertise.from row = not TUN mode, the 10.2.0.x host dials itself (flips if the mode is"
                         + " guessed from the address shape)");
+        // The debug watch's first window of two dials the live bind's own
+        // endpoint whatever the Fill rows say - the TUN host itself, the wildcard as loopback, IPv6 refused.
+        check(r, "10.2.0.9:46337".equals(OpsJoinSelf.dialLocal(tunLive))
+                        && "127.0.0.1:46337".equals(OpsJoinSelf.dialLocal(live("0.0.0.0", 46337))),
+                "the local dial = the TUN bind host itself and 0.0.0.0 as 127.0.0.1 (flips if the local dial rewrites"
+                        + " the bind host or passes the wildcard to the window as a host)");
+        check(r, OpsJoinSelf.R5.equals(refusal(() -> OpsJoinSelf.dialLocal(live("::1", 46337)))),
+                "an IPv6 bind = R5 on the local dial too (flips if an IPv6 host reaches the window through it)");
+        // The debug WATCH's second window - one local, one through the VPN: the VPN's public
+        // endpoint whatever advertise.from says; the gate = the probe's TUN address equals the live bind host.
+        Map<String, String> typed = Map.of(
+                ServerOpsLaunch.LAUNCHER_ROW_ADVERTISE_FROM, "typed",
+                ServerOpsLaunch.LAUNCHER_ROW_ADVERTISE_BIND, "10.2.0.9",
+                ServerOpsLaunch.LAUNCHER_ROW_ADVERTISE, "203.0.113.5:46337");
+        check(r, "203.0.113.5:46337".equals(OpsJoinSelf.dialPublic(tunLive, typed, found)),
+                "window 2 dials the probe's public exit:port with advertise.from=typed (flips if tunMode gates the"
+                        + " second window's dial - a folder saved by a typed address reads typed)");
+        check(r, "198.51.100.9:46337".equals(OpsJoinSelf.dialPublic(tunLive, typed, rotated)),
+                "window 2 over a rotated exit dials the RE-PROBE's exit (flips if the saved advertise row is dialled)");
+        check(r, OpsJoinSelf.dialPublic(tunLive, typed, null) == null,
+                "window 2 with no probe answer = null = the local fallback, never R10 (flips if a failed probe"
+                        + " refuses the second window)");
+        check(r, OpsJoinSelf.dialPublic(live("192.168.1.5", 46337), typed, found) == null
+                        && OpsJoinSelf.dialPublic(live("0.0.0.0", 46337), typed, found) == null,
+                "a serve not bound to the probe's TUN address keeps the local dial (flips if a LAN / wildcard serve's"
+                        + " second window dials the VPN exit)");
+        String deadSecond = refusal(() -> OpsJoinSelf.dialPublic(tunLive, typed, moved));
+        check(r, deadSecond.startsWith("ProtonVPN now forwards "),
+                "window 2 over a probe forwarding another port = the PACKAGE dead-port refusal (flips if the brick"
+                        + " check is skipped on the second window)");
         Map<String, String> otherBind = Map.of(
                 ServerOpsLaunch.LAUNCHER_ROW_ADVERTISE_FROM, "protonvpn",
                 ServerOpsLaunch.LAUNCHER_ROW_ADVERTISE_BIND, "10.2.0.7",
@@ -409,6 +440,66 @@ final class OpsJoinSelfSelftest {
         check(r, longRefusal.startsWith("The server address ") && longRefusal.length() <= 120,
                 "an over-long host = the N7 refusal, at most 120 chars (flips if the 253-char bound or the"
                         + " shown-host cut is lost): " + longRefusal.length());
+    }
+
+    /**
+     * {@code join-watch-dial}: {@link OpsJoinSelf#pressWatch} (each window's step 5 over the fakes) on a serve bound
+     * to the VPN's TUN address with the ProtonVPN Fill rows saved - window 1 dials the bind's own endpoint and asks
+     * no probe, window 2 the probe's public exit; a wildcard bind's window 1 dials 127.0.0.1; a LONE watch window
+     * keeps the TUN hairpin. WHY: one window local, one through the VPN - a hairpin on both leaves the local path
+     * unwatched.
+     */
+    private static void joinWatchDial(String r, Path base) throws Exception {
+        Path install1 = stageInstall(base.resolve("game1"), true, true);
+        Path install2 = stageInstall(base.resolve("game2"), true, true);
+        Path flight = base.resolve("flight");
+        Map<String, String> tun = new HashMap<>(Map.of(
+                ServerOpsLaunch.LAUNCHER_ROW_ADVERTISE_FROM, "protonvpn",
+                ServerOpsLaunch.LAUNCHER_ROW_ADVERTISE_BIND, "10.2.0.9",
+                ServerOpsLaunch.LAUNCHER_ROW_ADVERTISE, "203.0.113.5:46337",
+                ServeLauncher.ROW_GAME_ROOT_SECOND, install2.toString()));
+        VpnLeaseProbe.Probe found = new VpnLeaseProbe.Probe("203.0.113.5", "10.2.0.9", 46337, null, 0.5);
+        String local = String.format(Locale.ROOT, OpsJoinSelf.NOTE_OPENED, "10.2.0.9", 46337);
+        String vpn = String.format(Locale.ROOT, OpsJoinSelf.NOTE_OPENED, "203.0.113.5", 46337);
+
+        FakeEffects fx = twoKits(install1, install2);
+        fx.probe = found;
+        Pressed two = pressWatch(inputs(base, install1, live("10.2.0.9", 46337), PW, tun), fx, flight);
+        check(r, two.result.outcome() == Outcome.OPENED && fx.spawns.size() == 2
+                        && (local + " " + OpsJoinSelf.SECOND_PREFIX + vpn).equals(two.result.text()),
+                "a two-window watch on the VPN address with the ProtonVPN rows saved: window 1 dials the bind"
+                        + " 10.2.0.9:46337, window 2 the public exit 203.0.113.5:46337 (flips if window 1 takes the TUN"
+                        + " hairpin - both windows ride the VPN - or window 2 loses its public dial): "
+                        + two.result.outcome() + " " + two.result.text());
+        check(r, fx.probeCalls == 1 && hasRow(two.stdout, "cc-ops join first_dial=local")
+                        && hasRow(two.stdout, "cc-ops join second_dial=vpn")
+                        && !two.stdout.contains("10.2.0.9") && !two.stdout.contains("203.0.113.5"),
+                "window 1 asks no probe and says first_dial=local, window 2 probes once and says second_dial=vpn, no"
+                        + " address on stdout (flips if window 1 probes - a silent gateway would refuse it R10 - or a"
+                        + " dial row is lost or carries the address): probeCalls=" + fx.probeCalls);
+
+        FakeEffects wildFx = twoKits(install1, install2);
+        wildFx.probe = found;
+        Pressed wild = pressWatch(inputs(base, install1, live("0.0.0.0", 46337), PW, tun), wildFx, flight);
+        String loop = String.format(Locale.ROOT, OpsJoinSelf.NOTE_OPENED, "127.0.0.1", 46337);
+        check(r, wild.result.outcome() == Outcome.OPENED
+                        && (loop + " " + OpsJoinSelf.SECOND_PREFIX + loop).equals(wild.result.text())
+                        && hasRow(wild.stdout, "cc-ops join first_dial=local")
+                        && hasRow(wild.stdout, "cc-ops join second_dial=local"),
+                "a wildcard bind's two windows both dial 127.0.0.1:46337 (flips if window 1's local dial passes"
+                        + " 0.0.0.0 to the window as a host, or window 2 dials the VPN exit off a serve not on the TUN"
+                        + " address): " + wild.result.text());
+
+        Map<String, String> lone = new HashMap<>(tun);
+        lone.put(ServeLauncher.ROW_GAME_ROOT_SECOND, "  ");
+        FakeEffects loneFx = FakeEffects.withKit(install1);
+        loneFx.probe = found;
+        Pressed one = pressWatch(inputs(base, install1, live("10.2.0.9", 46337), PW, lone), loneFx, flight);
+        check(r, one.result.outcome() == Outcome.OPENED && vpn.equals(one.result.text()) && loneFx.probeCalls == 1
+                        && !one.stdout.contains("first_dial="),
+                "a LONE watch window on the VPN address keeps the TUN hairpin through the probe's public exit and says"
+                        + " no first_dial row (flips if the local dial is set on a window with no second one): "
+                        + one.result.text() + " probeCalls=" + loneFx.probeCalls);
     }
 
     // ---- join-merge ----

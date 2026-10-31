@@ -882,23 +882,41 @@ final class OpsJoinSelf {
      * ({@link #tunMode}) = the hairpin through the public endpoint of the in-mode RE-PROBE -
      * never the saved {@code advertise} row alone, a rotated exit would dial a dead address - so a null probe =
      * R10; any other host = itself. Then N7: the host must match {@link #DIAL_HOST} and the port be 1..65535,
-     * else {@link #R5_SHAPE}. {@code live} non-null. Thread: any.
+     * else {@link #R5_SHAPE}. {@code live} non-null. Thread: any. Every branch but TUN mode is {@link #dialLocal}.
      */
     static String dial(OpsSnapshot live, Map<String, String> rows, VpnLeaseProbe.Probe probeOrNull) {
         String host = trimmed(live.host());
-        String endpoint;
-        if ("0.0.0.0".equals(host)) {
-            endpoint = "127.0.0.1:" + live.port();
-        } else if (host.indexOf(':') >= 0) {
-            throw new IllegalArgumentException(R5);
-        } else if (tunMode(rows, host)) {
-            if (probeOrNull == null) {
-                throw new IllegalArgumentException(R10);
-            }
-            endpoint = tunDial(probeOrNull, rows.get(ServerOpsLaunch.LAUNCHER_ROW_ADVERTISE), live);
-        } else {
-            endpoint = host + ":" + live.port();
+        if ("0.0.0.0".equals(host) || host.indexOf(':') >= 0 || !tunMode(rows, host)) {
+            return dialLocal(live);
         }
+        if (probeOrNull == null) {
+            throw new IllegalArgumentException(R10);
+        }
+        return shapeChecked(tunDial(probeOrNull, rows.get(ServerOpsLaunch.LAUNCHER_ROW_ADVERTISE), live));
+    }
+
+    /**
+     * The live serve's OWN endpoint, never the VPN hairpin, or THROWS {@link IllegalArgumentException} carrying the
+     * refusal sentence: wildcard {@code 0.0.0.0} = {@code 127.0.0.1}, an IPv6 host = {@link #R5}, any other host =
+     * itself (a serve bound to the VPN's TUN address dials that address straight, no probe), then N7 as
+     * {@link #dial}. WHY a second home: the debug watch's FIRST window of two dials it whatever the saved
+     * {@code advertise.from} says - one window local, one through the VPN; a hairpin on both would leave the local
+     * path unwatched. {@code live} non-null. Thread: any.
+     */
+    static String dialLocal(OpsSnapshot live) {
+        String host = trimmed(live.host());
+        if ("0.0.0.0".equals(host)) {
+            return shapeChecked("127.0.0.1:" + live.port());
+        }
+        if (host.indexOf(':') >= 0) {
+            throw new IllegalArgumentException(R5);
+        }
+        return shapeChecked(host + ":" + live.port());
+    }
+
+    /** N7 on a dialled endpoint: the host must match {@link #DIAL_HOST} and the port be 1..65535, else
+     *  {@link #R5_SHAPE}; returns {@code host:port} normalised. Shared by {@link #dial}, {@link #dialLocal} and {@link #dialPublic}. */
+    private static String shapeChecked(String endpoint) {
         int colon = endpoint.lastIndexOf(':');
         String dialHost = colon < 0 ? endpoint : endpoint.substring(0, colon);
         int port = colon < 0 ? -1 : portOrMinus1(endpoint.substring(colon + 1));
@@ -906,6 +924,29 @@ final class OpsJoinSelf {
             throw new IllegalArgumentException(String.format(Locale.ROOT, R5_SHAPE, shownHost(dialHost)));
         }
         return dialHost + ":" + port;
+    }
+
+    /**
+     * The debug WATCH's SECOND window's dial: one window local, one through the VPN - the dev arm's shape since
+     * 2026-07-06, now the package console's too. The hairpin through the VPN's public forwarded
+     * endpoint WHATEVER the saved {@code advertise.from} says - a folder whose rows read {@code typed} has
+     * {@link #tunMode} false, so the mode cannot be the gate. The gate is the live serve itself: a probe that
+     * answered AND whose TUN address equals the live bind host (the serve really sits on the VPN) =
+     * {@link #tunDial} over it (its dead-port check against the running serve included, that refusal propagates),
+     * then N7 as {@link #dial}. A null probe, or a serve bound elsewhere (LAN, loopback, wildcard) = null = the
+     * caller falls back to {@link #dial}: there is no VPN path to dial, and a refusal would block every LAN debug
+     * watch. Thread: any.
+     */
+    static String dialPublic(OpsSnapshot live, Map<String, String> rows, VpnLeaseProbe.Probe probeOrNull) {
+        if (probeOrNull == null || probeOrNull.tunIp() == null) {
+            return null;
+        }
+        String host = trimmed(live.host());
+        if (host.isEmpty() || !host.equals(probeOrNull.tunIp().trim())) {
+            return null;
+        }
+        String advertise = rows == null ? null : rows.get(ServerOpsLaunch.LAUNCHER_ROW_ADVERTISE);
+        return shapeChecked(tunDial(probeOrNull, advertise, live));
     }
 
     /** The TUN dial: the probe's port when found, else the saved advertise's; 1..65535 = the lease checked
@@ -1367,6 +1408,13 @@ final class OpsJoinSelf {
         /** The window this press opens goes into {@link Result#windows} (the debug watch's presses only: the console
          *  closes those when the watch's serve ends). */
         boolean recordWindow;
+        /** The debug watch's SECOND window: step (5) tries {@link #dialPublic} (the VPN's public endpoint) before
+         *  {@link #dial} - one window local, one through the VPN. */
+        boolean publicDial;
+        /** The debug watch's FIRST window when a second one follows: step (5) dials {@link #dialLocal} (the live
+         *  bind's own endpoint), never the VPN hairpin and never the probe. A lone window keeps {@link #dial}.
+         * */
+        boolean localDial;
 
         Press(Inputs in, Effects fx) {
             this.in = in;
@@ -1443,6 +1491,13 @@ final class OpsJoinSelf {
      * {@link #watchClientLogMaxMib} refuses = {@link #R18} ({@code client_log_row}), nothing read, written, appended
      * or started; else each window's sidelog carries that cap ({@value #WATCH_SIDELOG_MAX_MIB_KEY}).
      *
+     *
+     * <p>Window 2's dial = {@link #dialPublic} first - one window local, one through the VPN:
+     * the VPN's public forwarded endpoint when the live serve sits on the probe's TUN address, else {@link #dial};
+     * ONE stdout row {@code cc-ops join second_dial=<vpn|local>} (no address). Window 1 of two dials
+     * {@link #dialLocal} - the live bind's own endpoint, never the hairpin a ProtonVPN-saved folder would take,
+     * no probe - and says ONE stdout row {@code cc-ops join first_dial=local} (no address). A single window keeps
+     * {@link #dial}.
      */
     static Result pressWatch(Inputs in, Effects fx, Path flightOrNull) {
         Map<String, String> rows = in.launcherRows();
@@ -1474,6 +1529,7 @@ final class OpsJoinSelf {
             return refusedSecond;
         }
         first.cidWanted = true;
+        first.localDial = true;
         Result r1 = pressOne(first);
         if (r1.outcome() != Outcome.OPENED) {
             System.out.println("cc-ops join second=none");
@@ -1484,6 +1540,7 @@ final class OpsJoinSelf {
         second.sidelogOrNull = sidelogOrNull(diag2);
         second.sidelogMaxMib = capMib;
         second.recordWindow = true;
+        second.publicDial = true;
         String cid2 = mintCid();
         while (cid2.equals(first.cid)) {
             cid2 = mintCid();
@@ -1971,12 +2028,17 @@ final class OpsJoinSelf {
     }
 
     /** (5) The dial; TUN mode asks the probe first (a failed probe = null = R10). A refusal carries its
-     *  sentence: token {@code r10} for R10, else {@code dial}. */
+     *  sentence: token {@code r10} for R10, else {@code dial}. A {@link Press#publicDial} press (the debug watch's
+     *  second window) always probes and tries {@link #dialPublic} first, {@link #dial} when that is null; its one
+     *  stdout row {@code cc-ops join second_dial=<vpn|local>} says which path it took. A
+     *  {@link Press#localDial} press (the debug watch's first window of two) asks no probe and dials
+     *  {@link #dialLocal} whatever the saved rows say, then one stdout row {@code cc-ops join first_dial=local}.
+     * */
     private static Result step5Dial(Press p) {
         OpsSnapshot live = p.in.liveOrNull();
         Map<String, String> rows = p.in.launcherRows();
         VpnLeaseProbe.Probe probe = null;
-        if (tunMode(rows, live.host())) {
+        if (!p.localDial && (p.publicDial || tunMode(rows, live.host()))) {
             try {
                 probe = p.fx.probe();
             } catch (IOException | RuntimeException silent) {
@@ -1984,12 +2046,27 @@ final class OpsJoinSelf {
                 probe = null;
             }
         }
-        String endpoint;
+        String endpoint = null;
+        boolean viaVpn = false;
         try {
-            endpoint = dial(live, rows, probe);
+            if (p.localDial) {
+                endpoint = dialLocal(live);
+            } else if (p.publicDial) {
+                endpoint = dialPublic(live, rows, probe);
+                viaVpn = endpoint != null;
+            }
+            if (endpoint == null) {
+                endpoint = dial(live, rows, probe);
+            }
         } catch (IllegalArgumentException refusal) {
             String text = refusal.getMessage();
             return refused(R10.equals(text) ? "r10" : "dial", text);
+        }
+        if (p.localDial) {
+            System.out.println("cc-ops join first_dial=local");
+        }
+        if (p.publicDial) {
+            System.out.println("cc-ops join second_dial=" + (viaVpn ? "vpn" : "local"));
         }
         int colon = endpoint.lastIndexOf(':');
         p.dialHost = endpoint.substring(0, colon);

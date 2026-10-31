@@ -6,8 +6,11 @@ package cc.starsector.server.ops;
  *
  * <p>WHY this layout: the Swing V3 geometry on a
  * full-viewport grid - the status strip pinned on top, {@code main} the one scroller between, the dock
- * (load above the 2x3 verb bar) pinned at the bottom; the seat table is the one grower and keeps its
- * header row in view. The dock comes before the nav in DOM order (Tab reaches the verbs early), so
+ * (load above the 2x3 verb bar) pinned at the bottom; the seat table sizes to its rows up to 40vh and then
+ * scrolls inside, keeping its header row in view, while the players section grows with it and {@code main}
+ * scrolls. A three-seat match had shown two rows plus a scrollbar: the table was the section's only shrinkable
+ * child, so the bans / kept / shipped lists squeezed it to a 5em floor. The dock
+ * comes before the nav in DOM order (Tab reaches the verbs early), so
  * the grid areas, not the DOM, place it last, and {@code column-reverse} puts the load above the bar.
  * The bar's {@code details.more} groups are see-through at this width (summary hidden, content shown
  * via {@code ::details-content}); a browser without that pseudo-element shows the summaries as
@@ -193,9 +196,9 @@ main {
   display: flex; flex-direction: column;
 }
 main > section { flex: 1 0 auto; }
-#sec-players { display: flex; flex-direction: column; gap: 6px; flex: 1 1 0; min-height: 16em; }
+#sec-players { display: flex; flex-direction: column; gap: 6px; flex: 1 0 auto; min-height: 16em; }
 .table-wrap { overflow: auto; border: 1px solid var(--line); }
-#sec-players .table-wrap { flex: 1 1 0; min-height: 5em; }
+#sec-players .table-wrap { flex: 0 0 auto; max-height: 40vh; }
 table { border-collapse: collapse; }
 #seats { width: 100%; font-variant-numeric: tabular-nums; }
 #seats th, #seats td {

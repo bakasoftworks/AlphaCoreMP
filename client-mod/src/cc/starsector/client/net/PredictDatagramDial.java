@@ -211,11 +211,16 @@ public final class PredictDatagramDial {
      * null = an IAE; blank = an IAE for a PILOT only — an OBSERVER may dial blank (the kit's reel
      * door is observer-only and OPEN; a real door answers a blank observer
      * with a terminal credential refusal, {@code match_password_required} /
-     * {@code observer_password_mode_only}). */
+     * {@code observer_password_mode_only}).
+     *
+     * <p>{@code keymap} = the pilot's 16-byte control keymap the caller read on the GAME thread (null = 16 zeros = the
+     * serve's own bindings answer): sealed into this dial's HELLO and KEPT on the session, so every re-HELLO (which
+     * mints a NEW serve session) re-seals the same map instead of silently reverting the seat to the serve's bindings.
+     * */
     static PredictReconcileDatagramSession connect(String host, int port, long shipId,
             int selectedWeaponGroup, String clientId, String seatToken, Handshake13Flight.Lane lane,
             int handshakeVersion, String fingerprint, String variantId, int readDeadlineMillis,
-            boolean observer, int helloTimeoutMillis) throws IOException {
+            boolean observer, int helloTimeoutMillis, byte[] keymap) throws IOException {
         final int helloHorizon = helloTimeoutMillis > 0 ? helloTimeoutMillis : CONNECT_TIMEOUT_MILLIS;
         if (host == null) {
             throw new IllegalArgumentException("host must not be null");
@@ -275,7 +280,7 @@ public final class PredictDatagramDial {
                     (observer ? Handshake13.FLAG_OBSERVER : 0)
                             | cc.starsector.client.magic.MagicCapabilities.helloFlagBits(),
                     helloFingerprint, helloClientId,
-                    shipId, variant, team, Handshake13PairBudget.process().host(budgetHostKey(server)), rng);
+                    shipId, variant, team, keymap, Handshake13PairBudget.process().host(budgetHostKey(server)), rng);
             byte[] hello = flight.start(nowMillis()); // null = send nothing (b2 contract)
             int cookieChallenges = 0;
             long deadline = nowMillis() + helloHorizon;
@@ -380,7 +385,7 @@ public final class PredictDatagramDial {
                 return admit(event.admitted().welcome(), shipId, selectedWeaponGroup, socket,
                         server, clientId, seatToken, lane, handshakeVersion, rng, fingerprint,
                         variant, readDeadlineMillis, observer, helloRetransmits, preAdmitDrops,
-                        cookieChallenges, held, flight, event.admitted());
+                        cookieChallenges, held, flight, event.admitted(), keymap);
             }
             throw new IOException("predict datagram HELLO timed out after " + helloHorizon
                     + " ms (" + helloRetransmits + " retransmits, no nonce-matching WELCOME)");
@@ -403,7 +408,8 @@ public final class PredictDatagramDial {
      * ({@code heldCookie}) is deleted with its arm.
      * Moved out of {@link #connect} — body edits = the ctor's three new
      * arguments, the {@code dialFlight} seed and the auth seed; the dialing thread (the auth seed
-     * takes the not-yet-shared session's lock).
+     * takes the not-yet-shared session's lock). {@code keymap} = the dial's sealed control keymap (null = none), kept
+     * on the session for its re-HELLOs.
      *
      *
      */
@@ -412,7 +418,7 @@ public final class PredictDatagramDial {
             String clientId, String seatToken, Handshake13Flight.Lane lane, int handshakeVersion,
             SecureRandom rng, String fingerprint, String variant, int readDeadlineMillis,
             boolean observer, int helloRetransmits, int preAdmitDrops, int cookieChallenges, int held,
-            Handshake13Flight flight, Handshake13.Admitted13 admitted13)
+            Handshake13Flight flight, Handshake13.Admitted13 admitted13, byte[] keymap)
             throws IOException {
         if (welcome.sessionId() == 0L) {
             throw new IOException("predict datagram WELCOME admitted with session id 0"
@@ -496,7 +502,7 @@ public final class PredictDatagramDial {
         PredictReconcileDatagramSession session = new PredictReconcileDatagramSession(
                 resolvedShipId, selectedWeaponGroup, socket, server, welcome.sessionId(),
                 welcome.startingRoundId(), clientId, seatToken, lane, handshakeVersion, rng,
-                fingerprint, variant, readDeadlineMillis, observer);
+                fingerprint, variant, readDeadlineMillis, observer, keymap);
         session.serverBoundShipId = welcome.boundShipId();
         session.serveSchemaMax = welcome.serveSchemaMax();
         session.serverLife = welcome.serverLife();

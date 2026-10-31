@@ -176,6 +176,8 @@ public final class Handshake13Flight {
     private final String variantId;
     /** The sealed team byte, 0..{@code Handshake13.TEAM_MAX} (0 = none). */
     private final int team;
+    /** The sealed 16-byte pilot keymap, a private copy; all zeros = no map (the serve's own table answers). */
+    private final byte[] keymap;
     private final Handshake13PairBudget.Host budget;
     private final SecureRandom rng;
 
@@ -234,6 +236,19 @@ public final class Handshake13Flight {
      */
     public Handshake13Flight(Lane lane, byte[] secret, int flags, String print, String cid, long desiredShipId,
             String variantId, int team, Handshake13PairBudget.Host budget, SecureRandom rng) {
+        this(lane, secret, flags, print, cid, desiredShipId, variantId, team, null, budget, rng);
+    }
+
+    /**
+     * The flight with the pilot's 16-byte control keymap sealed after the team byte into every F2 it sends:
+     * {@code keymapOrNull} = one byte per {@code PilotIntentFrame.CONTROL_KEY_NAMES} entry (0 unmapped, 1..0xDF the
+     * LWJGL key code the pilot's binding resolves to, 0xF0..0xF7 a mouse button), copied; null = 16 zeros (no map: the
+     * serve's own table answers, the fail-safe for a kit that resolved nothing); {@code IllegalArgumentException}
+     * "keymap" on a non-null array that is not 16 lawful bytes, after the team check. The ten-argument constructor
+     * above is this one at no keymap. Every other parameter as there. Main-written
+     */
+    public Handshake13Flight(Lane lane, byte[] secret, int flags, String print, String cid, long desiredShipId,
+            String variantId, int team, byte[] keymapOrNull, Handshake13PairBudget.Host budget, SecureRandom rng) {
         if (lane == null) {
             throw new IllegalArgumentException("lane");
         }
@@ -252,6 +267,9 @@ public final class Handshake13Flight {
         if (team < 0 || team > Handshake13.TEAM_MAX) {
             throw new IllegalArgumentException("team");
         }
+        if (keymapOrNull != null && !Handshake13.keymapLawful(keymapOrNull)) {
+            throw new IllegalArgumentException("keymap");
+        }
         if (budget == null) {
             throw new IllegalArgumentException("budget");
         }
@@ -269,6 +287,7 @@ public final class Handshake13Flight {
         this.desiredShipId = desiredShipId;
         this.variantId = variantId;
         this.team = team;
+        this.keymap = keymapOrNull == null ? Handshake13.keymapNone() : keymapOrNull.clone();
         this.budget = budget;
         this.rng = rng;
     }
@@ -610,7 +629,7 @@ public final class Handshake13Flight {
         }
         long nonce = rng.nextLong();
         Handshake13.ClientSeal seal = Handshake13.sealHelloOnGeneratorOrNull(nonce, flags, unit, print, cid, desiredShipId,
-                variantId, team, generator, prs.length == 0, mix, rng);
+                variantId, team, keymap, generator, prs.length == 0, mix, rng);
         if (seal == null) {
             shareRefused++;
             return Event.IGNORED;

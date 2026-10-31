@@ -96,6 +96,13 @@ final class Hs13ReHelloFlights {
     private final String cid;
     private final long shipId;
     private final String variantId;
+    /** The pilot's 16-byte control keymap (a private copy; null = none = the serve's own bindings), re-sealed by EVERY
+     *  re-HELLO: a re-HELLO mints a NEW serve session, so zeros here would silently revert the seat to the serve's
+     *  bindings. Seeded with the dial's game-thread read, REPLACED by {@link #setKeymap} at every combat init (the
+     *  same resolution the sampler's control bits poll), never re-resolved here (the timer thread never reads the
+     *  engine). Volatile: written on the game thread, read by the timer's {@link #build}.
+     *  main-written */
+    private volatile byte[] keymap;
     private final InetSocketAddress server;
     private final SecureRandom rng;
 
@@ -173,8 +180,8 @@ final class Hs13ReHelloFlights {
      * start). {@code print} / {@code cid} = "" when the session holds none (the version-12 encode's own substitution).
      */
     Hs13ReHelloFlights(PredictReconcileDatagramSession session, Handshake13Flight.Lane lane, String seatToken,
-            boolean observer, String print, String cid, long shipId, String variantId, InetSocketAddress server,
-            SecureRandom rng) {
+            boolean observer, String print, String cid, long shipId, String variantId, byte[] keymapOrNull,
+            InetSocketAddress server, SecureRandom rng) {
         this.s = session;
         this.lane = lane;
         this.seatToken = seatToken;
@@ -183,8 +190,26 @@ final class Hs13ReHelloFlights {
         this.cid = cid == null ? "" : cid;
         this.shipId = shipId;
         this.variantId = variantId;
+        this.keymap = keymapOrNull == null ? null : keymapOrNull.clone();
         this.server = server;
         this.rng = rng;
+    }
+
+    /**
+     * The GAME thread, at combat init, BEFORE the kept-open takeover re-HELLO is armed ({@code armReAdmission}): the
+     * map that init resolved — the SAME array the sampler's control bits are polled from — becomes the map every
+     * later re-HELLO seals. WHY: an app-scoped session stays open across ESC, a rebind at Settings and a re-pick; its
+     * takeover re-HELLO used to re-seal the DIAL-time map while the sampler polled the new bindings, so a hull
+     * script's literal key read answered HELD on the serve for a key the pilot no longer holds.
+     * {@code null} = none (the serve's own bindings); a non-null map must be 16 lawful bytes (the flight's own law,
+     * checked HERE on the game thread so the timer never dies of it). A private copy is kept.
+     * Main-written
+     */
+    void setKeymap(byte[] keymapOrNull) {
+        if (keymapOrNull != null && !Handshake13.keymapLawful(keymapOrNull)) {
+            throw new IllegalArgumentException("keymap");
+        }
+        keymap = keymapOrNull == null ? null : keymapOrNull.clone();
     }
 
     /**
@@ -361,6 +386,11 @@ final class Hs13ReHelloFlights {
      * seals team 0 = "the server's memory" (the door keeps each cid's team), so a nonzero byte at the door is always
      * an explicit pick from the join window and a re-dial can never revert a team switch made in game.
      *
+     *
+     * <p>THE KEYMAP IS NOT ONE-SHOT: unlike the team, the door keeps no per-cid memory of it (the map an admit takes is
+     * its own F2's), so every re-HELLO re-seals the session's {@link #keymap} — the dial's read until the first combat
+     * init, then that init's ({@link #setKeymap}).
+     *
      */
     Handshake13Flight build(Step step) {
         byte[] secret = Handshake13.secretBytes(seatToken);
@@ -369,7 +399,7 @@ final class Hs13ReHelloFlights {
             // construction, so a re-HELLO reports what the memo says now.
             int helloFlags = flags | cc.starsector.client.magic.MagicCapabilities.helloFlagBits();
             Handshake13Flight flight = new Handshake13Flight(lane, secret, helloFlags, print, cid, shipId, variantId, 0,
-                    Handshake13PairBudget.process().host(PredictDatagramDial.budgetHostKey(server)), rng);
+                    keymap, Handshake13PairBudget.process().host(PredictDatagramDial.budgetHostKey(server)), rng);
             if (step.unit != null) {
                 try {
                     flight.adoptCookie(step.unit);

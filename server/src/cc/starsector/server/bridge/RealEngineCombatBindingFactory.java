@@ -7,7 +7,9 @@ import cc.starsector.server.platform.RealEngineContentInit;
 import cc.starsector.server.platform.RealEngineGlSubstrate;
 import cc.starsector.server.platform.RealEngineRoundHeapDrain;
 import cc.starsector.server.runtime.OnFireAttachSweep;
+import cc.starsector.server.runtime.PilotControlNames;
 import cc.starsector.server.runtime.ServerConfig;
+import cc.starsector.server.transform.PilotShipWindow;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -1240,6 +1242,143 @@ public final class RealEngineCombatBindingFactory {
                 .install();
         System.out.println("real-engine-binding-factory keyboard_seed installed=true created="
                 + keyboardCreatedField.get(null) + " (Keyboard.isKeyDown reads false headless, never throws)");
+        installPilotControlMap(loader, keyboardClass);
+        installPilotControlNames(keyboardClass); // independent of the settings lookup: installs when the map cannot
+    }
+
+    /**
+     * The serve's OWN key for each vanilla ship control a pilot frame carries a
+     * bit for (the frame's control-name list, index = bit), installed once into the player-ship holder, so a
+     * redirected key poll asking for the serve's key of a control hears the pilot's own key for that control held,
+     * whatever either side bound it to. Here, beside the keyboard seed: at serve boot, after content init (the
+     * settings' control bindings are loaded), off-frame — never in the premain, never lazily on a frame. The settings
+     * method is taken off the public settings interface (the getter hands back a non-public class whose own method
+     * object refuses the call). Fail-open: a name this build lacks or a control bound to the mouse leaves its bit
+     * unmapped (the pilot's held key codes still answer); one row, enum names only.
+     */
+    private static void installPilotControlMap(ClassLoader loader, Class<?> keyboardClass) {
+        String[] names = cc.starsector.server.runtime.PilotIntentFrame.CONTROL_KEY_NAMES;
+        List<String> unmapped = new ArrayList<>();
+        int[] keys;
+        try {
+            Object settings = Class.forName(GLOBAL_CLASS, true, loader).getMethod("getSettings").invoke(null);
+            if (settings == null) {
+                throw new IllegalStateException("Global.getSettings() is null");
+            }
+            Method controlString = RealEngineVariantFacts.method(settings, "getControlStringForEnumName", String.class);
+            Method keyIndex = keyboardClass.getMethod("getKeyIndex", String.class);
+            keys = buildControlMap(names, name -> controlString.invoke(settings, name),
+                    binding -> keyIndex.invoke(null, binding), unmapped);
+        } catch (ReflectiveOperationException | RuntimeException setupFault) {
+            PilotShipWindow.installControlMap(null);
+            System.out.println("real-engine-binding-factory control_map installed=0/" + names.length
+                    + " unmapped=all error=" + setupFault.getClass().getSimpleName()
+                    + " (control keys answer nothing; held key codes still answer)");
+            return;
+        }
+        PilotShipWindow.installControlMap(keys);
+        System.out.println("real-engine-binding-factory control_map installed=" + (names.length - unmapped.size()) + "/"
+                + names.length + " unmapped=" + (unmapped.isEmpty() ? "none" : String.join(",", unmapped)));
+    }
+
+    /**
+     * The engine-format name of every key code and mouse button, installed once
+     * into the player-ship holder beside the control map: a mod's by-name control read inside a pilot's hull then
+     * answers the PILOT's binding as the pilot's own game names it. Each name = the shared table's override (the
+     * engine's own spellings: "Shift", "Space", "Tab", ...) over the input library's own key name, read from the same
+     * keyboard class the control map's key index comes from; mouse buttons are the shared table's names. Fail-open: a
+     * key-name lookup that cannot be bound leaves the override names only (a pilot bound to a plain letter is answered
+     * null = unbound, never the host's key); one row, counts only.
+     */
+    private static void installPilotControlNames(Class<?> keyboardClass) {
+        String[] keyNames = new String[256];
+        String[] mouseNames = new String[PilotControlNames.MOUSE_BUTTONS];
+        for (int b = 0; b < mouseNames.length; b++) {
+            mouseNames[b] = PilotControlNames.nameOrNull(PilotControlNames.MOUSE_BASE + b, null);
+        }
+        Method keyName = null;
+        String error = null;
+        try {
+            keyName = keyboardClass.getMethod("getKeyName", int.class);
+        } catch (ReflectiveOperationException | RuntimeException bindFault) {
+            error = bindFault.getClass().getSimpleName();
+        }
+        int named = 0;
+        int lookupFaults = 0;
+        for (int code = 1; code <= PilotControlNames.KEY_MAX; code++) {
+            String lwjgl = null;
+            if (keyName != null) {
+                try {
+                    Object n = keyName.invoke(null, code);
+                    lwjgl = n instanceof String s && !s.isEmpty() ? s : null;
+                } catch (ReflectiveOperationException | RuntimeException lookupFault) {
+                    lookupFaults++; // counted on the boot row; the code keeps its override name, if any
+                }
+            }
+            keyNames[code] = PilotControlNames.nameOrNull(code, lwjgl);
+            if (keyNames[code] != null) {
+                named++;
+            }
+        }
+        PilotShipWindow.installControlNames(keyNames, mouseNames);
+        System.out.println("real-engine-binding-factory control_names keys=" + named + "/" + PilotControlNames.KEY_MAX
+                + " mouse=" + mouseNames.length + " lookup_faults=" + lookupFaults
+                + (error == null ? "" : " error=" + error + " (override names only)"));
+    }
+
+    /** One per-name lookup of {@link #buildControlMap}; may throw (a reflective call into the engine). */
+    @FunctionalInterface
+    public interface ControlNameLookup {
+        Object lookup(String name) throws Exception;
+    }
+
+    /**
+     * For each control name: its binding string ({@code controlString}), then
+     * that string's keymap byte through the shared table the pilot's kit resolves with
+     * ({@link PilotControlNames#keymapByteOf}: the engine's own spellings "Shift", "Space", "Tab", "Esc", "Enter", ...
+     * name their key codes directly, any other string goes to {@code keyIndex}, the LWJGL key index), so the serve's
+     * own key for a control is found exactly as a pilot's is. The result {@code [bit]} = a key
+     * code 1..0xDF, or 0 when the name is unmapped on this side — the lookup threw (a name the engine's enum lacks
+     * throws from its {@code valueOf}), the binding is not a non-empty string, it is mouse-bound or modifier-prefixed,
+     * or its index is not 1..0xDF (0 = an unknown string). Each miss is caught per name and appended once to
+     * {@code unmappedOut}; never a throw.
+     */
+    public static int[] buildControlMap(String[] names, ControlNameLookup controlString, ControlNameLookup keyIndex,
+            List<String> unmappedOut) {
+        int[] keys = new int[names.length];
+        for (int i = 0; i < names.length; i++) {
+            int key = 0;
+            try {
+                Object binding = controlString.lookup(names[i]);
+                if (binding instanceof String s && !s.isEmpty()) {
+                    key = PilotControlNames.keymapByteOf(s, str -> keyIndexOrThrow(keyIndex, str));
+                }
+            } catch (Exception missFault) {
+                key = 0; // counted below: the name joins the unmapped list the boot row prints
+            }
+            if (key < 1 || key > PilotControlNames.KEY_MAX) {
+                key = 0; // a mouse byte (0xF0..) is no key code: the serve's key map holds keys only
+                unmappedOut.add(names[i]);
+            }
+            keys[i] = key;
+        }
+        return keys;
+    }
+
+    /**
+     * One {@code keyIndex} lookup as an int (a non-number = 0); a checked fault leaves unchecked, to the caller's
+     * per-name catch.
+     */
+    private static int keyIndexOrThrow(ControlNameLookup keyIndex, String binding) {
+        Object index;
+        try {
+            index = keyIndex.lookup(binding);
+        } catch (RuntimeException unchecked) {
+            throw unchecked;
+        } catch (Exception checked) {
+            throw new IllegalStateException(checked.getClass().getSimpleName(), checked);
+        }
+        return index instanceof Number n ? n.intValue() : 0;
     }
 
     /** An LWJGL {@code Keyboard.KEY_*} code read from the class itself — never a hard-coded scan code. */

@@ -792,7 +792,8 @@ public final class WireRecordSink implements AutoCloseable {
                 v.pdclFrames++;
                 return true;
             }
-            PilotIntentFrame frame = PilotIntentWireCodec.readFrame(in);
+            // the recorded read: a reel cut by an older build holds older-schema (narrower) PINT frames
+            PilotIntentFrame frame = PilotIntentWireCodec.readFrameRecorded(in);
             if (frame == null || in.available() != 0) {
                 v.error = "UP record " + v.records + ": not exactly one PINT frame";
                 return false;

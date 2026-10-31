@@ -5,6 +5,9 @@ import cc.starsector.client.net.PredictReconcileClientSession;
 import cc.starsector.client.net.PredictReconcileDatagramSession;
 import cc.starsector.client.net.PredictSession;
 import cc.starsector.server.match.MatchDescriptor;
+import cc.starsector.server.runtime.PilotControlNames;
+import com.fs.starfarer.api.Global;
+import org.lwjgl.input.Keyboard;
 
 import java.io.IOException;
 
@@ -453,6 +456,27 @@ final class PredictDialLane {
         }
     }
 
+    /** The keymap as 32 lower-case hex digits, byte 0 first (key codes and mouse slots only: never text).
+     * */
+    static String keymapHex(byte[] keymap) {
+        StringBuilder hex = new StringBuilder(keymap.length * 2);
+        for (byte b : keymap) {
+            hex.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+        }
+        return hex.toString();
+    }
+
+    /** How many of the keymap's entries carry a binding (non-zero). */
+    static int keymapMapped(byte[] keymap) {
+        int mapped = 0;
+        for (byte b : keymap) {
+            if (b != 0) {
+                mapped++;
+            }
+        }
+        return mapped;
+    }
+
     /**
      * The fresh-dial body shared by the click dial ({@link #dialPredictAtJoin}, legacy lanes) and
      * the Play dial ({@link #dialPredictAtPlay}, W13 leg 2c) — caller holds {@link #DIAL_LOCK} and
@@ -514,12 +538,21 @@ final class PredictDialLane {
         // only when it differs from the window pick: a saved-then-deleted stem would otherwise stay the
         // t=0 hull (its VDEF fold outlives the file) while the HELLO carries the window pick
         JoinVariantPick.set(variantPick);
+        // The pilot's own control keymap, snapshotted HERE on the game thread
+        // (the engine settings and the key-name table are game-thread reads) and handed to the connect thread, which
+        // seals it into the HELLO so the serve answers this seat's by-name control reads with this pilot's own
+        // bindings. The session keeps this copy for every re-HELLO (a timer thread that must never read the engine);
+        // a lookup that fails leaves its entry 0, and an all-zero map means "the serve's own bindings answer".
+        final byte[] keymap = PilotControlNames.resolveKeymap(
+                n -> Global.getSettings().getControlStringForEnumName(n), Keyboard::getKeyIndex);
+        PilotWatchLog.info(trigger + ": HELLO keymap " + keymapHex(keymap) + " (" + keymapMapped(keymap) + "/"
+                + keymap.length + " controls bound; 00 = unbound or unexpressible, f0+ = a mouse button)");
         Thread connectThread = new Thread(() -> {
             try {
                 connectPredictSession(dialNo, host, port, plan.shipId, plan.group, plan.attempts,
                         plan.transport, plan.clientId, plan.seatToken, plan.lane,
                         plan.handshakeVersion, plan.fingerprint, variantPick, plan.probePassword,
-                        plan.observer, plan.reelDoor);
+                        plan.observer, plan.reelDoor, keymap);
             } catch (Throwable t) {
                 PilotWatchLog.error("predict session connect thread died (dial #" + dialNo
                         + ") -> gave up: a held round stays parked, any other window stays LOCAL VANILLA (the"
@@ -1241,11 +1274,15 @@ final class PredictDialLane {
      * <p>{@code reelDoor} = the plan's {@code PredictDialPlan.reelDoor} (the dial's door kind — a re-resolve of the
      * other kind never dials, {@link #resolveDialEndpoint}): the ONLY source of the terminal check's door fact, so the
      * kit-only refusal token stops the loop only from the kit's own reel door.
+     *
+     * <p>{@code keymap} = the 16-byte control keymap {@link #startFreshDial} read on the game thread; every attempt's
+     * HELLO seals the same array, this thread never reads the engine settings.
      */
     private static void connectPredictSession(int dialNo, String host, int port, long shipId,
             int group, int attempts, String transport, String clientId, String seatToken,
             cc.starsector.server.runtime.Handshake13Flight.Lane lane, int handshakeVersion,
-            String fingerprint, String variantId, String probePassword, boolean observer, boolean reelDoor) {
+            String fingerprint, String variantId, String probePassword, boolean observer, boolean reelDoor,
+            byte[] keymap) {
         // An EMPTY pick on the password lane adopts the door's published
         // default BEFORE the HELLO (pick = HELLO variantId AND the mission's t=0 hull). The probe
         // re-runs ahead of each attempt until the door answers decisively (a listing, with or
@@ -1281,7 +1318,8 @@ final class PredictDialLane {
                                 host, port, shipId, group, clientId, seatToken, lane,
                                 handshakeVersion, fingerprint,
                                 pick, observer, // The observer posture
-                                PREDICT_CLICK_HELLO_TIMEOUT_MILLIS) // leg 1b: the click horizon
+                                PREDICT_CLICK_HELLO_TIMEOUT_MILLIS, // leg 1b: the click horizon
+                                keymap)
                         : PredictReconcileClientSession.connect(host, port, shipId, group);
                 if (dialCancelled(dialNo, attempt)) {
                     // Leg 1b: cancelled between the WELCOME and here — never publish over the

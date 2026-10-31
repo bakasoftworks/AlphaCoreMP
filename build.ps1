@@ -329,6 +329,7 @@ Write-Host 'client: SoundProbe -> client-mod/mod/SoundProbe.class'
 $fold = @(
     'cc\starsector\server\client\PilotIntentClientSession.class',
     'cc\starsector\server\runtime\PilotIntentFrame.class',
+    'cc\starsector\server\runtime\PilotControlNames.class',
     'cc\starsector\server\runtime\PilotIntentWireCodec.class',
     'cc\starsector\server\runtime\PilotWorldViewFrame.class',
     'cc\starsector\server\runtime\PilotWorldViewWireCodec.class',

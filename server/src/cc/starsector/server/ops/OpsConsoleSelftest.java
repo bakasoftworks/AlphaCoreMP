@@ -520,7 +520,7 @@ final class OpsConsoleSelftest {
     }
 
     /** {@code page-pilotship} - over the SERVED html + js: the player-ship select
-     * ({@code setup.mods.pilotShip}, on / off with OFF selected = the shipped default, labelled
+     * ({@code setup.mods.pilotShip}, on / off with ON selected = the shipped default, labelled
      * {@link OpsMatchRows#PILOT_SHIP_LABEL}) sits inside {@code #pre-start} right after the MagicLib select (locked while
      * a server runs: the serve reads the row only while it loads), its hint names the props row and has its help row, and
      * it rides the config prefill list and the Start payload under its own key (a payload sending the word as
@@ -533,7 +533,7 @@ final class OpsConsoleSelftest {
         int sel = html.indexOf("<select id=\"f-pilot-ship\" data-cc=\"setup.mods.pilotShip\"");
         if (sel < 0 || pre < 0 || sel < pre || sel > preEnd || magic < 0 || sel < magic
                 || html.indexOf("<select", magic + 1) != sel
-                || !html.startsWith("<option>on</option><option selected>off</option></select>",
+                || !html.startsWith("<option selected>on</option><option>off</option></select>",
                         html.indexOf('>', sel) + 1)) {
             bad.add("no player-ship select (on, off selected) with its twin id right after the MagicLib select inside"
                     + " #pre-start (flips if it moves out of the boot-time lock group, or stops opening at off)");
@@ -5723,8 +5723,9 @@ final class OpsConsoleSelftest {
      * {@code pilotShip=on} sent beside {@code magicSeam=off} reaches the spawn and writes {@code pilotship.enabled=true}
      * exactly once and {@code magicseam.enabled=false} exactly once (no launch argument: the serve's own startup reads
      * the file) - crossed StartFields slots, or one word written through both keys, flip one of the two values - and
-     * {@code /api/config} then serves {@code "pilotShip":"on"} (an absent row serves off, so a row that was never written
-     * reads off). The props bytes are restored in {@code finally}.
+     * {@code /api/config} then serves {@code "pilotShip":"on"} (the written {@code =true} row is counted directly; an
+     * absent row serves on too, the shipped default). The props bytes are restored in
+     * {@code finally}.
      */
     private static String startPilotShipRow(Rig rig) throws Exception {
         String r = "web-start-pilotship";

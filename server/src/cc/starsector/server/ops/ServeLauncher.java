@@ -696,14 +696,14 @@ public final class ServeLauncher {
     }
 
     /**
-     * The player-ship receipt word for {@code launch.txt}: {@code on} for a {@code true} row, else {@code off} (absent
-     * or blank = the default, off — the OPPOSITE default of the MagicLib row's, so the two stamps never share a
-     * helper). The row as the serve's premain will read it, never the premain's own verdict ({@code cc.pilot.ship}).
-     * Called only after {@link #checkRows} passed, so the row is blank, {@code true} or {@code false}.
-     *
+     * The player-ship receipt word for {@code launch.txt}: {@code off} for a {@code false} row, else {@code on} (absent
+     * or blank = the default, on; off while new). Its own helper
+     * because it names its own row. The row as the serve's premain will read it, never the premain's own verdict
+     * ({@code cc.pilot.ship}). Called only after {@link #checkRows} passed, so the row is blank, {@code true} or
+     * {@code false}.
      */
     static String pilotShipStamp(Properties props) {
-        return "true".equals(row(props, TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY)) ? "on" : "off";
+        return "false".equals(row(props, TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY)) ? "off" : "on";
     }
 
     /** The pre-checks in the vocabulary's order; the FIRST failure is returned, null = all pass. */

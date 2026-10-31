@@ -57,19 +57,29 @@ public final class PilotIntentWireCodec {
      * Schema v6 (the tube mirror) appends {@code activeTubeOrdinal} (1 B signed — the
      * selected ALTERNATING group's active-tube pointer, {@code -1} = absent), so the server can
      * conform its hull's tube pointer at fire-quiescent ticks (re-selects are wire-invisible
-     * edges; the pointer must ride as STATE). Versions are different widths, so the
+     * edges; the pointer must ride as STATE). Schema v7 (the raw input levels)
+     * appends the pilot's held keys and mouse buttons as LEVELS: {@code key[8]} (u8 each —
+     * the held LWJGL key codes strictly ascending, then zero pad: {@link PilotIntentFrame#keyCodes}),
+     * {@code mouseButtons} (u8, bit b = button b held) and {@code controlKeys} (u16 — bit i = the pilot's own
+     * key for {@link PilotIntentFrame#CONTROL_KEY_NAMES}{@code [i]} held), so the server can answer a ship-scoped
+     * script's key poll with that seat's own keys (+11 B). Versions are different widths, so the
      * version check fail-closes an old peer against a new server (and vice versa) — as with v1→v2,
-     * both halves ship in lockstep (one shared codec class folded into the client jar).
+     * both halves ship in lockstep (one shared codec class folded into the client jar); RECORDED frames
+     * of v5 / v6 / v7 still decode through {@link #decodeRecorded} / {@link #readFrameRecorded}.
      */
-    public static final short SCHEMA_VERSION = 6;
+    public static final short SCHEMA_VERSION = 7;
     public static final int HEADER_BYTES = Integer.BYTES + Short.BYTES + Short.BYTES; // 8
-    public static final int PAYLOAD_BYTES =
+    /** The v6 payload width — the recorded-corpus table's v6 row (a v5 body is this minus the tube byte). */
+    private static final int PAYLOAD_BYTES_V6 =
             Long.BYTES + Integer.BYTES + Float.BYTES + Integer.BYTES + Integer.BYTES + Byte.BYTES
             + Float.BYTES + Float.BYTES + Float.BYTES
             + Integer.BYTES
             + Long.BYTES + Byte.BYTES
             + Byte.BYTES; // 51 (v2: + ownShipFacingDeg; v3: + aimWorldX/Y; v4: + autofireGroupsMask; v5: + targetWireId + fireEdgeSeq; v6: + activeTubeOrdinal)
-    public static final int FRAME_BYTES = HEADER_BYTES + PAYLOAD_BYTES + Integer.BYTES; // 63
+    /** The v7 raw-input-level tail: one byte per key slot + {@code mouseButtons} u8 + {@code controlKeys} u16. */
+    private static final int KEY_LEVEL_BYTES = PilotIntentFrame.KEY_SLOTS + Byte.BYTES + Short.BYTES; // 11
+    public static final int PAYLOAD_BYTES = PAYLOAD_BYTES_V6 + KEY_LEVEL_BYTES; // 62
+    public static final int FRAME_BYTES = HEADER_BYTES + PAYLOAD_BYTES + Integer.BYTES; // 74
 
     private PilotIntentWireCodec() {}
 
@@ -108,6 +118,13 @@ public final class PilotIntentWireCodec {
         off = putLong(buf, off, frame.targetWireId()); // v5 (R-key target designation)
         off = putByte(buf, off, frame.fireEdgeSeq()); // v5 (fire rising-edge counter, 0..255)
         off = putByte(buf, off, frame.activeTubeOrdinal()); // v6 (active-tube pointer, signed, -1 = absent)
+        // The v7 raw input levels — the eight key-code slots in slot order
+        // (the canonical pack: ascending codes, then zero pad), the mouse-button byte, the control-key u16.
+        for (int slot = 0; slot < PilotIntentFrame.KEY_SLOTS; slot++) {
+            off = putByte(buf, off, frame.keyCode(slot));
+        }
+        off = putByte(buf, off, frame.mouseButtons());
+        off = putShort(buf, off, frame.controlKeys());
         // off now == HEADER_BYTES + PAYLOAD_BYTES; CRC32 covers exactly that body.
         CRC32 crc = new CRC32();
         crc.update(buf, 0, off);
@@ -163,7 +180,9 @@ public final class PilotIntentWireCodec {
      * bytes is refused (the dispatch site
      * used to stream {@link #readFrameAfterMagic} over the payload and the junk rode into the wire
      * record). The TCP demux ({@code UpLaneDemux}) keeps the stream readers: there the NEXT frame
-     * legitimately follows on the same stream, so a remaining-bytes check would be wrong.
+     * legitimately follows on the same stream, so a remaining-bytes check would be wrong. This is the
+     * LIVE door's entry: current schema only; a recorded frame of an older schema decodes through
+     * {@link #decodeRecorded}.
      */
     public static PilotIntentFrame decodeDatagram(byte[] payload) throws IOException {
         Objects.requireNonNull(payload, "payload");
@@ -179,15 +198,16 @@ public final class PilotIntentWireCodec {
     }
 
     /**
-     * RECORDED-CORPUS compat read: decode one frame that may be the current v6
-     * width OR the immediately-prior v5 width (62 B — no {@code activeTubeOrdinal} byte; the field
-     * decodes to {@link PilotIntentFrame#TUBE_ORDINAL_ABSENT}). For committed {@code .ccwr}
-     * evidence corpora and their readers ({@code CcwrUpReplayReader}, {@code CcwrDeadClocksScan},
-     * {@code CcwrIntentSourceReader}, {@code CcwrFireLoopAudit}) ONLY — a LIVE wire lane must keep
-     * the strict {@link #readFrame}/{@link #readFrameAfterMagic}, whose version check fail-closes
-     * an old peer by design (both halves ship in lockstep). Same magic/CRC/truncation fail-closed
-     * discipline as {@link #readFrame}, per accepted width; allowlist-clean like the rest of the
-     * codec (loader-B safe — {@code CcwrIntentSourceReader} calls this in-game).
+     * RECORDED-CORPUS compat read: decode one frame whose width follows its own
+     * header version by {@link #payloadBytesFor} — the current v7 (74 B), v6 (63 B — no raw input
+     * levels: keys {@link PilotIntentFrame#KEYS_EMPTY}, mouse / control 0) or v5 (62 B — also no
+     * {@code activeTubeOrdinal} byte: {@link PilotIntentFrame#TUBE_ORDINAL_ABSENT}). For committed
+     * {@code .ccwr} evidence corpora and their stream readers (the up-record verifier, the replay
+     * reader, the in-game intent-source reader and the offline reel tools) ONLY — a LIVE wire lane
+     * must keep the strict {@link #readFrame}/{@link #readFrameAfterMagic}, whose version check
+     * fail-closes an old peer by design (both halves ship in lockstep). Same magic/CRC/truncation
+     * fail-closed discipline as {@link #readFrame}, per accepted width; allowlist-clean like the rest
+     * of the codec (loader-B safe — the in-game intent-source reader calls this).
      */
     public static PilotIntentFrame readFrameRecorded(InputStream in) throws IOException {
         Objects.requireNonNull(in, "in");
@@ -204,10 +224,10 @@ public final class PilotIntentWireCodec {
             throw new IOException("pilot intent wire frame bad magic: 0x" + Integer.toHexString(magic));
         }
         int version = getUnsignedShort(header, Integer.BYTES);
-        if (version != SCHEMA_VERSION && version != 5) {
+        int payloadBytes = payloadBytesFor(version);
+        if (payloadBytes < 0) {
             throw new IOException("pilot intent wire frame unsupported schema version: " + version);
         }
-        int payloadBytes = version == 5 ? PAYLOAD_BYTES - Byte.BYTES : PAYLOAD_BYTES;
         byte[] rest = in.readNBytes(payloadBytes + Integer.BYTES);
         if (rest.length != payloadBytes + Integer.BYTES) {
             throw new IOException("pilot intent wire frame truncated: expected "
@@ -216,15 +236,61 @@ public final class PilotIntentWireCodec {
         byte[] frame = new byte[HEADER_BYTES + payloadBytes + Integer.BYTES];
         System.arraycopy(header, 0, frame, 0, HEADER_BYTES);
         System.arraycopy(rest, 0, frame, HEADER_BYTES, rest.length);
-        return decodeFields(frame, version, payloadBytes);
+        return decodeFields(frame, version);
+    }
+
+    /**
+     * The RECORDED-frame entry for one whole frame held in a byte array
+     * (a TAKES row's frame in a re-simulation, one UP record): the width is EXACT per the frame's own header
+     * version by {@link #payloadBytesFor} — v7 = {@link #FRAME_BYTES}, v6 = 63 B, v5 = 62 B; any other length
+     * or version, a bad magic or a CRC mismatch is an {@link IOException}. A v5 / v6 frame decodes with
+     * the raw input levels EMPTY (those recordings never carried them, so a re-simulation answers no key
+     * held, as the recording's serve did); a v5 frame also has the tube ABSENT. A LIVE lane never calls
+     * this: the door's {@link #decodeDatagram} stays strict to the current schema.
+     */
+    public static PilotIntentFrame decodeRecorded(byte[] frame) throws IOException {
+        Objects.requireNonNull(frame, "frame");
+        if (frame.length < HEADER_BYTES) {
+            throw new IOException("pilot intent recorded frame truncated: " + frame.length + " bytes");
+        }
+        int magic = getInt(frame, 0);
+        if (magic != MAGIC) {
+            throw new IOException("pilot intent wire frame bad magic: 0x" + Integer.toHexString(magic));
+        }
+        int version = getUnsignedShort(frame, Integer.BYTES);
+        int payloadBytes = payloadBytesFor(version);
+        if (payloadBytes < 0) {
+            throw new IOException("pilot intent wire frame unsupported schema version: " + version);
+        }
+        int width = HEADER_BYTES + payloadBytes + Integer.BYTES;
+        if (frame.length != width) {
+            throw new IOException("pilot intent recorded v" + version + " frame must be " + width
+                    + " bytes, got " + frame.length);
+        }
+        return decodeFields(frame, version);
+    }
+
+    /**
+     * The ONE per-version payload width table the recorded readers and the
+     * field decoder share — v5 = 50 B (no tube byte), v6 = 51 B (no raw input levels), v7 = {@link #PAYLOAD_BYTES};
+     * any other version answers -1 (refused by every caller).
+     */
+    private static int payloadBytesFor(int version) {
+        return switch (version) {
+            case 5 -> PAYLOAD_BYTES_V6 - Byte.BYTES;
+            case 6 -> PAYLOAD_BYTES_V6;
+            case 7 -> PAYLOAD_BYTES;
+            default -> -1;
+        };
     }
 
     private static PilotIntentFrame decodeAfterMagic(byte[] frame) throws IOException {
-        return decodeFields(frame, SCHEMA_VERSION, PAYLOAD_BYTES);
+        return decodeFields(frame, SCHEMA_VERSION);
     }
 
-    private static PilotIntentFrame decodeFields(byte[] frame, int expectedVersion, int payloadBytes)
-            throws IOException {
+    /** {@code frame} is exactly {@code HEADER_BYTES + payloadBytesFor(expectedVersion) + 4} long (every caller checked). */
+    private static PilotIntentFrame decodeFields(byte[] frame, int expectedVersion) throws IOException {
+        int payloadBytes = payloadBytesFor(expectedVersion);
         CRC32 crc = new CRC32();
         crc.update(frame, 0, HEADER_BYTES + payloadBytes);
         int expectedCrc = (int) crc.getValue();
@@ -250,8 +316,21 @@ public final class PilotIntentWireCodec {
         long targetWireId = getLong(frame, off); off += 8; // v5 (R-key target designation)
         int fireEdgeSeq = frame[off] & 0xFF; off += 1; // v5 (fire rising-edge counter, unsigned)
         // v6 (active-tube pointer, SIGNED: -1 = absent); a recorded v5 body ends here.
-        int activeTubeOrdinal = payloadBytes == PAYLOAD_BYTES
+        int activeTubeOrdinal = expectedVersion >= 6
                 ? frame[off++] : PilotIntentFrame.TUBE_ORDINAL_ABSENT;
+        // v7 raw input levels; a recorded v5 / v6 body ends before them and
+        // decodes EMPTY. The canonical-pack law (ascending codes, then zero pad) is the record's constructor, so a
+        // hole, a repeat or a descending pair fails below as a fields-invalid IOException.
+        long keyCodes = PilotIntentFrame.KEYS_EMPTY;
+        int mouseButtons = 0;
+        int controlKeys = 0;
+        if (expectedVersion >= 7) {
+            for (int slot = 0; slot < PilotIntentFrame.KEY_SLOTS; slot++) {
+                keyCodes = PilotIntentFrame.withKeyCode(keyCodes, slot, frame[off++]);
+            }
+            mouseButtons = frame[off++] & 0xFF;
+            controlKeys = getUnsignedShort(frame, off); off += 2;
+        }
         int actualCrc = getInt(frame, off);
         if (actualCrc != expectedCrc) {
             throw new IOException("pilot intent wire frame CRC mismatch");
@@ -260,7 +339,7 @@ public final class PilotIntentWireCodec {
             return new PilotIntentFrame(
                     shipId, frameSeq, cursorFacingDeg, heldControls, fireHeld, selectedWeaponGroup,
                     ownShipFacingDeg, aimWorldX, aimWorldY, autofireGroupsMask, targetWireId,
-                    fireEdgeSeq, activeTubeOrdinal);
+                    fireEdgeSeq, activeTubeOrdinal, keyCodes, mouseButtons, controlKeys);
         } catch (IllegalArgumentException badFields) {
             // A CRC-VALID frame whose fields are out
             // of the record's domain (NaN/inf aim floats, negative shipId/frameSeq, stray held

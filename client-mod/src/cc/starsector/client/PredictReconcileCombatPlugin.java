@@ -9,6 +9,7 @@ import cc.starsector.client.net.ServerEntityPose;
 import cc.starsector.client.net.ServerSnapshotFrame;
 import cc.starsector.client.voice.VoiceClientSettings;
 import cc.starsector.server.runtime.ClientPostureRegistry;
+import cc.starsector.server.runtime.PilotControlNames;
 import cc.starsector.server.runtime.PilotIntentFrame;
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.combat.BaseEveryFrameCombatPlugin;
@@ -44,6 +45,7 @@ import com.fs.starfarer.api.loading.ProjectileWeaponSpecAPI;
 import com.fs.starfarer.api.loading.WeaponGroupType;
 import com.fs.starfarer.api.ui.Alignment;
 import com.fs.starfarer.api.ui.LabelAPI;
+import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.util.vector.Vector2f;
@@ -620,6 +622,37 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
      */
     private volatile float ownFacingDeg;
     private volatile int heldControls;
+    /**
+     * PINT v7 raw input LEVELS, written by {@link #captureOwnInputLevels} once per render frame and shipped UP
+     * verbatim by both intent send sites: {@code keyCodes} = up to {@code PilotIntentFrame.KEY_SLOTS} held LWJGL key
+     * codes packed ascending then zero pad ({@code PilotIntentFrame.KEYS_EMPTY} = none), {@code mouseButtons} = u8
+     * (bit b = mouse button b held), {@code controlKeys} = u16 (bit i = this pilot's OWN key for
+     * {@code PilotIntentFrame.CONTROL_KEY_NAMES[i]} held). All three read EMPTY (0/0/0) under the sampler's gates and
+     * for a recorded intent source (never written). Levels only, never text or key names; the frame's contract
+     * ({@code PilotIntentFrame}) says what the server does with them.
+     */
+    private volatile long keyCodes;
+    private volatile int mouseButtons;
+    private volatile int controlKeys;
+    /** Render thread only: this pilot's keymap entry per {@code PilotIntentFrame.CONTROL_KEY_NAMES} entry (0 =
+     * unmapped, never sampled; 1..0xDF an LWJGL key code; 0xF0..0xF7 a mouse button), by the resolver the HELLO's
+     * keymap comes from; resolved once per {@link #init} ({@link #resolveControlKeyIndex}); null = not yet. */
+    private int[] controlKeyIndex;
+    /** The 16-byte keymap {@link #controlKeyIndex} was built from at this {@link #init} — the ONE game-thread
+     *  resolution ({@link #resolvePilotKeymap}): handed to the kept-open session's re-HELLO holder BEFORE the takeover
+     *  re-HELLO is armed and to every session this window binds, so the bits the sampler polls and the map the serve
+     *  reads them by are the same resolution. Main-written */
+    private byte[] pilotKeymap;
+    /** Render thread only: polls run by {@link #captureOwnInputLevels} (the gated EMPTY frames do not count). */
+    private long inputLevelPolls;
+    /** Render thread only: the first poll's cost (ns), held until the warm sample's one log row. */
+    private long inputLevelFirstPollNanos;
+    /** Render thread only: held key codes dropped past the eighth slot (one per dropped code per frame). */
+    private long keyOverflowDrops;
+    /** Render thread only: polls that threw (the three levels read EMPTY that frame; the first is logged). */
+    private long inputLevelPollFailures;
+    /** The poll whose cost is the WARM sample of the one-off cost row (the first poll is the cold one). */
+    private static final long INPUT_LEVEL_WARM_POLL = 100L;
     /**
      * The mod-ability slot bits ({@code PilotIntentFrame.ABILITY_SLOTS_MASK}, bits 13..20, else 0) that
      * {@link AbilityLocalReadLane} publishes each frame from the own ship's mod-written mask; both intent send
@@ -2477,6 +2510,16 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         boolean claimDial = CcClientModPlugin.dialPredictAtPlay();
         int waitPolls = claimDial ? Math.max(10, CLAIM_WAIT_MILLIS / 100) : 10;
         long waitT0 = System.currentTimeMillis();
+        // ONE game-thread resolution of the pilot's bindings per init: the sampler's control bits (PINT v7) AND the
+        // map the session's re-HELLOs seal. The kept-open session gets it BEFORE predictSessionForMissionInit arms
+        // the takeover re-HELLO, so a rebind made at the mission menu (ESC, Settings > Controls, re-pick) reaches
+        // the serve with the same keys the sampler now polls. Main-written
+        pilotKeymap = resolvePilotKeymap();
+        controlKeyIndex = resolveControlKeyIndex(pilotKeymap);
+        PredictSession kept = CcClientModPlugin.predictSession;
+        if (kept != null) {
+            kept.setPilotKeymap(pilotKeymap);
+        }
         PredictSession s = CcClientModPlugin.predictSessionForMissionInit();
         for (int i = 0; s == null && i < waitPolls; i++) { // legacy: up to ~1s (10 * 100ms); claim: CLAIM_WAIT_MILLIS
             try {
@@ -2607,6 +2650,9 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
      * advances) and INTENT_SOURCE (init — a load throw from advance would be a Fatal).
      */
     private void bindSession(PredictSession s) {
+        // A session that landed during init's wait or the late-attach hold: its dial read the same bindings as this
+        // init, and the map its later re-HELLOs seal is this init's either way.
+        s.setPilotKeymap(pilotKeymap);
         // The engine-wide hulk overkill veto — registered once per combat init,
         // server-driven windows only (a serverless window keeps vanilla local fracture, like the
         // bindShips-side breakProb suppression that also only runs with a live session). The
@@ -3106,7 +3152,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     long droppedBefore = session.sendsDropped(); //
                     session.sendIntent(aimDeg, ownFacingDeg, heldControls | abilityLocalBits, fireHeld,
                             aimWorldX, aimWorldY, liveSelectedGroup, liveAutofireMask, liveTargetWireId, fireEdgeSeq,
-                            liveActiveTubeOrdinal);
+                            liveActiveTubeOrdinal, keyCodes, mouseButtons, controlKeys);
                     if (session.sendsDropped() == droppedBefore) {
                         sent++;
                     }
@@ -3319,7 +3365,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                 long droppedBefore = s.sendsDropped(); // Count only wire sends
                 s.sendIntent(aimDeg, ownFacingDeg, heldControls | abilityLocalBits, fireHeld, aimWorldX, aimWorldY,
                         liveSelectedGroup, liveAutofireMask, liveTargetWireId, fireEdgeSeq,
-                        liveActiveTubeOrdinal, snap != null ? snap.simTick() : -1L);
+                        liveActiveTubeOrdinal, keyCodes, mouseButtons, controlKeys,
+                        snap != null ? snap.simTick() : -1L);
                 if (s.sendsDropped() != droppedBefore) {
                     sendsGated++; // the transport's gate ate it (reconnecting/held/kicked)
                 } else {
@@ -5634,6 +5681,146 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     }
 
     /**
+     * Resolve this pilot's OWN binding for each {@code PilotIntentFrame.CONTROL_KEY_NAMES} entry, once per
+     * {@link #init}, through the resolver the dial's HELLO keymap comes from ({@code PilotControlNames.resolveKeymap}
+     * over {@code SettingsAPI.getControlStringForEnumName} and {@code Keyboard.getKeyIndex}): the engine's own names
+     * for Shift / Space / Tab / Esc / Enter and the other keys it names its own way resolve to their key codes, a
+     * mouse-bound control (SHIP_FIRE's default "Left click") to 0xF0 + its button, and a modifier-prefixed, wheel or
+     * unknown binding stays unmapped (0, never sampled). A lookup that throws (the engine's {@code Enum.valueOf} over
+     * an unknown name) is caught per name, never a throw out of init, never a guess at another key. The control BIT,
+     * not a key code, rides each frame: the HELLO's keymap tells the server which key or button each bit means, so a
+     * mod asking the server for "the accelerate key" hears this pilot's own accelerate key. One log row: the mapped
+     * count, the unmapped names (enum constants only) and how many names threw. Returns the 16-byte map itself (the
+     * session's re-HELLO map, {@link #pilotKeymap}); {@link #resolveControlKeyIndex} derives the sampler's table from
+     * it — ONE resolution feeds both.
+     * main-written
+     */
+    private static byte[] resolvePilotKeymap() {
+        String[] names = PilotIntentFrame.CONTROL_KEY_NAMES;
+        int[] threw = {0};
+        byte[] keymap = PilotControlNames.resolveKeymap(name -> {
+            try {
+                return Global.getSettings().getControlStringForEnumName(name);
+            } catch (RuntimeException unknownName) {
+                threw[0]++; // counted into the row below; the resolver leaves the entry unmapped
+                throw unknownName;
+            }
+        }, Keyboard::getKeyIndex);
+        int mapped = 0;
+        StringBuilder unmapped = new StringBuilder();
+        for (int i = 0; i < names.length; i++) {
+            if (i < keymap.length && keymap[i] != 0) {
+                mapped++;
+            } else {
+                unmapped.append(unmapped.length() == 0 ? "" : ",").append(names[i]);
+            }
+        }
+        PilotWatchLog.info("predict keys: control_map mapped=" + mapped + "/" + names.length
+                + (unmapped.length() > 0 ? " unmapped=" + unmapped : "") + " threw=" + threw[0]);
+        return keymap;
+    }
+
+    /** The sampler's per-bit poll table from {@code keymap} (one entry per {@code CONTROL_KEY_NAMES} name; an
+     *  unmapped byte stays 0 = never sampled). Pure: no engine read, so the table and the HELLO map can never
+     *  disagree. Main-written */
+    private static int[] resolveControlKeyIndex(byte[] keymap) {
+        int[] index = new int[PilotIntentFrame.CONTROL_KEY_NAMES.length];
+        for (int i = 0; i < index.length; i++) {
+            index[i] = i < keymap.length ? keymap[i] & 0xFF : 0;
+        }
+        return index;
+    }
+
+    /**
+     * Sample the pilot's raw input LEVELS into {@link #keyCodes} / {@link #mouseButtons} / {@link #controlKeys} (PINT
+     * v7; what the server does with them = the {@code PilotIntentFrame} contract). Render thread, once per frame, from
+     * {@link #captureOwnCommands}. EMPTY (0/0/0) whenever a gate holds: {@link #abilityReadOwnOrNull()}'s three (a
+     * recorded intent source, a command-transfer TRANSIT, the own death latch — the body is not this seat's input) or no
+     * own ship, and while the chat box or the picker panel owns the keyboard (the state whose relays block the ship keys:
+     * typed text must never arrive at the server as held keys). Else: codes 1..{@code KEYBOARD_SIZE}-1 polled ascending
+     * into the first {@code KEY_SLOTS} held (the canonical pack; a ninth and later are dropped and counted, one log row at
+     * the first overflow); buttons 0..min(8, {@code getButtonCount()})-1, button 0 neutral while the (re)entry fire
+     * swallow holds (the click that joined is no press, the same rule the fire level obeys); control bits from
+     * {@link #controlKeyIndex} (unmapped bits stay 0): a key entry polls {@code Keyboard.isKeyDown(code)}, a mouse entry
+     * reads its button's bit in the level just sampled, so a mouse-bound control obeys the same swallow and button count
+     * as the raw button level the server sees beside it. RAW levels, never latched, never a key name or text. Cost (frame
+     * loop residency) measured once: the first poll vs the {@link #INPUT_LEVEL_WARM_POLL}th, one log row. A poll that throws
+     * leaves the three EMPTY that frame, counts, and logs once.
+     */
+    private void captureOwnInputLevels() {
+        if (abilityReadOwnOrNull() == null || chat.isBoxOpen() || picker.isPanelOpen()) {
+            keyCodes = PilotIntentFrame.KEYS_EMPTY;
+            mouseButtons = 0;
+            controlKeys = 0;
+            return;
+        }
+        long poll = ++inputLevelPolls;
+        boolean timed = poll == 1L || poll == INPUT_LEVEL_WARM_POLL;
+        long t0 = timed ? System.nanoTime() : 0L;
+        try {
+            long packed = PilotIntentFrame.KEYS_EMPTY;
+            int slot = 0;
+            int dropped = 0;
+            for (int key = 1; key < Keyboard.KEYBOARD_SIZE; key++) {
+                if (Keyboard.isKeyDown(key)) {
+                    if (slot < PilotIntentFrame.KEY_SLOTS) {
+                        packed = PilotIntentFrame.withKeyCode(packed, slot++, key);
+                    } else {
+                        dropped++;
+                    }
+                }
+            }
+            int buttons = 0;
+            int buttonCount = Math.min(8, Mouse.getButtonCount());
+            for (int b = 0; b < buttonCount; b++) {
+                if (Mouse.isButtonDown(b) && !(b == 0 && swallowFireUntilMouseRelease)) {
+                    buttons |= 1 << b;
+                }
+            }
+            int controls = 0;
+            int[] index = controlKeyIndex;
+            if (index != null) {
+                for (int i = 0; i < index.length; i++) {
+                    int entry = index[i];
+                    boolean held = entry >= PilotControlNames.MOUSE_BASE
+                            ? (buttons >>> (entry - PilotControlNames.MOUSE_BASE) & 1) != 0
+                            : entry > 0 && Keyboard.isKeyDown(entry);
+                    if (held) {
+                        controls |= 1 << i;
+                    }
+                }
+            }
+            keyCodes = packed;
+            mouseButtons = buttons;
+            controlKeys = controls;
+            if (dropped > 0) {
+                if (keyOverflowDrops == 0L) {
+                    PilotWatchLog.info("predict keys: key_overflow first held=" + (slot + dropped)
+                            + " kept=" + PilotIntentFrame.KEY_SLOTS
+                            + " (the lowest codes ride; later overflows counted, not logged)");
+                }
+                keyOverflowDrops += dropped;
+            }
+        } catch (RuntimeException pollFailed) {
+            keyCodes = PilotIntentFrame.KEYS_EMPTY;
+            mouseButtons = 0;
+            controlKeys = 0;
+            if (inputLevelPollFailures++ == 0L) {
+                PilotWatchLog.info("predict keys: poll threw " + pollFailed.getClass().getSimpleName()
+                        + " -> levels EMPTY this frame (later failures counted, not logged)");
+            }
+        }
+        if (timed) {
+            long ns = System.nanoTime() - t0;
+            if (poll == 1L) {
+                inputLevelFirstPollNanos = ns;
+            } else {
+                PilotWatchLog.info("predict keys: poll_ns first=" + inputLevelFirstPollNanos + " warm=" + ns);
+            }
+        }
+    }
+
+    /**
      * Snapshot the own ship's native-control MOVEMENT state into the volatile {@link #heldControls} semantic
      * bitmask the net thread ships UP, and update the capture-timing instrument. Reads the 7 PUBLIC
      * {@link ShipEngineControllerAPI} booleans the engine's own native player control sets each frame
@@ -5644,6 +5831,9 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
      * lags native control by ≤1 frame — invisible for HELD movement. Fail-soft; keeps the prior mask on any hiccup.
      */
     private void captureOwnCommands(ShipAPI own, float amount) {
+        // PINT v7 raw input levels FIRST — the sampler applies this method's gates
+        // itself (one set, the abilityReadOwnOrNull law), so a gated frame writes EMPTY, never a stale level riding up.
+        captureOwnInputLevels();
         if (INTENT_SOURCE != null) {
             return; // Synthetic seat: the recording owns facing/heldControls (capture counters stay 0)
         }
@@ -5983,6 +6173,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                 + " ventFrames=" + capVentFrames + " retreatFrames=" + capRetreatFrames
                 + " shieldFrames=" + capShieldFrames
                 + " cloakFrames=" + capCloakFrames
+                + " inputLevelPolls=" + inputLevelPolls + " keyOverflowDrops=" + keyOverflowDrops
+                + " inputLevelPollFailures=" + inputLevelPollFailures
                 + " (engine-controller booleans + getSystem().isOn() + getFluxTracker().isVenting(),"
                 + " no reflection)");
     }

@@ -757,9 +757,10 @@ public final class DoorProbe {
             for (int attempt = 0; attempt < TRIES && !collector.done(); attempt++) {
                 Handshake13Flight flight;
                 try {
-                    // team 0: a probe never carries a team pick (the door ignores one on a probe anyway)
+                    // team 0 and no keymap: a probe never carries a team pick (the door ignores one on a probe
+                    // anyway) and seats no pilot, so it has no bindings to send
                     flight = new Handshake13Flight(Handshake13Flight.Lane.PASSWORD, secret,
-                            Handshake13.FLAG_PROBE, print, cid, 0L, "", 0, budget, random);
+                            Handshake13.FLAG_PROBE, print, cid, 0L, "", 0, null, budget, random);
                 } catch (IllegalArgumentException refused) {
                     return Result.localRefusal("this build cannot send the list request: its "
                             + refusedField(refused) + " is not version-14 sendable (nothing sent)");

@@ -150,6 +150,15 @@ public final class PilotServeSession {
      * survives a round re-mint, like the seats).
      */
     private final Map<Integer, Integer> helloMagicBitsBySeat = new java.util.concurrent.ConcurrentHashMap<>();
+    /**
+     * Each seat's latest admitted HELLO keymap (seat 1..255 -> {lo, hi}: control bytes 0..7 / 8..15 packed, any sign;
+     * {0, 0} = no map = the serve's own table answers that seat's key reads), written once per NEW session at
+     * admission beside the magic bits — a 0/0 admission is written too, so a re-joined seat whose kit resolved nothing
+     * drops its old map — and read by the pilot keymap resolver whenever a hull's keymap sources ask. A stored pair
+     * is replaced whole, never mutated, so a reader holds one admission's pair; the read is a map lookup that builds
+     * no pair. Session-lived, like the magic bits.
+     */
+    private final Map<Integer, long[]> helloKeymapBySeat = new java.util.concurrent.ConcurrentHashMap<>();
     private int downEveryTicks;
     private long sessionDeclReceived;
     private String bindHost;
@@ -1201,6 +1210,9 @@ public final class PilotServeSession {
         // MagicSeamFollow). Read at call time, never captured: a later admission is still seen.
         pilotStep.setPilotMarkFlagsResolver(seat -> MagicSeamFollow.markFlags(MagicSeamFollow.receiptOrNull(),
                 doorFingerprint != null, helloMagicBitsBySeat.getOrDefault(seat, 0)));
+        // The seat's admitted HELLO keymap pair (null = none recorded = the
+        // serve's own table), read through the live map whenever a hull's keymap sources ask, never captured.
+        pilotStep.setPilotKeymapResolver(seat -> helloKeymapBySeat.get(seat));
         declaredLaneActive = fireLaneDeclared && !heldLaneFallback;
         pilotStep.setDeclaredFireLane(declaredLaneActive);
         if (hooks.finaleCreep() != null) {
@@ -1934,6 +1946,8 @@ public final class PilotServeSession {
      * from this sim (a disagreement is counted, never forced) and the re-recorded row. No sleep and no
      * lobby or timeout exit: those inputs are not recorded. A take naming a seat no frame-0 session minted
      * (a session that took at the gate and left before frame 0) is counted and still served like any other take.
+     * Each take decodes through {@link PilotIntentWireCodec#decodeRecorded} (exact width per its recorded schema), so a
+     * reel cut before the current PINT schema still re-simulates, its takes holding no raw input levels.
      */
     private void replayRoundStartGate(PilotIntentDatagramServer door, int round) throws IOException {
         int rows = 0;
@@ -1956,7 +1970,7 @@ public final class PilotServeSession {
                 if (!replayFeed.isMinted(seat)) {
                     replayFeed.noteAdmitUnminted(round, seat); // counted, and still served below
                 }
-                PilotIntentFrame intent = PilotIntentWireCodec.decodeDatagram(e.frame());
+                PilotIntentFrame intent = PilotIntentWireCodec.decodeRecorded(e.frame());
                 if (authority.recordCombatReady(seat)) {
                     System.out.println("npeer-serve combat_ready seat="
                             + seat + " round=" + round
@@ -2352,6 +2366,9 @@ public final class PilotServeSession {
                 // them), and say once per admission why MagicLib abilities will NOT follow this pilot — only
                 // where MagicLib is evidently in the match (the same predicate the mark uses).
                 helloMagicBitsBySeat.put(session.seatId(), magicBits);
+                // The seat's keymap pair, recorded the same way for its hull's
+                // keymap sources (a replay session carries the recorded seat's pair).
+                helloKeymapBySeat.put(session.seatId(), new long[] {session.helloKeymapLo, session.helloKeymapHi});
                 String receipt = MagicSeamFollow.receiptOrNull();
                 String followWhy = MagicSeamFollow.whyOrNull(receipt, doorFingerprint != null, magicBits);
                 if (followWhy != null && MagicSeamFollow.magicLibEvident(receipt, magicBits)) {
@@ -4710,7 +4727,8 @@ public final class PilotServeSession {
      * expression and staged per this sim (a disagreement with the recording is counted, never forced) and
      * re-recorded; the take meter is skipped (the row carries no deposit stamp). All takes, then all
      * declarations, which keeps each seat's take ahead of its own declarations. A frame that does not
-     * decode throws (an instrument fault ends the re-simulation loud).
+     * decode throws (an instrument fault ends the re-simulation loud); the decode is
+     * {@link PilotIntentWireCodec#decodeRecorded}, so an older-schema reel's takes decode at their own width.
      *
      * @return whether any applied frame held fire (the fail-open streak input)
      */
@@ -4736,7 +4754,7 @@ public final class PilotServeSession {
             if (seat < 0 || seat >= replayLiveSeats.length || !replayLiveSeats[seat]) {
                 replayFeed.noteSeatNotLive(round, applyTick, seat);
             }
-            PilotIntentFrame intent = PilotIntentWireCodec.decodeDatagram(e.frame());
+            PilotIntentFrame intent = PilotIntentWireCodec.decodeRecorded(e.frame());
             if (authority.recordCombatReady(seat)) {
                 System.out.println("npeer-serve combat_ready seat="
                         + seat + " round=" + round + " frame=" + frame
@@ -4808,7 +4826,8 @@ public final class PilotServeSession {
             PilotIntentDatagramServer.PeerSession session, String reason, String override, int round) {
         door.recordRow(MatchRecordRows.KIND_SESS, MatchRecordRows.encodeSess(new MatchRecordRows.SessRow(
                 event, session.sessionId(), session.seatId(), session.shipId(),
-                MatchRecordRows.sessFlags(session.observer(), session.admin(), session.helloMagicBits), reason, override),
+                MatchRecordRows.sessFlags(session.observer(), session.admin(), session.helloMagicBits), reason, override,
+                session.helloKeymapLo, session.helloKeymapHi),
                 MatchRecordRows.BAND_PRE, round), lastSimTick + 1);
     }
 
@@ -5291,8 +5310,9 @@ public final class PilotServeSession {
         }
 
         @Override
-        public void mint(long sessionId, int seat, long shipId, boolean observer, boolean admin, int helloMagicBits) {
-            door.replayMint(sessionId, seat, shipId, observer, admin, helloMagicBits);
+        public void mint(long sessionId, int seat, long shipId, boolean observer, boolean admin, int helloMagicBits,
+                long keymapLo, long keymapHi) {
+            door.replayMint(sessionId, seat, shipId, observer, admin, helloMagicBits, keymapLo, keymapHi);
         }
 
         @Override

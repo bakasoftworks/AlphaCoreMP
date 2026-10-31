@@ -233,11 +233,12 @@ unmodified behavior.
 
 On the server, `getPlayerShip()` called from a ship's own code (a hullmod's `advanceInCombat`, a ship system script,
 a weapon's every-frame script; not a hit effect) returns that ship, or a module's parent, while a player flies it,
-if the host turned "Each pilot's ship counts as the player's" on (off as shipped). Elsewhere it is never a ship a
-player flies (it can be an AI ship or a station): in plugins that loop over all ships, in classes that read
-`cc_client.pilot` themselves, and in classes that read the keyboard or mouse, draw, or change the battle's time
-multiplier. Check the key there. Keyboard input never reaches the server: an ability on your own hotkey still needs
-the two keys above. A check that works everywhere:
+unless the host turned "Each pilot's ship counts as the player's" off (on as shipped). Elsewhere it is never a ship a
+player flies (it can be an AI ship or a station): in any combat plugin, in classes that read `cc_client.pilot`
+themselves, and in classes that read the mouse pointer or input events, draw, or change the battle's time
+multiplier. Check the key there. With the switch on, `Keyboard.isKeyDown` and `Mouse.isButtonDown` in that ship's
+own code answer from the keys and mouse buttons its pilot holds (the pilot's own bindings, whatever keymap they use);
+elsewhere no key is ever down. A check that works everywhere:
 
     Object m = ship.getCustomData().get("cc_client.pilot");
     int[] pilot = m instanceof int[] && ((int[]) m).length >= 2 ? (int[]) m : null;

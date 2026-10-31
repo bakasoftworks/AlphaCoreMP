@@ -131,7 +131,7 @@ import java.util.List;
  * while it loads, so it locks while a server runs).
  *
  * <p>Each pilot's ship counts as the player's ({@code #f-pilot-ship},
- * {@code setup.mods.pilotShip}, on | off with OFF selected, hint {@code #hint-pilot-ship} + its help row) right after
+ * {@code setup.mods.pilotShip}, on | off with ON selected, hint {@code #hint-pilot-ship} + its help row) right after
  * the MagicLib select, last in {@code #pre-start} - the Start form's {@code pilotship.enabled} row (boot-time: the serve
  * changes ship scripts while it loads, so it locks while a server runs).
  *
@@ -561,8 +561,8 @@ final class OpsConsolePageHtml {
 </div>
 <div class="frow">
 <label for="f-pilot-ship">Each pilot's ship counts as the player's</label>
-<div class="ctl"><select id="f-pilot-ship" data-cc="setup.mods.pilotShip" aria-describedby="hint-pilot-ship"><option>on</option><option selected>off</option></select></div>
-<p class="hint" id="hint-pilot-ship">writes pilotship.enabled; on = a ship's own scripts (hullmods, ship systems, weapons) treat the ship a player flies as the player's ship, as in single player; off = they run as today</p>
+<div class="ctl"><select id="f-pilot-ship" data-cc="setup.mods.pilotShip" aria-describedby="hint-pilot-ship"><option selected>on</option><option>off</option></select></div>
+<p class="hint" id="hint-pilot-ship">writes pilotship.enabled; on = a ship's own scripts (hullmods, ship systems, weapons) treat the ship a player flies as the player's ship, as in single player, and read its pilot's keys; off = they treat it as an AI ship</p>
 </div>
 </details>
 </fieldset>

@@ -469,13 +469,16 @@ public final class MatchRecordRows {
 
     /** A session edge: event LIVE / DEAD; the SIGNED session id; seat 0 + ship 0 = observer; the
      *  departure reason is a server token (DEAD only); the variant override is the seat's pick at
-     *  LIVE ("" none). Never the client id (player text). */
+     *  LIVE ("" none); {@code keymapLo} / {@code keymapHi} = the seat's HELLO keymap packed (control
+     *  bytes 0..7 and 8..15), recorded so a re-sim answers the seat's redirected key reads as it ran —
+     *  appended in place, an older reel reads 0/0 (= the serve's own map, which is what it recorded).
+     *  Never the client id (player text). Main-written */
     public record SessRow(int event, long sessionId, int seat, long shipId, int flags,
-            String departureReason, String variantOverride) {
+            String departureReason, String variantOverride, long keymapLo, long keymapHi) {
     }
 
     public static byte[] encodeSess(SessRow r, byte band, int round) {
-        Out o = new Out(MAGIC_SESS, band, round, 64);
+        Out o = new Out(MAGIC_SESS, band, round, 80);
         o.u8(r.event());
         o.i64(r.sessionId());
         o.u8(r.seat());
@@ -483,12 +486,26 @@ public final class MatchRecordRows {
         o.u8(r.flags());
         o.utf(r.departureReason());
         o.utf(r.variantOverride());
+        o.i64(r.keymapLo());
+        o.i64(r.keymapHi());
         return o.toBytes();
     }
 
     public static SessRow decodeSess(byte[] payload) {
         In in = new In(payload, KIND_SESS, "SESS");
-        SessRow r = new SessRow(in.u8(), in.i64(), in.u8(), in.i64(), in.u8(), in.utf(), in.utf());
+        int event = in.u8();
+        long sessionId = in.i64();
+        int seat = in.u8();
+        long shipId = in.i64();
+        int flags = in.u8();
+        String reason = in.utf();
+        String override = in.utf();
+        long lo = 0L, hi = 0L;
+        if (in.remaining() >= 16) {
+            lo = in.i64();
+            hi = in.i64();
+        }
+        SessRow r = new SessRow(event, sessionId, seat, shipId, flags, reason, override, lo, hi);
         in.end();
         return r;
     }

@@ -551,6 +551,11 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
          *  to the serve loop; a re-HELLO is a NEW session carrying its own. NEVER in {@link #copyGateStateFrom}.
          * */
         volatile int helloMagicBits;
+        /** The admitting F2's pilot keymap, packed ({@code lo} = bytes 0..7, {@code hi} = bytes 8..15, byte i at
+         *  bits {@code ((i & 7) << 3)..+7}; 0/0 = no map = the serve's own table answers): set by the hs-13 admit
+         *  beside the magic bits; a replay session carries the RECORDED seat's ({@code PidsReplayDoor.replayMint});
+         *  NEVER in {@link #copyGateStateFrom}. Main-written */
+        volatile long helloKeymapLo, helloKeymapHi;
         final InetSocketAddress peer;
         final String clientId;
         /** The custom-variant AUTHOR key of a cid-keyed door
@@ -854,6 +859,17 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
 
         public int seatId() {
             return seatId;
+        }
+
+        /** ROW SEAM: the packed pilot keymap this session's admitting F2 opened ({@link #helloKeymapLo} /
+         *  {@link #helloKeymapHi}; 0/0 = no map) — the kit's DF-KEYMAP-CHAIN row reads what the door opened after a
+         *  dial and after a takeover re-HELLO. Main-written */
+        public long helloKeymapLo() {
+            return helloKeymapLo;
+        }
+
+        public long helloKeymapHi() {
+            return helloKeymapHi;
         }
 
         public long shipId() {
@@ -1833,8 +1849,15 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
     }
 
     public PeerSession replayMint(long sessionId, int seat, long shipId, boolean observer, boolean admin,
+            int helloMagicBits, long keymapLo, long keymapHi) {
+        return replayDoor.replayMint(sessionId, seat, shipId, observer, admin, helloMagicBits, keymapLo, keymapHi);
+    }
+
+    /** The replay mint with no recorded keymap (0/0 = the serve's own map): the rows' form; the feed passes the
+     *  SESS row's two longs through the 8-arg form above. */
+    public PeerSession replayMint(long sessionId, int seat, long shipId, boolean observer, boolean admin,
             int helloMagicBits) {
-        return replayDoor.replayMint(sessionId, seat, shipId, observer, admin, helloMagicBits);
+        return replayMint(sessionId, seat, shipId, observer, admin, helloMagicBits, 0L, 0L);
     }
 
     public void replayDie(long sessionId, String departureReason) {

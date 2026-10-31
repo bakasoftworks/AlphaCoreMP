@@ -384,6 +384,11 @@ final class PidsHello13 {
             hs.root = opened.root();
             hs.cookieBucket = bucket;
             hs.team = opened.team(); // 0..2 here: a 3..255 byte already left at the bodyOk == false refusal above
+            // The sealed keymap, packed beside the team byte; an unlawful byte
+            // already left at the same refusal, so a body that decoded carries 16 lawful bytes (0/0 = no map).
+            byte[] keymap = opened.keymap();
+            hs.keymapLo = Handshake13.keymapLo(keymap);
+            hs.keymapHi = Handshake13.keymapHi(keymap);
             return door.admitBranchesLocked(built, from, hs);
         }
     }
@@ -461,6 +466,12 @@ final class PidsHello13 {
          *  admitted session by {@link #onAdmittedLocked}, never into the cleartext {@code HelloPayload} the reject
          *  paths share. */
         int magicBits;
+        /** The sealed F2 body's pilot keymap packed ({@code keymapLo} = control bytes 0..7, {@code keymapHi} = 8..15,
+         *  byte i at bits {@code ((i & 7) << 3)..+7}; any sign): set at the open beside {@link #team}, copied onto
+         *  the admitted session by {@link #onAdmittedLocked}. 0/0 until the body decodes, and for a joiner that
+         *  resolved no binding = no map = the serve's own table answers that seat's key reads.
+         * */
+        long keymapLo, keymapHi;
         /** The salt {@link #sealWelcome} drew — kept for {@link #onAdmittedLocked}'s session root. */
         private byte[] doorSalt;
 
@@ -497,6 +508,8 @@ final class PidsHello13 {
             session.hs13SessionRoot = Handshake13.sessionRoot(root, doorSalt);
             session.hs13AuthScalar = auth.scalar();
             session.helloMagicBits = magicBits;
+            session.helloKeymapLo = keymapLo;
+            session.helloKeymapHi = keymapHi;
         }
     }
 }

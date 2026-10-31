@@ -2544,7 +2544,7 @@ public final class ServerOpsCore {
      * Pinned by {@code config-magicseam}.
      *
      * <p>{@code pilotShip} follows {@code magicSeam}
-     * ({@code OpsMatchRows.pilotShipFieldPrefill}: an absent row = {@code "off"}, the serve's compiled default).
+     * ({@code OpsMatchRows.pilotShipFieldPrefill}: an absent row = {@code "on"}, the serve's compiled default).
      * Pinned by {@code config-pilotship}.
      *
      * <p>{@code pvp} = {@link #selectedPvpWord} (on|off of the selected

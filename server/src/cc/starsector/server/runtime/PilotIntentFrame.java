@@ -97,7 +97,10 @@ public record PilotIntentFrame(
         int autofireGroupsMask,
         long targetWireId,
         int fireEdgeSeq,
-        int activeTubeOrdinal) {
+        int activeTubeOrdinal,
+        long keyCodes,
+        int mouseButtons,
+        int controlKeys) {
 
     /**
      * Widest valid {@link #heldControls} bit range (bits 0..20: the 7 movement bits 0..6 + the {@link #USE_SHIP_SYSTEM}
@@ -368,6 +371,78 @@ public record PilotIntentFrame(
      */
     public static final int TUBE_ORDINAL_ABSENT = -1;
 
+    /**
+     * The pilot's RAW INPUT LEVELS (v7): {@link #keyCodes}, {@link #mouseButtons},
+     * {@link #controlKeys}. WHY: a mod script that runs as part of the pilot's own ship's update (a hullmod, a ship
+     * system, a weapon script) polls LWJGL {@code Keyboard.isKeyDown} / {@code Mouse.isButtonDown} for its hotkeys;
+     * on the headless serve those statics answer nothing, so the pilot-ship call-site redirect rewrites that ship's
+     * call sites to {@code PilotShipCall} twins which answer from THIS frame's levels (pushed into the pilot-ship
+     * window on every applied frame). The serve NEVER applies these to the engine — they are answered only to the seat's own hull's
+     * redirected scripts. Levels, never latched (the ingest OR-latch leaves them verbatim), never text.
+     *
+     * <p><b>{@code keyCodes}</b> = up to {@link #KEY_SLOTS} held LWJGL key codes packed little-end: byte {@code i}
+     * (bits {@code 8i..8i+7}) = the {@code i}-th held code, {@code 1..255}, STRICTLY ASCENDING while non-zero, then
+     * zero pad — so one held set has exactly one encoding ({@link #KEYS_EMPTY} = nothing held) and a frame costs no
+     * allocation. A ninth key is dropped by the producer (counted there). <b>{@code mouseButtons}</b> = u8, bit
+     * {@code b} = mouse button {@code b} held ({@link #MOUSE_BUTTONS_MASK}). <b>{@code controlKeys}</b> = u16, bit
+     * {@code i} = the pilot's OWN binding for {@link #CONTROL_KEY_NAMES}{@code [i]} held ({@link #CONTROL_KEYS_MASK}) —
+     * carried as a control NAME bit because the two sides' keymaps differ; each side resolves its own binding and an
+     * unresolvable name is that bit unmapped, never a throw. The canonical constructor refuses a non-canonical
+     * {@code keyCodes} or an out-of-range mask; the decoder maps that to the door's {@code pint_corrupt} drop.
+     */
+    public static final long KEYS_EMPTY = 0L;
+    public static final int KEY_SLOTS = 8;
+    public static final int MOUSE_BUTTONS_MASK = 0xFF;
+    public static final int CONTROL_KEYS_MASK = 0xFFFF;
+    /**
+     * Index = {@link #controlKeys} bit. The names are the engine's own control-enum constants (measured from the
+     * install jar; the record =); resolved per side via
+     * {@code SettingsAPI.getControlStringForEnumName} then {@code Keyboard.getKeyIndex} (0 = unmapped, e.g. the
+     * mouse-bound default of SHIP_FIRE).
+     */
+    public static final String[] CONTROL_KEY_NAMES = {
+            "SHIP_ACCELERATE", "SHIP_ACCELERATE_BACKWARDS", "SHIP_DECELERATE", "SHIP_TURN_LEFT",
+            "SHIP_TURN_RIGHT", "SHIP_STRAFE_KEY", "SHIP_STRAFE_LEFT_NOTURN", "SHIP_STRAFE_RIGHT_NOTURN",
+            "SHIP_FIRE", "SHIP_SHIELDS", "SHIP_USE_SYSTEM", "SHIP_VENT_FLUX",
+            "SHIP_PULL_BACK_FIGHTERS", "SHIP_HOLD_FIRE", "SHIP_TARGET_SHIP", "C2_TOGGLE_AUTOPILOT" };
+
+    /**
+     * The {@link #keyCodes} canonical-form law: byte 0 may be 0 (empty); after a zero byte every higher byte is zero;
+     * each non-zero byte is strictly greater than the byte below it. Pure, never throws.
+     */
+    public static boolean isCanonicalKeyCodes(long packed) {
+        int prev = 0;
+        boolean pad = false;
+        for (int slot = 0; slot < KEY_SLOTS; slot++) {
+            int code = keyCode(packed, slot);
+            if (code == 0) {
+                pad = true;
+            } else if (pad || code <= prev) {
+                return false;
+            } else {
+                prev = code;
+            }
+        }
+        return true;
+    }
+
+    /** The code in {@code slot} (0..7) of a packed key set, {@code 0..255}; a slot outside 0..7 answers 0, never throws. */
+    public static int keyCode(long packed, int slot) {
+        return slot < 0 || slot >= KEY_SLOTS ? 0 : (int) ((packed >>> (8 * slot)) & 0xFFL);
+    }
+
+    /**
+     * {@code packed} with {@code slot}'s byte replaced by {@code code & 0xFF}; a slot outside 0..7 answers {@code packed}
+     * unchanged. Does NOT re-sort: the producer fills slots in ascending code order so the result stays canonical.
+     */
+    public static long withKeyCode(long packed, int slot, int code) {
+        if (slot < 0 || slot >= KEY_SLOTS) {
+            return packed;
+        }
+        int shift = 8 * slot;
+        return (packed & ~(0xFFL << shift)) | (((long) (code & 0xFF)) << shift);
+    }
+
     public PilotIntentFrame {
         if (shipId < 0L) {
             throw new IllegalArgumentException("shipId must be >= 0; got " + shipId);
@@ -414,6 +489,73 @@ public record PilotIntentFrame(
                     "activeTubeOrdinal must be in -1..127 (1 signed wire byte; -1 = absent); got "
                             + activeTubeOrdinal);
         }
+        if (!isCanonicalKeyCodes(keyCodes)) {
+            throw new IllegalArgumentException(
+                    "keyCodes must be strictly ascending non-zero bytes then zero pad; got 0x"
+                            + Long.toHexString(keyCodes));
+        }
+        if (mouseButtons < 0 || mouseButtons > MOUSE_BUTTONS_MASK) {
+            throw new IllegalArgumentException("mouseButtons must be in 0..255 (u8); got " + mouseButtons);
+        }
+        if (controlKeys < 0 || controlKeys > CONTROL_KEYS_MASK) {
+            throw new IllegalArgumentException("controlKeys must be in 0..65535 (u16); got " + controlKeys);
+        }
+    }
+
+    /**
+     * The pre-v7 13-component shape: every producer that samples no raw input levels (the
+     * server's own sessions, ladders, ghosts, tests, v5/v6 recordings) constructs here and rides
+     * {@link #KEYS_EMPTY}/0/0 — behavior-identical to before the v7 bump. Live kits sampling a real keyboard pass the
+     * levels via the canonical constructor.
+     */
+    public PilotIntentFrame(
+            long shipId,
+            int frameSeq,
+            float cursorFacingDeg,
+            int heldControls,
+            boolean fireHeld,
+            int selectedWeaponGroup,
+            float ownShipFacingDeg,
+            float aimWorldX,
+            float aimWorldY,
+            int autofireGroupsMask,
+            long targetWireId,
+            int fireEdgeSeq,
+            int activeTubeOrdinal) {
+        this(shipId, frameSeq, cursorFacingDeg, heldControls, fireHeld, selectedWeaponGroup, ownShipFacingDeg,
+                aimWorldX, aimWorldY, autofireGroupsMask, targetWireId, fireEdgeSeq, activeTubeOrdinal,
+                KEYS_EMPTY, 0, 0);
+    }
+
+    /** The code held in {@code slot} (0..7) this frame, {@code 0..255} (0 = empty slot); never throws. */
+    public int keyCode(int slot) {
+        return keyCode(keyCodes, slot);
+    }
+
+    /** How many key codes this frame holds (the non-zero prefix of the canonical pack, 0..8). */
+    public int keyCount() {
+        int n = 0;
+        while (n < KEY_SLOTS && keyCode(keyCodes, n) != 0) {
+            n++;
+        }
+        return n;
+    }
+
+    /** Whether LWJGL key {@code code} (1..255) is held this frame — a scan of the 8 bytes; any other code answers false. */
+    public boolean hasKeyCode(int code) {
+        if (code < 1 || code > 255) {
+            return false;
+        }
+        for (int slot = 0; slot < KEY_SLOTS; slot++) {
+            int c = keyCode(keyCodes, slot);
+            if (c == code) {
+                return true;
+            }
+            if (c == 0 || c > code) {
+                return false;
+            }
+        }
+        return false;
     }
 
     /**
@@ -446,12 +588,13 @@ public record PilotIntentFrame(
      * verbatim; the canonical constructor re-validates the mask). Exists for the ingest-side
      * edge-bit OR-latch: the endpoint's one-slot PINT deposit is latest-wins, so a sub-tick
      * edge-bit pulse (a 1-render-frame system press at high fps) dies unless the take folds
-     * the window's ORed edge bits back onto the surviving frame.
+     * the window's ORed edge bits back onto the surviving frame. The v7 raw levels ride through verbatim
+     * (the latch stretches edge BITS, never the key levels).
      */
     public PilotIntentFrame withHeldControls(int newHeldControls) {
         return new PilotIntentFrame(shipId, frameSeq, cursorFacingDeg, newHeldControls, fireHeld,
                 selectedWeaponGroup, ownShipFacingDeg, aimWorldX, aimWorldY, autofireGroupsMask,
-                targetWireId, fireEdgeSeq, activeTubeOrdinal);
+                targetWireId, fireEdgeSeq, activeTubeOrdinal, keyCodes, mouseButtons, controlKeys);
     }
 
     /** The faithful movement intent this frame carries (keys + aim) for the BasicEngineAI lane. */
