@@ -132,7 +132,12 @@ public final class RealEngineVariantFacts {
 
     private static Map<String, WeaponFacts> weapons(Object settings) throws ReflectiveOperationException {
         Map<String, WeaponFacts> out = new LinkedHashMap<>();
-        Collection<?> specs = (Collection<?>) call(settings, "getAllWeaponSpecs");
+        // The UNFILTERED walk. getAllWeaponSpecs() drops every AIHints.SYSTEM /
+        // WeaponType.SYSTEM spec; the Aleste's rolled arm weapons are
+        // SYSTEM-hinted, so the realized-loadout mint failed "not in the weapon id table" and every window rolled
+        // its own. The id table's design = the FULL loaded set (ClientIdTableBoot mirrors this call); player
+        // submits still refuse SYSTEM weapons by the systemHint flag (VariantPolicy.weaponBase), never by absence.
+        Collection<?> specs = (Collection<?>) call(settings, "getActuallyAllWeaponSpecs");
         for (Object spec : specs) {
             String id = (String) call(spec, "getWeaponId");
             if (id == null || id.isEmpty()) {

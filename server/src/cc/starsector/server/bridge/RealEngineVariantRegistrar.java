@@ -40,7 +40,8 @@ import org.json.JSONObject;
  *
  * <p>Engine pass, in the design's check order (the pure half already ran on the reader thread):
  * #3 the ctor resolves hull/weapons (a throw = {@code custom_engine_rejected}); #5 every fitted
- * slot exists on the hull, is a player slot, and {@code weaponFits}; #4 vents/caps ≤ the refit
+ * slot exists on the hull, is a player slot, and {@code weaponFits} (a built-in slot passes only with the hull's
+ * own built-in weapon, or, for a {@link #registerRealized} body, any weapon that resolves); #4 vents/caps ≤ the refit
  * table 5/10/20/30/50 by size + the spawn person's {@code getMaxVentsBonus/getMaxCapacitorsBonus}
  * (transcribed from the refit screen — the ctor caps NOTHING); #6 built-in +
  * submitted wings ≤ {@code stats.getNumFighterBays()} (hullmod bays included); #8/#9/#10 each
@@ -51,7 +52,7 @@ import org.json.JSONObject;
  * own spec; the registry singleton is never handed to an engine object).
  *
  * <p>Single-writer law: the {@code B} map is an unsynchronized static HashMap read on the sim
- * thread — {@link #register} MUST run on the serve thread (the caller's drain band); the boot
+ * thread — {@link #register} and {@link #registerRealized} MUST run on the serve thread (the caller's drain band); the boot
  * keyset snapshot ({@code RealEngineDemoRoster.variantRegistryIds}) shares that thread.
  * Persistence: the accepted JSON is written to
  * {@code <persistDir>/<serveStamp>/<canonical>.variant} best-effort — evidence, not catalog.
@@ -115,6 +116,22 @@ public final class RealEngineVariantRegistrar implements CustomVariantLane.Regis
      * own registration, never a boot id); the pass itself is identical. */
     @Override
     public Verdict register(VariantDefinition canonical, boolean overwrite) {
+        return pass(canonical, overwrite, false);
+    }
+
+    /**
+     * The REALIZED posture (the interface's javadoc says why) — a mint, so
+     * {@code overwrite=false}; the one difference from {@link #register} is check #5's built-in slot branch, where
+     * a weapon that is not the hull's own built-in entry passes once its spec resolves (a mod swap hook wrote it
+     * there on the server's own member) instead of the peer tier's "not a player weapon slot" refusal.
+     */
+    @Override
+    public Verdict registerRealized(VariantDefinition canonical) {
+        return pass(canonical, false, true);
+    }
+
+    /** The engine pass both postures share; {@code realizedBody} = the {@link #registerRealized} call site. */
+    private Verdict pass(VariantDefinition canonical, boolean overwrite, boolean realizedBody) {
         Objects.requireNonNull(canonical, "canonical");
         if (canonical.variantId().startsWith(VariantPolicy.WENDIGO_PREFIX)) {
             return Verdict.rejected(DoorRejectReasons.CUSTOM_ENGINE_REJECTED, "wendigo prefix (B rewrite law)");
@@ -148,6 +165,7 @@ public final class RealEngineVariantRegistrar implements CustomVariantLane.Regis
             // #5: slot identity + weaponFits on the REAL slots.
             Method getSlot = RealEngineVariantFacts.method(hullSpec, "getWeaponSlotAPI", String.class);
             Method getWeaponSpec = RealEngineVariantFacts.method(settings, "getWeaponSpec", String.class);
+            int realizedBuiltInSlots = 0;
             for (WeaponGroup group : canonical.weaponGroups()) {
                 for (WeaponMount mount : group.weapons()) {
                     Object slot = getSlot.invoke(hullSpec, mount.slotId());
@@ -161,6 +179,17 @@ public final class RealEngineVariantRegistrar implements CustomVariantLane.Regis
                         Object ownWeapons = RealEngineVariantFacts.call(hullSpec, "getBuiltInWeapons");
                         Object own = ownWeapons instanceof java.util.Map<?, ?> m ? m.get(mount.slotId()) : null;
                         if (own != null && own.equals(mount.weaponId())) {
+                            continue;
+                        }
+                        // A REALIZED body's built-in slot may hold a weapon a mod
+                        // hook wrote into the server's own member (a swap hullmod's roll); the engine already built
+                        // that member, so the weapon need only resolve — the peer tier keeps the refusal below.
+                        if (realizedBody) {
+                            if (getWeaponSpec.invoke(settings, mount.weaponId()) == null) {
+                                return Verdict.rejected(DoorRejectReasons.CUSTOM_WEAPON_DENIED,
+                                        "weapon unknown: " + mount.weaponId());
+                            }
+                            realizedBuiltInSlots++;
                             continue;
                         }
                     }
@@ -315,7 +344,8 @@ public final class RealEngineVariantRegistrar implements CustomVariantLane.Regis
                     + " wings=" + canonical.wings().size() + "/" + (bays - builtIn)
                     + " smods=" + sMods + "/" + cap + " unused_op=" + unusedOp
                     + " person=" + personNote + " registered=" + registered
-                    + (overwrite ? " overwrite=true" : ""));
+                    + (overwrite ? " overwrite=true" : "")
+                    + (realizedBody ? " posture=realized builtin_slot_rolls=" + realizedBuiltInSlots : ""));
             return Verdict.accepted(unusedOp); // step 3(f): the ops row's seat.N.op reading
         } catch (ReflectiveOperationException | RuntimeException engineFault) {
             // Anything escaping PAST the ctor content check (#3 above

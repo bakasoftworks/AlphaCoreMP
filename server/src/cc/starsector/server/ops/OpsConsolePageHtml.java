@@ -135,6 +135,12 @@ import java.util.List;
  * the MagicLib select, last in {@code #pre-start} - the Start form's {@code pilotship.enabled} row (boot-time: the serve
  * changes ship scripts while it loads, so it locks while a server runs).
  *
+ * <p>Other players' screens follow each pilot's keys
+ * ({@code #f-pilot-replicas}, {@code setup.mods.pilotReplicas}, on | off with ON selected = the row's absent default,
+ * hint {@code #hint-pilot-replicas} + its help row) right after the player-ship select, last in {@code #pre-start} -
+ * the Start form's {@code pilotship.replicas} row (boot-time: the serve reads its config file once and caches it, so
+ * it locks while a server runs).
+ *
  * <p>The page opens dark ({@code color-scheme} meta = {@code dark}
  * alone, so no light canvas paints before {@code ops.css} lands); {@code #theme-toggle} (Light / Dark, help row
  * {@code tip-theme}) follows {@code #help-open} in {@code #nav} with no {@code data-section} and no
@@ -171,6 +177,12 @@ import java.util.List;
  * <p>A second id-only line, {@code #pilot-ship}, right after
  * {@code #magic-seam} in the MATCH cluster (whether each pilot's ship counts as the player's), hidden the same way
  * and likewise no control: no {@code data-cc}, so neither the bar's control order nor the parity id list moves.
+ *
+ * <p>The Mods table's Settings file column ({@code mods.col.settings}, the
+ * row template's {@code data-col="Settings"} cell) and, under the table, the settings-exclusion text field
+ * {@code #mods-luna-exclude} ({@code mods.lunaExclude}, at most 1024 characters, described by
+ * {@code #hint-mods-luna-exclude} + its help row). Both ids are page controls beside the parity list (not in
+ * {@link OpsParity#PACKAGE_IDS}).
  */
 final class OpsConsolePageHtml {
 
@@ -564,6 +576,11 @@ final class OpsConsolePageHtml {
 <div class="ctl"><select id="f-pilot-ship" data-cc="setup.mods.pilotShip" aria-describedby="hint-pilot-ship"><option selected>on</option><option>off</option></select></div>
 <p class="hint" id="hint-pilot-ship">writes pilotship.enabled; on = a ship's own scripts (hullmods, ship systems, weapons) treat the ship a player flies as the player's ship, as in single player, and read its pilot's keys; off = they treat it as an AI ship</p>
 </div>
+<div class="frow">
+<label for="f-pilot-replicas">Other players' screens follow each pilot's keys</label>
+<div class="ctl"><select id="f-pilot-replicas" data-cc="setup.mods.pilotReplicas" aria-describedby="hint-pilot-replicas"><option selected>on</option><option>off</option></select></div>
+<p class="hint" id="hint-pilot-replicas">writes pilotship.replicas; on = other players' screens run this pilot's ship scripts as that pilot's, reading the pilot's keys (needs the select above on; off while pilotship.exclude lists anything); off = other players see these abilities through the server's corrections</p>
+</div>
 </details>
 </fieldset>
 
@@ -674,7 +691,7 @@ final class OpsConsolePageHtml {
 
 <section id="sec-mods" hidden aria-labelledby="mods-title">
 <h2 id="mods-title">Mods for the next start</h2>
-<p id="mods-explainer" data-cc="mods.explainer">required = the serve loads it and every joiner must run it.  optional = joiners may run it (presentation only; the serve never loads it).  off = not used.  cc_client is always on and never listed.</p>
+<p id="mods-explainer" data-cc="mods.explainer">On = the next start uses it: required = the serve loads it and every joiner must run it; optional = joiners may run it (presentation only; the serve never loads it).  Unticked = installed, not used - tick it again any time.  Remove stops searching a mod you added from another folder (nothing on disk is deleted); a mod in serve-mods is unticked, forgets optional and stays listed.  cc_client is always on and never listed.</p>
 <h3 id="mods-roots-title">Folders searched</h3>
 <ul id="mods-roots" data-cc="mods.roots.list" aria-labelledby="mods-roots-title" aria-describedby="hint-mods-roots"></ul>
 <p class="hint" id="hint-mods-roots">the folders searched for mods (the mods.roots row); none named = the serve-mods folder of this package: extract a mod there, set it to required, press Start</p>
@@ -695,13 +712,19 @@ final class OpsConsolePageHtml {
 <th scope="col" data-cc="mods.col.version">Version</th>
 <th scope="col" data-cc="mods.col.use">Use</th>
 <th scope="col" data-cc="mods.col.folder">Folder</th>
+<th scope="col" data-cc="mods.col.settings">Settings file</th>
 <th scope="col"><span class="vh">Remove</span></th>
 </tr>
 </thead>
 <tbody id="mods-body"></tbody>
 </table>
 </div>
-<template id="tpl-mod-row"><tr><td data-col="Mod"></td><td data-col="Id"></td><td data-col="Version"></td><td data-col="Use"><select class="use" aria-label="Use"><option>off</option><option>required</option><option>optional</option></select></td><td data-col="Folder"></td><td><button type="button" class="remove" data-cc="mods.remove">Remove</button></td></tr></template>
+<template id="tpl-mod-row"><tr><td data-col="Mod"></td><td data-col="Id"></td><td data-col="Version"></td><td data-col="Use"><label class="check"><input type="checkbox" class="on" data-cc="mods.on" aria-label="On"> on</label><select class="use" aria-label="Use"><option>required</option><option>optional</option></select></td><td data-col="Folder"></td><td data-col="Settings"></td><td><button type="button" class="remove" data-cc="mods.remove">Remove</button></td></tr></template>
+<div class="ctl">
+<label for="mods-luna-exclude">Settings kept out of the sync (modId:fieldId, comma-separated)</label>
+<input id="mods-luna-exclude" data-cc="mods.lunaExclude" type="text" size="48" maxlength="1024" autocomplete="off" spellcheck="false" aria-describedby="hint-mods-luna-exclude">
+</div>
+<p class="hint" id="hint-mods-luna-exclude">the server sends its LunaLib mod settings to every joiner; a setting named here (mod id, a colon, the setting's fieldID from the mod's LunaSettings.csv) is never sent; key binds never are, nor the display settings of the mods this version knows; leaving the field or Enter saves it, used from the next start. Settings file = the file this server reads that mod's settings from at start; (defaults) = no file there yet, so the mod's own defaults</p>
 <p id="mods-status" data-cc="mods.status"></p>
 <p id="mods-write-fail" class="note-err" data-cc="mods.note.writeFail" hidden></p>
 </section>
@@ -822,6 +845,7 @@ final class OpsConsolePageHtml {
 <dt>Deterministic replay pins (RNG)</dt><dd data-hint="hint-rng-pins"></dd>
 <dt>MagicLib abilities follow the pilot</dt><dd data-hint="hint-magic-seam"></dd>
 <dt>Each pilot's ship counts as the player's</dt><dd data-hint="hint-pilot-ship"></dd>
+<dt>Other players' screens follow each pilot's keys</dt><dd data-hint="hint-pilot-replicas"></dd>
 <dt>Wave faction</dt><dd data-hint="hint-wave-category"></dd>
 <dt>Default ship for joiners</dt><dd data-hint="hint-joiner"></dd>
 <dt>Endless</dt><dd data-hint="hint-endless"></dd>
@@ -845,6 +869,7 @@ final class OpsConsolePageHtml {
             + """
 <dt>Rescan</dt><dd>re-read the searched folders and the properties rows</dd>
 <dt>Folders searched</dt><dd data-hint="hint-mods-roots"></dd>
+<dt>Settings kept out of the sync</dt><dd data-hint="hint-mods-luna-exclude"></dd>
 </dl>
 <div class="actions"><button value="close" id="help-close">Close</button></div>
 </form>

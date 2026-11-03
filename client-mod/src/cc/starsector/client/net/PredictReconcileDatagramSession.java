@@ -3357,7 +3357,7 @@ public final class PredictReconcileDatagramSession implements PredictSession {
     }
 
     /** The game thread's init-time keymap → {@link Hs13ReHelloFlights#setKeymap} (the holder every re-HELLO builds
-     *  from); the predict plugin's init calls it BEFORE {@link #armReAdmission}. Main-written */
+     *  from); the predict plugin's init calls it BEFORE {@link #armReAdmission}. */
     @Override
     public void setPilotKeymap(byte[] keymapOrNull) {
         hs13.setKeymap(keymapOrNull);

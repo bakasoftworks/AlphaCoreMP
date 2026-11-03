@@ -99,6 +99,10 @@ package cc.starsector.server.ops;
  * {@code SETUP_PREFILL} ({@code /api/config} {@code pilotShip}) and {@code CC.startForm} sends it as
  * {@code pilotShip} - the MagicLib select's twin.
  *
+ * <p>Other players' screens follow each pilot's keys
+ * ({@code #f-pilot-replicas}) rides {@code SETUP_PREFILL} ({@code /api/config} {@code pilotReplicas}) and
+ * {@code CC.startForm} sends it as {@code pilotReplicas} - the player-ship select's twin.
+ *
  * <p>Main's fold on that lane: the New match shape's Players ({@code #f-new-players}) is
  * prefilled from the picked base's {@code seats} ({@code /api/config} {@code options[].seats}; blank without a
  * decode), refilled when Based on changes, and sent as {@code players} in the {@code /api/shape-new} POST
@@ -140,6 +144,14 @@ package cc.starsector.server.ops;
  * sends {@code pvp} and {@code pvpStation} (= the Battle map station pick, the family an OFF switch brings back;
  * {@code '-'} = the stock station). {@code setupMapGate} enables the station picker (never its Apply) on a PvP file
  * while PvP mode is Off, re-run by the select's change listener.
+ *
+ * <p>The Mods rows carry {@code settings} into the row template's
+ * {@code data-col="Settings"} cell (textContent, like every cell); {@code modsRender} fills {@code #mods-luna-exclude}
+ * from the answer's {@code lunaSyncExclude} unless the field holds text the host typed and no save took yet
+ * ({@code data-dirty}). A committed edit ({@code change}: leaving the field; Enter blurs it) posts
+ * {@code op=exclude} + {@code lunaSyncExclude} through {@code modsOp}, the section's one write (busy while in flight,
+ * a refusal on the write-fail note, the section re-read after); only an accepted save clears {@code data-dirty}, so a
+ * refused list stays in the field beside the refusal that names its bad item.
  */
 final class OpsConsoleJsSetup {
 
@@ -167,7 +179,7 @@ final class OpsConsoleJsSetup {
               ['f-game-root-second', 'gameRootSecond'], ['f-record', 'record'],
               ['f-seats-per-source', 'seatsPerSource'], ['f-all-skills', 'allSkills'],
               ['f-rng-pins', 'rngPins'], ['f-magic-seam', 'magicSeam'], ['f-pilot-ship', 'pilotShip'],
-              ['f-pvp', 'pvp']];
+              ['f-pilot-replicas', 'pilotReplicas'], ['f-pvp', 'pvp']];
             // The PvP match shape: a picked file of this shape prefills PvP mode On.
             const SETUP_PVP_SHAPE = 'bastion:fortress:pvp';
             const SETUP_LOCK_WHY = 'Locked while a server runs.';
@@ -996,7 +1008,7 @@ final class OpsConsoleJsSetup {
 
             // ---- mods section ----
 
-            let modsRows = null; // the last GET /api/mods rows [{mod, id, version, use, folder}]; null = not loaded
+            let modsRows = null; // the last GET /api/mods rows [{mod, id, version, use, kind, folder, settings}]; null = not loaded
             const modsStr = (v) => (v === undefined || v === null ? '' : String(v));
 
             // The Start payload's two mod lists (comma-joined ids, row order): the section's rows once
@@ -1047,11 +1059,29 @@ final class OpsConsoleJsSetup {
               CC.text(CC.q('[data-col="Id"]', frag), r.id);
               CC.text(CC.q('[data-col="Version"]', frag), r.version);
               CC.text(CC.q('[data-col="Folder"]', frag), r.folder);
+              CC.text(CC.q('[data-col="Settings"]', frag), r.settings);
+              // The game launcher's own shape: an On box per mod + the kind of use while on (a host
+              // disables a mod for a while without removing it). Unticked = off; the row stays, the kind box
+              // greys and shows the serve's kind for it: the serve remembers an off mod's optional kind in
+              // mods.offOptional, so a re-tick (or a reload) restores it. The wire stays off|required|optional.
+              const on = CC.q('input.on', frag);
               const sel = CC.q('select.use', frag);
-              setupSetValue(sel, r.use);
+              const used = r.use === 'required' || r.use === 'optional';
+              on.checked = used;
+              setupSetValue(sel, used ? r.use : (r.kind === 'optional' ? 'optional' : 'required'));
+              sel.disabled = !used;
+              const send = (use, busy) => {
+                r.use = use;
+                modsOp({op: 'use', id: r.id, use}, busy, 'mods: use sent');
+              };
+              on.addEventListener('change', () => {
+                sel.disabled = !on.checked;
+                send(on.checked ? sel.value : 'off', on);
+              });
               sel.addEventListener('change', () => {
-                r.use = sel.value;
-                modsOp({op: 'use', id: r.id, use: sel.value}, sel, 'mods: use sent');
+                if (on.checked) {
+                  send(sel.value, sel);
+                }
               });
               const rm = CC.q('button.remove', frag);
               // Swing's row Remove, by id for every row (a folder cell may be prose, never a path):
@@ -1075,12 +1105,17 @@ final class OpsConsoleJsSetup {
                 modsRootRow(list, '(none - add one)');
               }
               modsRows = (Array.isArray(a.rows) ? a.rows : []).map((r) => ({
-                mod: modsStr(r.mod), id: modsStr(r.id), version: modsStr(r.version),
-                use: modsStr(r.use), folder: modsStr(r.folder)}));
+                mod: modsStr(r.mod), id: modsStr(r.id), version: modsStr(r.version), use: modsStr(r.use),
+                kind: modsStr(r.kind), folder: modsStr(r.folder), settings: modsStr(r.settings)}));
               const body = CC.el('mods-body');
               body.replaceChildren();
               for (const r of modsRows) {
                 modsModRow(body, r);
+              }
+              // the saved exclusion list, unless the host has unsaved (or refused) text in the field
+              const exclude = CC.el('mods-luna-exclude');
+              if (exclude.dataset.dirty !== '1') {
+                exclude.value = modsStr(a.lunaSyncExclude);
               }
               CC.text(CC.el('mods-status'), modsStr(a.status));
             };
@@ -1118,6 +1153,28 @@ final class OpsConsoleJsSetup {
             CC.el('mods-rescan').addEventListener('click',
               () => modsOp({op: 'rescan'}, CC.el('mods-rescan'), 'mods: rescan sent'));
 
+            // The settings-exclusion list saves through the section's own write when the host commits an
+            // edit (leaving the field, or Enter, which leaves it). Typed text is kept over re-reads until a
+            // save is taken, so a refused list stays in the field next to the note naming the bad item.
+            const modsExclude = CC.el('mods-luna-exclude');
+            modsExclude.addEventListener('input', () => {
+              modsExclude.dataset.dirty = '1';
+            });
+            modsExclude.addEventListener('keydown', (e) => {
+              if (e.key === 'Enter' && !e.repeat) {
+                e.preventDefault();
+                modsExclude.blur();
+              }
+            });
+            modsExclude.addEventListener('change', () => {
+              modsOp({op: 'exclude', lunaSyncExclude: modsExclude.value}, modsExclude,
+                'mods: settings exclusions sent').then((ok) => {
+                if (ok) {
+                  delete modsExclude.dataset.dirty;
+                }
+              });
+            });
+
             // ---- the Start payload + the module ----
 
             // /api/start (the tri-state password rule): the five non-nullable keys always; a password only
@@ -1151,6 +1208,7 @@ final class OpsConsoleJsSetup {
                 rngPins: CC.el('f-rng-pins').value,
                 magicSeam: CC.el('f-magic-seam').value,
                 pilotShip: CC.el('f-pilot-ship').value,
+                pilotReplicas: CC.el('f-pilot-replicas').value,
                 pvp: CC.el('f-pvp').value,
                 pvpStation: CC.el('f-map-station').value,
                 gameRoot: CC.el('f-game-root').value,

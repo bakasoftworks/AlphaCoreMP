@@ -414,6 +414,10 @@ final class OpsConsoleForms {
      * <p>{@code pilotShip} (the player-ship word, on|off) obeys it
      * too: absent = {@code null} = the {@code pilotship.enabled} row untouched; present = the text as
      * sent, refused by {@link OpsMatchRows#parsePilotShip} unless on|off.
+     *
+     * <p>{@code pilotReplicas} (the replicas word, on|off) obeys it
+     * too: absent = {@code null} = the {@code pilotship.replicas} row untouched; present = the text as
+     * sent, refused by {@link OpsMatchRows#parsePilotReplicas} unless on|off.
      */
     static OpsWindowModel.StartFields startFields(Map<String, List<String>> form, String selDescriptor,
             ServerOpsCore.DescriptorInfo selInfo, String keptMatchPassword) {
@@ -432,7 +436,7 @@ final class OpsConsoleForms {
                 first(form, "asteroids"), first(form, "waveRosterFullDp"),
                 first(form, "waveRosterMultiplier"), first(form, "seatsPerSource"), first(form, "allSkills"),
                 first(form, "rngPins"), false, first(form, "pvp"), first(form, "pvpStation"),
-                first(form, "magicSeam"), first(form, "pilotShip"));
+                first(form, "magicSeam"), first(form, "pilotShip"), first(form, "pilotReplicas"));
     }
 
     static String matchPasswordText(Map<String, List<String>> form, String kept) {

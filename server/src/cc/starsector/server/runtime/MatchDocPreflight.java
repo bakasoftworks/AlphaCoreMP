@@ -23,7 +23,7 @@ import java.util.List;
  * <p>Server-only (never bundled): the boot and the Start path call it; a token-mode serve (no match password)
  * never does - it serves no document.
  *
- * <p>Main-written pre-launch seam (the L5a / L5b lanes build on it)
+ * <p>pre-launch seam (the L5a / L5b lanes build on it)
  */
 public final class MatchDocPreflight {
 

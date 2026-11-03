@@ -1,0 +1,4 @@
+Manifest-Version: 1.0
+Premain-Class: cc.starsector.compat.agent.CompatPremain
+Can-Redefine-Classes: false
+Can-Retransform-Classes: false

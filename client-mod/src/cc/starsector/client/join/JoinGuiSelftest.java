@@ -453,6 +453,8 @@ final class JoinGuiSelftest {
         selftestModStageDigestOnce(tmp);
         selftestVoiceCore();
         selftestLaunchGates(tmp);
+        selftestLunaSidecar(tmp);
+        selftestLunaCollector();
         selftestRefreshMatch(tmp);
         selftestOneAdopt();
         selftestKitDiffersOneCopy();
@@ -1443,6 +1445,210 @@ final class JoinGuiSelftest {
         if (!ok) {
             throw new AssertionError("join-gui selftest FAILED: " + what);
         }
+    }
+
+    /** The fixed exchange root the LUNA rows seal and open under (a test value; never a live flight's root). */
+    private static final byte[] LUNA_ROOT = new byte[96];
+    static {
+        for (int i = 0; i < LUNA_ROOT.length; i++) {
+            LUNA_ROOT[i] = (byte) (0x5a ^ i);
+        }
+    }
+
+    /**
+     * Rows {@code luna-collector}: the probe collector's settings-sheet holder and announce check, driven through
+     * {@link DoorProbe.Collector#offer} with sealed LUNA chunks (a fixed-root opener), a hand-built KIND_MODSET
+     * frame whose FIRST row is the announce, and the canned ship listing. Whole sheet = the text, the announce row
+     * stripped from the mod rows; one chunk dropped = hold, then {@code refused:incomplete} (never {@code none});
+     * the no-sheet term = {@code none}; count / digest / term breaches refuse by name; a lost announce frame keeps
+     * a sheet-carrying fetch undecided. Also the launch face's {@code lunaSync} reader.
+     *
+     */
+    private static void selftestLunaCollector() {
+        String row = "luna-collector";
+        List<cc.starsector.server.runtime.LunaSheetCodec.Row> rows = new ArrayList<>();
+        long seed = 0x1493L;
+        for (int i = 0; i < 60; i++) {
+            StringBuilder value = new StringBuilder();
+            for (int k = 0; k < 90; k++) {
+                seed = seed * 6364136223846793005L + 1442695040888963407L;
+                value.append("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".charAt(
+                        (int) ((seed >>> 33) % 62)));
+            }
+            rows.add(new cc.starsector.server.runtime.LunaSheetCodec.Row(i < 30 ? "modA" : "modB", "field" + i,
+                    cc.starsector.server.runtime.LunaSheetCodec.TYPE_STRING, value.toString()));
+        }
+        String text = cc.starsector.server.runtime.LunaSheetCodec.canonicalText(rows);
+        byte[][] chunks = lunaChunks(text);
+        check(chunks.length >= 2, "SETUP-" + row + ": the sheet seals to " + chunks.length + " chunk(s), want >= 2");
+        String term = cc.starsector.server.runtime.LunaSheetCodec.announceTerm(text, 60);
+
+        DoorProbe.Collector whole = lunaCollector();
+        offerLuna(whole, chunks, -1);
+        check(!whole.offer(LUNA_DOOR, modsetFrame(term), modsetFrame(term).length) || !whole.done(),
+                "SETUP-" + row + ": the modset frame alone decided the fetch");
+        check(whole.offer(LUNA_DOOR, shipFrame(), shipFrame().length) && whole.done() && !whole.wantsHold(),
+                row + ": a whole announced sheet + the listing decides with no hold (flips if a held whole sheet"
+                        + " keeps the receive loop open)");
+        DoorProbe.Result ok = whole.result("no reply");
+        check(DoorProbe.LUNA_OK.equals(ok.lunaStatus) && text.equals(ok.lunaText)
+                        && cc.starsector.server.runtime.LunaSheetCodec.decode(ok.lunaText).rows().size() == 60,
+                row + ": the whole sheet decodes to its 60 rows on the Result (status " + ok.lunaStatus + "; flips if"
+                        + " the LUNA holder, its opener or the count/digest check breaks)");
+        check(ok.mods.size() == 1 && "modA".equals(ok.mods.get(0).id) && ok.modsAvailable == 1 && ok.modsComplete,
+                row + ": the announce row is stripped from the mod rows and the totals (mods " + ok.mods.size()
+                        + ", available " + ok.modsAvailable + ", complete " + ok.modsComplete + "; flips if the"
+                        + " announce reaches the mod diff or the totals miscount it)");
+        check("Settings: the server sends 60 values for 2 mods.".equals(JoinLaunchGates.lunaLine(ok))
+                        && JoinLaunchGates.lunaOk(ok),
+                row + ": the page line counts rows and distinct mods (got " + JoinLaunchGates.lunaLine(ok) + ")");
+
+        DoorProbe.Collector lost = lunaCollector();
+        offerLuna(lost, chunks, 1);
+        lost.offer(LUNA_DOOR, modsetFrame(term), modsetFrame(term).length);
+        lost.offer(LUNA_DOOR, shipFrame(), shipFrame().length);
+        check(lost.done() && lost.wantsHold() && lost.lunaChunksHeld() == chunks.length - 1,
+                row + ": one chunk dropped = the decided fetch HOLDS for it (flips if an incomplete announced"
+                        + " sheet ends the receive loop at the listing)");
+        DoorProbe.Result incomplete = lost.result("no reply");
+        check("refused:incomplete".equals(incomplete.lunaStatus) && incomplete.lunaText == null
+                        && !JoinLaunchGates.lunaOk(incomplete)
+                        && "Settings: refused (incomplete) - press Refresh.".equals(JoinLaunchGates.lunaLine(incomplete)),
+                row + ": a dropped chunk reads refused:incomplete, never none (got " + incomplete.lunaStatus
+                        + "; flips if a lost chunk conceals the sheet as absent)");
+
+        DoorProbe.Collector noAnnounce = lunaCollector();
+        offerLuna(noAnnounce, chunks, -1);
+        noAnnounce.offer(LUNA_DOOR, shipFrame(), shipFrame().length);
+        check(!noAnnounce.done() && "refused:incomplete".equals(noAnnounce.result("no reply").lunaStatus),
+                row + ": sheet chunks + the ship listing without the announce frame stay undecided and read"
+                        + " refused:incomplete (flips if the ship listing alone ends a sheet-carrying fetch)");
+
+        DoorProbe.Collector none = lunaCollector();
+        none.offer(LUNA_DOOR, modsetFrame(cc.starsector.server.runtime.LunaSheetCodec.NO_SHEET_TERM),
+                modsetFrame(cc.starsector.server.runtime.LunaSheetCodec.NO_SHEET_TERM).length);
+        none.offer(LUNA_DOOR, shipFrame(), shipFrame().length);
+        DoorProbe.Result noneResult = none.result("no reply");
+        check(none.done() && !none.wantsHold() && DoorProbe.LUNA_NONE.equals(noneResult.lunaStatus)
+                        && noneResult.lunaText == null && "Settings: none.".equals(JoinLaunchGates.lunaLine(noneResult))
+                        && noneResult.mods.size() == 1,
+                row + ": the no-sheet term + no chunks = none, no hold (got " + noneResult.lunaStatus + "; flips if"
+                        + " the no-sheet term is refused or holds)");
+
+        DoorProbe.Collector bare = lunaCollector();
+        check(bare.offer(LUNA_DOOR, shipFrame(), shipFrame().length) && bare.done()
+                        && "refused:incomplete".equals(bare.result("no reply").lunaStatus),
+                row + ": a ship listing with no modset frame and no sheet chunk decides, its sheet state"
+                        + " refused:incomplete (never none: the announce was lost)");
+
+        String[][] breaches = {
+            {term.substring(0, 17) + "61", "refused:count"},
+            {"0000000000000000:60", "refused:digest"},
+            {"not-a-term", "refused:announce"},
+        };
+        for (String[] b : breaches) {
+            DoorProbe.Collector c = lunaCollector();
+            offerLuna(c, chunks, -1);
+            c.offer(LUNA_DOOR, modsetFrame(b[0]), modsetFrame(b[0]).length);
+            c.offer(LUNA_DOOR, shipFrame(), shipFrame().length);
+            DoorProbe.Result r = c.result("no reply");
+            check(b[1].equals(r.lunaStatus) && r.lunaText == null,
+                    row + ": a term the sheet does not match reads " + b[1] + " (got " + r.lunaStatus + "; flips if"
+                            + " the announced count / digest / term law is not checked)");
+        }
+
+        check("set:3/1 missing:0 skipped:1 digest:0123456789abcdef".equals(JoinBrowserUi.lunaSyncOf(
+                                "{\"ok\":true,\"lunaSync\":\"set:3\\/1 missing:0 skipped:1 digest:0123456789abcdef\"}"))
+                        && JoinBrowserUi.LUNA_SYNC_OLDER_KIT.equals(JoinBrowserUi.lunaSyncOf("{\"ok\":true}"))
+                        && JoinBrowserUi.LUNA_SYNC_UNREADABLE.equals(JoinBrowserUi.lunaSyncOf(
+                                "{\"lunaSync\":\"<b>\"}")),
+                row + ": the launch face reads api/ping's lunaSync (an escaped slash unescaped), an absent key ="
+                        + " the older-kit line, an off-charset value = unreadable (flips if the reader drops the"
+                        + " value or passes markup)");
+    }
+
+    private static final InetSocketAddress LUNA_DOOR = new InetSocketAddress("127.0.0.1", 51821);
+
+    /** A collector at {@link #LUNA_DOOR} whose LUNA opener opens under {@link #LUNA_ROOT} only. */
+    private static DoorProbe.Collector lunaCollector() {
+        DoorProbe.Collector c = new DoorProbe.Collector(LUNA_DOOR);
+        c.lunaOpener(p -> {
+            cc.starsector.server.runtime.MatchDocFrameCodec.Decoded d = cc.starsector.server.runtime.MatchDocFrameCodec
+                    .decode(cc.starsector.server.runtime.MatchDocFrameCodec.Kind.LUNA, LUNA_ROOT, p);
+            return d.reason() == cc.starsector.server.runtime.MatchDocFrameCodec.OK ? d.chunk() : null;
+        });
+        return c;
+    }
+
+    /** {@code text} sealed as one LUNA reply under {@link #LUNA_ROOT} (the server's encode, a fixed salt). */
+    private static byte[][] lunaChunks(String text) {
+        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        byte[] salt = new byte[cc.starsector.server.runtime.MatchDocFrameCodec.SALT_BYTES];
+        Arrays.fill(salt, (byte) 0x31);
+        return cc.starsector.server.runtime.MatchDocFrameCodec.encodeReply(
+                cc.starsector.server.runtime.MatchDocFrameCodec.Kind.LUNA, LUNA_ROOT, salt,
+                cc.starsector.server.runtime.MatchDocFrameCodec.deflate(
+                        cc.starsector.server.runtime.MatchDocFrameCodec.Kind.LUNA, bytes), bytes.length);
+    }
+
+    /** Every chunk as a CTRL datagram (seq = its index) except {@code skip} (-1 = none). */
+    private static void offerLuna(DoorProbe.Collector c, byte[][] chunks, int skip) {
+        for (int i = 0; i < chunks.length; i++) {
+            if (i != skip) {
+                byte[] d = DatagramFrameCodec.encode(DatagramFrameCodec.WireChannel.CTRL, 3, 0L, i, 0L, 0, 0L, chunks[i]);
+                check(!c.offer(LUNA_DOOR, d, d.length), "SETUP-luna-collector: a sheet chunk decided the fetch");
+            }
+        }
+    }
+
+    /** The canned ship listing as a CTRL datagram (seq 0). */
+    private static byte[] shipFrame() {
+        return DatagramFrameCodec.encode(DatagramFrameCodec.WireChannel.CTRL, 3, 0L, 0L, 0L, 0, 0L,
+                hex(SELFTEST_LSTD_HEX));
+    }
+
+    /**
+     * One KIND_MODSET listing frame (seq 0 of 1) as a CTRL datagram: the announce row ({@code ~luna}, version label =
+     * {@code term}) FIRST, then the mod row {@code modA} 1.0 — hand-built to the reader's layout (the client tree
+     * bundles the reader only), CRC32 over the frame.
+     */
+    private static byte[] modsetFrame(String term) {
+        String[][] entries = {{cc.starsector.server.runtime.LunaSheetCodec.ANNOUNCE_TOKEN, term}, {"modA", "1.0"}};
+        int n = entries.length;
+        byte[] f = new byte[ClientListingReader.frameBytes(n)];
+        java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(f);
+        b.putInt(ClientListingReader.MAGIC);
+        b.putInt(ClientListingReader.MESSAGE_TYPE_CODE);
+        b.putShort((short) ClientListingReader.SCHEMA_VERSION);
+        b.putInt(0);
+        b.put((byte) ClientListingReader.KIND_MODSET);
+        b.putInt(1);
+        b.put((byte) 0);
+        b.put((byte) 1);
+        b.putShort((short) n);
+        b.putShort((short) n);
+        b.put((byte) n);
+        for (String[] e : entries) {
+            int at = b.position();
+            byte[] token = e[0].getBytes(StandardCharsets.US_ASCII);
+            b.put((byte) token.length);
+            b.put(token);
+            b.position(at + 1 + ClientListingReader.TOKEN_BUFFER_BYTES);
+            b.put((byte) ClientListingReader.MARK_MODSET_REQUIRED);
+            b.put((byte) 0);
+            at = b.position();
+            byte[] label = e[1].getBytes(StandardCharsets.US_ASCII);
+            b.put((byte) label.length);
+            b.put(label);
+            b.position(at + 1 + ClientListingReader.TARGET_LABEL_BUFFER_BYTES);
+            b.put((byte) 0);
+            b.position(b.position() + ClientListingReader.OCCUPANT_LABEL_BUFFER_BYTES);
+            b.putLong(0L);
+        }
+        CRC32 crc = new CRC32();
+        crc.update(f, 0, f.length - Integer.BYTES);
+        b.putInt((int) crc.getValue());
+        return DatagramFrameCodec.encode(DatagramFrameCodec.WireChannel.CTRL, 3, 0L, 0L, 0L, 0, 0L, f);
     }
 
     private static void checkThrows(Runnable action, String what) {

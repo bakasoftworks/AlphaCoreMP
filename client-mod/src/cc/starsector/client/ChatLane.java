@@ -100,6 +100,9 @@ public final class ChatLane {
     private static final ChatInputLaw.History CHAT_HISTORY = new ChatInputLaw.History();
 
     private ChatInputLaw chatInput = new ChatInputLaw(CHAT_HISTORY);
+    /** The box state the edge log last reported (render
+     *  thread only; a fresh law starts closed, so false). See {@link #logChatBoxEdge}. */
+    private boolean chatBoxLoggedOpen;
     private boolean chatLaneDead;
     // wq P24 → v2: this round's picker-save count
     // (PeerBuildVerbLaw.SAVES_PER_ROUND; re-armed per round in resetForMatchReset). Render thread
@@ -201,6 +204,7 @@ public final class ChatLane {
         } catch (Throwable t) {
             chatLaneDead = true;
             chatInput = new ChatInputLaw(CHAT_HISTORY);
+            logChatBoxEdge(); // an open box force-closed here = CLOSED(reset)
             PilotWatchLog.error("predict chat-typing-line: draw FAILED, chat lane disabled until"
                     + " next round: " + t, t);
         }
@@ -227,6 +231,9 @@ public final class ChatLane {
             return;
         }
         try {
+            // The EDGE frame — the box may close on this pass's Enter / Escape, and the sampler that
+            // latches its still-held last letter runs later in advance; blocking on wasOpen too covers that frame.
+            boolean wasOpen = chatInput.isOpen();
             for (InputEventAPI event : events) {
                 if (event.isConsumed() || !event.isKeyboardEvent()) {
                     continue;
@@ -359,14 +366,38 @@ public final class ChatLane {
                             0, "chat", "too fast"));
                 }
             }
-            if (chatInput.isOpen()) {
+            logChatBoxEdge();
+            if (wasOpen || chatInput.isOpen()) {
                 plugin.blockShipKeyCommandsWhileTyping();
             }
         } catch (Throwable t) {
             chatLaneDead = true;
+            logChatBoxEdge(); // the edge this frame's keys made before the fault, with its own cause
             chatInput = new ChatInputLaw(CHAT_HISTORY); // force-closed: never leave the keyboard captured
+            logChatBoxEdge(); // still open at the fault = CLOSED(reset)
             PilotWatchLog.error("predict chat-input: feed FAILED, chat lane disabled until next round: " + t, t);
         }
+    }
+
+    /**
+     * The chat box OPEN / CLOSED edge log, always on: one
+     * watch row per edge (a few per match, never per frame), stamped with the plugin's advance
+     * count so a held ship key sampled on a given advance can be placed inside or outside an open
+     * box (the box blocks ship keys while open); without it, whether the box was open at a given
+     * key tap could only be recalled, never read. The compare runs against the state
+     * the log last reported (on the normal path that IS the frame-start state), so a second call
+     * on a fault path never repeats an edge. Only the close-cause token is logged, never the
+     * buffer. A box that opens and closes inside ONE frame's events leaves no row (frame edges only).
+     */
+    private void logChatBoxEdge() {
+        boolean open = chatInput.isOpen();
+        if (open == chatBoxLoggedOpen) {
+            return;
+        }
+        chatBoxLoggedOpen = open;
+        PilotWatchLog.info(open
+                ? "predict chat: box OPEN @advance=" + plugin.advFrames
+                : "predict chat: box CLOSED(" + chatInput.lastCloseCause() + ") @advance=" + plugin.advFrames);
     }
 
     /** A push-to-talk key's display name for the local /help block — LWJGL's own

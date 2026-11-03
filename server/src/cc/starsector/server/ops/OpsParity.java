@@ -77,6 +77,10 @@ public final class OpsParity {
      *  shown in BOTH modes (never package-only), its page twin landed with it - 103 in the list.
      *  + {@code setup.mods.pilotShip} (Each pilot's ship counts as the
      *  player's), shown in BOTH modes (never package-only), its page twin landed with it - 104 in the list.
+     *  + {@code setup.mods.pilotReplicas} (Other players' screens follow
+     *  each pilot's keys), shown in BOTH modes (never package-only), its page twin landed with it - 105 in the list.
+     *  + {@code mods.on} (the Mods table's On box per row, the vanilla launcher's shape;
+     *  the Use combo keeps required / optional, greyed while off), shown in BOTH modes - 106 in the list.
      *  The {@code WEB_TWIN_PENDING} list (the parity port's hatch: a control that landed before its
      *  page twin was skipped by the twin row) is DELETED
      * - an id listed here without a page twin turns {@code parity-web-twin} red as soon as
@@ -98,7 +102,7 @@ public final class OpsParity {
             "setup.reach", "setup.gameRoot",
             "setup.tickRate", "setup.record",
             "setup.net.seatsPerSource", "setup.officer.allSkills", "setup.replay.rngPins",
-            "setup.mods.magicSeam", "setup.mods.pilotShip",
+            "setup.mods.magicSeam", "setup.mods.pilotShip", "setup.mods.pilotReplicas",
             "setup.map.half", "setup.map.apply", "setup.map.station", "setup.map.stationApply",
             "setup.map.backdrop", "setup.map.backdropApply", "setup.map.deployCr",
             "setup.map.deployCrApply",
@@ -111,7 +115,7 @@ public final class OpsParity {
             "voice.enabled", "voice.fec", "voice.bitrateKbps", "voice.frameMs", "voice.complexity",
             "voice.maxTalkers", "voice.proxFullSu", "voice.proxCullSu", "voice.relayTickMs",
             "voice.jitterMinFrames", "voice.jitterMaxMs", "voice.jitterShrinkMs", "voice.apply",
-            "mods.table", "mods.col.mod", "mods.col.id", "mods.col.version", "mods.col.use",
+            "mods.table", "mods.col.mod", "mods.col.id", "mods.col.version", "mods.col.use", "mods.on",
             "mods.col.folder", "mods.roots.add", "mods.remove", "mods.rescan");
 
     /** The owner-mode-only controls (the page's {@code CC.packageChrome} hides them in a

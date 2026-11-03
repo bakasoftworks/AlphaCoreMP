@@ -21,8 +21,14 @@ import java.util.zip.Inflater;
  * {@code ciphertext (<= CHUNK_MAX) || tag 16 B}. One frame is at most {@link #FRAME_MAX} = one datagram
  * payload, so a chunk never fragments.
  *
+ * <p><b>Kinds</b> ({@link Kind}): the same chunk law carries a SECOND probe-reply document, the LunaSettings
+ * sheet ({@link LunaSheetCodec}, magic {@code "LUNA"}). A kind owns only what keeps its documents apart - its
+ * magic and wire type (the envelope check), its HKDF label (the seal key) and its text cap - and every form
+ * without a {@code Kind} argument is the DESC form, byte-for-byte what it was before the kinds existed.
+ *
  * <p><b>Sealing</b> (ChaCha20-Poly1305 via {@link HandshakeCrypto#seal}): {@code key = HKDF-SHA256(root,
- * docSalt, "cc-hs14 match doc", 32)} once per reply (and once per decode), {@code nonce = eleven zero bytes
+ * docSalt, label, 32)} (DESC's label {@code "cc-hs14 match doc"}, LUNA's {@link LunaSheetCodec#LABEL}) once per
+ * reply (and once per decode), {@code nonce = eleven zero bytes
  * || index}, AAD = the 24 B header, plain = that chunk's slice of the deflated document. WHY per-chunk AEAD
  * under a per-reply salt: every frame verifies ALONE (a lost datagram costs one chunk, never the reply, and
  * a frame needs no neighbour to be judged), and the sender draws a fresh salt per reply, so the key is fresh
@@ -32,11 +38,13 @@ import java.util.zip.Inflater;
  * freshness is the SENDER's law: two seals under one root + salt over different bytes would reuse a nonce.
  *
  * <p>Shared: bundled into the client mod jar and run under the game's script classloader, so this class is
- * byte[] in / byte[] out - {@code java.util.zip}, {@link WireByteOps}, {@link HandshakeCrypto} and the
- * document caps of {@link MatchDocumentLaws} only; no stream IO, no regex, no reflection, and no reference
- * to the server-only message registry (the wire type code is computed here from the twin message id, and a
- * contract row pins both equal). It counts nothing: every non-OK reason and every null is the caller's to
- * count.
+ * byte[] in / byte[] out - {@code java.util.zip}, {@link WireByteOps}, {@link HandshakeCrypto}, the
+ * document caps of {@link MatchDocumentLaws} and the sheet constants of {@link LunaSheetCodec} only (which
+ * must ride the kit beside this class: {@link Kind#LUNA} reads its wire type at class init); no stream IO,
+ * no regex, no reflection, and no reference to the server-only message registry (each wire type code is
+ * computed locally from its twin message id - DESC's here, LUNA's in {@link LunaSheetCodec} - and a contract
+ * row pins each equal to its registry entry). It counts nothing: every non-OK reason and every null is the
+ * caller's to count.
  *
  *
  */
@@ -77,7 +85,7 @@ public final class MatchDocFrameCodec {
     public static final int CHUNKS_MAX = MatchDocumentLaws.CHUNKS_MAX;
     /** The deflated document's size at most ({@code CHUNKS_MAX * CHUNK_MAX}). */
     public static final int DEFLATED_MAX = MatchDocumentLaws.DEFLATED_MAX;
-    /** The document text's UTF-8 size at most - the one inflate buffer's ceiling. */
+    /** The DESC document text's UTF-8 size at most - its one inflate buffer's ceiling ({@link Kind#textMax} per kind). */
     public static final int TEXT_MAX = MatchDocumentLaws.TEXT_MAX;
     /** One frame at most: one datagram payload ({@code 16 + 24 + CHUNK_MAX + 16 + 4}). */
     public static final int FRAME_MAX = DatagramFrameCodec.MAX_PAYLOAD_BYTES;
@@ -101,8 +109,10 @@ public final class MatchDocFrameCodec {
     private static final int OFF_BODY = ENVELOPE_HEADER_BYTES;
     private static final int OFF_SALT = OFF_BODY + 8;
     private static final int OFF_SEALED = OFF_BODY + BODY_HEADER_BYTES;
+    /** DESC's HKDF info label; {@link Kind#DESC} derives under the same literal. */
+    private static final String DESC_LABEL = "cc-hs14 match doc";
     /** Both literals are printable ASCII, so these bytes ARE their UTF-8 bytes (no charset class needed). */
-    private static final byte[] LABEL = ascii("cc-hs14 match doc");
+    private static final byte[] LABEL = ascii(DESC_LABEL);
 
     private static final Decoded DECODED_BAD_ENVELOPE = new Decoded(BAD_ENVELOPE, null);
     private static final Decoded DECODED_BAD_HEADER = new Decoded(BAD_HEADER, null);
@@ -117,6 +127,61 @@ public final class MatchDocFrameCodec {
     }
 
     private MatchDocFrameCodec() {
+    }
+
+    /**
+     * The document one reply carries: {@link #DESC} = the redacted match document, {@link #LUNA} = the
+     * LunaSettings sheet. Both ride the SAME chunk law (envelope layout, body header, {@link #CHUNK_MAX},
+     * {@link #CHUNKS_MAX}, {@link #DEFLATED_MAX}, per-chunk AEAD); a kind owns only what keeps the two apart. Its
+     * {@code magic} and {@code wireTypeCode} are what the envelope check reads, so a chunk of the other kind is a
+     * {@link #BAD_ENVELOPE}; its {@code label} is the HKDF info its seal key derives under, and since the AAD
+     * covers only the 24 B body header, that label split is what makes a chunk re-enveloped as the other kind
+     * fail its tag ({@link #BAD_TAG}) instead of opening; its {@code textMax} bounds the text total a header may
+     * declare and the one inflate buffer (1..{@code textMax}, both under the u16 field).
+     *
+     * <p>Class-init law: no static initializer of the outer class names a {@code Kind}, so these constants (which
+     * read {@link #WIRE_TYPE_CODE} and {@link LunaSheetCodec#WIRE_TYPE_CODE}) always meet both owners fully
+     * initialized; an outer static field holding a kind would let a constant read a zero wire type.
+     *
+     *
+     */
+    public enum Kind {
+        /** The redacted match document: magic {@code "DESC"}, wire type {@code server.match_document}. */
+        DESC(MAGIC, DESC_LABEL, WIRE_TYPE_CODE, MatchDocumentLaws.TEXT_MAX),
+        /** The LunaSettings sheet: magic {@code "LUNA"}, wire type {@code server.luna_sheet}. */
+        LUNA(LunaSheetCodec.MAGIC, LunaSheetCodec.LABEL, LunaSheetCodec.WIRE_TYPE_CODE, LunaSheetCodec.TEXT_MAX);
+
+        private final int magic;
+        private final byte[] label;
+        private final int wireTypeCode;
+        private final int textMax;
+
+        Kind(int magic, String label, int wireTypeCode, int textMax) {
+            this.magic = magic;
+            this.label = ascii(label);
+            this.wireTypeCode = wireTypeCode;
+            this.textMax = textMax;
+        }
+
+        /** The envelope's u32 magic. */
+        public int magic() {
+            return magic;
+        }
+
+        /** The HKDF info label of this kind's seal key, as a copy. */
+        public byte[] label() {
+            return label.clone();
+        }
+
+        /** The envelope's u32 wire type (CRC32 of the kind's message id). */
+        public int wireTypeCode() {
+            return wireTypeCode;
+        }
+
+        /** The text total's ceiling: the UTF-8 size of this kind's document at most. */
+        public int textMax() {
+            return textMax;
+        }
     }
 
     /** The HKDF info label ({@code "cc-hs14 match doc"}), as a copy. */
@@ -137,16 +202,21 @@ public final class MatchDocFrameCodec {
     }
 
     /**
-     * One verified chunk: its place ({@code index} of {@code count}), the reply's totals, the reply's salt and
-     * the opened plain bytes. The constructor enforces every law {@link #decode} checks (so a held chunk is
-     * always well-formed and a complete set concatenates to exactly {@code deflatedTotal} bytes) and copies
-     * both arrays; the accessors hand out copies, so no holder can change a chunk after the fact.
+     * One verified chunk: the document {@code kind} whose seal it opened under, its place ({@code index} of
+     * {@code count}), the reply's totals, the reply's salt and the opened plain bytes. The constructor enforces
+     * every law {@link #decode(Kind, byte[], byte[])} checks (so a held chunk is always well-formed, its text
+     * total within its kind's cap, and a complete set concatenates to exactly {@code deflatedTotal} bytes) and
+     * copies both arrays; the accessors hand out copies, so no holder can change a chunk after the fact.
      */
-    public record Chunk(int index, int count, int deflatedTotal, int textTotal, byte[] docSalt, byte[] plain) {
+    public record Chunk(Kind kind, int index, int count, int deflatedTotal, int textTotal, byte[] docSalt,
+            byte[] plain) {
         public Chunk {
+            if (kind == null) {
+                throw new IllegalArgumentException("kind");
+            }
             if (count < 1 || count > CHUNKS_MAX || index < 0 || index >= count
                     || deflatedTotal < 1 || deflatedTotal > DEFLATED_MAX || count != chunkCount(deflatedTotal)
-                    || textTotal < 1 || textTotal > TEXT_MAX) {
+                    || textTotal < 1 || textTotal > kind.textMax) {
                 throw new IllegalArgumentException("chunk header");
             }
             if (docSalt == null || docSalt.length != SALT_BYTES) {
@@ -157,6 +227,14 @@ public final class MatchDocFrameCodec {
             }
             docSalt = docSalt.clone();
             plain = plain.clone();
+        }
+
+        /**
+         * A DESC chunk: the constructor that predates the kinds, kept so every caller of that signature (this
+         * class is folded into the kit) binds unchanged.
+         */
+        public Chunk(int index, int count, int deflatedTotal, int textTotal, byte[] docSalt, byte[] plain) {
+            this(Kind.DESC, index, count, deflatedTotal, textTotal, docSalt, plain);
         }
 
         @Override
@@ -179,16 +257,23 @@ public final class MatchDocFrameCodec {
         }
     }
 
+    /** The DESC form of {@link #encodeReply(Kind, byte[], byte[], byte[], int)}, the signature that predates the kinds. */
+    public static byte[][] encodeReply(byte[] root, byte[] docSalt, byte[] deflated, int textTotal) {
+        return encodeReply(Kind.DESC, root, docSalt, deflated, textTotal);
+    }
+
     /**
-     * Encode one reply: {@code deflated} cut into {@code ceil(length / CHUNK_MAX)} chunks (1..{@link #CHUNKS_MAX}),
-     * chunk {@code i} = bytes {@code [i * CHUNK_MAX, min((i + 1) * CHUNK_MAX, length))}, each sealed under the
-     * reply key and framed alone. Every argument is the CALLER's (never network bytes): a null, a root shorter
-     * than {@link #ROOT_MIN_BYTES}, a salt that is not {@link #SALT_BYTES}, a deflated length outside
-     * 1..{@link #DEFLATED_MAX} or a text total outside 1..{@link #TEXT_MAX} = {@code IllegalArgumentException}.
+     * Encode one reply of {@code kind}: {@code deflated} cut into {@code ceil(length / CHUNK_MAX)} chunks
+     * (1..{@link #CHUNKS_MAX}), chunk {@code i} = bytes {@code [i * CHUNK_MAX, min((i + 1) * CHUNK_MAX, length))},
+     * each sealed under the reply key (the kind's label) and framed alone under the kind's magic and wire type.
+     * Every argument is the CALLER's (never network bytes): a null kind, a null, a root shorter than
+     * {@link #ROOT_MIN_BYTES}, a salt that is not {@link #SALT_BYTES}, a deflated length outside
+     * 1..{@link #DEFLATED_MAX} or a text total outside 1..{@link Kind#textMax} = {@code IllegalArgumentException}.
      * {@code docSalt} must be fresh per reply (SecureRandom) - see the class javadoc. Returns the complete
      * frames in index order, each at most {@link #FRAME_MAX} bytes.
      */
-    public static byte[][] encodeReply(byte[] root, byte[] docSalt, byte[] deflated, int textTotal) {
+    public static byte[][] encodeReply(Kind kind, byte[] root, byte[] docSalt, byte[] deflated, int textTotal) {
+        requireKind(kind);
         requireRoot(root);
         if (docSalt == null || docSalt.length != SALT_BYTES) {
             throw new IllegalArgumentException("docSalt");
@@ -196,11 +281,11 @@ public final class MatchDocFrameCodec {
         if (deflated == null || deflated.length < 1 || deflated.length > DEFLATED_MAX) {
             throw new IllegalArgumentException("deflated");
         }
-        if (textTotal < 1 || textTotal > TEXT_MAX) {
+        if (textTotal < 1 || textTotal > kind.textMax) {
             throw new IllegalArgumentException("textTotal");
         }
         int count = chunkCount(deflated.length);
-        byte[] key = HandshakeCrypto.hkdf(root, docSalt, LABEL, KEY_BYTES);
+        byte[] key = HandshakeCrypto.hkdf(root, docSalt, kind.label, KEY_BYTES);
         byte[][] frames = new byte[count][];
         for (int index = 0; index < count; index++) {
             int from = index * CHUNK_MAX;
@@ -214,32 +299,39 @@ public final class MatchDocFrameCodec {
             at = WireByteOps.putShort(header, at, textTotal);
             System.arraycopy(docSalt, 0, header, at, SALT_BYTES);
             byte[] sealed = HandshakeCrypto.seal(key, nonce(index), header, Arrays.copyOfRange(deflated, from, to));
-            frames[index] = envelope(header, sealed);
+            frames[index] = envelope(kind, header, sealed);
         }
         return frames;
     }
 
-    /**
-     * Decode and open ONE frame under {@code root}. {@code payload} is network bytes, so this never throws on
-     * it: a null, short or long payload and every broken law return a reason, and the reason names the FIRST
-     * law broken, in this order - {@link #BAD_ENVELOPE} (length outside {@code 60..FRAME_MAX}, magic, schema,
-     * header size, wire type, body size, CRC), {@link #BAD_HEADER} (version, flags), {@link #BAD_BOUNDS}
-     * (count, index, totals, the count / deflated-total agreement, the sealed length this index must carry),
-     * {@link #BAD_TAG} (the seal does not open). Nothing is sized from a field before that field is checked
-     * against the constants. {@code root} is the caller's: null or shorter than {@link #ROOT_MIN_BYTES} =
-     * {@code IllegalArgumentException}. A caller holding two roots (a player and an admin password) decodes
-     * under each and keeps the OK one.
-     */
+    /** The DESC form of {@link #decode(Kind, byte[], byte[])}, the signature that predates the kinds. */
     public static Decoded decode(byte[] root, byte[] payload) {
+        return decode(Kind.DESC, root, payload);
+    }
+
+    /**
+     * Decode and open ONE frame of {@code kind} under {@code root}. {@code payload} is network bytes, so this
+     * never throws on it: a null, short or long payload and every broken law return a reason, and the reason
+     * names the FIRST law broken, in this order - {@link #BAD_ENVELOPE} (length outside {@code 60..FRAME_MAX},
+     * the kind's magic, schema, header size, the kind's wire type, body size, CRC), {@link #BAD_HEADER}
+     * (version, flags), {@link #BAD_BOUNDS} (count, index, totals - the text total against the kind's cap - the
+     * count / deflated-total agreement, the sealed length this index must carry), {@link #BAD_TAG} (the seal
+     * does not open under the kind's key). Nothing is sized from a field before that field is checked against
+     * the constants. {@code kind} and {@code root} are the caller's: a null kind, or a root null or shorter than
+     * {@link #ROOT_MIN_BYTES} = {@code IllegalArgumentException}. A caller holding two roots (a player and an
+     * admin password) decodes under each and keeps the OK one.
+     */
+    public static Decoded decode(Kind kind, byte[] root, byte[] payload) {
+        requireKind(kind);
         requireRoot(root);
         if (payload == null || payload.length < MIN_FRAME_BYTES || payload.length > FRAME_MAX) {
             return DECODED_BAD_ENVELOPE;
         }
         int bodyBytes = WireByteOps.getInt(payload, 12);
-        if (WireByteOps.getInt(payload, 0) != MAGIC
+        if (WireByteOps.getInt(payload, 0) != kind.magic
                 || WireByteOps.getUnsignedShort(payload, 4) != SCHEMA
                 || WireByteOps.getUnsignedShort(payload, 6) != ENVELOPE_HEADER_BYTES
-                || WireByteOps.getInt(payload, 8) != WIRE_TYPE_CODE
+                || WireByteOps.getInt(payload, 8) != kind.wireTypeCode
                 || bodyBytes != payload.length - ENVELOPE_BYTES
                 || crc32(payload, OFF_BODY, bodyBytes) != WireByteOps.getInt(payload, payload.length - 4)) {
             return DECODED_BAD_ENVELOPE;
@@ -255,7 +347,7 @@ public final class MatchDocFrameCodec {
         }
         if (count < 1 || count > CHUNKS_MAX || index >= count
                 || deflatedTotal < 1 || deflatedTotal > DEFLATED_MAX
-                || textTotal < 1 || textTotal > TEXT_MAX
+                || textTotal < 1 || textTotal > kind.textMax
                 || count != chunkCount(deflatedTotal)
                 || bodyBytes - BODY_HEADER_BYTES != plainLength(index, count, deflatedTotal) + TAG_BYTES) {
             return DECODED_BAD_BOUNDS;
@@ -263,12 +355,12 @@ public final class MatchDocFrameCodec {
         byte[] header = Arrays.copyOfRange(payload, OFF_BODY, OFF_SEALED);
         byte[] salt = Arrays.copyOfRange(payload, OFF_SALT, OFF_SEALED);
         byte[] sealed = Arrays.copyOfRange(payload, OFF_SEALED, OFF_BODY + bodyBytes);
-        byte[] key = HandshakeCrypto.hkdf(root, salt, LABEL, KEY_BYTES);
+        byte[] key = HandshakeCrypto.hkdf(root, salt, kind.label, KEY_BYTES);
         byte[] plain = HandshakeCrypto.open(key, nonce(index), header, sealed);
         if (plain == null) {
             return DECODED_BAD_TAG;
         }
-        return new Decoded(OK, new Chunk(index, count, deflatedTotal, textTotal, salt, plain));
+        return new Decoded(OK, new Chunk(kind, index, count, deflatedTotal, textTotal, salt, plain));
     }
 
     /**
@@ -277,11 +369,13 @@ public final class MatchDocFrameCodec {
      * the memory one flight can pin is bounded by the caps alone. A salt's FIRST chunk pins its count and
      * totals; a later chunk of that salt that disagrees is dropped. A repeat of a held index with the same
      * bytes is idempotent; different bytes at a held index are dropped (first wins). Once a set is complete
-     * the result never changes and every chunk of another salt is dropped. Not thread-safe: one per probe
-     * flight, owned by the one collector that feeds it.
+     * the result never changes and every chunk of another salt is dropped. A reassembler holds ONE document
+     * kind: a chunk that opened as another kind is dropped, so two kinds' sets never mix. Not thread-safe: one
+     * per probe flight and kind, owned by the one collector that feeds it.
      */
     public static final class Reassembler {
 
+        private final Kind kind;
         private final byte[][] salts = new byte[SALTS_MAX][];
         private final int[] counts = new int[SALTS_MAX];
         private final int[] deflatedTotals = new int[SALTS_MAX];
@@ -292,16 +386,31 @@ public final class MatchDocFrameCodec {
         private int complete = -1;
         private byte[] deflated;
 
+        /** A DESC reassembler: the constructor that predates the kinds. */
+        public Reassembler() {
+            this(Kind.DESC);
+        }
+
+        /** A reassembler of {@code kind}'s chunks; a null kind is a caller bug ({@code IllegalArgumentException}).
+         * */
+        public Reassembler(Kind kind) {
+            requireKind(kind);
+            this.kind = kind;
+        }
+
         /**
          * Offer one verified chunk. Returns {@code true} when it is held (a new index of a known or new salt
          * whose count and totals equal that salt's first chunk, or an identical repeat), {@code false} when it
-         * is dropped (its count / totals differ from its salt's first chunk, different bytes at a held index,
-         * a new salt while {@link #SALTS_MAX} are held, or any other salt once a set is complete).
-         * {@code null} is a caller bug = {@code IllegalArgumentException}.
+         * is dropped (a chunk of another kind, its count / totals differ from its salt's first chunk, different
+         * bytes at a held index, a new salt while {@link #SALTS_MAX} are held, or any other salt once a set is
+         * complete). {@code null} is a caller bug = {@code IllegalArgumentException}.
          */
         public boolean offer(Chunk c) {
             if (c == null) {
                 throw new IllegalArgumentException("chunk");
+            }
+            if (c.kind != kind) {
+                return false;
             }
             int s = saltSlot(c.docSalt);
             if (complete >= 0 && s != complete) {
@@ -369,15 +478,22 @@ public final class MatchDocFrameCodec {
         }
     }
 
-    /**
-     * Inflate a complete reply into the document text: ONE output buffer of exactly {@code textTotal} bytes,
-     * a raw inflater, and OK only when the stream FINISHED, produced exactly {@code textTotal} bytes and left
-     * no input behind. Never throws on the input: {@code textTotal} outside 1..{@link #TEXT_MAX} (checked
-     * before any allocation), a null, a corrupt, short, long or trailing-garbage stream = {@code null}, which
-     * the caller counts.
-     */
+    /** The DESC form of {@link #inflateExact(Kind, byte[], int)}, the signature that predates the kinds. */
     public static byte[] inflateExact(byte[] deflated, int textTotal) {
-        if (textTotal < 1 || textTotal > TEXT_MAX || deflated == null) {
+        return inflateExact(Kind.DESC, deflated, textTotal);
+    }
+
+    /**
+     * Inflate a complete reply of {@code kind} into the document text: ONE output buffer of exactly
+     * {@code textTotal} bytes, a raw inflater, and OK only when the stream FINISHED, produced exactly
+     * {@code textTotal} bytes and left no input behind. Never throws on the input: {@code textTotal} outside
+     * 1..{@link Kind#textMax} (checked before any allocation), a null, a corrupt, short, long or trailing-garbage
+     * stream = {@code null}, which the caller counts. A null {@code kind} is the caller's bug
+     * ({@code IllegalArgumentException}).
+     */
+    public static byte[] inflateExact(Kind kind, byte[] deflated, int textTotal) {
+        requireKind(kind);
+        if (textTotal < 1 || textTotal > kind.textMax || deflated == null) {
             return null;
         }
         byte[] text = new byte[textTotal];
@@ -411,14 +527,21 @@ public final class MatchDocFrameCodec {
         }
     }
 
-    /**
-     * Raw-deflate (level 9, no zlib wrapper) a document text the caller owns: null or longer than
-     * {@link #TEXT_MAX} = {@code IllegalArgumentException}. The output starts at {@code length + 64} bytes (a
-     * stored block adds 5 B per 65,535 B, so the cap never outgrows it) and grows if the stream ever needs it
-     * - the returned stream is always complete, never truncated.
-     */
+    /** The DESC form of {@link #deflate(Kind, byte[])}, the signature that predates the kinds. */
     public static byte[] deflate(byte[] text) {
-        if (text == null || text.length > TEXT_MAX) {
+        return deflate(Kind.DESC, text);
+    }
+
+    /**
+     * Raw-deflate (level 9, no zlib wrapper) a document text of {@code kind} the caller owns: a null kind, a
+     * null text or one longer than {@link Kind#textMax} = {@code IllegalArgumentException}. The output starts at
+     * {@code length + 64} bytes (a stored block adds 5 B per 65,535 B, so the cap never outgrows it) and grows if
+     * the stream ever needs it - the returned stream is always complete, never truncated.
+     *
+     */
+    public static byte[] deflate(Kind kind, byte[] text) {
+        requireKind(kind);
+        if (text == null || text.length > kind.textMax) {
             throw new IllegalArgumentException("text");
         }
         Deflater deflater = new Deflater(9, true);
@@ -446,6 +569,12 @@ public final class MatchDocFrameCodec {
         }
     }
 
+    private static void requireKind(Kind kind) {
+        if (kind == null) {
+            throw new IllegalArgumentException("kind");
+        }
+    }
+
     private static int chunkCount(int deflatedLength) {
         return (deflatedLength + CHUNK_MAX - 1) / CHUNK_MAX;
     }
@@ -461,13 +590,13 @@ public final class MatchDocFrameCodec {
         return nonce;
     }
 
-    private static byte[] envelope(byte[] header, byte[] sealed) {
+    private static byte[] envelope(Kind kind, byte[] header, byte[] sealed) {
         int bodyBytes = header.length + sealed.length;
         byte[] frame = new byte[ENVELOPE_BYTES + bodyBytes];
-        int at = WireByteOps.putInt(frame, 0, MAGIC);
+        int at = WireByteOps.putInt(frame, 0, kind.magic);
         at = WireByteOps.putShort(frame, at, SCHEMA);
         at = WireByteOps.putShort(frame, at, ENVELOPE_HEADER_BYTES);
-        at = WireByteOps.putInt(frame, at, WIRE_TYPE_CODE);
+        at = WireByteOps.putInt(frame, at, kind.wireTypeCode);
         at = WireByteOps.putInt(frame, at, bodyBytes);
         System.arraycopy(header, 0, frame, at, header.length);
         System.arraycopy(sealed, 0, frame, at + header.length, sealed.length);

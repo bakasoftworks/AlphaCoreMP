@@ -101,7 +101,7 @@ final class Hs13ReHelloFlights {
      *  bindings. Seeded with the dial's game-thread read, REPLACED by {@link #setKeymap} at every combat init (the
      *  same resolution the sampler's control bits poll), never re-resolved here (the timer thread never reads the
      *  engine). Volatile: written on the game thread, read by the timer's {@link #build}.
-     *  main-written */
+     * */
     private volatile byte[] keymap;
     private final InetSocketAddress server;
     private final SecureRandom rng;
@@ -203,7 +203,7 @@ final class Hs13ReHelloFlights {
      * script's literal key read answered HELD on the serve for a key the pilot no longer holds.
      * {@code null} = none (the serve's own bindings); a non-null map must be 16 lawful bytes (the flight's own law,
      * checked HERE on the game thread so the timer never dies of it). A private copy is kept.
-     * Main-written
+     *
      */
     void setKeymap(byte[] keymapOrNull) {
         if (keymapOrNull != null && !Handshake13.keymapLawful(keymapOrNull)) {

@@ -71,6 +71,86 @@ public final class PilotShipRedirectRewriter {
     /** Unchanged: the patched output failed the self-check. */
     public static final String REASON_SELF_CHECK = "self_check";
 
+    /**
+     * A redirect target: the typed owner every swapped call invokes and the rows it swaps (opcode + owner + name +
+     * descriptor of the original call, and the twin's name + descriptor on the owner). The swap, the self-check's
+     * token pass and its appended-pool allow-list all read ONE table, so a row added for one is added for all.
+     * {@link #SERVE} is the serve's table ({@link #TARGET_OWNER} + {@link PilotShipClassifier#TWINS}); a client
+     * pass builds its own table over its own owner (the same twin rows retargeted, plus its own rows), and the
+     * shared verdict still decides WHICH classes are rewritten. The first row of a repeated call key wins.
+     *
+     *
+     */
+    public static final class TwinTable {
+        private final String owner;
+        private final List<Twin> rows;
+        private final Map<String, Twin> index = new HashMap<>();
+
+        /** {@code owner} = an internal name; {@code rows} = the swapped calls, each twin static on the owner. */
+        public TwinTable(String owner, List<Twin> rows) {
+            this.owner = owner;
+            this.rows = List.copyOf(rows);
+            for (Twin t : this.rows) {
+                index.putIfAbsent(t.owner() + '.' + t.name() + t.desc(), t);
+            }
+        }
+
+        /** The typed owner the swapped calls invoke (an internal name). */
+        public String owner() {
+            return owner;
+        }
+
+        /** The rows, in table order. */
+        public List<Twin> rows() {
+            return rows;
+        }
+
+        /** The row of a call, or {@code null} when the call is no site of this table (all four parts keyed). */
+        public Twin site(int opcode, String callOwner, String name, String desc) {
+            if (callOwner == null || name == null || desc == null) {
+                return null;
+            }
+            Twin t = index.get(callOwner + '.' + name + desc);
+            return t != null && t.opcode() == opcode ? t : null;
+        }
+
+        /** The row whose twin on {@link #owner()} is {@code name + desc}; {@code null} for none or a null part. */
+        Twin byTarget(String name, String desc) {
+            if (name == null || desc == null) {
+                return null;
+            }
+            for (Twin t : rows) {
+                if (t.twin().equals(name) && t.twinDesc().equals(desc)) {
+                    return t;
+                }
+            }
+            return null;
+        }
+
+        /** Sites of this table per method (name + descriptor, name order); methods without one are absent. */
+        public Map<String, Integer> siteMethods(byte[] bytes) {
+            Map<String, Integer> out = new TreeMap<>();
+            new ClassReader(bytes).accept(new ClassVisitor(Opcodes.ASM9) {
+                @Override
+                public MethodVisitor visitMethod(int a, String nm, String d, String s, String[] e) {
+                    String key = nm + d;
+                    return new MethodVisitor(Opcodes.ASM9) {
+                        @Override
+                        public void visitMethodInsn(int op, String o, String n, String desc, boolean itf) {
+                            if (site(op, o, n, desc) != null) {
+                                out.merge(key, 1, Integer::sum);
+                            }
+                        }
+                    };
+                }
+            }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+            return out;
+        }
+    }
+
+    /** The serve's table: the typed target {@link #TARGET_OWNER} and the classifier's twin rows. */
+    public static final TwinTable SERVE = new TwinTable(TARGET_OWNER, PilotShipClassifier.TWINS);
+
     /** One class's outcome: patched bytes, or the one reason the class keeps its original bytes. */
     public static final class Result {
         private final byte[] patched;
@@ -81,12 +161,17 @@ public final class PilotShipRedirectRewriter {
         final Map<String, Integer> siteMethods;
 
         Result(byte[] patched, String reason, Verdict v, String detail) {
+            this(patched, reason, v, detail, v.siteMethods(), v.sites());
+        }
+
+        Result(byte[] patched, String reason, Verdict v, String detail, Map<String, Integer> siteMethods,
+                int sites) {
             this.patched = patched;
             this.reason = reason;
-            this.sites = v.sites();
+            this.sites = sites;
             this.keySites = v.keySites();
             this.detail = PilotShipClassifier.bounded(detail);
-            this.siteMethods = v.siteMethods();
+            this.siteMethods = siteMethods;
         }
 
         /** Of {@link #sites()}, the LWJGL keyboard / mouse sites (0 <= keySites <= sites). */
@@ -150,10 +235,50 @@ public final class PilotShipRedirectRewriter {
     }
 
     /**
-     * The swap itself, only inside {@code siteMethods} (methods with a site of either family); each site becomes its
-     * table twin; {@code replaced[0]} counts the swapped calls.
+     * The redirect of a class whose shared verdict {@code v} is already known, through another table: the sites are
+     * the table's own (a superset of the verdict's when the table carries the twin rows plus its own), every one
+     * swapped, the self-check over the same table. A verdict with a reason returns that reason unchanged, so the
+     * set of rewritten classes is the verdict's or smaller, never larger. Never throws.
+     *
+     *
      */
+    public static Result redirect(byte[] bytes, Verdict v, TwinTable table) {
+        if (v.reason() != null) {
+            return new Result(null, v.reason(), v, v.detail());
+        }
+        Map<String, Integer> sm = Map.of();
+        int want = 0;
+        try {
+            sm = table.siteMethods(bytes);
+            for (int s : sm.values()) {
+                want += s;
+            }
+            int[] replaced = {0};
+            byte[] out = swap(bytes, sm.keySet(), replaced, table);
+            if (replaced[0] != want) {
+                return new Result(null, REASON_SELF_CHECK, v, "replaced=" + replaced[0], sm, want);
+            }
+            String miss = selfCheck(bytes, out, sm, table);
+            if (miss != null) {
+                return new Result(null, REASON_SELF_CHECK, v, miss, sm, want);
+            }
+            return new Result(out, null, v, "", sm, want);
+        } catch (Throwable t) {
+            return new Result(null, PilotShipClassifier.REASON_ERROR_PREFIX + MagicSeamRewriter.simpleName(t), v, "",
+                    sm, want);
+        }
+    }
+
+    /** The serve's swap ({@link #SERVE}). */
     static byte[] swap(byte[] bytes, Set<String> siteMethods, int[] replaced) {
+        return swap(bytes, siteMethods, replaced, SERVE);
+    }
+
+    /**
+     * The swap itself, only inside {@code siteMethods} (methods with a site of the table); each site becomes its
+     * table twin on the table's owner; {@code replaced[0]} counts the swapped calls.
+     */
+    static byte[] swap(byte[] bytes, Set<String> siteMethods, int[] replaced, TwinTable table) {
         ClassReader reader = new ClassReader(bytes);
         ClassWriter writer = new ClassWriter(reader, 0);
         reader.accept(new ClassVisitor(Opcodes.ASM9, writer) {
@@ -167,10 +292,10 @@ public final class PilotShipRedirectRewriter {
                 return new MethodVisitor(Opcodes.ASM9, mv) {
                     @Override
                     public void visitMethodInsn(int op, String owner, String n, String d, boolean itf) {
-                        Twin t = PilotShipClassifier.siteTwin(op, owner, n, d);
+                        Twin t = table.site(op, owner, n, d);
                         if (t != null) {
                             replaced[0]++;
-                            super.visitMethodInsn(Opcodes.INVOKESTATIC, TARGET_OWNER, t.twin(), t.twinDesc(), false);
+                            super.visitMethodInsn(Opcodes.INVOKESTATIC, table.owner(), t.twin(), t.twinDesc(), false);
                         } else {
                             super.visitMethodInsn(op, owner, n, d, itf);
                         }
@@ -183,9 +308,14 @@ public final class PilotShipRedirectRewriter {
 
     // ---------------------------------------------------------------- the self-check (an independent re-read)
 
-    /** {@code null} = the output holds; else a bounded description of the first miss. */
+    /** The serve's self-check ({@link #SERVE}). */
     static String selfCheck(byte[] in, byte[] out, Map<String, Integer> siteMethods) {
-        String pool = poolDelta(in, out);
+        return selfCheck(in, out, siteMethods, SERVE);
+    }
+
+    /** {@code null} = the output holds against {@code table}; else a bounded description of the first miss. */
+    static String selfCheck(byte[] in, byte[] out, Map<String, Integer> siteMethods, TwinTable table) {
+        String pool = poolDelta(in, out, table);
         if (pool != null) {
             return pool;
         }
@@ -207,8 +337,8 @@ public final class PilotShipRedirectRewriter {
         }
         int[] swapped = {0};
         int[] targets = {0};
-        Map<String, List<String>> ti = tokens(in, siteMethods.keySet(), true, swapped);
-        Map<String, List<String>> to = tokens(out, siteMethods.keySet(), false, targets);
+        Map<String, List<String>> ti = tokens(in, siteMethods.keySet(), true, swapped, table);
+        Map<String, List<String>> to = tokens(out, siteMethods.keySet(), false, targets, table);
         for (String k : siteMethods.keySet()) {
             if (!Arrays.equals(ri.maxs.get(k), ro.maxs.get(k))) {
                 return "maxs_changed:" + k;
@@ -229,7 +359,7 @@ public final class PilotShipRedirectRewriter {
     }
 
     /** The input pool must be an untouched prefix of the output pool; appended entries only the twin table's own. */
-    private static String poolDelta(byte[] in, byte[] out) {
+    private static String poolDelta(byte[] in, byte[] out, TwinTable table) {
         int[] pi = PilotShipClassifier.poolOffsets(in);
         int[] po = PilotShipClassifier.poolOffsets(out);
         if (pi == null || po == null) {
@@ -252,7 +382,7 @@ public final class PilotShipRedirectRewriter {
         }
         Set<String> added = new HashSet<>();
         for (int k = ni; k < no; k++) {
-            String what = entry(out, po, k, ni);
+            String what = entry(out, po, k, ni, table);
             if (what == null || !added.add(what)) {
                 int p = po[k];
                 int tag = p < 0 ? -1 : out[p] & 0xff;
@@ -285,11 +415,12 @@ public final class PilotShipRedirectRewriter {
      *
      *
      */
-    private static String entry(byte[] b, int[] off, int k, int inputCount) {
+    private static String entry(byte[] b, int[] off, int k, int inputCount, TwinTable table) {
         int p = off[k];
         if (p < 0) {
             return null;
         }
+        String targetOwner = table.owner();
         int tag = b[p] & 0xff;
         switch (tag) {
             case 17:
@@ -299,10 +430,10 @@ public final class PilotShipRedirectRewriter {
             }
             case 1: {
                 String s = utf8(b, p);
-                if (TARGET_OWNER.equals(s)) {
+                if (targetOwner.equals(s)) {
                     return "u_owner";
                 }
-                for (Twin t : PilotShipClassifier.TWINS) {
+                for (Twin t : table.rows()) {
                     if (t.twin().equals(s)) {
                         return "u_name:" + s;
                     }
@@ -313,17 +444,17 @@ public final class PilotShipRedirectRewriter {
                 return null;
             }
             case 7:
-                return TARGET_OWNER.equals(utf8(b, at(b, off, p + 1))) ? "class" : null;
+                return targetOwner.equals(utf8(b, at(b, off, p + 1))) ? "class" : null;
             case 12: {
-                Twin t = twinByTarget(utf8(b, at(b, off, p + 1)), utf8(b, at(b, off, p + 3)));
+                Twin t = table.byTarget(utf8(b, at(b, off, p + 1)), utf8(b, at(b, off, p + 3)));
                 return t == null ? null : "nat:" + t.twin() + t.twinDesc();
             }
             case 10: {
                 int cls = at(b, off, p + 1);
                 int nat = at(b, off, p + 3);
-                boolean owner = cls >= 0 && (b[cls] & 0xff) == 7 && TARGET_OWNER.equals(utf8(b, at(b, off, cls + 1)));
+                boolean owner = cls >= 0 && (b[cls] & 0xff) == 7 && targetOwner.equals(utf8(b, at(b, off, cls + 1)));
                 Twin t = owner && nat >= 0 && (b[nat] & 0xff) == 12
-                        ? twinByTarget(utf8(b, at(b, off, nat + 1)), utf8(b, at(b, off, nat + 3))) : null;
+                        ? table.byTarget(utf8(b, at(b, off, nat + 1)), utf8(b, at(b, off, nat + 3))) : null;
                 return t == null ? null : "methodref:" + t.twin() + t.twinDesc();
             }
             default:
@@ -331,17 +462,9 @@ public final class PilotShipRedirectRewriter {
         }
     }
 
-    /** The twin-table row whose typed-target twin is {@code name + desc}; {@code null} for none (or a null part). */
+    /** The serve table's row whose typed-target twin is {@code name + desc}; {@code null} for none (or a null part). */
     static Twin twinByTarget(String name, String desc) {
-        if (name == null || desc == null) {
-            return null;
-        }
-        for (Twin t : PilotShipClassifier.TWINS) {
-            if (t.twin().equals(name) && t.twinDesc().equals(desc)) {
-                return t;
-            }
-        }
-        return null;
+        return SERVE.byTarget(name, desc);
     }
 
     private static int at(byte[] b, int[] off, int p) {
@@ -408,7 +531,8 @@ public final class PilotShipRedirectRewriter {
      * Canonical instruction streams of the named methods: opcodes and symbolic operands, labels by first use, frames,
      * try ranges, lines, locals and maxs; no offsets or pool indices. {@code substitute}: render each site as the swap.
      */
-    private static Map<String, List<String>> tokens(byte[] b, Set<String> keys, boolean substitute, int[] count) {
+    private static Map<String, List<String>> tokens(byte[] b, Set<String> keys, boolean substitute, int[] count,
+            TwinTable table) {
         Map<String, List<String>> out = new TreeMap<>();
         new ClassReader(b).accept(new ClassVisitor(Opcodes.ASM9) {
             @Override
@@ -420,7 +544,7 @@ public final class PilotShipRedirectRewriter {
                 }
                 List<String> t = new ArrayList<>();
                 out.put(key, t);
-                return new TokenVisitor(t, substitute, count);
+                return new TokenVisitor(t, substitute, count, table);
             }
         }, 0);
         return out;
@@ -430,13 +554,15 @@ public final class PilotShipRedirectRewriter {
         private final List<String> t;
         private final boolean substitute;
         private final int[] count;
+        private final TwinTable table;
         private final Map<Label, Integer> ids = new IdentityHashMap<>();
 
-        TokenVisitor(List<String> t, boolean substitute, int[] count) {
+        TokenVisitor(List<String> t, boolean substitute, int[] count, TwinTable table) {
             super(Opcodes.ASM9);
             this.t = t;
             this.substitute = substitute;
             this.count = count;
+            this.table = table;
         }
 
         private String id(Object o) {
@@ -486,16 +612,16 @@ public final class PilotShipRedirectRewriter {
 
         @Override
         public void visitMethodInsn(int opcode, String owner, String name, String descriptor, boolean itf) {
-            Twin site = substitute ? PilotShipClassifier.siteTwin(opcode, owner, name, descriptor) : null;
+            Twin site = substitute ? table.site(opcode, owner, name, descriptor) : null;
             if (site != null) {
                 count[0]++;
                 opcode = Opcodes.INVOKESTATIC;
-                owner = TARGET_OWNER;
+                owner = table.owner();
                 name = site.twin();
                 descriptor = site.twinDesc();
                 itf = false;
-            } else if (!substitute && opcode == Opcodes.INVOKESTATIC && TARGET_OWNER.equals(owner)
-                    && twinByTarget(name, descriptor) != null) {
+            } else if (!substitute && opcode == Opcodes.INVOKESTATIC && table.owner().equals(owner)
+                    && table.byTarget(name, descriptor) != null) {
                 count[0]++;
             }
             t.add(opcode + " " + owner + "." + name + " " + descriptor + " " + itf);
@@ -567,8 +693,9 @@ public final class PilotShipRedirectRewriter {
 
     /**
      * {@code --census <jar...>}: one csv row per redirect site in every class of the given jars (jar, class, method,
-     * kind, twin = the typed target's method the site becomes: {@code playerShip} for a ship site, any other for a key
-     * site, verdict = kept | unchanged, reason, detail), then summary rows: kept vs unchanged classes, sites and key
+     * kind, twin = the typed target's method the site becomes: an LWJGL keyboard / mouse twin for a key site, any other
+     * - {@code playerShip}, the control string, the pilot-state twins - for a site that is no key site, verdict = kept
+     * | unchanged, reason, detail), then summary rows: kept vs unchanged classes, sites and key
      * sites per reason, the sites in non-candidate classes, the elapsed time. Pass the API jar too: it resolves the kinds.
      * {@code --golden <jar>}: per class the input and output sha256 and the verdict. {@code --selftest}: the
      * hand-built fixtures, one per reason and per hard shape. Exit 0 / 1 / 2 = done / a selftest failed / bad arguments.
@@ -623,7 +750,8 @@ public final class PilotShipRedirectRewriter {
         int[] outside = new int[2];
         int scanned = 0;
         System.out.println("# verdict kept = the class is rewritten (its sites follow the pilot); unchanged = the class"
-                + " keeps its bytes for <reason>; twin playerShip = a ship site, any other twin = a key site");
+                + " keeps its bytes for <reason>; an LWJGL keyboard / mouse twin = a key site, any other twin"
+                + " (playerShip, controlStringForEnumName, getAI, getShipAI, isUIAutopilotOn) = a site");
         System.out.println("jar,class,method,kind,twin,verdict,reason,detail");
         for (String j : jars) {
             String label = MagicSeamRewriter.jarLabel(Path.of(j).getFileName().toString());

@@ -236,7 +236,7 @@ public final class PackageModSync {
         List<Path> folders = found.get(id);
         if (folders == null || folders.isEmpty()) {
             throw new IllegalArgumentException(what + " is not in any searched folder (" + searched
-                    + "): extract it into " + modsDir + (via.isEmpty() ? ", or set it to off in the Mods tab"
+                    + "): extract it into " + modsDir + (via.isEmpty() ? ", or untick it in the Mods tab"
                             : ", or set mod '" + via + "' to off in the Mods tab"));
         }
         // the copy a previous launch made under serve-mods/ is the MIRROR of a folder found outside

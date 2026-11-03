@@ -51,6 +51,10 @@ call :envclean
 
 set "CCKITSTAMP="
 set "CCKITMD5="
+set "CCAGENTMD5="
+rem CCKITLAUNCH is composed below from THIS start's choices and rides to the game as -Dcc.kit.launch; a value
+rem inherited from the parent shell would ride too, so it starts empty here.
+set "CCKITLAUNCH="
 if not exist "%~dp0kit-manifest.txt" (
     echo   detail: kit-manifest.txt is missing from this CC_Client folder.
     goto kitbad
@@ -58,13 +62,16 @@ if not exist "%~dp0kit-manifest.txt" (
 for /f "usebackq tokens=1,* delims==" %%A in ("%~dp0kit-manifest.txt") do (
     if /i "%%A"=="kitStamp" set "CCKITSTAMP=%%B"
     if /i "%%A"=="jarMd5" set "CCKITMD5=%%B"
+    if /i "%%A"=="agentMd5" set "CCAGENTMD5=%%B"
 )
 rem Manifest values are HOST-AUTHORED text that later rides a bare %VAR% into echo (the kit-OK
 rem line and the mismatch line below), and cmd re-parses whatever it substitutes - so a manifest
 rem row like "kitStamp=x & <command> & rem" would RUN on the joiner's PC, on the success path.
-rem Charset-gate both before any bare expansion; same rule the seat-token/password lane states.
+rem Charset-gate all three before any bare expansion (agentMd5 meets one in the agent check
+rem below); same rule the seat-token/password lane states.
 call :vguard CCKITSTAMP || goto kitbadval
 call :vguard CCKITMD5 || goto kitbadval
+call :vguard CCAGENTMD5 || goto kitbadval
 rem client pairing lane retired to wire (WELCOME v5 matchFlags, server-owned).
 rem officerSkillsAll now rides the wire; an old kit-manifest officerSkillsAll row is
 rem ignored like any unknown key (no parse, no vguard, no launch append).
@@ -86,6 +93,35 @@ if /i not "%CCJARMD5%"=="%CCKITMD5%" (
 )
 echo Kit check OK: kit %CCKITSTAMP%, jar %CCJARMD5%.
 if defined CC_JOIN_VERIFY_ONLY exit /b 0
+rem The compatibility agent (jars\cc-compat-agent.jar): a small Java agent that changes one MagicLib
+rem class in memory while the game loads, so other players' MagicLib abilities show when their pilots
+rem fire them. A kit packed with it carries an agentMd5 manifest row; no row = a kit without the agent,
+rem and nothing here or at the launch changes. It rides ONLY the bundled-Java start below (never the
+rem Explorer start, a starsector.exe start or JAVA_TOOL_OPTIONS), and it buys presentation, never the
+rem join: switched off (a cc-compat-agent.jar.off file beside it), an install path holding "=", missing, or not
+rem the jar the manifest names = CCAGENTWHY says why, the launch leaves the agent out with one NOTE line and the game starts.
+rem The md5 is a drift check (an old agent beside a new mod, a half-copied folder), not tamper-proofing.
+rem Hashed here, before any credential is read (the window lane holds none yet).
+set "CCAGENTWHY="
+set "CCAGENTJARMD5="
+set "CCAGENTOPT="
+if defined CCAGENTMD5 if exist "%~dp0jars\cc-compat-agent.jar.off" set "CCAGENTWHY=off"
+rem A cc-compat-agent.pilot.off file beside the jar keeps the agent (its MagicLib change included) but starts it with
+rem its pilot-replica part off: the recovery when the agent fails to load a mod class with that part on (the README
+rem says when). CCAGENTOPT then holds "=pilot=off" (the "=" that opens Java's agent options included) for the token
+rem below; empty = the token is unchanged. A cc-compat-agent.jar.off file (the whole agent off) wins when both exist.
+if defined CCAGENTMD5 if exist "%~dp0jars\cc-compat-agent.pilot.off" set "CCAGENTOPT==pilot=off"
+rem An install path holding "=" (legal, rare): Java reads -javaagent:<jar>=<options> and splits at the FIRST "=", so
+rem the jar path is cut short and the JVM aborts before the game starts (measured on the bundled Java: exit 1,
+rem "Error opening zip file or JAR manifest missing"). The agent stays off there. for /f on the quoted path splits
+rem it at "=": a second token = the path holds one (no child cmd, no re-parse; the quotes keep "&" and ")" text).
+if defined CCAGENTMD5 if not defined CCAGENTWHY for /f "tokens=1,* delims==" %%A in ("%~dp0") do if not "%%B"=="" set "CCAGENTWHY=path"
+if defined CCAGENTMD5 if not defined CCAGENTWHY if not exist "%~dp0jars\cc-compat-agent.jar" set "CCAGENTWHY=missing"
+if defined CCAGENTMD5 if not defined CCAGENTWHY for /f "delims=" %%H in ('certutil -hashfile "%~dp0jars\cc-compat-agent.jar" MD5 ^| find /v ":"') do if not defined CCAGENTJARMD5 set "CCAGENTJARMD5=%%H"
+if defined CCAGENTJARMD5 set "CCAGENTJARMD5=%CCAGENTJARMD5: =%"
+call :vguard CCAGENTJARMD5 || set "CCAGENTJARMD5="
+rem A jar certutil cannot hash leaves CCAGENTJARMD5 empty, which never equals a manifest row: drift too.
+if defined CCAGENTMD5 if not defined CCAGENTWHY if /i not "%CCAGENTJARMD5%"=="%CCAGENTMD5%" set "CCAGENTWHY=drift"
 rem Credential handoff folder (the launch pass below writes there): LOCALAPPDATA\cc-starsector\handoff.
 rem Start-of-run sweep, before any credential is read: a handoff file older than a day is the
 rem leftover of a window that was closed mid-game. forfiles compares DATES, so /d -2 removes a
@@ -125,6 +161,10 @@ rem Single-line ifs on purpose: %~dp0 may hold "(x86)" and a ")" inside a ( bloc
 set "CCJAVA=%~dp0..\..\jre\bin\java.exe"
 set "CCLAUNCH=starsector.exe"
 if exist "%~dp0jre-cc\bin\javaw.exe" if exist "%~dp0kit-jvm.args" set "CCLAUNCH=jre-cc"
+rem CCKITLAUNCH names the start for the mod's sidelog row AND the compat agent's premain gate (the agent
+rem stays inert without -Dcc.kit.launch): jre-cc on the bundled start; the health probe, the Explorer lane
+rem and the start fallbacks below overwrite it; a no-bundle kit leaves it unset (its JTO stays byte-identical).
+if "%CCLAUNCH%"=="jre-cc" set "CCKITLAUNCH=jre-cc"
 if "%CCLAUNCH%"=="jre-cc" set "CCJAVA=%~dp0jre-cc\bin\java.exe"
 rem Health probe: a bundled runtime that cannot even print its version
 rem (antivirus-quarantined DLL, corrupt or partial download) must not be trusted with the join
@@ -464,8 +504,9 @@ rem Tooling-armed CLIENT-ONLY JVM flags (arm-watch -ClientJvmFlags -> env
 rem CC_CLIENT_JVM_FLAGS, space-joined, each flag ONE token: double-quoted when it holds a space) - e.g. the flight-#5 render-thread
 rem JFR. A public joiner never sets it: JTO byte-identical when undefined.
 if defined CC_CLIENT_JVM_FLAGS set JAVA_TOOL_OPTIONS=%JAVA_TOOL_OPTIONS% %CC_CLIENT_JVM_FLAGS%
-rem Bundled-Java fallback marker (set by the health probe above, or by :kitjrefallback on a rejoin
-rem pass): unset on the normal bundled launch and on no-bundle kits, so the JTO stays byte-identical.
+rem Launch marker (jre-cc on the bundled start, fallback-probe from the health probe above, explorer from
+rem the sound check, fallback-start from :kitjrefallback on a rejoin pass): unset only on no-bundle kits,
+rem whose JTO stays byte-identical. The compat agent's premain gate reads it (inert without it).
 if defined CCKITLAUNCH set JAVA_TOOL_OPTIONS=%JAVA_TOOL_OPTIONS% -Dcc.kit.launch=%CCKITLAUNCH%
 rem Launch-nonce law: the launch nonce (:mintnonce, charset-gated) binds the join window to THIS
 rem game's editor endpoint - the mod writes it as the endpoint file's third field. Unset on the
@@ -482,6 +523,21 @@ if exist "%CCMODSROOT%\enabled_mods.json" set _JAVA_OPTIONS="-Dcom.fs.starfarer.
 rem The manifest tickRate carrier is RETIRED - since HANDSHAKE v3 the
 rem server's rate rides WELCOME at admit (wire wins over any cached value), so no -D append
 rem here. A leftover tickRate= row in an old manifest is simply ignored.
+rem The compatibility agent (checked at the top): CCAGENT is the quoted -javaagent token, set ONLY
+rem when this pass starts the bundled Java (the same two tests that pick :launchkitjre below) and the
+rem check matched; it is empty on every other start. A left-out agent on that start = one NOTE line.
+rem The path sits inside the token's quotes, so a space, "(x86)" or "&" in the install path stays text.
+rem CCAGENTDRY is the dry run's report: the token, none (no agent on this start, or a kit without
+rem one) or omitted:<why>.
+set "CCAGENT="
+set "CCAGENTDRY=none"
+if "%CCLAUNCH%"=="jre-cc" if not "%CCKITLAUNCH%"=="explorer" if defined CCAGENTWHY set "CCAGENTDRY=omitted:%CCAGENTWHY%"
+if "%CCLAUNCH%"=="jre-cc" if not "%CCKITLAUNCH%"=="explorer" if defined CCAGENTMD5 if not defined CCAGENTWHY set CCAGENT="-javaagent:%~dp0jars\cc-compat-agent.jar%CCAGENTOPT%"
+if "%CCAGENTDRY%"=="omitted:off" echo   NOTE: jars\cc-compat-agent.jar.off is present, so the compatibility agent stays off - the game starts without it. Delete the .off file to turn it back on.
+if "%CCAGENTDRY%"=="omitted:missing" echo   NOTE: jars\cc-compat-agent.jar is missing - the game starts without the compatibility agent. Re-extract the kit to restore it.
+if "%CCAGENTDRY%"=="omitted:drift" echo   NOTE: jars\cc-compat-agent.jar does not match this kit's manifest - the game starts without it. Re-extract the kit to restore it.
+if "%CCAGENTDRY%"=="omitted:path" echo   NOTE: jars\cc-compat-agent.jar stays off because this Starsector folder's path contains '=' and Java cannot load an agent from such a path - the game starts without it.
+if defined CCAGENT if defined CCAGENTOPT echo   NOTE: jars\cc-compat-agent.pilot.off is present, so the compatibility agent starts with its pilot-replica part off - other pilots' ships run their mod scripts the plain way on this screen. Delete the .pilot.off file to turn it back on.
 rem Every game start line below (the direct launcher, the bundled-Java start, both fallbacks and
 rem the Explorer lane's script) sits inside ONE-line setlocal ... endlocal that blanks the six
 rem credential names first, so the started process inherits none of them; endlocal restores this
@@ -551,9 +607,11 @@ rem runs from starsector-core (the args file's relative classpath/paths) on jre-
 rem console), reading kit-jvm.args (= the install's vmparams with documented deltas; minted by
 rem the host's args-mint script). The normal launcher window still opens, so the player's saved
 rem resolution applies. JAVA_TOOL_OPTIONS composed above rides exactly as before.
+rem %CCAGENT% = the compatibility agent's quoted token, or nothing (set above); this is the one start
+rem line that carries it - the fallback below and every starsector.exe start never do.
 rem The bracket's (call ) resets errorlevel first: a successful start leaves the previous value in
 rem place, so a stale non-zero from an earlier command would read as a launch failure (observed).
-setlocal & set "CCPASSWORD=" & set "CCTOKEN=" & set "CCCID=" & set "CC_JOIN_PASSWORD=" & set "CC_JOIN_CID=" & set "CC_JOIN_TOKEN=" & (call ) & start "" /D "%~dp0..\..\starsector-core" "%~dp0jre-cc\bin\javaw.exe" "@%~dp0kit-jvm.args" & endlocal
+setlocal & set "CCPASSWORD=" & set "CCTOKEN=" & set "CCCID=" & set "CC_JOIN_PASSWORD=" & set "CC_JOIN_CID=" & set "CC_JOIN_TOKEN=" & (call ) & start "" /D "%~dp0..\..\starsector-core" "%~dp0jre-cc\bin\javaw.exe" %CCAGENT% "@%~dp0kit-jvm.args" & endlocal
 if errorlevel 1 goto kitjrefallback
 rem Early-death check: a ShellExecute refusal (SmartScreen blocking a
 rem downloaded javaw.exe - Windows shows its own error dialog and errorlevel above catches it) or
@@ -660,6 +718,8 @@ rem It gives its CLAIM up all the same: the kept file alone stops a later mint f
 call :hoclaimfree
 echo DRYRUN jopt=%_JAVA_OPTIONS%
 echo DRYRUN launch=%CCLAUNCH%
+if defined CCAGENT echo DRYRUN agent=%CCAGENT%
+if not defined CCAGENT echo DRYRUN agent=%CCAGENTDRY%
 if defined CC_PREDICT_TRANSPORT (echo DRYRUN transport=%CC_PREDICT_TRANSPORT%) else echo DRYRUN transport=udp-default
 if defined CC_MATCH_DESCRIPTOR (echo DRYRUN descriptor=%CC_MATCH_DESCRIPTOR%) else echo DRYRUN descriptor=none
 exit /b 0

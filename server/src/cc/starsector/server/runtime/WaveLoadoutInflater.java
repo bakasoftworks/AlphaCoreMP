@@ -101,13 +101,15 @@ public final class WaveLoadoutInflater {
     /**
      * LIVE registrations per serve (the late-joiner spool + the live count): the wave term of the ONE
      * admission budget — {@code VariantDefinitionFrameCodec.VDEF_BUDGET_TOTAL} 960 minus the boot
-     * catalog cap 256 minus the customs' {@code GLOBAL_CAP} 64 = 640, written as a literal so the
+     * catalog cap 256 minus the customs' {@code GLOBAL_CAP} 64 minus the realized-loadout term
+     * ({@code RealizedLoadoutLane.REGISTER_CAP} 64, carved from this one) = 576, written as a literal so the
      * budget row ({@code WaveInflateContractRows.budgetRows}) FAILS when any term moves. Sized for
      * one DP-scaled chain (~100 rows) plus every id an endless serve's category switches fielded;
      * a retired chain's never-fielded bodies are parked, not counted ({@link #retarget}). Was 128
-     * (sized on "~60 slots"), exhausted by one chain + one switch.
+     * (sized on "~60 slots"), exhausted by one chain + one switch; then 640 before the
+     * realized term was carved out.
      */
-    public static final int REGISTER_CAP = 640;
+    public static final int REGISTER_CAP = 576;
     /**
      * The per-tick sim-thread budget of the warm walk ({@link #warmStep}). Measured before this
      * residency: 0.59 ms per row warm (29 rows),
@@ -1057,7 +1059,8 @@ public final class WaveLoadoutInflater {
                 + " warm_budget_ms=" + String.format(java.util.Locale.ROOT, "%.1f", WARM_BUDGET_NANOS / 1_000_000.0d)
                 + " (vanilla fleet inflation over the wave rows; re-serve with this seed = same loadouts)");
         schedule.setRowInflater(lane::stage);
-        door.setWaveVariantCatalog(lane::frames);
+        // the door's server-generated catalog slot = these bodies, then the realized-loadout spool (one writer)
+        RealizedLoadoutLane.attachSpool(door, lane::frames);
         lane.preInflate(schedule);
         return lane;
     }

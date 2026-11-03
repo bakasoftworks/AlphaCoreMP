@@ -16,6 +16,7 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -31,6 +32,7 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import cc.starsector.server.match.ContentFingerprints;
 import cc.starsector.server.match.MatchDescriptor;
@@ -41,6 +43,7 @@ import cc.starsector.server.match.MatchPasswords;
 import cc.starsector.server.match.MatchRespawnPolicy;
 import cc.starsector.server.platform.ActivationGate;
 import cc.starsector.server.runtime.MatchDocPreflight;
+import cc.starsector.server.runtime.ModSet;
 import cc.starsector.server.runtime.PostureRegistry;
 import cc.starsector.server.runtime.SimTickRate;
 import cc.starsector.server.transform.TransformRegistry;
@@ -122,6 +125,19 @@ public final class ServeLauncher {
     static final String LIVES_DIR = "lives";
     static final String SETTINGS_DIR = "settings";
     static final List<String> SETTINGS_SUBDIRS = List.of("logs", "saves", "screenshots");
+    /**
+     * The host's LunaLib seed folder in the package root ({@link #seedLunaSettings}): each {@code <modId>.json.data}
+     * there is copied into a new flight's {@code settings/saves/common/LunaSettings/}, the file LunaLib reads and writes
+     * for that mod.
+     */
+    static final String LUNA_SEED_DIR = "luna-settings";
+    /** The text the package ships inside {@link #LUNA_SEED_DIR}: never a seed, never a console row. */
+    static final String LUNA_SEED_README = "README.txt";
+    /** LunaLib's own file name tail ({@code <saves>/common/LunaSettings/<modId>.json.data}). */
+    static final String LUNA_SEED_SUFFIX = ".json.data";
+    /** The intake caps: bytes per file (a LunaLib file is a few KiB) and candidate files per flight. */
+    static final long LUNA_SEED_MAX_BYTES = 65_536L;
+    static final int LUNA_SEED_MAX_FILES = 32;
     /** The flight dir stamp = {@code LaneFollow}'s {@code flight-[0-9]{8}-[0-9]{6}} pointer shape. */
     static final DateTimeFormatter FLIGHT_STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
     static final String FLIGHT_PREFIX = "flight-";
@@ -385,6 +401,14 @@ public final class ServeLauncher {
             // (PilotShipApplier.parseExclude) - no sysprop / env tier, so no registry knob; without this entry a host
             // who lists a mod here is told the row is ignored while the premain honours it
             TransformRegistry.PILOT_SHIP_EXCLUDE_FILE_KEY);
+    /**
+     * Config rows the ops GUI alone writes and reads - neither the serve nor this launcher reads them, so they are
+     * no {@link #UNREGISTERED_KNOWN_KEYS} row (that list = serve-READ rows; its T11-stale census refuses a row read
+     * nowhere) - yet {@link #warnUnknownKeys} must not tell a host the GUI's own row "is ignored" at every start.
+     * {@code mods.offOptional}, the Mods tab's memory of an unticked
+     * optional mod's kind (the kind-memory fix).
+     */
+    static final List<String> CONSOLE_ONLY_KEYS = List.of(OpsMatchRows.MODS_OFF_OPTIONAL_KEY);
     private static final int MAX_CONSOLE_TOKEN_CHARS = 200;
     /**
      * The running-serve guard reads at most this much of {@code run/ops/ops-status.txt}; its
@@ -540,8 +564,14 @@ public final class ServeLauncher {
             return EXIT_REFUSED_PRELAUNCH;
         }
         // The run/stop boot law in place of its stale clear - before every run/
-        // write but the lock, so a stop the Ops console's Kill wrote after this launcher started ends it here
-        if (stopOrderedAtBoot(stopFile, ProcessHandle.current().info().startInstant(), out)) {
+        // write but the lock, so a stop the Ops console's Kill wrote after this launcher started ends it here.
+        // The start instant = the JVM's own start time: it is stamped from the same wall clock as a file time. The
+        // process handle's instant is not: on Linux the JDK rebuilds it from the kernel boot time in WHOLE seconds,
+        // so it can sit up to a second off that clock, and a stop written a few hundred ms before a restart then
+        // reads as an order (the Linux rig's links-only restart row hit it: exit 4 for a refusal).
+        java.util.Optional<Instant> launcherStart = java.util.Optional.of(Instant.ofEpochMilli(
+                java.lang.management.ManagementFactory.getRuntimeMXBean().getStartTime()));
+        if (stopOrderedAtBoot(stopFile, launcherStart, out)) {
             return EXIT_STOPPED_AT_BOOT;
         }
         deleteStale(opsStatus, out);
@@ -558,6 +588,7 @@ public final class ServeLauncher {
             say(out, REFUSED_PREFIX + "a flight folder under " + run + " cannot be created (" + e.getClass().getSimpleName() + ")");
             return EXIT_REFUSED_PRELAUNCH;
         }
+        seedLunaSettings(pkg, flight, out); // before life 1 boots: a one-way seed, the flight's own writes stay here
         Path pointer = run.resolve(POINTER_FILE);
         try {
             Files.deleteIfExists(pointer);
@@ -615,8 +646,10 @@ public final class ServeLauncher {
                 "rngpin=" + (c.rngPins == null ? "" : c.rngPins),
                 // the MagicLib seam row as read (absent = on, the default); never the serve's receipt
                 "magicseam=" + (c.magicSeam == null ? "" : c.magicSeam),
-                // the player-ship row as read (absent = off, the default); never the premain's receipt
-                "pilotship=" + (c.pilotShip == null ? "" : c.pilotShip)), out);
+                // the player-ship row as read (absent = on, the default); never the premain's receipt
+                "pilotship=" + (c.pilotShip == null ? "" : c.pilotShip),
+                // the replicas row as read through the serve's loose set (absent = on, the reader's fallback)
+                "pilotreplicas=" + (c.pilotReplicas == null ? "" : c.pilotReplicas)), out);
         if (!c.doorArmed) {
             say(out, DOOR_UNARMED_LINE);
         }
@@ -670,6 +703,9 @@ public final class ServeLauncher {
         /** The player-ship row as read, {@code on|off}, for {@code launch.txt} ({@link #pilotShipStamp}); null = the
          * rows were never reached. */
         String pilotShip;
+        /** The replicas row as read, {@code on|off}, for {@code launch.txt}
+         * ({@link #pilotReplicasStamp}); null = the rows were never reached. */
+        String pilotReplicas;
     }
 
     /**
@@ -704,6 +740,19 @@ public final class ServeLauncher {
      */
     static String pilotShipStamp(Properties props) {
         return "false".equals(row(props, TransformRegistry.PILOT_SHIP_ENABLED_FILE_KEY)) ? "off" : "on";
+    }
+
+    /**
+     * The replicas receipt word for {@code launch.txt}: {@code off} for a row in the LOOSE false set
+     * ({@link OpsMatchRows#isLooseOff}, shared with the ops GUI prefill), else {@code on}. Loose, not the strict pair,
+     * because the row's one reader is the runtime's tiered boolean resolver ({@link #looseBoolean} is its accepted
+     * set): a host's {@code off} is off in the serve, so the receipt must say off too. Absent or blank = on, the reader's fallback.
+     * The file row only, never the serve's verdict (a sysprop or environment tier in the serve JVM outranks it).
+     * Called only after {@link #checkRows} passed, so the row is blank or a {@link #looseBoolean} word.
+     *
+     */
+    static String pilotReplicasStamp(Properties props) {
+        return OpsMatchRows.isLooseOff(row(props, OpsMatchRows.PILOT_REPLICAS_KEY)) ? "off" : "on";
     }
 
     /** The pre-checks in the vocabulary's order; the FIRST failure is returned, null = all pass. */
@@ -941,6 +990,7 @@ public final class ServeLauncher {
         c.rngPins = rngPinsStamp(props);
         c.magicSeam = magicSeamStamp(props);
         c.pilotShip = pilotShipStamp(props);
+        c.pilotReplicas = pilotReplicasStamp(props);
         // Port: a non-blank bind.port BOX row WINS (an
         // invalid one refuses even beside a valid config row); a blank one leaves the config row's rule unchanged
         String boxPort = box.getOrDefault(ROW_BIND_PORT, "").trim();
@@ -965,7 +1015,7 @@ public final class ServeLauncher {
         }
         String packStamp = c.manifest.meta.get(OpsRoots.PACK_STAMP);
         boolean packed = packStamp != null && !packStamp.isBlank();
-        String mismatch = PackageManifest.firstMismatch(pkg, c.manifest);
+        String mismatch = checkedAgainstManifest(pkg, c.manifest, out);
         if (mismatch != null) {
             // A PACKED server names the update script as the remedy - a
             // RELEASE stamp only (the update check refuses a source-built folder, which is rebuilt instead); the mods
@@ -1014,6 +1064,54 @@ public final class ServeLauncher {
             }
         }
         return null;
+    }
+
+    /**
+     * How long the manifest check runs in silence before {@link #checkedAgainstManifest} says so - a TELL threshold,
+     * never a wait or a limit: the check runs to its end either way, and a start is never delayed by it.
+     */
+    static final long MANIFEST_CHECK_TELL_MS = 5_000L;
+
+    /**
+     * {@link PackageManifest#firstMismatch} with a tell for a slow disk. WHY (the chain 2's package-watch
+     * row pw11): the check reads every packaged byte (about 180 MB over 2000+ files) - under a
+     * second warm, 30 s and more on a cold HDD under load - and the launcher said NOTHING meanwhile, so a host saw a
+     * silent window and the rig read a launcher still hashing as a dead one. A clean fast start still prints exactly
+     * its life line and its terminal row (the T3-clean host-surface law, design-u4): the tell comes only once the
+     * check has run {@link #MANIFEST_CHECK_TELL_MS}, and the closing line - the measurement - only after a tell.
+     */
+    static String checkedAgainstManifest(Path pkg, PackageManifest manifest, PrintStream out) {
+        int rows = manifest.sha256ByPath.size();
+        java.util.concurrent.atomic.AtomicBoolean told = new java.util.concurrent.atomic.AtomicBoolean();
+        Thread tell = new Thread(() -> {
+            try {
+                Thread.sleep(MANIFEST_CHECK_TELL_MS);
+            } catch (InterruptedException ended) {
+                return;
+            }
+            told.set(true);
+            say(out, "serve-launcher: still checking the package's " + rows + " files against its manifest after "
+                    + (MANIFEST_CHECK_TELL_MS / 1000L) + " s (a slow or busy disk); the server starts when the check ends");
+        }, "serve-launcher-manifest-tell");
+        tell.setDaemon(true);
+        long t0 = System.nanoTime();
+        tell.start();
+        String mismatch;
+        try {
+            mismatch = PackageManifest.firstMismatch(pkg, manifest);
+        } finally {
+            tell.interrupt();
+        }
+        try {
+            tell.join(1_000L);
+        } catch (InterruptedException keepGoing) {
+            Thread.currentThread().interrupt();
+        }
+        if (told.get()) {
+            say(out, "serve-launcher: the package's " + rows + " files were checked against its manifest in "
+                    + String.format(java.util.Locale.ROOT, "%.1f", (System.nanoTime() - t0) / 1_000_000_000.0) + " s");
+        }
+        return mismatch;
     }
 
     /**
@@ -1231,7 +1329,7 @@ public final class ServeLauncher {
         // one reader (the serve JVM's startup) is the exact switch; the launcher only validates.
         // The MagicLib seam row joins it - its one reader (the premain) refuses
         // anything but exact true / false, so a loose value is refused here, before the launch, not at the serve's boot
-        // Main-written: the player-ship row too - the premain's resolveStrictSwitch is the
+        // the player-ship row too - the premain's resolveStrictSwitch is the
         // same exact switch
         for (String key : List.of("net.doorFingerprint", "server.engineBornGrowth", OpsMatchRows.ALL_SKILLS_KEY,
                 OpsMatchRows.RNG_PINS_KEY, TransformRegistry.MAGIC_SEAM_ENABLED_FILE_KEY,
@@ -1241,7 +1339,10 @@ public final class ServeLauncher {
                 return rowRefusal(key, "must be true or false, got '" + v + "'");
             }
         }
-        for (String key : List.of("net.socketLiveness", "net.snapDelta", "predict.eventReplay")) {
+        // The replica row joins the LOOSE pair - its one reader is the
+        // runtime's resolveBoolean (true/false/1/0/yes/no/on/off), so the launcher accepts exactly what the serve does
+        for (String key : List.of("net.socketLiveness", "net.snapDelta", "predict.eventReplay",
+                cc.starsector.server.transform.PilotShipReplicaFollow.REPLICAS_FILE_KEY)) {
             String v = row(props, key);
             if (!v.isEmpty() && !looseBoolean(v)) {
                 return rowRefusal(key, "must be true/false/1/0/yes/no/on/off, got '" + v + "'");
@@ -1293,10 +1394,11 @@ public final class ServeLauncher {
         return Refusal.of(R_ROW_PARSE, "the row " + key + " does not parse: " + bounded(String.valueOf(message)));
     }
 
-    /** {@code ServerConfig.resolveBoolean}'s accepted set: true 1 yes on / false 0 no off, case-insensitive. */
+    /** {@code ServerConfig.resolveBoolean}'s accepted set: true 1 yes on / false 0 no off, case-insensitive; the
+     * false half is {@link OpsMatchRows#isLooseOff}, the one copy the GUI prefill and the receipt stamp share. */
     private static boolean looseBoolean(String v) {
         return v.equalsIgnoreCase("true") || v.equals("1") || v.equalsIgnoreCase("yes") || v.equalsIgnoreCase("on")
-                || v.equalsIgnoreCase("false") || v.equals("0") || v.equalsIgnoreCase("no") || v.equalsIgnoreCase("off");
+                || OpsMatchRows.isLooseOff(v);
     }
 
     /** A config row as the serve's file tier reads it: trimmed, blank = absent ({@code ""}). */
@@ -1317,7 +1419,8 @@ public final class ServeLauncher {
      * D4: ONE warning line per config key the serve does not read (not a FILE key of
      * {@link PostureRegistry#knobs()}, not {@link #UNREGISTERED_KNOWN_KEYS}), sorted — never a
      * refusal. WHY: the serve's loader ignores a mistyped key silently, so the host's intended
-     * setting would never apply.
+     * setting would never apply. The ops GUI's own
+     * {@link #CONSOLE_ONLY_KEYS} rows are known too (not a host typo).
      */
     private static void warnUnknownKeys(Properties props, Path config, PrintStream out) {
         Set<String> known = new TreeSet<>();
@@ -1327,6 +1430,7 @@ public final class ServeLauncher {
             }
         }
         known.addAll(UNREGISTERED_KNOWN_KEYS);
+        known.addAll(CONSOLE_ONLY_KEYS);
         for (String key : new TreeSet<>(props.stringPropertyNames())) {
             if (!known.contains(key)) {
                 say(out, "serve-launcher warning: the server config " + config.getFileName() + " has a row '"
@@ -1574,6 +1678,127 @@ public final class ServeLauncher {
                 }
             }
         }
+    }
+
+    /**
+     * The LunaLib seed intake: copies the host's {@code <pkg>/luna-settings/<modId>.json.data} files into this flight's
+     * {@code settings/saves/common/LunaSettings/} before the serve boots. WHY: every flight starts on fresh saves, so
+     * without a seed the serve runs each LunaLib mod on its CSV defaults; LunaLib reads that file at load and fills the
+     * keys it lacks, so a seed holds only what the host changes. A one-way copy: the flight's own writes stay in it.
+     * The folder is host input, so the INTAKE LAW holds: a regular file only, never through a link; the name a lawful
+     * mod id ({@link ModSet#lawfulId}, 1..{@link ModSet#MAX_ID_CHARS} chars) + {@link #LUNA_SEED_SUFFIX}; at most
+     * {@link #LUNA_SEED_MAX_BYTES}; at most {@link #LUNA_SEED_MAX_FILES} candidate files in name order (the rest are
+     * skipped unopened); the bytes a JSON object by {@link #jsonObjectShape} (LunaLib's loader drops a malformed file
+     * without a word and writes the defaults back, so a broken seed is named here instead). ONE console row per entry,
+     * {@code luna-seed <name> copied|not-json|oversize|skipped|not-a-file} - its name, never a value; an absent folder
+     * prints nothing and {@link #LUNA_SEED_README} is passed over silently. Never refuses the launch: a failure is its
+     * row. Returns the files copied (0..{@link #LUNA_SEED_MAX_FILES}).
+     *
+     *
+     */
+    static int seedLunaSettings(Path pkg, Path flight, PrintStream out) {
+        Path dir = pkg.resolve(LUNA_SEED_DIR);
+        if (!Files.isDirectory(dir)) {
+            return 0;
+        }
+        List<String> names;
+        try (Stream<Path> listing = Files.list(dir)) {
+            names = listing.map(p -> p.getFileName().toString()).sorted().toList();
+        } catch (IOException | RuntimeException unreadable) {
+            say(out, "luna-seed " + LUNA_SEED_DIR + " skipped (" + unreadable.getClass().getSimpleName() + ")");
+            return 0;
+        }
+        Path dest = flight.resolve(SETTINGS_DIR).resolve("saves").resolve("common").resolve("LunaSettings");
+        int candidates = 0;
+        int copied = 0;
+        for (String name : names) {
+            if (name.equals(LUNA_SEED_README)) {
+                continue;
+            }
+            String id = name.endsWith(LUNA_SEED_SUFFIX) ? name.substring(0, name.length() - LUNA_SEED_SUFFIX.length()) : "";
+            String verdict;
+            if (id.isEmpty() || id.length() > ModSet.MAX_ID_CHARS || !ModSet.lawfulId(id)) {
+                verdict = "skipped";
+            } else {
+                try {
+                    Path src = dir.resolve(name);
+                    BasicFileAttributes a = Files.readAttributes(src, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                    if (a.isSymbolicLink() || !a.isRegularFile()) {
+                        verdict = "not-a-file";
+                    } else if (candidates >= LUNA_SEED_MAX_FILES) {
+                        verdict = "skipped";
+                    } else {
+                        candidates++;
+                        byte[] bytes = a.size() > LUNA_SEED_MAX_BYTES ? null : readAtMost(src, LUNA_SEED_MAX_BYTES);
+                        if (bytes == null) {
+                            verdict = "oversize";
+                        } else if (!jsonObjectShape(bytes)) {
+                            verdict = "not-json";
+                        } else {
+                            Files.createDirectories(dest);
+                            Files.write(dest.resolve(name), bytes);
+                            copied++;
+                            verdict = "copied";
+                        }
+                    }
+                } catch (IOException | RuntimeException failed) {
+                    verdict = "skipped (" + failed.getClass().getSimpleName() + ")";
+                }
+            }
+            say(out, "luna-seed " + bounded(name) + " " + verdict);
+        }
+        return copied;
+    }
+
+    /** At most {@code cap} bytes of {@code file}, never through a link; null = it holds more (it grew since the stat). */
+    private static byte[] readAtMost(Path file, long cap) throws IOException {
+        try (InputStream in = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+            byte[] b = in.readNBytes((int) cap + 1);
+            return b.length > cap ? null : b;
+        }
+    }
+
+    /**
+     * A bounded JSON OBJECT shape check, never a parse: the first non-blank byte is an open brace, the last a close
+     * brace, the braces balance outside string literals (a backslash escapes the next byte inside one) and the outer
+     * object closes only at that last byte. A byte-order mark, an array, a scalar or two objects fail.
+     *
+     */
+    static boolean jsonObjectShape(byte[] b) {
+        int first = 0;
+        int last = b.length - 1;
+        while (first <= last && jsonBlank(b[first])) {
+            first++;
+        }
+        while (last >= first && jsonBlank(b[last])) {
+            last--;
+        }
+        if (first > last || b[first] != '{' || b[last] != '}') {
+            return false;
+        }
+        int depth = 0;
+        boolean inString = false;
+        for (int i = first; i <= last; i++) {
+            byte c = b[i];
+            if (inString) {
+                if (c == '\\') {
+                    i++;
+                } else if (c == '"') {
+                    inString = false;
+                }
+            } else if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}' && --depth == 0 && i != last) {
+                return false;
+            }
+        }
+        return depth == 0 && !inString;
+    }
+
+    private static boolean jsonBlank(byte c) {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r';
     }
 
     /**

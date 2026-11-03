@@ -485,7 +485,8 @@ public final class PackageFolderWriterSelftest {
      * names are SEEDED (unlisted) - {@code cc-server.properties} / {@code launcher.properties} = the base's
      * templates byte-equal, {@code enabled_mods.json} = the minted bytes, {@code match/match.txt} + sidecar = the
      * base's defaults pair, the shape at {@code match/match-alpha.txt} with its sidecar re-keyed to its id; the two
-     * templates + {@code update.bat} are LISTED singles; no {@code match-defaults/} folder lands; and a re-run is green
+     * templates + {@code update.bat} + {@code luna-settings/README.txt} are LISTED singles; no {@code match-defaults/}
+     * folder lands; and a re-run is green
      * with no K / R15 line, every seed kept. Flips if the defaults pair, the templates, the update script or the
      * shape library refuse R13, or the live names go unseeded.
      */
@@ -519,7 +520,8 @@ public final class PackageFolderWriterSelftest {
                 src.resolve("match/match-alpha.txt.fingerprint"), StandardCharsets.ISO_8859_1), "match-alpha"), "match");
         require(alpha.matchId().equals(keyed), "the seeded shape's sidecar is not re-keyed to the shape's id (flips if"
                 + " the base's match-defaults sidecar is copied instead of re-keyed): match=" + keyed);
-        for (String single : List.of("cc-server.template.properties", "launcher.template.properties", "update.bat")) {
+        for (String single : List.of("cc-server.template.properties", "launcher.template.properties", "update.bat",
+                "luna-settings/README.txt")) {
             require(m.sha256ByPath.containsKey(single) && Files.isRegularFile(src.resolve(single)), single + " is not a"
                     + " LISTED single of the SOURCE folder (flips if the new-layout base's program file is dropped or"
                     + " seeded)");
@@ -608,10 +610,34 @@ public final class PackageFolderWriterSelftest {
                 "jre/bin/java.exe", "jre/bin/opengl32.dll", "jre/bin/libgallium_wgl.dll", "jre/cc-serve-jre.txt",
                 "kits/" + fx.kit().getFileName(), "cc-server.template.properties", "launcher.template.properties",
                 "serve.bat", "stop.bat", "ops-web.bat", "update.bat", "README.md", "match-defaults/match.txt",
-                "match-defaults/match.txt.fingerprint"));
+                "match-defaults/match.txt.fingerprint", "luna-settings/README.txt"));
         require(new TreeSet<>(m.sha256ByPath.keySet()).equals(listed), "the PACKED route table's LISTED set drifted"
                 + " (flips if a template, script, README or the match-defaults pair goes unlisted or back to a live name):"
                 + " expected " + listed + ", got " + new TreeSet<>(m.sha256ByPath.keySet()));
+        // Every PACKED listed rel is admitted by the FROZEN update check: a packed file PackageUpdateCheck.PROGRAM_NAMES
+        // / PROGRAM_PREFIXES lacks is refused by every later UPDATE of a package built with it ("the zip lists a file
+        // outside the program set"). That happened once: luna-settings/README.txt was packed but not admitted;
+        // this row flips the next time a packed file is left out.
+        String kitRow = "kits/" + fx.kit().getFileName();
+        List<String> outsideProgramSet = new ArrayList<>();
+        for (String rel : m.sha256ByPath.keySet()) {
+            if (!PackageUpdateCheck.inProgramSet(rel, kitRow)) {
+                outsideProgramSet.add(rel);
+            }
+        }
+        require(outsideProgramSet.isEmpty(), "a PACKED listed file sits outside the frozen program set, so an UPDATE of"
+                + " a package built from this tree refuses it (flips when a packed file is left out of"
+                + " PackageUpdateCheck.PROGRAM_NAMES / PROGRAM_PREFIXES): " + outsideProgramSet);
+        // The LunaLib seed folder's README: the one shipped file there, the text a host reads before writing a seed.
+        //
+        byte[] luna = Files.readAllBytes(pkg.resolve("luna-settings/README.txt"));
+        String lunaText = new String(luna, StandardCharsets.US_ASCII);
+        require(Arrays.equals(lunaText.getBytes(StandardCharsets.US_ASCII), luna) && luna.length > 0
+                && luna[luna.length - 1] == '\n' && lunaText.indexOf('\r') < 0
+                && lunaText.contains("<modId>" + ServeLauncher.LUNA_SEED_SUFFIX),
+                "luna-settings/README.txt is not US-ASCII LF text naming the <modId>.json.data seed law (flips if the"
+                        + " README leaves the pack or the seed folder, picks up a non-ASCII byte or CR, or its file name"
+                        + " law drifts from the seed intake's suffix)");
         List<String> order = new ArrayList<>(m.sha256ByPath.keySet());
         List<String> sorted = new ArrayList<>(order);
         sorted.sort(Comparator.naturalOrder());

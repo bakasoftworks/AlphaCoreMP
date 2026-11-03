@@ -20,6 +20,7 @@ import cc.starsector.server.adapter.ShipSystemView;
 import cc.starsector.server.adapter.WeaponMountView;
 import cc.starsector.server.bridge.FreshSpawnScan.FreshSpawn;
 import cc.starsector.server.protocol.NonShipEntitySnapshot;
+import cc.starsector.server.protocol.ShipManeuverCommandSnapshot;
 import cc.starsector.server.runtime.HullSourceLedger;
 import cc.starsector.server.runtime.MissileSplitEventDetector;
 import cc.starsector.server.runtime.ParityAuditWalker;
@@ -4214,9 +4215,10 @@ public final class EngineCombatBinding {
                 if (readEngineFlareFlag(controller)) {
                     maneuverMask |= 1 << ShipManeuverCommandView.BIT_ENGINE_FLARE;
                 }
-                int pilotTriple = readPilotMarkTriple(ship);
+                long pilotMark = readPilotMark(ship);
                 commands.add(new EngineBackedShipManeuverCommandView(shipId++, maneuverMask,
-                        pilotTriple >>> 16, (pilotTriple >>> 8) & 0xFF, pilotTriple & 0xFF));
+                        (int) (pilotMark >>> 16) & 0xFF, (int) (pilotMark >>> 8) & 0xFF, (int) pilotMark & 0xFF,
+                        (int) (pilotMark >>> 24) & 0xFFFF));
             }
             return commands;
         } catch (ReflectiveOperationException | RuntimeException e) {
@@ -4289,8 +4291,9 @@ public final class EngineCombatBinding {
      * {@link PilotCommandApplier#PILOT_MARK_KEY} before the step, i.e. exactly what the serve's
      * mod reads this tick (one source, no second bookkeeping). {@code [0]} in 1..255 is the seat;
      * {@code [1] & 0xFF} the applied ability bits (the mod reads the low byte only);
-     * {@code [3] & 0xFF} the flags when the mark is at least 4 long (bit 0 = the pilot's MagicLib
-     * decision is followed), else 0 (a pair-shaped mark is append-compatible and simply unflagged).
+     * {@code [3]}'s defined bits 0..2 the flags when the mark is at least 4 long (bit 0 = the pilot's
+     * MagicLib decision is followed; bit 2 only beside bit 1), else 0 (a pair-shaped mark is
+     * append-compatible and simply unflagged).
      * ANY other case — handle unbound, the get throws, no map, key absent, another type, length
      * below 2, seat outside 1..255 — reads 0 = NO MARK, so the canonical (0, 0, 0) shape is the
      * only absent shape minted and this read can never null the maneuver tier (its own try, the
@@ -4299,8 +4302,13 @@ public final class EngineCombatBinding {
      * {@code Map.get}, one {@code instanceof} per ship per tick on the sim thread (the minimum
      * coherent read); an unmarked hull whose custom data field is still null gets a fresh empty
      * map from the engine's getter on every call.
+     *
+     * <p>Packed {@code (controls << 24) | (seat << 16) | (mask << 8) | flags} in a long: {@code controls} = the mark's
+     * {@code [4]} u16 when the mark is at least 5 long AND flags bit 1 is set, else 0. WHY one widened read rather than
+     * a second one: the u16 does not fit beside the triple in an int, and a second read would double the per-ship
+     * reflective get on the sim thread.
      */
-    private int readPilotMarkTriple(Object ship) {
+    private long readPilotMark(Object ship) {
         if (shipGetCustomData == null) {
             return 0;
         }
@@ -4340,8 +4348,16 @@ public final class EngineCombatBinding {
             logPilotMarkFaultOnce("mark-seat-out-of-range length=" + pair.length);
             return 0;
         }
-        int flags = pair.length >= 4 ? pair[3] & 0xFF : 0;
-        return (seat << 16) | ((pair[1] & ShipManeuverCommandView.PILOT_MASK_BITS) << 8) | flags;
+        // Canonicalized HERE, the one read before the wire. The array
+        // is the hull's own custom data, so another writer's bits 3..7, or a bit 2 without bit 1, would otherwise
+        // reach the baseline's v15 refusal and throw on the capture thread every tick; controls ride with bit 1 only.
+        int flags = pair.length >= 4 ? pair[3] & ShipManeuverCommandSnapshot.PILOT_FLAGS_DEFINED : 0;
+        if ((flags & ShipManeuverCommandView.PILOT_FLAG_CONTROLS) == 0) {
+            flags &= ~ShipManeuverCommandView.PILOT_FLAG_REPLICA_FOLLOW;
+        }
+        long controls = pair.length >= 5 && (flags & ShipManeuverCommandView.PILOT_FLAG_CONTROLS) != 0
+                ? pair[4] & 0xFFFFL : 0L;
+        return (controls << 24) | (seat << 16) | ((pair[1] & ShipManeuverCommandView.PILOT_MASK_BITS) << 8) | flags;
     }
 
     private void logPilotMarkFaultOnce(String token) {

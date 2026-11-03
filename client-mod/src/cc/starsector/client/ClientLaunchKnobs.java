@@ -70,7 +70,11 @@ final class ClientLaunchKnobs {
      * (the {@code start javaw.exe} launch was refused / died within 5 s) when the install's own
      * {@code jre\} took over. This is the ONE sidelog row that says so (joiner-debrief bundles the
      * sidelog into the Desktop report); the Java version beside it is the cross-check (jre-cc =
-     * Temurin 25, the install jre = Zulu 17). Unset = the bundled runtime ran, or a no-bundle kit.
+     * Temurin 25, the install jre = Zulu 17). {@code jre-cc} = the bundled runtime's NORMAL start:
+     * join-cc.bat marks it too, because the kit's compat agent premain
+     * ({@code jars\cc-compat-agent.jar}) gates on the marker's presence and would stay inert without it;
+     * {@code rig} = the dev rig's direct javaw line. Unset = a no-bundle kit, a kit missing kit-jvm.args, or an
+     * older kit's bundled start.
      */
     static String describeKitLaunch() {
         String v = System.getProperty("cc.kit.launch");
@@ -86,7 +90,9 @@ final class ClientLaunchKnobs {
         // (jre-cc = the bundled runtime, jre = the install's own). java.home is launcher-owned
         // text riding a log line: basename only, sanitized, bounded (no java.nio.file — the
         // jar-content gate bans it from the mod jar).
-        return (v == null ? "unset (bundled jre-cc ran, a no-bundle kit, or a kit missing kit-jvm.args - see home)"
+        return (v == null ? "unset (a no-bundle kit, a kit missing kit-jvm.args, or an older kit's bundled start - see home)"
+                : "jre-cc".equals(v) ? "BUNDLED jre-cc (join-cc.bat's normal start; the marker the compat agent's gate reads)"
+                : "rig".equals(v) ? "RIG (the dev rig's direct javaw line)"
                 : "explorer".equals(v) ? "EXPLORER-PARENT (join-cc.bat chose the Explorer launch shape)"
                 : "explorer-fallback".equals(v) ? "EXPLORER-FALLBACK (the Explorer launch brought no Java up; join-cc.bat started starsector.exe directly)"
                 : "FALLBACK " + FallbackAnnounce.sanitize(v, 32))

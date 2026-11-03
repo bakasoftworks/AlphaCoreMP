@@ -96,6 +96,12 @@ public final class PidsReaderCounters {
     /** PROBEs whose {@code match=} term differed from the served document's id (none, absent or a null print
      *  included), counted at the door's fingerprint check before any credential compare. Reader thread only. */
     public volatile long probeDocStale;
+    /** PROBE replies that carried the LunaSettings sheet's sealed LUNA frames
+     *  (every password-proven probe on a door holding a sheet, any match term). Reader thread only. */
+    public volatile long probeLunaServed;
+    /** Proven PROBEs the sheet's budget term held: dropped SILENTLY, nothing sent, the probe budget not asked (the
+     *  kit's next try is served). Reader thread only. */
+    public volatile long probeLunaHeld;
     /** un-cookied v12 HELLOs answered with a COOKIE WELCOME. */
     public volatile long cookieChallenged;
     /** cookie-bearing HELLOs that failed verify (stale/forged/foreign) — re-challenged. */
@@ -221,6 +227,15 @@ public final class PidsReaderCounters {
      *  default tally. Written under the door lock. Readers: {@code PidsHello13GuardRows} hs14-f1-bounce, the door
      *  line's {@code hello_v14_bounced=}. Delete trigger: none (a door meter). */
     public volatile long helloV14Bounced;
+    /** version-15 and version-16 HELLOs bounced as an outdated kit (those rungs
+     *  of the bounce ladder), never folded into the version-1 default tally. Written under the door lock. Readers:
+     *  {@code PidsHello13GuardRows} hs15-17-f1-bounce, the door line. Delete trigger: none (door meters). */
+    public volatile long helloV15Bounced;
+    public volatile long helloV16Bounced;
+    /** The version-17 tally, the v15 / v16 shape — the hs-17 kit a host still
+     *  runs after the door moved to 18 bounces at the frozen v17 rung and counts HERE, never under v1's default arm.
+     *  Readers: {@code PidsHello13GuardRows} hs15-17-f1-bounce, the door line. Delete trigger: none (a door meter). */
+    public volatile long helloV17Bounced;
     /** F2s whose secret the wrap proved but whose sealed body did not
      *  decode or authenticate (any body grammar; version-free), each answered {@code handshake_refused}. Expected
      *  0 on a clean door. Written under the door lock. Readers: {@code SeatTeamDoorContractRows}, the door line
@@ -398,6 +413,12 @@ public final class PidsReaderCounters {
                 + " hello_v13_bounced=" + helloV13Bounced
                 + " hello_body_refused=" + helloBodyRefused
                 // Appended LAST (appended-only grammar), a count only
-                + " hello_v14_bounced=" + helloV14Bounced);
+                + " hello_v14_bounced=" + helloV14Bounced
+                // Appended LAST (appended-only grammar), counts only
+                + " probe_luna_served=" + probeLunaServed
+                + " probe_luna_held=" + probeLunaHeld
+                + " hello_v15_bounced=" + helloV15Bounced
+                + " hello_v16_bounced=" + helloV16Bounced
+                + " hello_v17_bounced=" + helloV17Bounced);
     }
 }

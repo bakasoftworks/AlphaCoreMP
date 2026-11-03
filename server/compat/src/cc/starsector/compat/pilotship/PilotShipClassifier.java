@@ -53,6 +53,12 @@ import cc.starsector.compat.magic.MagicSeamRewriter;
  * LWJGL sites are rewritten with its {@code getPlayerShip} sites, so inside a hull's window a key read answers that
  * hull's pilot, and outside every window it reads up instead of throwing (the server has no display).
  *
+ * <p>The same table carries the pilot-state rows ({@code getAI} / {@code getShipAI} / {@code isUIAutopilotOn}, receiver
+ * first): on the serve every seat hull carries a fast-time shim in its ship-AI slot, so a mod's "is this ship
+ * AI-driven?" branch would run its AI logic on a human-flown hull; inside that hull's window the twins answer what the
+ * pilot's own screen answers (no AI on the root, the autopilot reading as a human at the helm).
+ *
+ *
  * <p>The reasons, first match wins ({@link #REASON_ORDER}): a fixed {@link #DENY_LIST} entry; the host's exclude row;
  * an adopter (the pool holds {@link #PILOT_MARK}: the class already follows the pilot itself); IS-A
  * {@link #MAGIC_SUBSYSTEM} through the same-jar superclass chain (a mere reference is no reason); then five USE
@@ -61,7 +67,7 @@ import cc.starsector.compat.magic.MagicSeamRewriter;
  * cursor (any other Keyboard / Mouse member: the pointer, wheel, event readers, grabbing, device life), drawing (OpenGL
  * or the libraries' draw helpers), and a battle-clock WRITER; then a class another load-time transform already owns;
  * then a class whose pool names {@code getPlayerShip} but holds no redirect site. A class that never names
- * {@code getPlayerShip} and holds no LWJGL redirect site is no subject at all ({@link #classify} answers null).
+ * {@code getPlayerShip} and holds no other redirect site is no subject at all ({@link #classify} answers null).
  *
  * <p>A USE is an instruction, a field or method descriptor, a catch type, an invokedynamic handle or an ldc constant;
  * a constant-pool Class entry nothing uses (an inlined constant's leftover) and a generic-signature mention are no use.
@@ -99,6 +105,16 @@ public final class PilotShipClassifier {
     public static final String SETTINGS_API = "com/fs/starfarer/api/SettingsAPI";
     public static final String GET_CONTROL_STRING = "getControlStringForEnumName";
     public static final String GET_CONTROL_STRING_DESC = "(Ljava/lang/String;)Ljava/lang/String;";
+    /**
+     * The pilot-state rows' owners and names: {@code getAI} is declared on the entity interface and reached through the
+     * ship interface too (a call names its receiver's static type, so both owners are rows); {@code getShipAI} on the
+     * ship interface; {@code isUIAutopilotOn} on the engine interface.
+     */
+    public static final String SHIP_API = "com/fs/starfarer/api/combat/ShipAPI";
+    public static final String ENTITY_API = "com/fs/starfarer/api/combat/CombatEntityAPI";
+    public static final String GET_AI = "getAI";
+    public static final String GET_SHIP_AI = "getShipAI";
+    public static final String IS_UI_AUTOPILOT_ON = "isUIAutopilotOn";
     static final String INPUT_EVENT = "com/fs/starfarer/api/input/InputEventAPI";
     static final String GL_PACKAGE = "org/lwjgl/opengl/";
     static final String KOTLIN_INTRINSICS = "kotlin/jvm/internal/Intrinsics";
@@ -140,9 +156,9 @@ public final class PilotShipClassifier {
      * row's twin takes the settings. {@link #key()} = an LWJGL keyboard / mouse row.
      */
     public record Twin(int opcode, String owner, String name, String desc, String twin, String twinDesc) {
-        /** True for an LWJGL keyboard / mouse row (a key site); false for the {@code getPlayerShip} row and the
-         *  {@code getControlStringForEnumName} row (an interface call with a receiver, counted as a site, not a key
-         *  site). */
+        /** True for an LWJGL keyboard / mouse row (a key site); false for the {@code getPlayerShip} row, the
+         *  {@code getControlStringForEnumName} row and the pilot-state rows (an interface call with a receiver, counted
+         *  as a site, not a key site). */
         public boolean key() {
             return owner.startsWith(LWJGL_INPUT_PREFIX);
         }
@@ -170,7 +186,21 @@ public final class PilotShipClassifier {
             new Twin(Opcodes.INVOKESTATIC, MOUSE, "isInsideWindow", "()Z", "isInsideWindow", "()Z"),
             // The tenth twin: a by-name control read answers the window's pilot's own binding.
             new Twin(Opcodes.INVOKEINTERFACE, SETTINGS_API, GET_CONTROL_STRING, GET_CONTROL_STRING_DESC,
-                    "controlStringForEnumName", "(L" + SETTINGS_API + ";Ljava/lang/String;)Ljava/lang/String;"));
+                    "controlStringForEnumName", "(L" + SETTINGS_API + ";Ljava/lang/String;)Ljava/lang/String;"),
+            // The pilot-state twins: receiver first, the twin named as the member; the records equal the
+            // client table's own rows for the same calls (that table starts from this one and keeps the first row).
+            receiverFirst(ENGINE_API, IS_UI_AUTOPILOT_ON, "()Z"),
+            receiverFirst(SHIP_API, GET_AI, "()Ljava/lang/Object;"),
+            receiverFirst(ENTITY_API, GET_AI, "()Ljava/lang/Object;"),
+            receiverFirst(SHIP_API, GET_SHIP_AI, "()Lcom/fs/starfarer/api/combat/ShipAIPlugin;"));
+
+    /**
+     * A receiver-first interface row: the twin keeps the member's name and takes the receiver as its first argument,
+     * so the swapped static has the interface call's stack effect.
+     */
+    private static Twin receiverFirst(String owner, String name, String desc) {
+        return new Twin(Opcodes.INVOKEINTERFACE, owner, name, desc, name, "(L" + owner + ";" + desc.substring(1));
+    }
 
     /** {@link #TWINS} by {@code owner.name+desc} (the opcode is checked on lookup). */
     private static final Map<String, Twin> TWIN_INDEX;
@@ -247,13 +277,18 @@ public final class PilotShipClassifier {
     public static final String LWJGL_INPUT_PREFIX = "org/lwjgl/input/";
     private static final byte[] LWJGL_INPUT_BYTES = LWJGL_INPUT_PREFIX.getBytes(StandardCharsets.US_ASCII);
     private static final byte[] GCS_BYTES = GET_CONTROL_STRING.getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] GAI_BYTES = GET_AI.getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] GSAI_BYTES = GET_SHIP_AI.getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] UIAP_BYTES = IS_UI_AUTOPILOT_ON.getBytes(StandardCharsets.US_ASCII);
     /** {@link #siteNameMask} bits: the pool names {@code getPlayerShip}; the pool names the LWJGL input package; the
      *  pool names {@code getControlStringForEnumName} (the tenth twin, treated as the LWJGL bit is: admits the class,
-     *  no site = null). */
+     *  no site = null); the pool names {@code getAI}, {@code getShipAI} or {@code isUIAutopilotOn} (the
+     *  pilot-state twins, treated the same way). */
     public static final int NAMES_PLAYER_SHIP = 1;
     public static final int NAMES_LWJGL_INPUT = 2;
     public static final int NAMES_CONTROL_NAME = 4;
-    private static final int NAMES_ALL = NAMES_PLAYER_SHIP | NAMES_LWJGL_INPUT | NAMES_CONTROL_NAME;
+    public static final int NAMES_AI_STATE = 8;
+    private static final int NAMES_ALL = NAMES_PLAYER_SHIP | NAMES_LWJGL_INPUT | NAMES_CONTROL_NAME | NAMES_AI_STATE;
 
     // ---------------------------------------------------------------- the verdict
 
@@ -346,9 +381,11 @@ public final class PilotShipClassifier {
     /**
      * The pre-filter of both families in one pool walk: {@link #NAMES_PLAYER_SHIP} when a Utf8 equals
      * {@code getPlayerShip}, {@link #NAMES_LWJGL_INPUT} when a Utf8 starts with {@link #LWJGL_INPUT_PREFIX},
-     * {@link #NAMES_CONTROL_NAME} when a Utf8 equals {@code getControlStringForEnumName}; 0 for none or for bytes that
-     * are no class file. A truncated or unknown pool answers every bit, so the full parse decides and reports
-     * {@code error:<SimpleName>} once. The third bit
+     * {@link #NAMES_CONTROL_NAME} when a Utf8 equals {@code getControlStringForEnumName}, {@link #NAMES_AI_STATE} when
+     * a Utf8 equals {@code getAI}, {@code getShipAI} or {@code isUIAutopilotOn}; 0 for none or for bytes that are no
+     * class file. A truncated or unknown pool answers every bit, so the full parse decides and reports
+     * {@code error:<SimpleName>} once. The third bit; the fourth bit
+     *
      */
     public static int siteNameMask(byte[] b) {
         if (b == null || b.length < 10 || (b[0] & 0xff) != 0xCA || (b[1] & 0xff) != 0xFE) {
@@ -369,14 +406,20 @@ public final class PilotShipClassifier {
                 mask |= NAMES_LWJGL_INPUT;
             } else if (utf8Equals(b, off[i], GCS_BYTES)) {
                 mask |= NAMES_CONTROL_NAME;
+            } else if (utf8Equals(b, off[i], GAI_BYTES) || utf8Equals(b, off[i], GSAI_BYTES)
+                    || utf8Equals(b, off[i], UIAP_BYTES)) {
+                mask |= NAMES_AI_STATE;
             }
         }
         return mask;
     }
 
     /**
-     * The decision. {@code null} when the class is no candidate, its pool names neither {@code getPlayerShip} nor the
-     * LWJGL input package (no parse), or it names only the input package and holds no redirect site (no subject);
+     * The decision. {@code null} when the class is no candidate, its pool names none of {@code getPlayerShip}, the
+     * LWJGL input package, {@code getControlStringForEnumName} and the pilot-state names {@code getAI} /
+     * {@code getShipAI} / {@code isUIAutopilotOn} (no parse; the third = the tenth twin's name; the fourth = the
+     * pilot-state twins'), or it names only those and not {@code getPlayerShip} and holds no redirect site (no
+     * subject);
      * else a {@link Verdict} that never throws. {@code jar} = the defining code source's index for the hop and the
      * IS-A chain ({@code null} = no hop); {@code hostExclude} = the host's exclude entries ({@code null} = none);
      * {@code codeSourcePath} = the code source location as a path or a {@code file:} URL ({@code null} = unknown).
@@ -408,7 +451,7 @@ public final class PilotShipClassifier {
             String codeSourcePath, boolean namesPlayerShip) {
         ClassModel c = model(bytes);
         if (c.sites == 0 && !namesPlayerShip) {
-            return null; // the input package named, no site of either family: nothing to redirect, nothing to count
+            return null; // admitted by a non-ship name (input package, control name, pilot-state name), no site
         }
         int s = c.sites;
         int k = c.keySites;

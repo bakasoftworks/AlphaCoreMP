@@ -60,11 +60,13 @@ final class OpsSetupDraft {
      * config row Start writes, drafted like its replay-pins neighbour.
      * + {@code setup.mods.pilotShip}, the player-ship select - a boot-time
      * config row Start writes, drafted like its MagicLib neighbour.
+     * + {@code setup.mods.pilotReplicas}, the replicas select - a boot-time
+     * config row Start writes, drafted like its player-ship neighbour.
      */
     static final Set<String> DRAFT_IDS = Set.of("setup.bindHost", "setup.bindPort", "setup.advertise",
             "setup.gameRoot", "setup.gameRootSecond", "setup.tickRate", "setup.record", "setup.net.seatsPerSource",
             "setup.officer.allSkills", "setup.replay.rngPins", "setup.mods.magicSeam", "setup.mods.pilotShip",
-            "setup.shape", "setup.fortress.dp",
+            "setup.mods.pilotReplicas", "setup.shape", "setup.fortress.dp",
             "setup.fortress.terrain", "setup.fortress.terrainLevel", "setup.fortress.asteroids", "setup.wave.scale",
             "setup.wave.rosterDp", "setup.wave.rosterMultiplier", "setup.wave.category", "setup.joiner.default",
             "setup.joiner.endless", "setup.match.pvp");

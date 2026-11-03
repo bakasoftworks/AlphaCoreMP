@@ -56,6 +56,63 @@ final class JoinGuiSelftestFs {
     private JoinGuiSelftestFs() {
     }
 
+    /**
+     * Row {@code luna-sidecar}: the settings sheet's hand-off. A served outcome carrying a sheet rides through
+     * {@link JoinLaunchGates#check} into the Ready, and {@link JoinLaunchGates#commit} writes
+     * {@code luna-settings.txt} beside {@code match.txt} — line 1 {@code luna.match=<id>} (the staged document's id,
+     * or the cached file's id the probe presented), then the sheet text byte for byte; a commit with no sheet
+     * DELETES the earlier file; a sidecar that cannot be replaced = the {@code luna_write} refusal.
+     *
+     */
+    static void selftestLunaSidecar(Path tmp) throws Exception {
+        String row = "luna-sidecar";
+        Path root = tmp.resolve("luna");
+        Path modDir = root.resolve("install").resolve("mods").resolve("cc");
+        Files.createDirectories(modDir);
+        Path plan = root.resolve("plan.txt");
+        Path settings = root.resolve("join-settings.properties");
+        Path sidecar = modDir.resolve("luna-settings.txt");
+        String text = cc.starsector.server.runtime.LunaSheetCodec.canonicalText(List.of(
+                new cc.starsector.server.runtime.LunaSheetCodec.Row("modB", "speed", 'D', "1.5"),
+                new cc.starsector.server.runtime.LunaSheetCodec.Row("modA", "label", 'S', "a=b c"),
+                new cc.starsector.server.runtime.LunaSheetCodec.Row("modA", "on", 'B', "true")));
+        JoinLaunchGates.ProbeOutcome staged = new JoinLaunchGates.ProbeOutcome(JoinLaunchGates.ProbeOutcome.Kind.SERVED,
+                "1.2.3.4", 7777, "probe-line", true, "fetched", false, text, "Settings: x", null);
+        JoinLaunchGates.Verdict v = JoinLaunchGates.check(new JoinLaunchGates.Form("1.2.3.4", "7777", "", "", "",
+                lawfulDocument(), true), modDir, staged);
+        check(v.ready != null && text.equals(v.ready.lunaText),
+                row + ": a served outcome's sheet rides the gate into the Ready beside the staged document (flips if"
+                        + " the hand-off never sees the probe's sheet)");
+        JoinLaunchGates.Handoff h = JoinLaunchGates.commit(v.ready, modDir, plan, settings, null, true, null);
+        String want = "luna.match=" + v.ready.pasted.matchId() + "\n" + text;
+        check(h.refusal == null && Files.isRegularFile(modDir.resolve("match.txt")) && Files.isRegularFile(sidecar)
+                        && Arrays.equals(Files.readAllBytes(sidecar), want.getBytes(StandardCharsets.UTF_8)),
+                row + ": the sheet lands as luna-settings.txt beside match.txt, line 1 luna.match=<the document's"
+                        + " id>, then the exact text (flips if the file is skipped, unbound, or not byte-exact)");
+        JoinLaunchGates.ProbeOutcome cached = new JoinLaunchGates.ProbeOutcome(JoinLaunchGates.ProbeOutcome.Kind.SERVED,
+                "1.2.3.4", 7777, "probe-line", true, "", true, text, "Settings: x", "cached-match-7");
+        v = JoinLaunchGates.check(new JoinLaunchGates.Form("1.2.3.4", "7777", "", "", "", "", true), modDir, cached);
+        h = JoinLaunchGates.commit(v.ready, modDir, plan, settings, null, true, null);
+        check(h.refusal == null && v.ready.pasted == null && Arrays.equals(Files.readAllBytes(sidecar),
+                        ("luna.match=cached-match-7\n" + text).getBytes(StandardCharsets.UTF_8)),
+                row + ": with the cache current the sheet binds to the id the probe presented (flips if a returning"
+                        + " player's sheet is dropped or bound to nothing)");
+        JoinLaunchGates.ProbeOutcome bare = new JoinLaunchGates.ProbeOutcome(JoinLaunchGates.ProbeOutcome.Kind.SERVED,
+                "1.2.3.4", 7777, "probe-line", true, "", true, null, "Settings: none.", "cached-match-7");
+        v = JoinLaunchGates.check(new JoinLaunchGates.Form("1.2.3.4", "7777", "", "", "", "", true), modDir, bare);
+        h = JoinLaunchGates.commit(v.ready, modDir, plan, settings, null, true, null);
+        check(h.refusal == null && !Files.exists(sidecar),
+                row + ": a commit with no sheet DELETES the earlier luna-settings.txt (flips if a stale sheet rides"
+                        + " into the next launch)");
+        Files.createDirectories(sidecar.resolve("blocker"));
+        v = JoinLaunchGates.check(new JoinLaunchGates.Form("1.2.3.4", "7777", "", "", "", "", true), modDir, cached);
+        h = JoinLaunchGates.commit(v.ready, modDir, plan, settings, null, true, null);
+        check(h.refusal != null && "luna_write".equals(h.refusal.gate)
+                        && JoinLaunchGates.TITLE_LAUNCH_FAILED.equals(h.refusal.title) && !h.refusal.error,
+                row + ": a sidecar that cannot be replaced = the luna_write refusal, nothing launched (flips if the"
+                        + " failure is swallowed and an old sheet survives)");
+    }
+
     /** GUI v2 step 3: the press-time law BOTH windows call — the gates in v1 order with v1
      *  words (pure on a fake kit folder), then the hand-off's bytes (the plan golden, canonical match.txt,
      *  the current build, the settings) in a temp root. */

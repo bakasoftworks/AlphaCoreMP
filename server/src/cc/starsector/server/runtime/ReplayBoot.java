@@ -493,6 +493,22 @@ public final class ReplayBoot {
     }
 
     /**
+     * The LunaSettings sheet's post-boot leg, evaluated AFTER this JVM minted its own sheet, with
+     * {@code jvmTermNow} = the {@value MatchRecordMeta#LUNA_SHEET_SYSPROP} receipt read then (null =
+     * {@link LunaSheetCodec#NO_SHEET_TERM}): the {@code REFUSED key=luna.sheet} line when the reel's
+     * {@code luna.sheet} differs, else null. A reel without the key predates the sync and served no sheet, so it reads
+     * {@code NO_SHEET_TERM}: it re-simulates only where no sheet is minted. Like {@link #magicSeamRefusalOrNull} the
+     * line never joins {@link #refusals}: the caller throws a {@link ReplayRefusedException} carrying it.
+     *
+     */
+    public String lunaSheetRefusalOrNull(String jvmTermNow) {
+        String recorded = meta("luna.sheet");
+        String reel = recorded == null ? LunaSheetCodec.NO_SHEET_TERM : recorded;
+        String now = jvmTermNow == null ? LunaSheetCodec.NO_SHEET_TERM : jvmTermNow;
+        return reel.equals(now) ? null : refusedLine("luna.sheet", reel, now);
+    }
+
+    /**
      * The boot leg (19): true only when the post-boot outcome is already certain to differ - the reel
      * applied and this JVM can no longer apply (its receipt is neither {@code armed} nor {@code applied:*}),
      * or this JVM already applied and the reel did not apply the same window. A reel that did not apply

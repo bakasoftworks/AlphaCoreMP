@@ -357,9 +357,13 @@ public final class PilotIntentCombatServerMain {
             // VSUB/VCHK decode is refused by requireIdTables() as malformed —
             // never IdTables.empty() folded into a real vtab (an empty table is a LOCAL scan input
             // only, never the installed singleton).
+            // The boot facts stay in a local for the player pick law below (a hull-class refusal reads the hull
+            // facts this same snapshot holds); engine-less = null = that law off, loud.
+            VariantPolicy.Catalog bootFacts = null;
             IdTables idTables = null;
             try {
-                idTables = cc.starsector.server.bridge.RealEngineVariantFacts.snapshot().idTables();
+                bootFacts = cc.starsector.server.bridge.RealEngineVariantFacts.snapshot();
+                idTables = bootFacts.idTables();
             } catch (RuntimeException noEngineFacts) {
                 System.out.println("pilot-intent-combat-server id_tables=NONE (no engine facts: "
                         + noEngineFacts.getMessage() + ") — door UNFOLDED, every VSUB/VCHK refused as"
@@ -383,6 +387,19 @@ public final class PilotIntentCombatServerMain {
                             + ") — the door folds vtab ONLY; every in-game kit (which folds its mod set) is"
                             + " REFUSED at the door with presented_fold=full");
                 }
+                // The LunaSettings sheet, minted ONCE here (the
+                // mod set is read, the engine's script loader holds every enabled mod) and never on the door
+                // thread; the host's exclude row joins the built-in table. Its term is stamped as a receipt for the
+                // reel META and the re-simulation's post-boot leg below, the cc.magic.seam way.
+                LunaSheetMint.HostExclude lunaExclude = LunaSheetMint.parseHostExclude(
+                        ServerConfig.resolve("cc.luna.sync.exclude", "CC_LUNA_SYNC_EXCLUDE", "luna.sync.exclude", ""));
+                if (lunaExclude.malformed() > 0) {
+                    System.out.println("luna-sync host-exclude malformed=" + lunaExclude.malformed());
+                }
+                LunaSheetMint.Result lunaSheet = LunaSheetMint.fromLunaLib(
+                        LunaSheetMint.scriptLoaderOrNull(System.out), lunaExclude.items(), System.out);
+                LunaSheetMint.installServed(lunaSheet.sheetOrNull());
+                System.setProperty(MatchRecordMeta.LUNA_SHEET_SYSPROP, LunaSheetMint.termOf(lunaSheet.sheetOrNull()));
                 // The client-OPTIONAL set (mods.optional row; the wrapper mirrors the
                 // folders but never enables them) — published on the probe as MARK_MODSET_OPTIONAL rows,
                 // never folded. An operator-named id that cannot be minted REFUSES THE BOOT (a set knob is
@@ -434,9 +451,18 @@ public final class PilotIntentCombatServerMain {
                 if (seamRefusal != null) {
                     throw new ReplayBoot.ReplayRefusedException(java.util.List.of(seamRefusal));
                 }
+                // The LunaSettings sheet's post-boot leg: a reel minted under
+                // other mod settings (or none) never re-simulates silently under this JVM's sheet.
+                String lunaRefusal = replay.lunaSheetRefusalOrNull(System.getProperty(MatchRecordMeta.LUNA_SHEET_SYSPROP));
+                if (lunaRefusal != null) {
+                    throw new ReplayBoot.ReplayRefusedException(java.util.List.of(lunaRefusal));
+                }
             }
 
-            java.util.List<java.io.File> variantRoots = RealEngineDemoRoster.enabledModVariantRoots();
+            // The roots AND the kit root by mod id, so the kit's npc/ folder
+            // leaves the pick walk by PATH and the wire catalog is the KIT root or empty, never a foreign mod's.
+            RealEngineDemoRoster.VariantRoots vr = RealEngineDemoRoster.enabledModVariantRootsWithKit();
+            java.util.List<java.io.File> variantRoots = vr.roots();
             PickableVariants pickable;
             VariantCatalogStore variantCatalog;
             if (variantRoots.isEmpty()) {
@@ -448,19 +474,31 @@ public final class PilotIntentCombatServerMain {
                 // Every enabled mod's root is pickable — the KIT's root
                 // first BY MOD ID (PickableVariants.kitRootFirst; the launcher orders mods by display NAME,
                 // so root 0 was the kit only by luck), then launcher order; an earlier
-                // root wins a duplicate stem. A mod variant stays under every pick law (bans, the hidden set,
-                // overrides): the host enabled the mod.
-                pickable = PickableVariants.scan(variantRoots, RealEngineDemoRoster::variantResolvable);
-                // The KIT root alone feeds the wire catalog (root 0 = the kit by id, never by name order; a
-                // set with no kit root logs kit_root_missing and root 0 is then whatever the launcher listed
-                // first); mod roots are pick-only. The catalog
-                // delivers kit-local definitions to the client (root ∪ npc/, since waves need npc ids
-                // client-side too, pre-encoded once at boot), while a mod variant is already on every
-                // player's disk through that mod's own install.
+                // root wins a duplicate id. A mod variant stays under every pick law (bans, the hidden set,
+                // overrides): the host enabled the mod. The pick predicate = the registry lookup AND the player
+                // hull law (a fighter, station, module or default-D twin never lists; the refusals print as ONE
+                // count line); the kit's npc/ folder is excluded by path (waves need those ids, players do not).
+                RealEngineDemoRoster.PlayerPickable pick =
+                        RealEngineDemoRoster.playerPickable(bootFacts == null ? null : bootFacts.hulls());
+                pickable = PickableVariants.scan(variantRoots, pick,
+                        vr.kitRootOrNull() == null
+                                ? java.util.Set.<java.io.File>of()
+                                : java.util.Set.of(new java.io.File(vr.kitRootOrNull(), "npc")));
+                pick.logDropped();
+                // The KIT root alone feeds the wire catalog: it delivers kit-local definitions to the client
+                // (root ∪ npc/, since waves need npc ids client-side too, pre-encoded once at boot), while a mod
+                // variant is already on every player's disk through that mod's own install; no kit root = an
+                // EMPTY catalog, loud (a foreign mod's root never becomes the wire catalog).
                 // A LOCAL empty table for the scan only when
                 // engine-less — never installed (the door stays unfolded).
-                variantCatalog = VariantCatalogStore.scan(variantRoots.get(0),
-                        idTables == null ? IdTables.empty() : idTables);
+                if (vr.kitRootOrNull() == null) {
+                    System.out.println("pilot-intent-combat-server variant_catalog=empty"
+                            + " (no kit data/variants root; a mod root never becomes the wire catalog)");
+                    variantCatalog = VariantCatalogStore.empty();
+                } else {
+                    variantCatalog = VariantCatalogStore.scan(vr.kitRootOrNull(),
+                            idTables == null ? IdTables.empty() : idTables);
+                }
             }
 
             final String portFilePath = portFile;

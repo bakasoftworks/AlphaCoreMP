@@ -319,6 +319,20 @@ public final class WaveLoadoutAutofit {
 
     // ------------------------------------------------------------------ serialization
 
+    /**
+     * The public twin of {@link #toVariantJson} for a variant the engine
+     * already REALIZED on a fleet member (a mod hullmod's {@code applyEffectsBeforeShipCreation} may have rolled a
+     * weapon into it), as {@code .variant}-shaped JSON text under {@code id}. The product unit's realized-loadout lane
+     * calls it BY NAME twice per seat fly-in (the registry's stock variant and the member's own, compared as text) and
+     * a third time under the minted id when they differ. {@code modules} = the variant's own station-module map (slot
+     * to the module variant id it names) — the stock module ids both engines hold; a module's own realized loadout is
+     * not carried here. THROWS like the private shape (a fitted weapon in no group = a weapon the wire would drop).
+     */
+    public static String realizedVariantJson(ShipVariantAPI v, String id) {
+        Map<String, String> moduleIds = new java.util.TreeMap<>(v.getStationModules());
+        return toVariantJson(v, id, moduleIds).toString();
+    }
+
     /** The {@code .variant} file shape ({@code VariantCatalogStore.parseVariantChecked} keys). Every
      * fitted non-built-in weapon must sit in a group, else THROW (a weapon the wire would drop).
      * {@code moduleIds} = the parent's {@code modules} map (slot → the minted module body id), empty for

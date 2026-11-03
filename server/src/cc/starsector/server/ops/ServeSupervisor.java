@@ -55,9 +55,13 @@ public final class ServeSupervisor {
     /**
      * Bound of {@link #lastNonBlankLine}: the printable line length (the {@code LaneFollow.firstExceptionLine} twin).
      * 320, not 240: the key gate's no-key refusal line is 253 chars and 240 cut its "server again." tail
-     * (the host reads that line to learn what to do).
+     * (the host reads that line to learn what to do). 512, not 320: the
+     * Windows reserved-port warning ({@code WindowsPortReservation.warning}) is about 350 chars before the
+     * probe's own prefix, so 320 cut its admin remedy on BOTH host surfaces (the ops GUI's last line and the
+     * console's first exception line, which share this bound); the longest such line is pinned under it by
+     * the port-reservation-warning-fits-host-line selftest row.
      */
-    static final int LAST_LINE_MAX_CHARS = 320;
+    static final int LAST_LINE_MAX_CHARS = 512;
     /** Bound of {@link #lastNonBlankLine}: bytes read from the END of the file. */
     static final int LAST_LINE_MAX_BYTES = 64 * 1024;
     /** Grace between {@code destroy()} and {@code destroyForcibly()} on a stop. */

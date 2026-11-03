@@ -35,6 +35,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -54,6 +55,8 @@ import cc.starsector.server.match.MatchDescriptorCodec;
 import cc.starsector.server.match.MatchShapes;
 import cc.starsector.server.ops.ServerOpsCore.DescriptorInfo;
 import cc.starsector.server.ops.ServerOpsCore.ServerState;
+import cc.starsector.server.runtime.LunaSheetCodec;
+import cc.starsector.server.runtime.ModSet;
 import cc.starsector.server.runtime.PilotIntentDatagramServer;
 import cc.starsector.server.runtime.VoiceConfig;
 
@@ -1708,7 +1711,7 @@ public final class OpsConsole {
             inMode = ServerOpsLaunch.protonMode(rows, f.bindHost(), OpsConsoleForms.first(form, "advertise"));
             VpnLeaseProbe.Probe probe = inMode ? probeOrNull("start") : null;
             if (probe != null) {
-                VpnLeaseProbe.Fill answered = VpnLeaseProbe.fill(probe, f.bindPort());
+                VpnLeaseProbe.Fill answered = WindowsPortReservation.annotate(VpnLeaseProbe.fill(probe, f.bindPort()));
                 fill = answered; // the fill rows are SAVED only once the flow started (below)
                 int port = portOrZero(answered.bindPort());
                 bind = port > 0
@@ -1804,7 +1807,7 @@ public final class OpsConsole {
                     f.terrainLevelText(), f.asteroidsText(), f.waveRosterFullDpText(),
                     f.waveRosterMultiplierText(), f.seatsPerSourceText(), f.allSkillsText(),
                     f.rngPinsText(), false, f.pvpText(), f.pvpStationText(), f.magicSeamText(),
-                    f.pilotShipText());
+                    f.pilotShipText(), f.pilotReplicasText());
             fields = fields.withDebugWatch(debugWatch); // the flow's upsert writes the posture row either way
             // The package Start's wrap - the Game folder
             // saved into launcher.properties right before the ONE spawn
@@ -3241,7 +3244,8 @@ public final class OpsConsole {
         VpnLeaseProbe.Fill fill;
         try {
             OpsConsoleForms.refuseControlChars(form);
-            fill = VpnLeaseProbe.fill(sharedProbe(), OpsConsoleForms.first(form, "bindPort"));
+            fill = WindowsPortReservation.annotate(VpnLeaseProbe.fill(sharedProbe(),
+                    OpsConsoleForms.first(form, "bindPort")));
         } catch (IllegalArgumentException | IllegalStateException | IOException refused) { // one bounded row + the sentence
             System.out.println("cc-console lease result=refused reason=" + leaseReason(refused));
             String sentence = refused instanceof IOException
@@ -3775,10 +3779,17 @@ public final class OpsConsole {
      * separator kept, ONE write, and only when a row changed). A success answers the GET shape
      * re-scanned over the rows now on disk plus {@code "ok":true}; a refusal answers
      * {@code {error,title:"Mods"}} and writes nothing.
+     *
+     * <p>{@code op=exclude} + {@code lunaSyncExclude=<text>} = the
+     * Settings-kept-out-of-the-sync field's save. The text is judged BEFORE the lock (it depends on the form alone,
+     * {@link #lunaSyncExcludeValue}); a refusal answers 400 {@code {error,title:"Mods"}} naming the bad item's
+     * position, never its text, and writes nothing. An accepted list rides the SAME locked read-modify-write as the
+     * other ops ({@link #withLunaSyncExcludeRow}; an empty list removes the row), so the lease daemon's rewrite and
+     * this one never interleave.
      */
     private void handleMods(HttpExchange ex) throws IOException {
         if ("GET".equals(ex.getRequestMethod())) {
-            respond(ex, 200, JSON, modsJson(roots.modsBase(), propsLines(), false));
+            respond(ex, 200, JSON, modsJson(roots.modsBase(), propsLines(), false, lunaSeedDir(roots)));
             return;
         }
         Map<String, List<String>> form = readForm(ex, "Mods");
@@ -3790,6 +3801,15 @@ public final class OpsConsole {
             respond(ex, 200, JSON, OpsConsoleForms.errorJson("Mods", "missing field"));
             return;
         }
+        String excludeRow = null; // op=exclude: the normalized row value ("" = remove the row)
+        if (MODS_OP_EXCLUDE.equals(op)) {
+            try {
+                excludeRow = lunaSyncExcludeValue(OpsConsoleForms.first(form, LUNA_SYNC_EXCLUDE_FIELD));
+            } catch (IllegalArgumentException bad) { // the fixed refusal text IS the answer (no host text in it)
+                respond(ex, 400, JSON, OpsConsoleForms.errorJson("Mods", bad.getMessage()));
+                return;
+            }
+        }
         String body;
         synchronized (startLock) {
             // The read-modify-write holds ServerOpsLaunch.PROPS_LOCK, taken
@@ -3799,16 +3819,17 @@ public final class OpsConsole {
             synchronized (ServerOpsLaunch.PROPS_LOCK) {
                 String raw = Files.isRegularFile(propsFile) ? Files.readString(propsFile, StandardCharsets.UTF_8) : "";
                 List<String> fresh = raw.isEmpty() ? List.of() : raw.lines().toList();
-                ModsEdit edit = modsEdit(op, form, roots.modsBase(), fresh, roots.mode() == OpsRoots.Mode.PACKAGE
-                        ? roots.pkg().resolve(PackageModSync.MODS_DIR) : null);
+                ModsEdit edit = excludeRow != null ? ModsEdit.NONE : modsEdit(op, form, roots.modsBase(), fresh,
+                        roots.mode() == OpsRoots.Mode.PACKAGE ? roots.pkg().resolve(PackageModSync.MODS_DIR) : null);
                 List<String> want = fresh;
                 if (edit.refusal() != null) {
                     body = OpsConsoleForms.errorJson("Mods", edit.refusal());
                 } else {
-                    if (edit.writes()) { // the write order: roots, then enabled, then optional
-                        want = InstalledModScan.withModsRootsRow(want, edit.roots());
-                        want = OpsMatchRows.withModsEnabledRow(want, edit.enabled());
-                        want = OpsMatchRows.withModsOptionalRow(want, edit.optional());
+                    if (edit.writes()) { // the write order: roots, enabled, optional, offOptional (withModsEditRows)
+                        want = withModsEditRows(want, edit);
+                    }
+                    if (excludeRow != null) {
+                        want = withLunaSyncExcludeRow(want, excludeRow);
                     }
                     body = null;
                     if (!want.equals(fresh)) {
@@ -3822,7 +3843,7 @@ public final class OpsConsole {
                         }
                     }
                     if (body == null) {
-                        body = modsJson(roots.modsBase(), want, true);
+                        body = modsJson(roots.modsBase(), want, true, lunaSeedDir(roots));
                         if (edit.note() != null) { // a package Remove's note (ServerOpsCore.modsRemovedLine)
                             body = body.substring(0, body.length() - 1) + ",\"note\":\""
                                     + OpsConsoleForms.jsonEscape(edit.note()) + "\"}";
@@ -3839,19 +3860,38 @@ public final class OpsConsole {
      * text. {@code writes} false = nothing to compose (rescan, an unchanged Use); {@code roots}
      * null = the {@code mods.roots} row untouched (an ABSENT row stays absent:
      * {@link InstalledModScan#roots} then reads its defaults; the console never writes them in).
+     *
+     * <p>+ {@code offOptional} = the {@link OpsMatchRows#MODS_OFF_OPTIONAL_KEY}
+     * row (null = untouched, {@code ""} = removed, else the canonical comma-joined ids) - this console's memory of an
+     * unticked optional mod's kind (the kind-memory fix). Package-private (was private), with {@link #modsEdit},
+     * {@link #withModsEditRows} and {@link #modsJson}, so {@code ServerOpsCoreSelftest} pins the op, rows and JSON
+     * chain directly (no HTTP rig).
      */
-    private record ModsEdit(String refusal, boolean writes, String roots, String enabled, String optional,
-            String note) {
+    record ModsEdit(String refusal, boolean writes, String roots, String enabled, String optional,
+            String offOptional, String note) {
         static final ModsEdit NONE = new ModsEdit(null, false, null, null, null);
 
-        /** No {@code note} (only a package Remove carries one). */
+        /** No {@code note} (only a package Remove carries one).
+         * And {@code offOptional} null (the memory row untouched). */
         ModsEdit(String refusal, boolean writes, String roots, String enabled, String optional) {
-            this(refusal, writes, roots, enabled, optional, null);
+            this(refusal, writes, roots, enabled, optional, null, null);
         }
 
         static ModsEdit refused(String why) {
             return new ModsEdit(why, false, null, null, null);
         }
+    }
+
+    /**
+     * An edit's rows over {@code lines}, in the ONE write order: roots,
+     * enabled, optional, then the off-optional memory row (each {@code null} = that row untouched). WHY carved out of
+     * {@link #handleMods}: the selftest composes the SAME order the POST writes (the kind-memory rows).
+     */
+    static List<String> withModsEditRows(List<String> lines, ModsEdit edit) {
+        List<String> want = InstalledModScan.withModsRootsRow(lines, edit.roots());
+        want = OpsMatchRows.withModsEnabledRow(want, edit.enabled());
+        want = OpsMatchRows.withModsOptionalRow(want, edit.optional());
+        return OpsMatchRows.withModsOffOptionalRow(want, edit.offOptional());
     }
 
     /**
@@ -3861,20 +3901,25 @@ public final class OpsConsole {
      * {@code classifyFolder}. A missing verb arg = {@code missing field}.
      * {@code keptRoot} = a package's
      * {@code <pkg>/serve-mods} (null in owner mode), handed to {@link #modsRemove}.
+     * Use and Remove also get the OLD off-optional ids (the
+     * {@link OpsMatchRows#MODS_OFF_OPTIONAL_KEY} row of {@code lines}, split the launcher's way) so they can
+     * remember / forget an unticked optional mod's kind (the kind-memory fix); Add and rescan leave that row alone.
      */
-    private static ModsEdit modsEdit(String op, Map<String, List<String>> form, Path base, List<String> lines,
+    static ModsEdit modsEdit(String op, Map<String, List<String>> form, Path base, List<String> lines,
             Path keptRoot) {
         List<String> modRoots = consoleRoots(lines);
         List<InstalledModScan.InstalledMod> scanned = InstalledModScan.scanRoots(base, modRoots);
         List<OpsModsPanel.ModRow> rows = OpsModsPanel.modRows(scanned, lines);
+        List<String> offOptional = OpsModsPanel.splitIds(OpsMatchRows.modsOffOptionalFieldPrefill(lines));
         switch (op) {
             case "add":
                 return modsAdd(OpsConsoleForms.first(form, "path"), base, modRoots, rows);
             case "remove":
                 return modsRemove(OpsConsoleForms.first(form, "id"), OpsConsoleForms.first(form, "path"), base,
-                        modRoots, scanned, rows, keptRoot);
+                        modRoots, scanned, rows, keptRoot, offOptional);
             case "use":
-                return modsUse(OpsConsoleForms.first(form, "id"), OpsConsoleForms.first(form, "use"), rows);
+                return modsUse(OpsConsoleForms.first(form, "id"), OpsConsoleForms.first(form, "use"), rows,
+                        offOptional);
             case "rescan":
                 return ModsEdit.NONE;
             default:
@@ -3946,9 +3991,14 @@ public final class OpsConsole {
      * {@link ServerOpsCore#keptRootSplit} before and not after). Roots equal to the current ones = a null row:
      * an ABSENT row stays absent (row {@code web-mods-remove}). Owner mode: no note, the
      * 4-arg rule (null keptRoot).
+     *
+     * <p>The victim's id also leaves the off-optional memory row
+     * ({@code offOptional} = the old ids; {@link #idsWithout}, null when it was not there) - a removed mod's kind
+     * is forgotten, so a serve-mods mod listed again after a Remove shows unticked + {@code required}.
      */
     private static ModsEdit modsRemove(String id, String path, Path base, List<String> modRoots,
-            List<InstalledModScan.InstalledMod> scanned, List<OpsModsPanel.ModRow> rows, Path keptRoot) {
+            List<InstalledModScan.InstalledMod> scanned, List<OpsModsPanel.ModRow> rows, Path keptRoot,
+            List<String> offOptional) {
         if (id == null && path == null) {
             return ModsEdit.refused("missing field");
         }
@@ -3984,14 +4034,22 @@ public final class OpsConsole {
         keptRows.remove(at);
         return new ModsEdit(null, true, next.equals(modRoots) ? null : String.join(";", next),
                 OpsModsPanel.joinChoices(keptRows, OpsModsPanel.MOD_REQUIRED),
-                OpsModsPanel.joinChoices(keptRows, OpsModsPanel.MOD_OPTIONAL), note);
+                OpsModsPanel.joinChoices(keptRows, OpsModsPanel.MOD_OPTIONAL), idsWithout(offOptional, victim.id()),
+                note);
     }
 
     /**
      * The Use combo: the value law ({@link OpsConsoleForms#modsUseValue}), a listed id, then the
      * choice rows re-joined with that row's new choice; an unchanged choice composes nothing.
+     *
+     * <p>+ the off-optional memory row ({@code offOptional} = the old
+     * ids). WHY (the kind-memory fix): the page's On box unticks with {@code off} and re-ticks with the kind its greyed
+     * select shows, and that select is rebuilt from this console's answer after every write - so the kind of an
+     * unticked mod must live HERE. An INSTALLED {@code optional} row going {@code off} = old + its id; any other
+     * change = old - its id (a re-tick, a kind change, an untick from {@code required}); null = the row unchanged.
+     * A not-installed row going off is never remembered (it leaves the table, the pre-fix behaviour).
      */
-    private static ModsEdit modsUse(String id, String use, List<OpsModsPanel.ModRow> rows) {
+    private static ModsEdit modsUse(String id, String use, List<OpsModsPanel.ModRow> rows, List<String> offOptional) {
         String choice;
         try {
             choice = OpsConsoleForms.modsUseValue(use);
@@ -4011,8 +4069,33 @@ public final class OpsConsole {
         }
         List<OpsModsPanel.ModRow> next = new ArrayList<>(rows);
         next.set(at, new OpsModsPanel.ModRow(row.id(), row.name(), row.version(), choice, row.folders()));
+        boolean remember = OpsModsPanel.MOD_OFF.equals(choice) && OpsModsPanel.MOD_OPTIONAL.equals(row.choice())
+                && row.installed();
         return new ModsEdit(null, true, null, OpsModsPanel.joinChoices(next, OpsModsPanel.MOD_REQUIRED),
-                OpsModsPanel.joinChoices(next, OpsModsPanel.MOD_OPTIONAL));
+                OpsModsPanel.joinChoices(next, OpsModsPanel.MOD_OPTIONAL),
+                remember ? idsWith(offOptional, row.id()) : idsWithout(offOptional, row.id()), null);
+    }
+
+    /** {@code ids} + {@code id}, comma-joined (the off-optional row's
+     * canonical value), or {@code null} when {@code id} is already there (the row unchanged, nothing composed). */
+    private static String idsWith(List<String> ids, String id) {
+        if (ids.contains(id)) {
+            return null;
+        }
+        List<String> out = new ArrayList<>(ids);
+        out.add(id);
+        return String.join(",", out);
+    }
+
+    /** {@code ids} - {@code id}, comma-joined ({@code ""} = the row
+     * removed), or {@code null} when {@code id} is not there (the row unchanged - an ABSENT row stays absent). */
+    private static String idsWithout(List<String> ids, String id) {
+        if (!ids.contains(id)) {
+            return null;
+        }
+        List<String> out = new ArrayList<>(ids);
+        out.remove(id);
+        return String.join(",", out);
     }
 
     /** The index of the row whose id equals
@@ -4033,10 +4116,20 @@ public final class OpsConsole {
      * table's text) and {@code status} (the tab's caption); {@code ok} prepends
      * {@code "ok":true} (a POST's success). Carved
      * out of the GET handler so the POST answers the same shape.
+     * Each row also carries {@code settings} ({@link #settingsCell} over
+     * {@code lunaDir}, the host's seed folder {@link #lunaSeedDir}) and the answer carries {@code lunaSyncExclude}
+     * (the {@value #LUNA_SYNC_EXCLUDE_KEY} row as written, {@code ""} absent), placed before {@code status} so a
+     * package Remove's appended {@code note} stays last.
+     * Each row also carries {@code kind} right after {@code use} = what the
+     * page's kind select shows ({@link #modsKind}): the row's own choice while on, else {@code optional} when the id
+     * is in the {@link OpsMatchRows#MODS_OFF_OPTIONAL_KEY} memory row, else {@code required} (the kind-memory fix: the
+     * page rebuilds every row from this answer, so an unticked optional mod must come back optional on a re-tick
+     * and after a reload). Package-private (was private) for the ServerOpsCoreSelftest rows.
      */
-    private static String modsJson(Path base, List<String> lines, boolean ok) {
+    static String modsJson(Path base, List<String> lines, boolean ok, Path lunaDir) {
         List<String> modRoots = consoleRoots(lines);
         List<OpsModsPanel.ModRow> rows = OpsModsPanel.modRows(InstalledModScan.scanRoots(base, modRoots), lines);
+        List<String> offOptional = OpsModsPanel.splitIds(OpsMatchRows.modsOffOptionalFieldPrefill(lines));
         StringBuilder sb = new StringBuilder(ok ? "{\"ok\":true,\"roots\":[" : "{\"roots\":[");
         for (int i = 0; i < modRoots.size(); i++) {
             sb.append(i == 0 ? "" : ",").append('"').append(OpsConsoleForms.jsonEscape(modRoots.get(i))).append('"');
@@ -4050,10 +4143,176 @@ public final class OpsConsole {
                     .append("\",\"id\":\"").append(OpsConsoleForms.jsonEscape(r.id()))
                     .append("\",\"version\":\"").append(OpsConsoleForms.jsonEscape(r.version()))
                     .append("\",\"use\":\"").append(OpsConsoleForms.jsonEscape(r.choice()))
-                    .append("\",\"folder\":\"").append(OpsConsoleForms.jsonEscape(folderCell(r))).append("\"}");
+                    .append("\",\"kind\":\"").append(OpsConsoleForms.jsonEscape(modsKind(r, offOptional)))
+                    .append("\",\"folder\":\"").append(OpsConsoleForms.jsonEscape(folderCell(r)))
+                    .append("\",\"settings\":\"").append(OpsConsoleForms.jsonEscape(settingsCell(r, lunaDir))).append("\"}");
         }
-        return sb.append("],\"status\":\"").append(OpsConsoleForms.jsonEscape(modsStatus(rows))).append("\"}")
+        sb.append("],\"lunaSyncExclude\":\"").append(OpsConsoleForms.jsonEscape(lunaSyncExcludeRow(lines)));
+        return sb.append("\",\"status\":\"").append(OpsConsoleForms.jsonEscape(modsStatus(rows))).append("\"}")
                 .toString();
+    }
+
+    /** A row's kind for the page's select - its choice while on
+     * ({@code required} / {@code optional}), else {@code optional} when the off-optional memory ids hold it, else
+     * {@code required} (the kind-memory fix). A live row always wins over a stale memory id. */
+    private static String modsKind(OpsModsPanel.ModRow r, List<String> offOptional) {
+        if (OpsModsPanel.MOD_REQUIRED.equals(r.choice()) || OpsModsPanel.MOD_OPTIONAL.equals(r.choice())) {
+            return r.choice();
+        }
+        return offOptional.contains(r.id()) ? OpsModsPanel.MOD_OPTIONAL : OpsModsPanel.MOD_REQUIRED;
+    }
+
+    // ---- the LunaSettings host surface: the seed file cell + the exclude row ----------------------
+
+    /** The {@code cc-server.properties} row naming LunaSettings values the serve never sends to joiners
+     * ({@code <modId>:<fieldId>,...}); the serve applies it beside its built-in exclusion table. */
+    static final String LUNA_SYNC_EXCLUDE_KEY = "luna.sync.exclude";
+    /** The marker the console keeps directly above its {@link #LUNA_SYNC_EXCLUDE_KEY} row (the
+     * {@link OpsMatchRows#MODS_ENABLED_COMMENT} idiom: a removal takes the marker with it). */
+    static final String LUNA_SYNC_EXCLUDE_COMMENT = "# LunaLib settings never sent to joiners:"
+            + " modId:fieldId, comma-separated";
+    /** The marker an earlier version wrote above the row: still recognised there, so a file that version saved gets
+     * {@link #LUNA_SYNC_EXCLUDE_COMMENT} in its place on the next save, never both. */
+    static final String LUNA_SYNC_EXCLUDE_COMMENT_OLD = "# LunaSettings values the serve never sends to joiners"
+            + " (modId:fieldId, comma-separated; blank/absent = none beyond the built-in list)";
+    /** The Mods POST op that saves the exclude field, and its form field. */
+    static final String MODS_OP_EXCLUDE = "exclude";
+    static final String LUNA_SYNC_EXCLUDE_FIELD = "lunaSyncExclude";
+    /** The longest exclude text accepted (characters, before any trim). */
+    static final int LUNA_SYNC_EXCLUDE_MAX_CHARS = 1024;
+    /** The host's seed folder name: a package's sits beside its {@code cc-server.properties}; the launcher copies
+     * each {@code <modId>.json.data} in it into the flight's own saves before the serve boots. */
+    static final String LUNA_SEED_DIR = "luna-settings";
+    /** A seed file's suffix (LunaLib's own per-mod settings file name). */
+    static final String LUNA_SEED_SUFFIX = ".json.data";
+    /** The Settings file cell's tail when the seed file is absent: the serve runs the mod's CSV defaults. */
+    static final String LUNA_DEFAULTS_SUFFIX = " (defaults)";
+
+    /**
+     * Where this console's host keeps the LunaSettings seed files. A package
+     * = {@code <pkg>/luna-settings}, the folder beside the package's {@code cc-server.properties} that the package
+     * launcher copies from (its {@code --pkg} is this console's {@link OpsRoots#pkg}). The repository's own mode =
+     * the tracked {@code luna-settings} folder under the repository's {@code local} folder (the repository = the folder
+     * of its {@code cc-server.properties}, the console's working directory), which its run scripts copy from.
+     */
+    static Path lunaSeedDir(OpsRoots r) {
+        if (r.mode() == OpsRoots.Mode.PACKAGE) {
+            return r.pkg().resolve(LUNA_SEED_DIR);
+        }
+        Path repo = r.config().toAbsolutePath().getParent();
+        return (repo != null ? repo : r.modsBase()).resolve("local").resolve(LUNA_SEED_DIR);
+    }
+
+    /**
+     * The Mods table's Settings file cell. Blank unless the row's FIRST
+     * folder holds {@code data/config/LunaSettings.csv} (a mod with LunaLib settings); else the seed path
+     * {@code <lunaDir>/<id>.json.data}, plus {@value #LUNA_DEFAULTS_SUFFIX} when no regular file sits there (a link is
+     * not followed, as the launcher's intake copies only a regular file). An id the file system cannot name (a
+     * {@code ':'} on Windows) reads blank with one bounded row.
+     */
+    static String settingsCell(OpsModsPanel.ModRow m, Path lunaDir) {
+        if (!m.installed()) {
+            return "";
+        }
+        Path folder = m.folders().get(0).folder();
+        if (!Files.isRegularFile(folder.resolve("data").resolve("config").resolve("LunaSettings.csv"))) {
+            return "";
+        }
+        Path seed;
+        try {
+            seed = lunaDir.resolve(m.id() + LUNA_SEED_SUFFIX);
+        } catch (InvalidPathException unnamed) { // counted by its row; the cell stays blank
+            System.out.println("cc-console luna_seed_name_unusable");
+            return "";
+        }
+        return Files.isRegularFile(seed, LinkOption.NOFOLLOW_LINKS) ? seed.toString() : seed + LUNA_DEFAULTS_SUFFIX;
+    }
+
+    /** The LAST {@link #LUNA_SYNC_EXCLUDE_KEY} row's value as
+     * {@code java.util.Properties} reads it ({@link ServerOpsCore#propertiesRowValue}), {@code ""} when absent. */
+    static String lunaSyncExcludeRow(List<String> lines) {
+        String value = "";
+        for (String line : lines) {
+            String v = ServerOpsCore.propertiesRowValue(line, LUNA_SYNC_EXCLUDE_KEY);
+            if (v != null) {
+                value = v;
+            }
+        }
+        return value;
+    }
+
+    /**
+     * The typed exclude text judged and normalized. At most
+     * {@value #LUNA_SYNC_EXCLUDE_MAX_CHARS} characters; comma-separated items, each trimmed, blank ones skipped,
+     * a repeat kept once; an item = {@code <modId>:<fieldId>} split at its LAST colon (a mod id may hold a colon,
+     * a field id never does), the mod id under {@link ModSet#lawfulId} + {@link ModSet#MAX_ID_CHARS}, the field id
+     * under {@link LunaSheetCodec#lawfulFieldId}. WHY the charsets: the value becomes a properties row, so a line
+     * break or a backslash would inject or fold a row; both laws admit neither.
+     *
+     * @param typed the form's text ({@code null} = the field is missing)
+     * @return the row value, items joined by {@code ","}; {@code ""} = remove the row
+     * @throws IllegalArgumentException one fixed sentence naming the bad item's 1-based position, never its text
+     */
+    static String lunaSyncExcludeValue(String typed) {
+        if (typed == null) {
+            throw new IllegalArgumentException("missing field");
+        }
+        if (typed.length() > LUNA_SYNC_EXCLUDE_MAX_CHARS) {
+            throw new IllegalArgumentException("Settings kept out of the sync: at most " + LUNA_SYNC_EXCLUDE_MAX_CHARS
+                    + " characters.");
+        }
+        String[] parts = typed.split(",", -1);
+        LinkedHashSet<String> items = new LinkedHashSet<>();
+        for (int i = 0; i < parts.length; i++) {
+            String item = parts[i].trim();
+            if (item.isEmpty()) {
+                continue;
+            }
+            int colon = item.lastIndexOf(':');
+            String mod = colon < 0 ? "" : item.substring(0, colon);
+            String field = colon < 0 ? "" : item.substring(colon + 1);
+            if (mod.isEmpty() || mod.length() > ModSet.MAX_ID_CHARS || !ModSet.lawfulId(mod)
+                    || !LunaSheetCodec.lawfulFieldId(field)) {
+                throw new IllegalArgumentException("Settings kept out of the sync: item " + (i + 1)
+                        + " is not modId:fieldId (a mod id, a colon, then the setting's id).");
+            }
+            items.add(mod + ":" + field);
+        }
+        return String.join(",", items);
+    }
+
+    /**
+     * {@code lines} with the {@link #LUNA_SYNC_EXCLUDE_KEY} row set to
+     * {@code value} - the {@link OpsMatchRows#withModsEnabledRow} surgery (marker + row in place of the first row,
+     * every other row of the key dropped with its marker, appended when absent) over a {@code java.util.Properties}
+     * key match ({@link ServerOpsCore#propertiesRowValue}), so a hand-typed {@code luna.sync.exclude = ...} twin never
+     * shadows the console's row. A blank value removes the row and its marker. Callers pass a
+     * {@link #lunaSyncExcludeValue} result.
+     */
+    static List<String> withLunaSyncExcludeRow(List<String> lines, String value) {
+        boolean keep = !value.isEmpty();
+        List<String> out = new ArrayList<>();
+        boolean placed = false;
+        for (String line : lines) {
+            if (ServerOpsCore.propertiesRowValue(line, LUNA_SYNC_EXCLUDE_KEY) != null) {
+                if (!out.isEmpty() && (out.get(out.size() - 1).equals(LUNA_SYNC_EXCLUDE_COMMENT)
+                        || out.get(out.size() - 1).equals(LUNA_SYNC_EXCLUDE_COMMENT_OLD))) {
+                    out.remove(out.size() - 1);
+                }
+                if (keep && !placed) {
+                    out.add(LUNA_SYNC_EXCLUDE_COMMENT);
+                    out.add(LUNA_SYNC_EXCLUDE_KEY + "=" + value);
+                    placed = true;
+                }
+            } else {
+                out.add(line);
+            }
+        }
+        if (keep && !placed) {
+            out.add(LUNA_SYNC_EXCLUDE_COMMENT);
+            out.add(LUNA_SYNC_EXCLUDE_KEY + "=" + value);
+        }
+        return out;
     }
 
     /** The searched roots: the present row's tokens ({@link InstalledModScan#roots}); absent = the mode's

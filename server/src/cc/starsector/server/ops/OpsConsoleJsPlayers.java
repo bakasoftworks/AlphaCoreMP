@@ -39,7 +39,7 @@ package cc.starsector.server.ops;
  * <p>{@code renderShips} paints {@code #ships-list} from the status keys
  * {@code shipsBaseIds} / {@code shipsHiddenIds} (a row per shipped id, then any hidden id the shipped list lacks;
  * ids compared ASCII-folded), a hidden row marked {@code ship-hidden} with Show in place of Hide; the heading counts
- * the shipped ids and carries the over-cap words on {@code shipsOverCap}; {@code #ships-last} shows
+ * the listed shipped ids and carries the over-cap words on {@code shipsOverCap}; {@code #ships-last} shows
  * {@code shipsLast} and, on a non-zero {@code shipsPersistFailed}, the failed-save sentence with its count. Hide
  * ({@code V.shipHide}) sends {@code ship-hide} + {@code id=} (the server asks first), Show ({@code V.shipShow})
  * {@code ship-show} + {@code id=}, both gated like Forget (row {@code page-ships}).

@@ -2,6 +2,7 @@ package cc.starsector.server.runtime;
 
 import cc.starsector.server.match.ContentFingerprints;
 import cc.starsector.server.ops.PeerText;
+import cc.starsector.server.ops.WindowsPortReservation;
 import cc.starsector.server.match.MatchDescriptors;
 import cc.starsector.server.match.MatchSeatAuthority;
 import cc.starsector.server.match.PasswordSeatLedger;
@@ -110,8 +111,9 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
      * default send window ({@link DatagramReliability.Config#defaults}): a full window PLUS a
      * full spool of backlog means the peer has not acked two windows' worth of CTRL —
      * hostile-or-dead, the same verdict the legacy bounded block reaches. Public: the
-     * VDEF admission budget ({@code VariantDefinitionFrameCodec.VDEF_BUDGET_TOTAL}) is asserted under
-     * window + this by {@code WaveInflateContractRows.budgetRows}. */
+     * VDEF admission budget ({@code VariantDefinitionFrameCodec.VDEF_BUDGET_TOTAL} 960 = boot 256 + customs 64
+     * + waves 576 + realized seat loadouts 64, plus its CTRL margin 64) is asserted under window + this
+     * (512 + 512 = 1024) by {@code WaveInflateContractRows.budgetRows}. */
     public static final int CTRL_SPOOL_BOUND = 512;
     /** Rung-0 N-door observability cadence: one {@code npeer-ctrl} line per live session. */
     private static final long NPEER_CTRL_LINE_MILLIS = 5_000L;
@@ -233,10 +235,18 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
     /** The match document a password-proven PROBE with a stale {@code match=} term is served (null = none: a token
      *  door, every rig door). */
     final ProbeMatchDoc matchDoc;
+    /** The LunaSettings sheet every password-proven PROBE reply carries after {@link #matchDoc}'s chunks, whatever the
+     *  probe's match term (null = none: the reply's announce row then reads {@code LunaSheetCodec.NO_SHEET_TERM}).
+     * */
+    final ProbeLunaSheet lunaSheet;
     /** The document term of the probe budget: asked once per stale-term probe IMMEDIATELY before whichever
      *  {@link #probeBudget} ask that probe reaches, keyed by {@link DoorSourceBudget#sourceKey}; the host's own
      *  exempt addresses skip its per-key gap only (guarded by {@link #lock}). */
     final DoorSourceBudget docBudget = DoorSourceBudget.forMatchDoc();
+    /** The sheet's own budget term, {@link #docBudget}'s numbers in a window of its own: asked once per
+     *  password-proven probe on a door holding a sheet, right after the document term (guarded by {@link #lock}).
+     * */
+    final DoorSourceBudget lunaDocBudget = DoorSourceBudget.forMatchDoc();
     /** W15 v3 VCHK: the dry-run's per-KEY gap
      * (100 ms, no global window), asked after the {@link DoorGuessLedger#dryRunOpen} gate and
      * BEFORE the compare (guarded by {@link #lock}). */
@@ -545,7 +555,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
          *  ledger GRANTED (u32 in a long, 0..2^32-1; 0 = none yet), advanced before the X25519 ({@code PidsChatVerbs}). */
         byte[] hs13AuthShare;
         long hs13AuthHighest;
-        /** The admitting F2's MagicLib report bits ({@code Handshake13.FLAG_MAGIC_UP | FLAG_MAGIC_REPLICA}, 0x00..0x18;
+        /** The admitting F2's report bits ({@code Handshake13.FLAG_MAGIC_UP | FLAG_MAGIC_REPLICA | FLAG_PILOT_REPLICA}, 0x00..0x38;
          *  0 on a v12 session; a replay session carries the RECORDED seat's bits, {@code PidsReplayDoor.replayMint}):
          *  set by the hs-13 admit beside the root, before the session is ever handed
          *  to the serve loop; a re-HELLO is a NEW session carrying its own. NEVER in {@link #copyGateStateFrom}.
@@ -554,7 +564,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         /** The admitting F2's pilot keymap, packed ({@code lo} = bytes 0..7, {@code hi} = bytes 8..15, byte i at
          *  bits {@code ((i & 7) << 3)..+7}; 0/0 = no map = the serve's own table answers): set by the hs-13 admit
          *  beside the magic bits; a replay session carries the RECORDED seat's ({@code PidsReplayDoor.replayMint});
-         *  NEVER in {@link #copyGateStateFrom}. Main-written */
+         *  NEVER in {@link #copyGateStateFrom}. */
         volatile long helloKeymapLo, helloKeymapHi;
         final InetSocketAddress peer;
         final String clientId;
@@ -863,7 +873,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
 
         /** ROW SEAM: the packed pilot keymap this session's admitting F2 opened ({@link #helloKeymapLo} /
          *  {@link #helloKeymapHi}; 0/0 = no map) — the kit's DF-KEYMAP-CHAIN row reads what the door opened after a
-         *  dial and after a takeover re-HELLO. Main-written */
+         *  dial and after a takeover re-HELLO. */
         public long helloKeymapLo() {
             return helloKeymapLo;
         }
@@ -1114,10 +1124,12 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
             PasswordSeatLedger passwordLedger, PickableVariants pickableVariants,
             VariantCatalogStore variantCatalog, SeatRebindArbiter moduleSeats,
             boolean moduleVerbsArmed, TransferTargets transferTargets, DoorSourceHold.Policy chatSourceHold,
-            SourceSeatCap sourceSeatCap, ProbeMatchDoc matchDoc, boolean replay, boolean pvp) {
+            SourceSeatCap sourceSeatCap, ProbeMatchDoc matchDoc, ProbeLunaSheet lunaSheet, boolean replay,
+            boolean pvp) {
         this.replay = replay;
         this.seatTeams = passwordLedger == null ? null : new SeatTeamTable(passwordLedger, pvp);
         this.matchDoc = matchDoc;
+        this.lunaSheet = lunaSheet;
         this.socket = socket;
         this.offLoopback = offLoopback;
         this.host = host;
@@ -1240,7 +1252,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         return openInternal(bindHost, bindPort, seatAuthority, true, maxSessions,
                 p.requiredDoorFingerprint(), p.matchPassword(), p.passwordLedger(), p.pickableVariants(),
                 p.variantCatalog(), p.moduleSeats(), p.moduleVerbsArmed(), p.transferTargets(),
-                p.bootBans(), p.chatSourceHold(), p.sourceSeatCap(), p.matchDoc(), false, p.pvp());
+                p.bootBans(), p.chatSourceHold(), p.sourceSeatCap(), p.matchDoc(), p.lunaSheet(), false, p.pvp());
     }
 
     /**
@@ -1262,7 +1274,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         return openInternal("127.0.0.1", 0, seatAuthority, true, maxSessions,
                 p.requiredDoorFingerprint(), p.matchPassword(), p.passwordLedger(), p.pickableVariants(),
                 p.variantCatalog(), p.moduleSeats(), p.moduleVerbsArmed(), p.transferTargets(),
-                p.bootBans(), p.chatSourceHold(), p.sourceSeatCap(), p.matchDoc(), true, p.pvp());
+                p.bootBans(), p.chatSourceHold(), p.sourceSeatCap(), p.matchDoc(), p.lunaSheet(), true, p.pvp());
     }
 
     /**
@@ -1318,9 +1330,15 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
                     : new InetSocketAddress(bind, bindPort));
             System.out.println("npeer-udp-bind-probe host=" + named + " ok");
         } catch (SocketException bindFailure) {
-            BindException why = new BindException("bind probe FAILED for " + named
+            // A port inside a Windows-reserved block fails WSAEACCES, which
+            // Java words "Address already in use" - there the block and its admin remedy are named, never the
+            // three guesses (all wrong there); only this failure path pays the netsh check
+            String reserved = WindowsPortReservation.warning(bindPort);
+            BindException why = new BindException(reserved.isEmpty()
+                    ? "bind probe FAILED for " + named
                     + " (VPN down / stale lease / port taken? the door binds this endpoint after"
-                    + " engine boot): " + bindFailure.getMessage());
+                    + " engine boot): " + bindFailure.getMessage()
+                    : "bind probe FAILED for " + named + ": " + reserved);
             why.initCause(bindFailure);
             throw why;
         } finally {
@@ -1335,7 +1353,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
             VariantCatalogStore variantCatalog, SeatRebindArbiter moduleSeats,
             boolean moduleVerbsArmed, TransferTargets transferTargets, BanSet bootBans,
             DoorSourceHold.Policy chatSourceHold, SourceSeatCap sourceSeatCap, ProbeMatchDoc matchDoc,
-            boolean replay, boolean pvp) throws IOException {
+            ProbeLunaSheet lunaSheet, boolean replay, boolean pvp) throws IOException {
         if ((matchPassword == null) != (passwordLedger == null)) {
             throw new IllegalArgumentException("password mode is a PAIR — matchPassword and"
                     + " passwordLedger arrive together or not at all; got password="
@@ -1427,7 +1445,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
                 advertised.getHostAddress(), socket.getLocalPort(), seatAuthority, multiPeer,
                 maxSessions, requiredDoorFingerprint, matchPassword, passwordLedger,
                 pickableVariants, variantCatalog, moduleSeats, moduleVerbsArmed,
-                transferTargets, chatSourceHold, boundCap, matchDoc, replay, pvp);
+                transferTargets, chatSourceHold, boundCap, matchDoc, lunaSheet, replay, pvp);
         if (boundCap.armed()) {
             System.out.println("npeer-udp-door source_seat_cap " + boundCap.describe()
                     + " (" + SourceSeatCap.ROW + "; password door only; spectators never count)");
@@ -3231,6 +3249,13 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
             // The version-14 tally (never v1's): the bounce ladder's rung for a
             // version-14 open counts here; the rung exists while the door's own version is above 14.
             case 14 -> readerCounters.helloV14Bounced++;
+            // The version-15 and version-16 tallies (never v1's), the v14 shape;
+            // each rung exists while the door's own version is above it.
+            case 15 -> readerCounters.helloV15Bounced++;
+            case 16 -> readerCounters.helloV16Bounced++;
+            // The version-17 tally (never v1's); the rung exists while the door's
+            // own version is above 17.
+            case 17 -> readerCounters.helloV17Bounced++;
             default -> readerCounters.helloV1Bounced++;
         }
     }
@@ -3771,6 +3796,10 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
      * A probe whose {@code match=} term is stale on a door that serves a match document also asks the
      * document budget ({@link #matchDocHeldLocked}) and, once served, gets the sealed DESC frames
      * BEFORE the mod-set and ship listings.
+     * Every proven probe on a door holding a LunaSettings sheet also asks the sheet's budget
+     * ({@link #lunaDocHeldLocked}) and gets the sealed LUNA frames after any DESC frames, whatever its
+     * match term; the mod-set listing rides every proven reply, its FIRST row the sheet's announce.
+     *
      */
     private void handleProbeLocked(HandshakeCodec.HelloPayload hello, InetSocketAddress from, PidsHello13.Hs13 hs13) {
         String reason;
@@ -3799,7 +3828,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         }
         if (!hs13.budgetAsked) {
             long now = nowMillis();
-            if (matchDocHeldLocked(hs13, from, now)) {
+            if (matchDocHeldLocked(hs13, from, now) || lunaDocHeldLocked(hs13, from, now)) {
                 return;
             }
             if (!probeBudget.admit(from.toString(), now)) {
@@ -3834,20 +3863,26 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         // as its own KIND_MODSET listing (seq = its own frame index, same listingId; a pre-rung-2
         // kit ignores the kind) so the join page can name what the joiner lacks BEFORE a 60-s boot
         // bounces at the door. Sent before the ship frames: the collector declares the reply done
-        // on the ship listing, so the set is on the wire by then. A set-less door sends nothing.
-        List<byte[]> modFrames = List.of();
+        // on the ship listing, so the set is on the wire by then.
+        // The listing rides EVERY proven reply, a set-less door's too, its
+        // FIRST row the LunaSettings announce (the sheet's digest and row count, or the no-sheet term), so a reader
+        // told a sheet exists holds for its chunks instead of reading a lost chunk as "no sheet".
+        String lunaTerm = lunaSheet == null ? LunaSheetCodec.NO_SHEET_TERM
+                : lunaSheet.digest16() + ":" + lunaSheet.rows();
+        List<byte[]> modFrames;
         int optionalCount = optionalModSet == null ? 0 : optionalModSet.size();
-        if (modSet != null && (modSet.size() > 0 || optionalCount > 0)) {
-            try {
-                // Required rows first, then the published OPTIONAL rows (mark 27, never folded)
-                modFrames = ListingEmitter.encodeListing(0, ListingFrameCodec.KIND_MODSET,
-                        PROBE_LISTING_ID, ListingEmitter.modSetEntries(modSet, optionalModSet));
-            } catch (RuntimeException codecLaw) {
-                modFrames = List.of(); // the ship half still serves; the door's fold names the skew
-                readerCounters.probeModsetEncodeFailed++; //
-                System.out.println("pilot-datagram-admission PROBE_MODSET_ENCODE_FAILED src=" + from
-                        + " " + codecLaw);
-            }
+        try {
+            // Required rows first, then the published OPTIONAL rows (mark 27, never folded)
+            modFrames = ListingEmitter.encodeListing(0, ListingFrameCodec.KIND_MODSET,
+                    PROBE_LISTING_ID, ListingEmitter.modSetEntriesWithAnnounce(lunaTerm, modSet, optionalModSet));
+        } catch (RuntimeException codecLaw) {
+            // the ship half still serves and the announce alone still rides (a lawful token + term); the door's
+            // fold names the mod skew
+            modFrames = ListingEmitter.encodeListing(0, ListingFrameCodec.KIND_MODSET,
+                    PROBE_LISTING_ID, ListingEmitter.modSetEntriesWithAnnounce(lunaTerm, null, null));
+            readerCounters.probeModsetEncodeFailed++; //
+            System.out.println("pilot-datagram-admission PROBE_MODSET_ENCODE_FAILED src=" + from
+                    + " " + codecLaw);
         }
         int modSent = Math.min(modFrames.size(), PROBE_MODSET_MAX_FRAMES);
         // THIS probe's password is proven and both budgets granted, so a
@@ -3863,6 +3898,18 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
             }
             docSent = doc.length;
             readerCounters.probeDocServed++;
+        }
+        // The sheet rides EVERY proven reply, never gated on the match term
+        // (that gate would starve a returning player and every confirming re-probe), after DESC, before the listing.
+        int lunaSent = 0;
+        if (lunaSheet != null) {
+            byte[][] luna = lunaSheet.reply(hs13.root);
+            for (int i = 0; i < luna.length; i++) {
+                sendRawDatagram(DatagramFrameCodec.encode(DatagramFrameCodec.WireChannel.CTRL,
+                        roundId, 0L, i, 0L, 0, 0L, luna[i]), from);
+            }
+            lunaSent = luna.length;
+            readerCounters.probeLunaServed++;
         }
         for (int i = 0; i < modSent; i++) {
             sendRawDatagram(DatagramFrameCodec.encode(DatagramFrameCodec.WireChannel.CTRL,
@@ -3880,7 +3927,8 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
                 + " modset_frames=" + modSent + " of=" + modFrames.size()
                 + " mods=" + (modSet == null ? 0 : modSet.size())
                 + " optional=" + optionalCount
-                + " doc_frames=" + docSent);
+                + " doc_frames=" + docSent
+                + " luna_frames=" + lunaSent);
     }
 
     /**
@@ -3904,13 +3952,33 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         return true;
     }
 
+    /**
+     * The LunaSettings sheet's budget term: {@link #matchDocHeldLocked}'s shape WITHOUT its match-term gate, asked at
+     * most ONCE per password-proven probe on a door holding a sheet, right after the document term and before the
+     * {@link #probeBudget} ask. True = DENIED: counted {@code probe_luna_held} and the probe dropped SILENTLY (nothing
+     * sent, nothing stamped beyond the document term's own grant), so the kit's next try meets an open gap; never the
+     * listing without the sheet, which a kit told of a sheet would hold on. Lock held.
+     *
+     */
+    boolean lunaDocHeldLocked(PidsHello13.Hs13 hs13, InetSocketAddress from, long now) {
+        if (lunaSheet == null) {
+            return false;
+        }
+        if (lunaDocBudget.admit(DoorSourceBudget.sourceKey(from.getAddress()), now,
+                sourceSeatCap.exempt(from.getAddress()))) {
+            return false;
+        }
+        readerCounters.probeLunaHeld++;
+        return true;
+    }
+
     /** The probe listing's ids = the mod scan (canonical spelling); empty scan = no listing.
      * Public for the contract rows (the {@code debugShips} dispatch precedent — the door stays
      * the one caller that serves it). The pickable listing
      * PARTITIONED — the BASE ids first in their listing order, then the overlay's promoted ids (dev
-     * promotions + kept ships) in theirs; {@code fold()} sorts the union, so this is a stable re-order of
-     * ONE {@link PickableVariants#ids} snapshot (the base is immutable: {@link PickableVariants#baseHoldsFold}
-     * splits it), never a new id. The probe's first 28 are base ships (when the base lists that many); a
+     * promotions + kept ships) in theirs; {@link PickableVariants#ids} already leads with the base (root
+     * rank, then the promoted), so this is an order-keeping partition of ONE snapshot (the base is immutable:
+     * {@link PickableVariants#baseHoldsFold} splits it), never a new id. The probe's first 28 are base ships (when the base lists that many); a
      * kept id past the cap stays typable. */
     public List<String> probeListingIds() {
         if (pickableVariants == null) {

@@ -6,5 +6,8 @@
 	# thread, one per frame, and the editor is used in a browser — i.e. with the game window unfocused — so the
 	# vanilla value stalls every answer until the player clicks the game. OFF keeps the loop advancing while
 	# unfocused; the cost is title-screen CPU/GPU while alt-tabbed.
-	"idleWhileWindowNotVisible":false
+	"idleWhileWindowNotVisible":false,
+	# plugins (merged over vanilla's map): the game wraps each entry into EVERY combat engine, the title screen's own
+	# included, so the drain clears a served-settings restore mark on the first title frame after a match exit.
+	"plugins": {"cc_lunaSyncDrain": "cc.starsector.client.luna.LunaSyncDrainPlugin"}
 }

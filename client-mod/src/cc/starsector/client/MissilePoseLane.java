@@ -1124,7 +1124,9 @@ final class MissilePoseLane {
     /**
      * ENROLL a presented missile at its present site (PRCP foe discharge tail / FLC own-adopt),
      * same render-thread stack as the spawn — the engine never advances between mint and the
-     * apply-mode no-op install, so the factory seeker AI is never advanced (a safety requirement).
+     * apply-mode no-op install, so the factory seeker AI is never advanced (a safety requirement);
+     * the one exception is a replica script's missile enrolled from the PRCP projectile scan, which has
+     * advanced at most one engine frame under its mod AI before the puppet install.
      * Classification reads the FACTORY AI ({@code isGuided()||isFlare()}) BEFORE any replace;
      * engine-less ballistic (bombs) now enrolls as a puppet class of its own — the
      * skip left it in free local flight with a live warhead, and M1 proved its wire twin crosses

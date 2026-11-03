@@ -119,11 +119,20 @@ public final class HandshakeCodec {
      * well-formed F1 earns the version-15-SHAPED {@code kit_outdated}
      * ({@link WelcomePayload#encodeRejectedKitOutdatedV15}) instead of a drop at its first frame.
      *
+     * v17: the version-16 bytes unchanged; the bump gates the {@code LUNA} probe document beside {@code DESC}
+     * and the {@code KMAP} family reservation — a version-16 kit's well-formed F1 earns the
+     * version-16-SHAPED {@code kit_outdated} ({@link WelcomePayload#encodeRejectedKitOutdatedV16}).
+     *
+     * v18: the version-17 F1 grammar with one more defined HELLO report bit ({@code 0x20},
+     * {@link Handshake13#FLAG_PILOT_REPLICA}); the bump gates the snapshot schema a version-17 kit cannot
+     * read — a version-17 kit's well-formed F1 (flag set frozen at {@code 0x1F}) earns the
+     * version-17-SHAPED {@code kit_outdated} ({@link WelcomePayload#encodeRejectedKitOutdatedV17}).
+     *
      * A bump (always with {@link Handshake13#VERSION}, the byte heading every frozen hs-13 message)
      * re-mints the {@code Handshake13KatRows} K0..K7 goldens in the SAME commit (two temporary hex-print
      * passes, never committed); the 15 and 16 bumps both went red on it.
-     * Sixteen-tier: v16 admit / v15..v1 bounce / garbage silent. */
-    public static final int HANDSHAKE_VERSION = 16;
+     * Eighteen-tier: v18 admit / v17..v1 bounce / garbage silent. */
+    public static final int HANDSHAKE_VERSION = 18;
     /** HELLO v12 cookie tail cap (the door's {@code DoorCookie.BYTES} is 17; the cap leaves room
      * for a future shape without another bump). A longer tail REJECTS at decode, fail-closed. */
     public static final int HELLO_COOKIE_MAX_BYTES = 32;
@@ -775,6 +784,39 @@ public final class HandshakeCodec {
         public static byte[] encodeRejectedKitOutdatedV15(long nonceEcho, int startingRoundId,
                 int tickRate, long serverLife) {
             return frame(15, WELCOME_REJECTED, nonceEcho, 0L, startingRoundId,
+                    DoorRejectReasons.KIT_OUTDATED, 0L, tickRate, 0, serverLife,
+                    CUSTOM_TIER_STANDARD, 4, CUSTOM_S_MOD_CAP_ENGINE, 0);
+        }
+
+        /**
+         * The v16-SHAPED {@code kit_outdated} bounce: version byte <b>16</b>, the same REJECTED
+         * layout and values as {@link #encodeRejectedKitOutdatedV15} — a version-16 kit reads its
+         * one plaintext REJECT at its own version byte, so its F1 (its join probe included) at a
+         * version-17 door reads "kit outdated" instead of a silent timeout, and never meets the
+         * {@code LUNA} probe document it cannot read. 57 B payload: never larger than the 123 B F1
+         * it answers.
+         *
+         */
+        public static byte[] encodeRejectedKitOutdatedV16(long nonceEcho, int startingRoundId,
+                int tickRate, long serverLife) {
+            return frame(16, WELCOME_REJECTED, nonceEcho, 0L, startingRoundId,
+                    DoorRejectReasons.KIT_OUTDATED, 0L, tickRate, 0, serverLife,
+                    CUSTOM_TIER_STANDARD, 4, CUSTOM_S_MOD_CAP_ENGINE, 0);
+        }
+
+        /**
+         * The v17-SHAPED {@code kit_outdated} bounce: version byte <b>17</b>, the same REJECTED
+         * layout and values as {@link #encodeRejectedKitOutdatedV16}. A frozen emitter per version
+         * exists because a kit reads only a REJECT headed by its OWN version byte: a reply at the
+         * door's current byte would fail that kit's decode and read as a silent timeout. So a
+         * version-17 kit's F1 (its join probe included) at a version-18 door reads "kit outdated"
+         * instead of being admitted and then failing on the first snapshot it cannot read. 57 B
+         * payload: never larger than the 123 B F1 it answers.
+         *
+         */
+        public static byte[] encodeRejectedKitOutdatedV17(long nonceEcho, int startingRoundId,
+                int tickRate, long serverLife) {
+            return frame(17, WELCOME_REJECTED, nonceEcho, 0L, startingRoundId,
                     DoorRejectReasons.KIT_OUTDATED, 0L, tickRate, 0, serverLife,
                     CUSTOM_TIER_STANDARD, 4, CUSTOM_S_MOD_CAP_ENGINE, 0);
         }

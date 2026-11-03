@@ -1,5 +1,8 @@
 package cc.starsector.server.runtime;
 
+import cc.starsector.server.adapter.ShipManeuverCommandView;
+import cc.starsector.server.protocol.ShipManeuverCommandSnapshot;
+
 import java.util.List;
 
 /**
@@ -41,7 +44,9 @@ import java.util.List;
  * legitimately ablates to exactly 0; the min-1 floor is hull-only).
  * The v14 pilot triple rides {@code pilotSeat}/{@code pilotMask}/{@code pilotFlags} (u8 each;
  * {@link #PILOT_SEAT_NONE_WIRE} = no mark, canonical (0, 0, 0); flags bit 0 = the pilot's
- * MagicLib decision is followed on this hull).
+ * MagicLib decision is followed on this hull). The v15 {@code pilotControls} u16 rides beside it
+ * (the pilot's applied held controls, meaningful only while flags bit 1 is set; the canonical
+ * form of all four = {@link ShipManeuverCommandSnapshot#pilotMarkRefusalOrNull}).
  * Mounts ride sorted ascending by unique {@code mountIndex} (the domain tier
  * order), at most 255.
  */
@@ -85,6 +90,7 @@ public record AwsdEntityBaseline(
         int pilotSeat,
         int pilotMask,
         int pilotFlags,
+        int pilotControls,
         List<Mount> mounts) {
 
     /** Wire {@code ownerWire} value carrying {@code NO_OWNER_CONNECTION} (−1). */
@@ -124,6 +130,37 @@ public record AwsdEntityBaseline(
     public static final int PILOT_SEAT_NONE_WIRE = 0;
 
     /**
+     * The {@code pilotFlags} bit (bit 1, CONTROLS) that
+     * makes {@code pilotControls} present: a KEYFRAME carries the u16 only on such records, and a
+     * resolved record with this bit clear must carry controls 0.
+     */
+    public static final int PILOT_FLAG_CONTROLS_WIRE = ShipManeuverCommandView.PILOT_FLAG_CONTROLS;
+
+    /**
+     * The pre-controls shape: a record whose mark carries
+     * no held controls (pilotControls 0). Kept so triple-shaped callers stay source-compatible.
+     */
+    public AwsdEntityBaseline(int entityId, int epoch, long anchorTick, int contentId, int ownerWire,
+            int qx, int qy, int qvx, int qvy, int qFacing, int qAngVel,
+            int maxHp, int hullFrac, int armorFrac, int maxFlux, int fluxLevel, int hardFluxFrac, int fluxFlags,
+            int shieldFacingU8, int fleetSide,
+            int engineDisabledMask, int enginePermDisabledMask, int engineControllerState,
+            int maneuverMask, int sysStateCode, int sysEffectLevel, int qSysCd, int sysAmmoWire,
+            int cloakStateWire, int cloakEffectFrac, int qCloakCd, int cloakAmmoWire,
+            int crU8, int depHalfSecU16, int peakHalfSecU16, int fighterRatePct,
+            int pilotSeat, int pilotMask, int pilotFlags, List<Mount> mounts) {
+        this(entityId, epoch, anchorTick, contentId, ownerWire,
+                qx, qy, qvx, qvy, qFacing, qAngVel,
+                maxHp, hullFrac, armorFrac, maxFlux, fluxLevel, hardFluxFrac, fluxFlags,
+                shieldFacingU8, fleetSide,
+                engineDisabledMask, enginePermDisabledMask, engineControllerState,
+                maneuverMask, sysStateCode, sysEffectLevel, qSysCd, sysAmmoWire,
+                cloakStateWire, cloakEffectFrac, qCloakCd, cloakAmmoWire,
+                crU8, depHalfSecU16, peakHalfSecU16, fighterRatePct,
+                pilotSeat, pilotMask, pilotFlags, 0, mounts);
+    }
+
+    /**
      * The pre-flags shape: a record whose mark carries no
      * flags byte (pilotFlags 0 — the pilot's MagicLib decision is not followed on this hull).
      * Kept so pair-shaped callers stay source-compatible; the wire always carries the third byte.
@@ -145,7 +182,7 @@ public record AwsdEntityBaseline(
                 maneuverMask, sysStateCode, sysEffectLevel, qSysCd, sysAmmoWire,
                 cloakStateWire, cloakEffectFrac, qCloakCd, cloakAmmoWire,
                 crU8, depHalfSecU16, peakHalfSecU16, fighterRatePct,
-                pilotSeat, pilotMask, 0, mounts);
+                pilotSeat, pilotMask, 0, 0, mounts);
     }
 
     /**
@@ -238,10 +275,18 @@ public record AwsdEntityBaseline(
         requireU8("pilotSeat", pilotSeat);
         requireU8("pilotMask", pilotMask);
         requireU8("pilotFlags", pilotFlags);
-        if (pilotSeat == PILOT_SEAT_NONE_WIRE && (pilotMask != 0 || pilotFlags != 0)) {
-            // Canonical absent shape: an unmarked hull carries mask 0 and flags 0 (no seat owns its bits).
-            throw new IllegalArgumentException("pilotSeat 0 (no mark) must ride pilotMask 0 and pilotFlags 0; got 0x"
-                    + Integer.toHexString(pilotMask) + "/0x" + Integer.toHexString(pilotFlags));
+        if (pilotControls < 0 || pilotControls > 0xFFFF) {
+            // The value is a pilot's held input: the refusal names the rule, never the number.
+            throw new IllegalArgumentException("pilotControls outside wire u16");
+        }
+        // The mark's canonical form on the RESOLVED
+        // values: a keyframe decode and an applied delta both land here, so a delta that would
+        // resolve to a refused shape is the per-record drop (hold-last + re-key), never a frame
+        // refusal; the serve's capture record checks the same law (one rule both sides).
+        String pilotRefusal = ShipManeuverCommandSnapshot.pilotMarkRefusalOrNull(
+                pilotSeat, pilotMask, pilotFlags, pilotControls);
+        if (pilotRefusal != null) {
+            throw new IllegalArgumentException("pilot mark refused: " + pilotRefusal);
         }
         if (sysStateCode == SYS_NONE_WIRE) {
             // Canonical absent shape (one bit pattern per meaning): a systemless ship's

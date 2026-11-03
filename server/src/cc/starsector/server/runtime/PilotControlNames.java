@@ -9,11 +9,12 @@ import java.util.function.ToIntFunction;
  * redirected on the serve hears exactly the text the pilot's own game shows. WHY a replica: the engine exposes a
  * binding only as a string; that string is the LWJGL {@code KEY_*} suffix except for the entries below, which the
  * engine names its own way (measured from the install, 0.98a-RC8); the kit cannot call the engine's reverse lookup
- * and has no reflection. Pure tables, java.base only: both jars pack it. A mouse binding is one of the mouse names
+ * and has no reflection. Pure tables over java.base plus its sibling {@code PilotIntentFrame.CONTROL_KEY_NAMES}
+ * (packed by both jars beside it): both jars pack it. A mouse binding is one of the mouse names
  * (buttons 0..7 expressible); a modifier-prefixed binding ("Ctrl-", "Alt-", "Shift-"), a wheel binding, a button
  * past 7 and an unknown string are unexpressible = 0 (unmapped). A duplicate name ("Shift", "Ctrl", "Alt") resolves
  * to its FIRST code (the left key, the engine's own default for the strafe key); the engine's reverse map keeps the
- * last, so a pilot bound to the right modifier is sent the left code — the string API is lossy. Main-written.
+ * last, so a pilot bound to the right modifier is sent the left code — the string API is lossy.
  *
  */
 public final class PilotControlNames {

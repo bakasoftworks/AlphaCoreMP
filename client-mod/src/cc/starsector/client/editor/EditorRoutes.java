@@ -162,6 +162,9 @@ final class EditorRoutes {
             JSONObject verdict = nextVerdictJson();
             o.put("nextVerdict", verdict == null ? JSONObject.NULL : verdict);
             o.put("host", HostShips.hostJson()); // the host card's gate: {live, admin, submissions}, always present
+            // the served LunaLib settings read-back: set:<rows>/<mods> missing:<k> skipped:<j> digest:<hex> | absent
+            // | lunalib off | refused:<class> (one volatile read; counts, a digest and class words, never a value)
+            o.put("lunaSync", cc.starsector.client.luna.LunaSyncApply.status());
             HttpExchange.replyJson(out, 200, o.toString());
         } else if (get && rest.startsWith("data/")) {
             data(req, rest.substring(5), out);

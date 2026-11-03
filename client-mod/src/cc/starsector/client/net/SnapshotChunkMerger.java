@@ -267,8 +267,8 @@ public final class SnapshotChunkMerger {
                 try {
                     current = AwsdSnapshotReader.applyDelta(record, anchor.kf());
                 } catch (IllegalArgumentException d5Drop) {
-                    // The reader's remaining D5 drop signal reachable here (a dirty mount
-                    // index absent from the anchor roster — roster changes ride keyframes):
+                    // The reader's remaining D5 drop signals reachable here (a dirty mount index
+                    // absent from the anchor roster, or a resolved pilot mark the reader refuses):
                     // drop + hold-last + NACK, same posture as the kernel epoch guard.
                     // 1290 (83) CL-5 Q-a: unappliable is NOT the expected epoch-mismatch class
                     // (the NACK re-key covers that) — the first one confesses; behavior unchanged.

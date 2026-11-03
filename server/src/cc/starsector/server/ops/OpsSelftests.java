@@ -43,13 +43,15 @@ public final class OpsSelftests {
                 + guarded("kill", ServerOpsKillSelftest::run) + guarded("vpn-lease", VpnLeaseSelftest::run);
         // The row mains: the package-folder writer's three, the package match-setting Apply rows, the
         // match-shape library, the joiner-kit packer, the record rows, the reach probe rows (loopback
-        // sockets), the first-start repair rows and the update check rows; each run()
-        // RETURNS its failure count (their own mains exit on it).
+        // sockets), the first-start repair rows and the update check rows, the Windows
+        // reserved-port block rows; each run() RETURNS its failure count (their own
+        // mains exit on it).
         if (thrown + PackageZipSelftest.run() + PackageFolderWriterSelftest.run()
                 + PackageFolderWriterGuardSelftest.run() + OpsMatchApplySelftest.run()
                 + cc.starsector.server.match.MatchShapesSelftest.run() + KitPackerSelftest.run()
                 + ServeRecordSelftest.run() + ReachProbeSelftest.run()
-                + PackageRepairSelftest.run() + PackageUpdateCheckSelftest.run() != 0) {
+                + PackageRepairSelftest.run() + PackageUpdateCheckSelftest.run()
+                + WindowsPortReservationSelftest.run() != 0) {
             System.exit(1);
         }
         System.out.println("server-ops selftest PASS");

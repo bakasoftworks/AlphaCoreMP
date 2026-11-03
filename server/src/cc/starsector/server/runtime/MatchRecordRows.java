@@ -472,7 +472,7 @@ public final class MatchRecordRows {
      *  LIVE ("" none); {@code keymapLo} / {@code keymapHi} = the seat's HELLO keymap packed (control
      *  bytes 0..7 and 8..15), recorded so a re-sim answers the seat's redirected key reads as it ran —
      *  appended in place, an older reel reads 0/0 (= the serve's own map, which is what it recorded).
-     *  Never the client id (player text). Main-written */
+     *  Never the client id (player text). */
     public record SessRow(int event, long sessionId, int seat, long shipId, int flags,
             String departureReason, String variantOverride, long keymapLo, long keymapHi) {
     }

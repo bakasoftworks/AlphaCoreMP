@@ -142,7 +142,8 @@ public final class PilotIntentDatagramClient {
         // triples, at most LEVEL_WINDOWS_MAX each (empty = that level never held): an LWJGL key code 1..255, a mouse
         // button 0..7, a CONTROL_KEY_NAMES bit 0..15, each held over [from, to) in frameSeq space; windows OR.
         //
-        // helloFlags: 0 or a subset of 0x18 (the HELLO MagicLib report bits; a drill lever, never a kit sysprop);
+        // helloFlags: 0 or a subset of 0x38 (the three HELLO report bits: 0x08 / 0x10 MagicLib, 0x20 pilot-replica;
+        // a drill lever, never a kit sysprop);
         // abilityWindow: null or {slot 0..7, fromFrame >= 1, toFrame > from} = the held ability bit for one slot
         // over that frame window (S4b's seam drill rows 19-21 + 23; the hunk = its commit body).
         // lane: never null — the --lane credential FIELD of every version-13 flight (default PASSWORD).
@@ -757,9 +758,10 @@ public final class PilotIntentDatagramClient {
                     "--cloak-from / --chat-after-sent / --shield-from / --ability-from must be >= 0: "
                     + cloakFrom + " / " + chatAfterSent + " / " + shieldFrom + " / " + abilityFrom);
         }
-        if ((helloFlags & ~(Handshake13.FLAG_MAGIC_UP | Handshake13.FLAG_MAGIC_REPLICA)) != 0) {
-            throw new IllegalArgumentException("--hello-flags must be 0 or a subset of 0x18 (the MagicLib report"
-                    + " bits): 0x" + Integer.toHexString(helloFlags));
+        if ((helloFlags & ~(Handshake13.FLAG_MAGIC_UP | Handshake13.FLAG_MAGIC_REPLICA
+                | Handshake13.FLAG_PILOT_REPLICA)) != 0) {
+            throw new IllegalArgumentException("--hello-flags must be 0 or a subset of 0x38 (the three HELLO report"
+                    + " bits: 0x08 / 0x10 MagicLib, 0x20 pilot-replica): 0x" + Integer.toHexString(helloFlags));
         }
         int[] abilityWindow = null;
         if (abilityWindowSpec != null) {
@@ -1073,7 +1075,7 @@ public final class PilotIntentDatagramClient {
      *
      */
     private void handshake13() throws IOException {
-        // the drill's HELLO MagicLib report bits (0 unless --hello-flags; probe flights keep FLAG_PROBE below)
+        // the drill's HELLO report bits (0 unless --hello-flags; probe flights keep FLAG_PROBE below)
         Handshake13Flight flight = newFlight(options.helloFlags(), options.helloVariant());
         try {
             long deadline = nowMillis() + options.connectTimeoutMillis();

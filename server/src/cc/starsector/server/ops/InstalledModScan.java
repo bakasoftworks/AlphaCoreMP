@@ -55,8 +55,8 @@ public final class InstalledModScan {
     /** The {@code cc-server.properties} row naming the roots (the lib's key). */
     public static final String MODS_ROOTS_KEY = "mods.roots";
 
-    /** {@code Get-CcDefaultModRoots} mirrored: in-repo proof mods + pinned third-party releases. */
-    public static final List<String> DEFAULT_ROOTS = List.of("local/drills", "generated/foreign-mods");
+    /** {@code Get-CcDefaultModRoots} mirrored: in-repo proof mods + pinned third-party releases (repo SIBLING). */
+    public static final List<String> DEFAULT_ROOTS = List.of("local/drills", "../CC_foreign-mods");
 
     /** The file that makes a folder a mod. */
     public static final String MOD_INFO = "mod_info.json";

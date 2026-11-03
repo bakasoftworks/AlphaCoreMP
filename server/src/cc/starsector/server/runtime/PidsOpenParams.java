@@ -51,12 +51,20 @@ import cc.starsector.server.match.PasswordSeatLedger;
  *        seat may play for the other side), counts each team against its side's seat count, and remembers a
  *        player's team for the rejoin ({@link SeatTeamTable}). False = every other shape (and every rig and narrow
  *        overload): team picks follow the descriptor seat sides only.
+ * @param lunaSheet the LunaSettings sheet ({@link ProbeLunaSheet}, minted once at boot) the door sends on EVERY
+ *        password-proven PROBE reply, whatever its {@code match=} term: sealed chunks after any {@code matchDoc}
+ *        chunks and before the mod-set listing, under the sheet's own per-source budget term
+ *        ({@link PilotIntentDatagramServer#lunaDocHeldLocked}; a denial is silence). Null = no sheet (every rig and
+ *        narrow overload): the listing's announce row then reads {@link LunaSheetCodec#NO_SHEET_TERM}. The live serve
+ *        hands in the boot's sheet from {@code PilotServeSession}'s door parameters.
+ *
  */
 public record PidsOpenParams(String requiredDoorFingerprint, String matchPassword,
         PasswordSeatLedger passwordLedger, PickableVariants pickableVariants,
         VariantCatalogStore variantCatalog, SeatRebindArbiter moduleSeats,
         boolean moduleVerbsArmed, TransferTargets transferTargets, BanSet bootBans,
-        DoorSourceHold.Policy chatSourceHold, SourceSeatCap sourceSeatCap, ProbeMatchDoc matchDoc, boolean pvp) {
+        DoorSourceHold.Policy chatSourceHold, SourceSeatCap sourceSeatCap, ProbeMatchDoc matchDoc, boolean pvp,
+        ProbeLunaSheet lunaSheet) {
 
     /** Every optional OFF: the 4-arg door (fingerprint off, token mode, no picks/catalog/modules/transfers/boot bans). */
     public static final PidsOpenParams NONE = new PidsOpenParams(null, null, null, null, null, null, false, null, null);
@@ -65,6 +73,18 @@ public record PidsOpenParams(String requiredDoorFingerprint, String matchPasswor
     public PidsOpenParams {
         chatSourceHold = chatSourceHold == null ? DoorSourceHold.Policy.OFF : chatSourceHold;
         sourceSeatCap = sourceSeatCap == null ? SourceSeatCap.OFF : sourceSeatCap;
+    }
+
+    /** The thirteen-component form: no LunaSettings sheet held, so every construction site that predates it keeps
+     *  today's door byte-for-byte. */
+    public PidsOpenParams(String requiredDoorFingerprint, String matchPassword,
+            PasswordSeatLedger passwordLedger, PickableVariants pickableVariants,
+            VariantCatalogStore variantCatalog, SeatRebindArbiter moduleSeats,
+            boolean moduleVerbsArmed, TransferTargets transferTargets, BanSet bootBans,
+            DoorSourceHold.Policy chatSourceHold, SourceSeatCap sourceSeatCap, ProbeMatchDoc matchDoc, boolean pvp) {
+        this(requiredDoorFingerprint, matchPassword, passwordLedger, pickableVariants, variantCatalog,
+                moduleSeats, moduleVerbsArmed, transferTargets, bootBans, chatSourceHold, sourceSeatCap, matchDoc, pvp,
+                null);
     }
 
     /** The twelve-component form: not the PvP shape, so every construction site that predates the flag keeps

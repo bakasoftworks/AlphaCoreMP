@@ -2547,6 +2547,10 @@ public final class ServerOpsCore {
      * ({@code OpsMatchRows.pilotShipFieldPrefill}: an absent row = {@code "on"}, the serve's compiled default).
      * Pinned by {@code config-pilotship}.
      *
+     * <p>{@code pilotReplicas} follows {@code pilotShip}
+     * ({@code OpsMatchRows.pilotReplicasFieldPrefill}: an absent row = {@code "on"}, the serve reader's fallback).
+     * Pinned by {@code config-pilotreplicas}.
+     *
      * <p>{@code pvp} = {@link #selectedPvpWord} (on|off of the selected
      * option's shape; no props row), right after {@code uplinkDefault}, before {@code seatsPerSource}. Pinned by
      * {@code web-start-pvp}.
@@ -2612,7 +2616,7 @@ public final class ServerOpsCore {
     public static String configJson(Path propsFile, double uplinkDefault, OpsSetupDraft.Draft draft) {
         String json = configJsonBody(propsFile, uplinkDefault);
         // the draft members lead the object: every adjacency the config rows pin
-        // (allSkills-rngPins-magicSeam-pilotShip-selectedIndex, the selected facts before options, the closing "}]}") stays byte-identical, and a page reading members
+        // (allSkills-rngPins-magicSeam-pilotShip-pilotReplicas-selectedIndex, the selected facts before options, the closing "}]}") stays byte-identical, and a page reading members
         // by name is indifferent to the position
         return "{" + OpsSetupDraft.jsonMembers(draft) + "," + json.substring(1);
     }
@@ -2724,6 +2728,7 @@ public final class ServerOpsCore {
                 .append("\",\"rngPins\":\"").append(jsonEscape(OpsMatchRows.rngPinsFieldPrefill(propsLines)))
                 .append("\",\"magicSeam\":\"").append(jsonEscape(OpsMatchRows.magicSeamFieldPrefill(propsLines)))
                 .append("\",\"pilotShip\":\"").append(jsonEscape(OpsMatchRows.pilotShipFieldPrefill(propsLines)))
+                .append("\",\"pilotReplicas\":\"").append(jsonEscape(OpsMatchRows.pilotReplicasFieldPrefill(propsLines)))
                 .append("\",\"selectedIndex\":").append(opts.selectedIndex())
                 .append(',').append(selectedFacts)
                 .append(",\"options\":[").append(options).append("]}");

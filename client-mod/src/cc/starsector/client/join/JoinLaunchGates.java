@@ -1,6 +1,7 @@
 package cc.starsector.client.join;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -8,6 +9,7 @@ import cc.starsector.client.net.DoorProbe;
 import cc.starsector.server.match.MatchDescriptor;
 import cc.starsector.server.match.MatchDocumentLaws;
 import cc.starsector.server.match.MatchDocumentRefused;
+import cc.starsector.server.runtime.LunaSheetCodec;
 
 /**
  * The join window's PRESS-TIME LAUNCH LAW, Swing-free (GUI v2 design): the
@@ -23,7 +25,7 @@ import cc.starsector.server.match.MatchDocumentRefused;
  * inline red line) — the words are this class's.
  *
  * <p>Gate ids are fixed words the SPA keys on (never player text): {@code address}, {@code password},
- * {@code ship}, {@code probe}, {@code door}, {@code document}, {@code credential_write},
+ * {@code ship}, {@code probe}, {@code door}, {@code document}, {@code credential_write}, {@code luna_write},
  * {@code cid}, {@code plan_write}. Player-authored input (host, name) is DATA here: sanitized by
  * {@link JoinLaunchPlan}, matched against fixed rules; a refused document is named by OUR reason + field only.
  */
@@ -92,9 +94,23 @@ final class JoinLaunchGates {
          *  document; else a Launch would go on a match the probe never confirmed. */
         final boolean cacheCurrent;
         final String docLine;
+        /** The server's settings sheet this probe received whole and lawful ({@code DoorProbe.Result.lunaText}),
+         *  or null — what a Launch for this pair stages beside the match file. */
+        final String lunaText;
+        /** The page's settings line for this probe ({@link #lunaLine}); empty when none was judged. */
+        final String lunaLine;
+        /** The match id the probe PRESENTED from the cached match file when {@link #cacheCurrent}, else null: the id a
+         *  sheet staged without a fetched document binds to (the file the game will load). */
+        final String cachedMatchId;
 
         ProbeOutcome(Kind kind, String host, int port, String statusLine, boolean docOk, String docLine,
                 boolean cacheCurrent) {
+            this(kind, host, port, statusLine, docOk, docLine, cacheCurrent, null, "", null);
+        }
+
+        /** The outcome with the probe's settings sheet + its page line. */
+        ProbeOutcome(Kind kind, String host, int port, String statusLine, boolean docOk, String docLine,
+                boolean cacheCurrent, String lunaText, String lunaLine, String cachedMatchId) {
             this.kind = kind;
             this.host = host == null ? "" : host;
             this.port = port;
@@ -102,6 +118,9 @@ final class JoinLaunchGates {
             this.docOk = docOk;
             this.cacheCurrent = cacheCurrent;
             this.docLine = docLine == null ? "" : docLine;
+            this.lunaText = lunaText;
+            this.lunaLine = lunaLine == null ? "" : lunaLine;
+            this.cachedMatchId = cachedMatchId;
         }
 
         /** This outcome when it was recorded for {@code host:port} (host case-blind, port numeric), else NONE. */
@@ -225,6 +244,73 @@ final class JoinLaunchGates {
         Files.write(modDir.resolve("match.txt"), JoinLaunchPlan.canonicalBytes(d));
     }
 
+    /** The settings sidecar beside {@code match.txt}; the kit reads it once at game load. */
+    static final String LUNA_SETTINGS_FILE = "luna-settings.txt";
+    /** The sidecar's first line's key: the match id the sheet is bound to. */
+    static final String LUNA_MATCH_KEY = "luna.match=";
+
+    /**
+     * The ONE writer of {@code CC_Client\luna-settings.txt}: any earlier file is DELETED first, then — when the
+     * probe staged a sheet — line 1 {@code luna.match=<matchId>} and the sheet's canonical text verbatim (LF lines,
+     * UTF-8). No sheet = no file, so a sheet from an earlier launch never rides into this one; the binding line lets
+     * the game refuse a sheet staged for another match. {@code matchId} must be one line (a launch whose sheet has
+     * no id to bind to is refused, never written unbound).
+     *
+     *
+     */
+    static void writeLunaSettings(Path modDir, String matchId, String sheetText) throws IOException {
+        Path file = modDir.resolve(LUNA_SETTINGS_FILE);
+        Files.deleteIfExists(file);
+        if (sheetText == null) {
+            return;
+        }
+        if (matchId == null || matchId.isEmpty() || matchId.indexOf('\n') >= 0 || matchId.indexOf('\r') >= 0) {
+            throw new IOException("no match id to bind the settings to");
+        }
+        Files.write(file, (LUNA_MATCH_KEY + matchId + "\n" + sheetText).getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * The page's settings line for a served probe: "Settings: the server sends N values for M mods." (M = distinct
+     * mod ids), "Settings: none.", "Settings: refused (incomplete) - press Refresh." when a part never arrived, or
+     * "Settings: the server's mod settings arrived damaged - ask the host." for any other reply; empty when no
+     * collector judged the reply. The line never carries sheet bytes.
+     *
+     *
+     */
+    static String lunaLine(DoorProbe.Result r) {
+        String status = r == null ? null : r.lunaStatus;
+        if (status == null) {
+            return "";
+        }
+        if (DoorProbe.LUNA_NONE.equals(status)) {
+            return "Settings: none.";
+        }
+        if (DoorProbe.LUNA_OK.equals(status) && r.lunaText != null) {
+            LunaSheetCodec.Decoded d = LunaSheetCodec.decode(r.lunaText);
+            if (d.ok()) {
+                java.util.Set<String> mods = new java.util.HashSet<>();
+                for (LunaSheetCodec.Row row : d.rows()) {
+                    mods.add(row.modId());
+                }
+                int n = d.rows().size();
+                return "Settings: the server sends " + n + (n == 1 ? " value" : " values") + " for " + mods.size()
+                        + (mods.size() == 1 ? " mod." : " mods.");
+            }
+        }
+        String cls = status.startsWith(DoorProbe.LUNA_REFUSED) ? status.substring(DoorProbe.LUNA_REFUSED.length())
+                : status;
+        if ("incomplete".equals(cls)) {
+            return "Settings: refused (" + cls + ") - press Refresh.";
+        }
+        return "Settings: the server's mod settings arrived damaged - ask the host.";
+    }
+
+    /** False only for a refused sheet (the page paints the line red); ok, none and unjudged are true. */
+    static boolean lunaOk(DoorProbe.Result r) {
+        return r == null || r.lunaStatus == null || !r.lunaStatus.startsWith(DoorProbe.LUNA_REFUSED);
+    }
+
     /** A gate that refused: its id, the v1 dialog title, the v1 dialog text; {@code error} = v1 ERROR_MESSAGE. */
     static final class Refusal {
         final String gate;
@@ -251,6 +337,11 @@ final class JoinLaunchGates {
         final MatchDescriptor pasted;
         /** The gated Team choice, 0..2 (0 = the server picks = no plan row). */
         final int team;
+        /** The settings sheet the launch's pair last served whole (null = none: the hand-off writes no sidecar). */
+        final String lunaText;
+        /** With no {@link #pasted} document: the cached match file's id the probe presented, which the sheet binds
+         *  to; null otherwise. */
+        final String cachedMatchId;
 
         Ready(String host, String port, String name, String password, String ship, MatchDescriptor pasted) {
             this(host, port, name, password, ship, pasted, JoinLaunchPlan.TEAM_SERVER_PICKS);
@@ -259,6 +350,14 @@ final class JoinLaunchGates {
         /** The passed gates with the Team choice the plan writes. */
         Ready(String host, String port, String name, String password, String ship, MatchDescriptor pasted,
                 int team) {
+            this(host, port, name, password, ship, pasted, team, null, null);
+        }
+
+        /** The passed gates with the probe's settings sheet staged. */
+        Ready(String host, String port, String name, String password, String ship, MatchDescriptor pasted,
+                int team, String lunaText, String cachedMatchId) {
+            this.lunaText = lunaText;
+            this.cachedMatchId = cachedMatchId;
             this.host = host;
             this.port = port;
             this.name = name;
@@ -385,21 +484,25 @@ final class JoinLaunchGates {
         }
         // The match gate. A staged document is parsed (never yet
         // written) under the same laws its adopt ran, so a refusal lands BEFORE any file changes.
+        ProbeOutcome last = probe == null ? ProbeOutcome.NONE : probe.forPair(host, port);
+        // The sheet this pair's last SERVED probe received rides into
+        // the hand-off beside the match it binds to (the staged document's id, else the cached file's)
+        String luna = last.kind == ProbeOutcome.Kind.SERVED ? last.lunaText : null;
         if (!f.document.isBlank()) {
             try {
                 return new Verdict(null, new Ready(host, port, f.name, password, ship, lawfulDocument(f.document),
-                        f.team));
+                        f.team, luna, null));
             } catch (DocumentRefused r) {
                 return Verdict.refuse("document", TITLE_MATCH, refusedLine(r.getMessage()));
             }
         }
-        ProbeOutcome last = probe == null ? ProbeOutcome.NONE : probe.forPair(host, port);
         switch (last.kind) {
             case REJECTED:
                 return Verdict.refuse("door", TITLE_MATCH, last.statusLine);
             case SERVED:
                 if (last.cacheCurrent) {
-                    return new Verdict(null, new Ready(host, port, f.name, password, ship, null, f.team));
+                    return new Verdict(null, new Ready(host, port, f.name, password, ship, null, f.team, luna,
+                            last.cachedMatchId));
                 }
                 if (last.docOk) {
                     // The outcome rested on a stage this Form no longer carries (cleared since the
@@ -437,7 +540,8 @@ final class JoinLaunchGates {
     }
 
     /**
-     * The FILE hand-off, in order: (1) a staged server document becomes {@code match.txt} ({@link #writeMatchText});
+     * The FILE hand-off, in order: (0) the settings sidecar ({@link #writeLunaSettings}: any old one deleted, this
+     * launch's sheet written when the probe staged one); (1) a staged server document becomes {@code match.txt} ({@link #writeMatchText});
      * (2) the per-host client id is derived from this install's master beside {@code settingsPath} (minted on first
      * use) — the door keys the seat by it; (3) the settings file (best-effort); (4) the plan's ship = the pick, else
      * the served default; (5) the voice hook; (6) the variant index publish (row (e)); (7) the PLAN FILE,
@@ -469,6 +573,16 @@ final class JoinLaunchGates {
             msg.append("\nThe server admits only its exact mod set - fix the rows above, press"
                     + " Refresh, then Launch. (We never redistribute other people's mods.)");
             return new Handoff(new Refusal(JoinModStage.GATE, TITLE_MODS, msg.toString(), false), null, null, null);
+        }
+        // The settings sidecar — a stale one deleted FIRST on every
+        // commit, then this launch's sheet bound to the match the game will load (the written document's id via
+        // MatchDescriptor.matchId, else the cached file's the probe presented); its own gate on a failure
+        try {
+            writeLunaSettings(modDir, r.pasted != null ? r.pasted.matchId() : r.cachedMatchId, r.lunaText);
+        } catch (IOException ex) {
+            return new Handoff(new Refusal("luna_write", TITLE_LAUNCH_FAILED,
+                    "Could not save the server's mod settings as " + LUNA_SETTINGS_FILE + ": "
+                            + ex.getClass().getSimpleName(), false), null, null, null);
         }
         if (r.pasted != null) {
             try {

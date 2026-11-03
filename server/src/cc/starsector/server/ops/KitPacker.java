@@ -423,7 +423,11 @@ public final class KitPacker {
         if (versions == null) {
             throw refuse(DAMAGED, KitPackRules.textR3(name, "mod_info.json"));
         }
-        byte[] manifestBytes = KitPackRules.manifestText(jarMd5, req.stamp(), versions[0], versions[1])
+        // The agentMd5 row is read off the agent ENTRY this pack ships (a host's
+        // zip: re-pack of the release kit included), never off a build-side value; no entry = the five-row manifest
+        byte[] agent = byName.get(KitPackRules.AGENT_ENTRY);
+        String agentMd5 = agent == null ? null : ContentFingerprints.md5Hex(agent);
+        byte[] manifestBytes = KitPackRules.manifestText(jarMd5, agentMd5, req.stamp(), versions[0], versions[1])
                 .getBytes(StandardCharsets.US_ASCII);
         Set<String> replaced = new HashSet<>(List.of(KitPackRules.MATCH_ENTRY, KitPackRules.SIDECAR_ENTRY,
                 KitPackRules.MANIFEST_ENTRY));

@@ -107,6 +107,14 @@ public final class KitPackRules {
     public static final String README_ENTRY = "README.md";
     /** The client-mod jar whose md5 is the composite's {@code jar=} and the manifest's {@code jarMd5=}. */
     public static final String JAR_ENTRY = MOD_DIR + "/jars/cc-client-mod.jar";
+    /**
+     * The kit's Java agent jar, beside the mod jar and never named in {@code mod_info.json}: the kit's launcher puts it
+     * on the game's own command line as {@code -javaagent:} (the system class path, never the mod's loader). OPTIONAL: a
+     * kit carrying it gets the manifest's {@code agentMd5=} row (the launcher's drift check before it adds the agent), a
+     * kit without it keeps the five-row manifest. Outside the digest surface ({@code jars/} is out by construction).
+     *
+     */
+    public static final String AGENT_ENTRY = MOD_DIR + "/jars/cc-compat-agent.jar";
     /** The bundled JRE's shipped stamp ({@code implementorVersion=} feeds the README's JRE block). */
     public static final String JRE_STAMP_ENTRY = MOD_DIR + "/jre-cc/cc-kit-jre.txt";
 
@@ -180,16 +188,31 @@ public final class KitPackRules {
     private static final Pattern MD5_HEX = Pattern.compile("[0-9a-fA-F]{32}");
 
     /**
-     * {@code kit-manifest.txt}, byte-exact to {@code package-joiner-kit.ps1:398-408}: five rows
-     * ({@code kitStamp}, {@code jarMd5} UPPERCASE as {@code Get-FileHash} prints it, {@code modVersion},
-     * {@code gameVersion}, {@code source=kit}), each ending CRLF including the last (Set-Content of an
-     * array, ASCII). WHY exact: {@code join-cc.bat:57-82} reads kitStamp / jarMd5 through its vguard
-     * (charset {@code [0-9A-Za-z._:-]}) and compares jarMd5 to the jar's certutil md5. THROWS on a
-     * jarMd5 not 32 hex, a stamp outside {@link #STAMP}, or a version holding a control / non-ASCII char.
+     * {@code kit-manifest.txt} of a kit WITHOUT the agent jar: the five rows below, byte-exact to the pwsh kit
+     * packer's composition it replaced.
      */
     public static String manifestText(String jarMd5, String stamp, String modVersion, String gameVersion) {
+        return manifestText(jarMd5, null, stamp, modVersion, gameVersion);
+    }
+
+    /**
+     * {@code kit-manifest.txt}: five rows ({@code kitStamp}, {@code jarMd5} UPPERCASE as {@code Get-FileHash}
+     * prints it, {@code modVersion}, {@code gameVersion}, {@code source=kit}), each ending CRLF including the last
+     * (Set-Content of an array, ASCII); a non-null {@code agentMd5OrNull} adds ONE sixth row
+     * {@code agentMd5=<32 hex UPPERCASE>} right after {@code jarMd5} (the md5 of {@link #AGENT_ENTRY}), null = the
+     * five-row text byte for byte. WHY exact: {@code join-cc.bat} reads kitStamp / jarMd5 (and agentMd5) through its
+     * vguard (charset {@code [0-9A-Za-z._:-]}) and compares each md5 to its jar's certutil md5 - a jarMd5 drift
+     * stops the join, an agentMd5 drift only leaves the agent off the launch line. THROWS on an md5 not 32 hex, a
+     * stamp outside {@link #STAMP}, or a version holding a control / non-ASCII char.
+     * The optional agentMd5 row.
+     */
+    public static String manifestText(String jarMd5, String agentMd5OrNull, String stamp, String modVersion,
+            String gameVersion) {
         if (jarMd5 == null || !MD5_HEX.matcher(jarMd5).matches()) {
             throw new IllegalArgumentException("kit manifest: jarMd5 is not 32 hex");
+        }
+        if (agentMd5OrNull != null && !MD5_HEX.matcher(agentMd5OrNull).matches()) {
+            throw new IllegalArgumentException("kit manifest: agentMd5 is not 32 hex");
         }
         if (stamp == null || !STAMP.matcher(stamp).matches()) {
             throw new IllegalArgumentException("kit manifest: the stamp is not yyyyMMdd-HHmmss");
@@ -198,6 +221,7 @@ public final class KitPackRules {
         requirePrintable("gameVersion", gameVersion);
         return "kitStamp=" + stamp + CRLF
                 + "jarMd5=" + jarMd5.toUpperCase(Locale.ROOT) + CRLF
+                + (agentMd5OrNull == null ? "" : "agentMd5=" + agentMd5OrNull.toUpperCase(Locale.ROOT) + CRLF)
                 + "modVersion=" + modVersion + CRLF
                 + "gameVersion=" + gameVersion + CRLF
                 + "source=kit" + CRLF;
@@ -330,6 +354,9 @@ public final class KitPackRules {
 
             - Enter opens chat and `/help` lists commands and keys. Your mic is used only with "Enable microphone" (join window) or "Mic" (`/settings`) ON. Hold "B" for global voice chat and "Space" for local (proximity) voice chat. Voice settings are under `/settings`.
             - Spotted a potential bug? Press F9: the logs mark the moment, your ship shows "BUG MARKED IN LOG #1" (then #2 ...), the server gets only the number and time. Send the host the report zip from your Desktop (marks are in its `cc-client.log`) and say what you saw.
+            - Set your keys in Starsector's Controls before the match: a key rebound during a match counts on the server only from your next join. A ship control bound to a key combination (Ctrl, Alt or Shift plus a key) or to the mouse wheel works only on your screen. Keys you type with no text box open, or into a mod's typing box that pauses the game (Console Commands), reach the server as held ship keys.
+            - Mods with LunaLib settings use the host's values during a match; yours come back after it.
+            - When `join-cc.bat` starts the kit's own Java and the host leaves it on, your game runs other pilots' ship mod scripts from their ship-control keys; the last row under [If something goes wrong](#if-something-goes-wrong) turns that off.
 
             ## After the game closes
 
@@ -351,9 +378,11 @@ public final class KitPackRules {
             - Wrong match password: paste the code again or type it as announced.
             - NO MATCH YET: the host's server must be running; run `join-cc.bat` again and press "Refresh".
             - "Launch failed: Could not save the server's match as `match.txt`": your Windows account likely cannot write to the Starsector folder; a Starsector install outside `Program Files` (e.g. `C:\\Games\\Starsector`) avoids this.
+            - "Launch failed: Could not save the server's mod settings as luna-settings.txt": same cause and fix as match.txt above.
             - Tab gone or "join window not answering": run `join-cc.bat` again and use the tab it reopens; close the new black window ("Launch cancelled"), keep the first.
             - No page in the browser: a plain window opens after about 45 seconds.
-            - "Error in sound initialization" only via `join-cc.bat`: the kit checks and repairs the launch itself; the report zip carries the result - send it to the host.""";
+            - "Error in sound initialization" only via `join-cc.bat`: the kit checks and repairs the launch itself; the report zip carries the result - send it to the host.
+            - The game stops with an error naming a class of one of your mods (while loading or in a match), only via `join-cc.bat` on the kit's own Java: press Q in the black window, create an empty file named exactly `cc-compat-agent.pilot.off` (no `.txt` ending) in `mods\\CC_Client\\jars`, then run `join-cc.bat` again; your game then runs other pilots' ship mod scripts without their keys (a NOTE line says so). Tell the host which mod it was.""";
 
     /** The bundled-runtime section's heading (present only when the kit carries {@code jre-cc}). */
     private static final String JRE_HEADING = "## This kit brings its own Java";
@@ -399,6 +428,7 @@ public final class KitPackRules {
 
             - `%LOCALAPPDATA%\\cc-starsector\\`: `join-settings.properties` (address, port, pilot name, ship, report tick, the match password in plain text; delete it to make the window forget), `cid-master` (player id), `join-window.log` (no password), an address file in `join\\`, short-lived launch files (two hold the password and player id) and a sound-library copy.
             - `mods\\CC_Client\\match.txt` (the match, saved on Launch).
+            - mods\\CC_Client\\luna-settings.txt (the server's mod settings, saved on Launch).
             - `saves\\common\\`: `cc_mods` (links to your mods, not copies, plus one for this kit and an `enabled_mods.json`), `cc_variants` (your ship builds, cached server builds and lists), `cc_client_settings.data` (voice and HUD settings, mic name), `cc_editor_endpoint.data` (how the join window finds the ship editor).
             - `starsector-core\\`: `cc-client.log`, `cc-client.log.1` and, after a crash, `hs_err_pid*.log` and `replay_pid*.log` (both: server address, port, pilot name, file id; no password; never in the report).
             - `%USERPROFILE%\\`: `.cc-starsector-window-*.properties` (the game window's position when you play in a window; its name can show your pilot name).

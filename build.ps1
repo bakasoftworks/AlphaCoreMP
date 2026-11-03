@@ -251,6 +251,42 @@ try {
 if ($shaded -lt 30) { throw "server premain: only $shaded ASM class(es) in $asmJar (a different jar layout?)" }
 Write-Host "server premain: $($premainSources.Count) sources + $shaded ASM classes -> server/premain/classes"
 
+# 3c. compat-agent: the kit's own -javaagent (a premain and its private class loader), compiled against the JDK alone
+# (-cp = its own still-empty output folder, so neither ASM nor the compat classes resolve on the system path); then its
+# private tree under META-INF/cc-compat/classes: the same ASM classes and the compat unit's magic package. The kit's
+# join-cc.bat passes the jar on its bundled start; step 10 puts it beside the mod jar.
+$compatAgent = Join-Path $server 'compat-agent'
+$compatAgentClasses = Join-Path $compatAgent 'classes'
+Reset-Dir $compatAgentClasses
+$compatAgentSources = @(Get-ChildItem -LiteralPath (Join-Path $compatAgent 'src') -Recurse -Filter '*.java')
+Invoke-Javac 'server compat-agent' $javac @('--release', '17', '-cp', $compatAgentClasses, '-d', $compatAgentClasses) @($compatAgentSources.FullName)
+$compatAgentPrivate = Join-Path $compatAgentClasses 'META-INF/cc-compat/classes'
+New-Item -ItemType Directory -Force -Path $compatAgentPrivate | Out-Null
+$zip = [IO.Compression.ZipFile]::OpenRead($asmJar)
+$agentShaded = 0
+try {
+    foreach ($entry in $zip.Entries) {
+        if ($entry.FullName.EndsWith('/')) { continue }
+        if ($entry.FullName -notlike 'org/objectweb/asm/*.class') { continue }
+        $dest = Join-Path $compatAgentPrivate ($entry.FullName.Replace('/', $dirSep))
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
+        [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+        $agentShaded++
+    }
+} finally { $zip.Dispose() }
+if ($agentShaded -lt 30) { throw "server compat-agent: only $agentShaded ASM class(es) in $asmJar (a different jar layout?)" }
+$compatMagic = Join-Path $compatClasses 'cc/starsector/compat/magic'
+if (-not (Test-Path -LiteralPath (Join-Path $compatMagic 'MagicSeamAgentTransformer.class'))) { throw "server compat-agent: the compat unit did not emit cc/starsector/compat/magic/MagicSeamAgentTransformer.class under $compatClasses" }
+$privateCompat = Join-Path $compatAgentPrivate 'cc/starsector/compat'
+New-Item -ItemType Directory -Force -Path $privateCompat | Out-Null
+Copy-Item -LiteralPath $compatMagic -Destination $privateCompat -Recurse -Force
+# the premain's second transformer (the replica pilot pass) lives in the pilotship package: copied like magic, else
+# it fails at load behind the private loader (the home build copies the same two packages)
+$compatPilot = Join-Path $compatClasses 'cc/starsector/compat/pilotship'
+if (-not (Test-Path -LiteralPath (Join-Path $compatPilot 'ReplicaPilotAgentTransformer.class'))) { throw "server compat-agent: the compat unit did not emit cc/starsector/compat/pilotship/ReplicaPilotAgentTransformer.class under $compatClasses" }
+Copy-Item -LiteralPath $compatPilot -Destination $privateCompat -Recurse -Force
+Write-Host "server compat-agent: $($compatAgentSources.Count) sources + $agentShaded ASM classes + the compat magic + pilotship packages -> server/compat-agent/classes"
+
 # 4. the two agent-side jars. cc-premain.jar = the agent + ASM + the product unit's transform package (the registry
 # classes the agent reads) + the compat unit; cc-rngpin-holder.jar = the product unit's rngpin package alone.
 $premainJar = Join-Path $premain 'cc-premain.jar'
@@ -260,7 +296,11 @@ foreach ($j in @($premainJar, $holderJar)) { if (Test-Path -LiteralPath $j) { Re
 Assert-Exit 'cc-premain.jar'
 & $jar --create --file $holderJar -C $classes cc/starsector/server/rngpin
 Assert-Exit 'cc-rngpin-holder.jar'
-Write-Host 'server jars: server/premain/cc-premain.jar, server/premain/cc-rngpin-holder.jar'
+$compatAgentJar = Join-Path $compatAgent 'cc-compat-agent.jar'
+if (Test-Path -LiteralPath $compatAgentJar) { Remove-Item -LiteralPath $compatAgentJar -Force }
+& $jar --create --file $compatAgentJar --manifest (Join-Path $compatAgent 'MANIFEST.MF') -C $compatAgentClasses .
+Assert-Exit 'cc-compat-agent.jar'
+Write-Host 'server jars: server/premain/cc-premain.jar, server/premain/cc-rngpin-holder.jar, server/compat-agent/cc-compat-agent.jar'
 
 # 4b. -ServerFolder / -Package: the package folder writer in this build's own classes lays the folder out (it refuses,
 # naming why and changing nothing, on a folder that is not empty and was not made by it, a running server, or a zip that
@@ -369,6 +409,12 @@ $fold = @(
     'cc\starsector\server\runtime\MatchDocFrameCodec$Chunk.class',
     'cc\starsector\server\runtime\MatchDocFrameCodec$Decoded.class',
     'cc\starsector\server\runtime\MatchDocFrameCodec$Reassembler.class',
+    # the codec's document kinds + the shared LunaSettings sheet codec and exclusion table (nested classes named)
+    'cc\starsector\server\runtime\MatchDocFrameCodec$Kind.class',
+    'cc\starsector\server\runtime\LunaSheetCodec.class',
+    'cc\starsector\server\runtime\LunaSheetCodec$Row.class',
+    'cc\starsector\server\runtime\LunaSheetCodec$Decoded.class',
+    'cc\starsector\server\runtime\LunaSyncExclusions.class',
     'cc\starsector\server\match\ContentFingerprints.class',
     'cc\starsector\server\match\ContentFingerprintClientSurface.class',
     'cc\starsector\server\runtime\IdTables.class',
@@ -424,6 +470,10 @@ if (Test-Path -LiteralPath $modJar) { Remove-Item -LiteralPath $modJar -Force }
 & $jar --create --date 2026-01-01T00:00:00Z --file $modJar -C $out .
 Assert-Exit 'cc-client-mod.jar'
 Write-Host 'client jar: client-mod/mod/jars/cc-client-mod.jar'
+# 10a. the kit's compat agent jar (3c.) beside the mod jar: join-cc.bat's bundled start passes it as -javaagent, and the
+# kit packer reads it from here.
+Copy-Item -LiteralPath $compatAgentJar -Destination (Join-Path $jarsDir 'cc-compat-agent.jar') -Force
+Write-Host 'kit agent: client-mod/mod/jars/cc-compat-agent.jar'
 
 # 10b. -KitRuntime: the kit's own Java runtime, in the mod folder so a kit packed from it (11.) carries it and so does a
 # copy of client-mod/mod. client-mod/kit-runtime.ps1 holds the module list, the jlink flags, the Temurin check and the
@@ -513,9 +563,9 @@ function Add-KitRuntimeNotices([System.Collections.Generic.List[string]] $L, [st
     $L.Add("           (copied from $leaf\NOTICE, the runtime's own notice file)")
     $L.Add("  The runtime's licence texts, and those of the parts it includes, are in")
     $L.Add("  $leaf\legal\ (one folder per module, $($legalFiles.Count) files).")
-    $L.Add("  Source code: $vendor keeps the source code of this runtime build; we host")
-    $L.Add("  no copy of it. These rows, copied from the build's own release file, point to")
-    $L.Add('  where it is kept:')
+    $L.Add("  Source code: $vendor keeps the source code of this runtime build; no copy")
+    $L.Add("  of it is hosted in this package or repository. These rows, copied from the")
+    $L.Add("  build's own release file, point to where it is kept:")
     $L.AddRange([string[]] $pointer)
     $ms = @(Get-ChildItem -LiteralPath (Join-Path $Image 'bin') -Filter '*.dll' -File -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object {
             $vi = [Diagnostics.FileVersionInfo]::GetVersionInfo($_.FullName); $co = "$($vi.CompanyName)".Trim()

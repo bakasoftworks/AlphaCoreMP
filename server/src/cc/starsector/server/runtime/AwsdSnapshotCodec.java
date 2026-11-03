@@ -111,8 +111,15 @@ public final class AwsdSnapshotCodec {
      * u8 + the v11 always-present cell-section runCount u8 + the v12
      * fighterRatePct u8 after the CR block + the v14 pilotSeat u8 +
      * pilotMask u8 + pilotFlags u8 after fighterRatePct: 68 B
-     * + 12/mount + cell-run bytes). */
+     * + {@link #KEYFRAME_CONTROLS_BYTES} on a flags-bit-1 record + 12/mount + cell-run bytes). */
     public static final int KEYFRAME_BASE_BYTES = 68;
+    /**
+     * v15: the conditional {@code pilotControls} u16 a
+     * KEYFRAME carries right after pilotFlags when flags bit 1 (CONTROLS) is set, and only then.
+     * Required there: a keyframe re-anchors every remote copy, so one that dropped a held control
+     * would replay as a release and a fresh press (a phantom double tap) on every screen.
+     */
+    public static final int KEYFRAME_CONTROLS_BYTES = 2;
     /** Per-mount KEYFRAME bytes. */
     public static final int KEYFRAME_MOUNT_BYTES = 12;
 
@@ -145,8 +152,19 @@ public final class AwsdSnapshotCodec {
      * (no mark) carries mask 0 AND flags 0.
      */
     public static final int EXT_PILOT = 0x01;
+    /**
+     * Ext bit (v15): the hull's {@code pilotControls}
+     * u16 (the pilot's applied held controls), ABSOLUTE, present while it differs from the
+     * anchor's — the triple's own rule, so it repeats until the next keyframe re-anchors and an
+     * absent bit means "the anchor's value". Rides after EXT_PILOT's bytes (ascending bit order).
+     * Its presence is never refused: when a seat leaves its hull the delta carries the triple
+     * with CONTROLS clear AND this bit carrying the fall to 0 — a routine edge a presence rule
+     * would refuse on every screen. The canonical form is checked on the resolved record in
+     * {@link #applyDelta} instead.
+     */
+    public static final int EXT_CONTROLS = 0x02;
     /** Every ext bit this schema defines; any other is refused. */
-    public static final int ALL_EXT_BITS = 0x01;
+    public static final int ALL_EXT_BITS = EXT_PILOT | EXT_CONTROLS;
 
     // Per-section field-mask bits (fields serialize in ascending bit order).
     public static final int POSE_X = 1;
@@ -461,7 +479,8 @@ public final class AwsdSnapshotCodec {
             int extMask,
             int pilotSeat,
             int pilotMask,
-            int pilotFlags) {
+            int pilotFlags,
+            int pilotControls) {
         public AwsdDelta {
             if ((sectionMask & ~ALL_SECTION_BITS) != 0) {
                 throw new IllegalArgumentException(
@@ -484,6 +503,16 @@ public final class AwsdSnapshotCodec {
                 }
             } else if (pilotSeat != 0 || pilotMask != 0 || pilotFlags != 0) {
                 throw new IllegalArgumentException("pilot triple set without EXT_PILOT");
+            }
+            //
+            // v15: only the u16 carriage is a delta-level law; the canonical form against the
+            // triple is a RESOLVED-value check (the triple may live in the anchor).
+            if ((extMask & EXT_CONTROLS) != 0) {
+                if (pilotControls < 0 || pilotControls > 0xFFFF) {
+                    throw new IllegalArgumentException("pilotControls outside u16");
+                }
+            } else if (pilotControls != 0) {
+                throw new IllegalArgumentException("pilotControls set without EXT_CONTROLS");
             }
             if ((poseFieldMask & ~POSE_FIELD_BITS) != 0
                     || (fluxFieldMask & ~FLUX_FIELD_BITS) != 0
@@ -810,6 +839,7 @@ public final class AwsdSnapshotCodec {
                 maneuver.pilotSeat(),
                 maneuver.pilotMask(),
                 maneuver.pilotFlags(),
+                maneuver.pilotControls(),
                 qMounts);
     }
 
@@ -857,7 +887,8 @@ public final class AwsdSnapshotCodec {
     /** Encode one KEYFRAME record ({@link #KEYFRAME_BASE_BYTES} + 12/mount): the wire field
      * order with the v3 5-B cloak block (state u8 + effectFrac u8 + qCd u16 + ammo u8)
      * between sysAmmoWire and mountCount, then the v6 CR block, the v12 fighterRatePct u8
-     * and the v14 pilot triple (pilotSeat u8 + pilotMask u8 + pilotFlags u8) right before mountCount. This
+     * and the v14 pilot triple (pilotSeat u8 + pilotMask u8 + pilotFlags u8) + the v15 conditional
+     * pilotControls u16 (flags bit 1 records only) right before mountCount. This
      * no-runs signature writes a v11 cell section with runCount 0. */
     public static byte[] encodeKeyframe(AwsdEntityBaseline baseline) {
         return encodeKeyframe(baseline, List.of());
@@ -910,6 +941,12 @@ public final class AwsdSnapshotCodec {
             data.writeByte(baseline.pilotSeat());
             data.writeByte(baseline.pilotMask());
             data.writeByte(baseline.pilotFlags());
+            if ((baseline.pilotFlags() & AwsdEntityBaseline.PILOT_FLAG_CONTROLS_WIRE) != 0) {
+                //
+                // v15: required on a CONTROLS record (a dropped held control would replay as a
+                // release + press); absent otherwise, where the baseline law pins it to 0.
+                data.writeShort(baseline.pilotControls());
+            }
             data.writeByte(baseline.mounts().size());
             for (AwsdEntityBaseline.Mount mount : baseline.mounts()) {
                 data.writeByte(mount.mountIndex());
@@ -1003,9 +1040,13 @@ public final class AwsdSnapshotCodec {
         // v14 ext section: the pilot triple rides ABSOLUTE while it differs from the anchor —
         // so it repeats on every delta until a keyframe re-anchors (a lost datagram never
         // loses the mark), and the edge rides the very tick it happens.
+        //
+        // v15: the held controls follow the same rule on their own bit, so a controls edge costs
+        // 2 B (3 with the extMask byte) without repeating the triple, and vice versa.
         int extMask = maskBit(cur.pilotSeat() != anchor.pilotSeat()
                 || cur.pilotMask() != anchor.pilotMask()
-                || cur.pilotFlags() != anchor.pilotFlags(), EXT_PILOT);
+                || cur.pilotFlags() != anchor.pilotFlags(), EXT_PILOT)
+                | maskBit(cur.pilotControls() != anchor.pilotControls(), EXT_CONTROLS);
         if ((extMask & ~ALL_EXT_BITS) != 0) {
             throw new IllegalArgumentException("extMask carries unknown bits: 0x" + Integer.toHexString(extMask));
         }
@@ -1118,6 +1159,9 @@ public final class AwsdSnapshotCodec {
                     data.writeByte(cur.pilotSeat());
                     data.writeByte(cur.pilotMask());
                     data.writeByte(cur.pilotFlags());
+                }
+                if ((extMask & EXT_CONTROLS) != 0) {
+                    data.writeShort(cur.pilotControls());
                 }
             }
             writeCellSection(data, cellRuns);
@@ -1315,6 +1359,11 @@ public final class AwsdSnapshotCodec {
         int pilotSeat = data.readUnsignedByte();
         int pilotMask = data.readUnsignedByte();
         int pilotFlags = data.readUnsignedByte();
+        //
+        // v15: the u16 is present exactly when flags bit 1 is; the ctor below refuses the
+        // non-canonical shapes (an undefined flags bit included) as a wire fault.
+        int pilotControls = (pilotFlags & AwsdEntityBaseline.PILOT_FLAG_CONTROLS_WIRE) != 0
+                ? data.readUnsignedShort() : 0;
         int mountCount = data.readUnsignedByte();
         List<AwsdEntityBaseline.Mount> mounts = new ArrayList<>(mountCount);
         try {
@@ -1338,7 +1387,7 @@ public final class AwsdSnapshotCodec {
                     maneuverMask, sysStateCode, sysEffectLevel, qSysCd, sysAmmoWire,
                     cloakStateWire, cloakEffectFrac, qCloakCd, cloakAmmoWire,
                     crU8, depHalfSecU16, peakHalfSecU16, fighterRatePct, pilotSeat, pilotMask, pilotFlags,
-                    mounts);
+                    pilotControls, mounts);
         } catch (IllegalArgumentException corrupt) {
             throw new IOException(
                     "AWSD keyframe for entity " + entityId + " failed wire validation", corrupt);
@@ -1469,6 +1518,7 @@ public final class AwsdSnapshotCodec {
         int pilotSeat = 0;
         int pilotMask = 0;
         int pilotFlags = 0;
+        int pilotControls = 0;
         if ((sectionMask & SECTION_EXT) != 0) {
             extMask = data.readUnsignedByte();
             if ((extMask & ~ALL_EXT_BITS) != 0) {
@@ -1486,6 +1536,12 @@ public final class AwsdSnapshotCodec {
                             + Integer.toHexString(pilotMask) + " flags 0x" + Integer.toHexString(pilotFlags));
                 }
             }
+            if ((extMask & EXT_CONTROLS) != 0) {
+                //
+                // v15: ABSOLUTE u16. No check against the flags here — they may live in the
+                // anchor; applyDelta refuses a non-canonical RESOLVED record per record.
+                pilotControls = data.readUnsignedShort();
+            }
         }
         return new AwsdDelta(
                 sectionMask,
@@ -1498,7 +1554,7 @@ public final class AwsdSnapshotCodec {
                 engineFieldMask, engineDisabledMask, enginePermDisabledMask, engineControllerState,
                 maneuverMask,
                 sysFieldMask, sysStateCode, sysEffectLevel, sysCdSteps, sysAmmoWire,
-                extMask, pilotSeat, pilotMask, pilotFlags);
+                extMask, pilotSeat, pilotMask, pilotFlags, pilotControls);
     }
 
     // ------------------------------------------------------------------ apply/resolve
@@ -1508,8 +1564,9 @@ public final class AwsdSnapshotCodec {
      * state (same epoch/anchorTick — the result is derived state, never a new anchor;
      * the anchor itself only moves on the next KEYFRAME). Throws
      * {@code IllegalArgumentException} on an entity or epoch mismatch — the D5 drop
-     * signal a client turns into hold-last + NACK, and on a dirty mount index absent
-     * from the anchor roster (roster changes always ride a keyframe).
+     * signal a client turns into hold-last + NACK, on a dirty mount index absent
+     * from the anchor roster (roster changes always ride a keyframe), and on a resolved
+     * pilot mark outside its canonical form (v15: e.g. held controls with flags bit 1 clear).
      */
     public static AwsdEntityBaseline applyDelta(AwsdRecord record, AwsdEntityBaseline anchor) {
         Objects.requireNonNull(record, "record");
@@ -1565,6 +1622,7 @@ public final class AwsdSnapshotCodec {
         boolean engine = (sectionMask & SECTION_ENGINE) != 0;
         boolean system = (sectionMask & SECTION_SYSTEM) != 0;
         boolean pilot = (sectionMask & SECTION_EXT) != 0 && (delta.extMask() & EXT_PILOT) != 0;
+        boolean controls = (sectionMask & SECTION_EXT) != 0 && (delta.extMask() & EXT_CONTROLS) != 0;
         return new AwsdEntityBaseline(
                 anchor.entityId(),
                 anchor.epoch(),
@@ -1632,6 +1690,11 @@ public final class AwsdSnapshotCodec {
                 pilot ? delta.pilotSeat() : anchor.pilotSeat(),
                 pilot ? delta.pilotMask() : anchor.pilotMask(),
                 pilot ? delta.pilotFlags() : anchor.pilotFlags(),
+                //
+                // v15 held controls: the same ABSOLUTE / hold-last rule on EXT_CONTROLS. The
+                // baseline ctor checks the mark's canonical form on these RESOLVED values, so a
+                // delta that resolves to a refused shape throws here = the per-record drop.
+                controls ? delta.pilotControls() : anchor.pilotControls(),
                 mounts);
     }
 
@@ -1716,11 +1779,11 @@ public final class AwsdSnapshotCodec {
                 baseline.engineControllerState());
     }
 
-    /** Mint the maneuver-command tier, with the v14 pilot triple. */
+    /** Mint the maneuver-command tier, with the v14 pilot triple and the v15 held controls. */
     public static ShipManeuverCommandSnapshot resolveManeuver(AwsdEntityBaseline baseline) {
         Objects.requireNonNull(baseline, "baseline");
         return ShipManeuverCommandSnapshot.fromWire(baseline.entityId(), baseline.maneuverMask(),
-                baseline.pilotSeat(), baseline.pilotMask(), baseline.pilotFlags());
+                baseline.pilotSeat(), baseline.pilotMask(), baseline.pilotFlags(), baseline.pilotControls());
     }
 
     /**

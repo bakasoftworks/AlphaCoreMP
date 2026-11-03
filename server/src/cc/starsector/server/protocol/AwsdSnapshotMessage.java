@@ -23,6 +23,19 @@ public final class AwsdSnapshotMessage {
 
     public static final String MESSAGE_ID = "server.world_snapshot.awsd_delta_keyframe";
     /**
+     * v15 = the pilot's held controls: a u16
+     * {@code pilotControls} beside the triple (bit i = the pilot holds their own binding of the
+     * i-th ship control; never a raw key code). KEYFRAME: the u16 follows pilotFlags ONLY when
+     * flags bit 1 (CONTROLS) is set (68 B base, 70 B on such records) - required there, because a
+     * keyframe that reset a held control would fake a release and a fresh press on every remote
+     * screen. DELTA: ext bit EXT_CONTROLS = 0x02 carries the u16 ABSOLUTE while it differs from
+     * the anchor's (+2 B, +1 extMask byte when EXT_PILOT does not ride; hold-last otherwise).
+     * The flags byte now defines bits 0..2 (FOLLOW, CONTROLS, REPLICA_FOLLOW) and refuses 3..7.
+     * Canonical form, refused on the RESOLVED values (never on whether EXT_CONTROLS is present,
+     * since a seat leaving its hull legitimately rides a triple change with the controls held at
+     * the anchor's): seat 0 carries mask, flags and controls 0; flags bit 1 clear carries
+     * controls 0; bit 2 needs bit 1. A refused keyframe fails its frame; a refused delta is the
+     * per-record drop (hold-last, re-key request).
      * v14 = the pilot triple:
      *the serve's per-hull pilot mark (u8 pilotSeat, 0 = no
      * mark, seats 1..255; u8 pilotMask = the applied ability bits, slot k = bit k; u8 pilotFlags,
@@ -89,7 +102,7 @@ public final class AwsdSnapshotMessage {
      * migrated (v2/v3 DID ship; their retirement is the same one-kit law, recorded
      * at the golden contract).
      */
-    public static final int SCHEMA_VERSION = 14;
+    public static final int SCHEMA_VERSION = 15;
     public static final String CODEC_OWNER = "server.protocol.awsd_snapshot.codec";
     public static final String VALIDATION_OWNER = "server.protocol.awsd_snapshot.validation";
     /**
@@ -99,7 +112,7 @@ public final class AwsdSnapshotMessage {
      */
     public static final String RELEVANCE_RULE_ID = "awsd_snapshot.owner_visibility_scoped";
     public static final String COMPATIBILITY_PREDICATE_ID =
-            "awsd_snapshot_schema_v14_delta_keyframe_compatible";
+            "awsd_snapshot_schema_v15_delta_keyframe_compatible";
     public static final String FAILURE_CODE = "AWSD_SNAPSHOT_PROTOCOL_REJECTED";
     public static final ProtocolDataClass DATA_CLASS = ProtocolDataClass.REPLACEABLE_SNAPSHOT;
 

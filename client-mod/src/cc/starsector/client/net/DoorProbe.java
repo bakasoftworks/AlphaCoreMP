@@ -24,6 +24,7 @@ import cc.starsector.server.runtime.DatagramFrameCodec;
 import cc.starsector.server.runtime.Handshake13;
 import cc.starsector.server.runtime.Handshake13Flight;
 import cc.starsector.server.runtime.Handshake13PairBudget;
+import cc.starsector.server.runtime.LunaSheetCodec;
 import cc.starsector.server.runtime.MatchDocFrameCodec;
 
 /**
@@ -250,12 +251,30 @@ public final class DoorProbe {
          *
          */
         public final Map<String, String> hulls;
+        /**
+         * The server's LunaSettings sheet: its canonical text when the reply announced one AND its chunks opened,
+         * decoded, and matched the announced row count and digest; else null ({@link #lunaStatus} says why). The
+         * window stages it beside the match file; nothing here applies it.
+         *
+         */
+        public final String lunaText;
+        /**
+         * What the reply's settings sheet came to: {@code ok} (the text is on {@link #lunaText}), {@code none} (the
+         * server announced no sheet and sent none), or {@code refused:<class>} — {@code incomplete} (announced but
+         * not all chunks arrived, or the announce row itself was lost), {@code announce} (a missing or malformed
+         * announce row, or chunks the announce disowns), {@code count}, {@code digest}, {@code inflate},
+         * {@code utf8}, or the sheet codec's own class word. Null on an outcome no collector judged (not served, or
+         * built by a factory). A lost chunk never reads {@code none}.
+         */
+        public final String lunaStatus;
 
         private Result(List<String> ids, int hidden, int totalAvailable, String defaultId,
                 String rejectReason, String error, List<ModRow> mods, int modsAvailable,
                 boolean modsComplete, boolean listRefused, boolean localRefusal,
                 String matchDocText, boolean sawDocument, String matchDocRefusal,
-                Map<String, String> names, Map<String, String> hulls) {
+                Map<String, String> names, Map<String, String> hulls, String lunaText, String lunaStatus) {
+            this.lunaText = lunaText;
+            this.lunaStatus = lunaStatus;
             this.names = Collections.unmodifiableMap(new LinkedHashMap<>(names));
             this.hulls = Collections.unmodifiableMap(new LinkedHashMap<>(hulls));
             this.listRefused = listRefused;
@@ -298,35 +317,44 @@ public final class DoorProbe {
                 String defaultId, List<ModRow> mods, int modsAvailable, boolean modsComplete,
                 Map<String, String> names, Map<String, String> hulls) {
             return new Result(ids, hidden, totalAvailable, defaultId, null, null, mods,
-                    modsAvailable, modsComplete, false, false, null, false, null, names, hulls);
+                    modsAvailable, modsComplete, false, false, null, false, null, names, hulls, null, null);
         }
 
         public static Result rejected(String reason) {
             return new Result(List.of(), 0, 0, null, reason, null, List.of(), 0, true, false, false,
-                    null, false, null, Map.of(), Map.of());
+                    null, false, null, Map.of(), Map.of(), null, null);
         }
 
         public static Result failed(String error) {
             return new Result(List.of(), 0, 0, null, null, error, List.of(), 0, true, false, false,
-                    null, false, null, Map.of(), Map.of());
+                    null, false, null, Map.of(), Map.of(), null, null);
         }
 
         /** A {@link #failed} whose cause is the listing itself ({@link #listRefused}). */
         public static Result listRefused(String error) {
             return new Result(List.of(), 0, 0, null, null, error, List.of(), 0, true, true, false,
-                    null, false, null, Map.of(), Map.of());
+                    null, false, null, Map.of(), Map.of(), null, null);
         }
 
         /** A {@link #failed} whose cause is this build's own un-sendable request ({@link #localRefusal}). */
         public static Result localRefusal(String error) {
             return new Result(List.of(), 0, 0, null, null, error, List.of(), 0, true, false, true,
-                    null, false, null, Map.of(), Map.of());
+                    null, false, null, Map.of(), Map.of(), null, null);
         }
 
         /** This outcome with the fetch's document state attached (the collector's one call; every other field kept). */
         public Result withDocument(String text, boolean saw, String refusal) {
             return new Result(ids, hidden, totalAvailable, defaultId, rejectReason, error, mods,
-                    modsAvailable, modsComplete, listRefused, localRefusal, text, saw, refusal, names, hulls);
+                    modsAvailable, modsComplete, listRefused, localRefusal, text, saw, refusal, names, hulls,
+                    lunaText, lunaStatus);
+        }
+
+        /** This outcome with the reply's settings-sheet state attached ({@link #lunaText}, {@link #lunaStatus}); every
+         *  other field kept. */
+        public Result withLuna(String text, String status) {
+            return new Result(ids, hidden, totalAvailable, defaultId, rejectReason, error, mods,
+                    modsAvailable, modsComplete, listRefused, localRefusal, matchDocText, sawDocument,
+                    matchDocRefusal, names, hulls, text, status);
         }
 
         public boolean served() {
@@ -374,6 +402,12 @@ public final class DoorProbe {
      * (counted ignored once there when it is not a listing). Past the listing, while {@link #wantsHold()}, only a
      * document chunk is still taken; {@link #documentResult} turns the held set into the text on the {@link Result}.
      *
+     *
+     * <p>The settings sheet is a second document of its own kind: its own opener ({@link #lunaOpener}) and
+     * reassembler, checked at {@link #result} against the announce row the modset listing carries first (that row is
+     * stripped before the mod rows are built). A seen sheet chunk makes {@link #done()} wait for the announce frame,
+     * and a sheet that is announced or seen but not whole holds like the match document.
+     *
      */
     public static final class Collector {
         private final SocketAddress server;
@@ -394,6 +428,14 @@ public final class DoorProbe {
         private boolean sawDocument;
         private int docDropped;
         private int docChunksHeld;
+        /** The settings sheet's chunks (a second document kind beside DESC, its own reassembler and opener), and
+         *  their counters: the same holder shape as the match document's. */
+        private final MatchDocFrameCodec.Reassembler luna =
+                new MatchDocFrameCodec.Reassembler(MatchDocFrameCodec.Kind.LUNA);
+        private DocumentOpener lunaOpener;
+        private boolean sawLuna;
+        private int lunaDropped;
+        private int lunaChunksHeld;
 
         public Collector(SocketAddress server) {
             this.server = server;
@@ -415,6 +457,12 @@ public final class DoorProbe {
          * decode and is counted ignored there, as a collector that knows no document. */
         public void opener(DocumentOpener o) {
             this.opener = o;
+        }
+
+        /** The settings sheet's opener of the CURRENT try's flight (its LUNA-kind open); null = none, and a sheet
+         *  chunk then falls to the listing decode like any frame no opener takes. */
+        public void lunaOpener(DocumentOpener o) {
+            this.lunaOpener = o;
         }
 
         public boolean offer(SocketAddress from, byte[] data, int length) {
@@ -473,9 +521,18 @@ public final class DoorProbe {
             return done();
         }
 
+        /**
+         * The listing decides: a reject, a protocol break, or every ship frame under the cap. Once a settings-sheet
+         * chunk was seen, the ship frames alone no longer decide: the modset listing's frame 0 (it carries the
+         * sheet's announce row) must be held too, so a lost announce keeps the try listening and the next try
+         * re-probes instead of reading a sheet it cannot check. WHY only then: a reply with no sheet chunk decides
+         * on its ship frames as before, and a missing announce there reads {@code refused:incomplete} at
+         * {@link #result} (never {@code none}).
+         *
+         */
         public boolean done() {
             return rejectReason != null || protocolError != null
-                    || (expected > 0 && frames.size() >= expected);
+                    || (expected > 0 && frames.size() >= expected && (!sawLuna || modFrames.containsKey(0)));
         }
 
         /**
@@ -486,7 +543,25 @@ public final class DoorProbe {
          *
          */
         public boolean wantsHold() {
-            return sawDocument && doc.textTotal() < 0; // -1 until a set completes; no copy of the held bytes
+            // -1 until a set completes; no copy of the held bytes. An
+            // announced settings sheet (or one whose chunk was seen) that is not whole holds the same way
+            return (sawDocument && doc.textTotal() < 0)
+                    || (luna.textTotal() < 0 && (sawLuna || announcedSheet(announce()) != null));
+        }
+
+        /** True when at least one authenticated settings-sheet chunk arrived this fetch, held or dropped. */
+        public boolean sawLuna() {
+            return sawLuna;
+        }
+
+        /** Settings-sheet chunks the reassembler refused. */
+        public int lunaDropped() {
+            return lunaDropped;
+        }
+
+        /** Settings-sheet chunk offers the reassembler held (an identical repeat counts again). */
+        public int lunaChunksHeld() {
+            return lunaChunksHeld;
         }
 
         /** True when at least one authenticated document chunk arrived this fetch, held or dropped. */
@@ -526,26 +601,35 @@ public final class DoorProbe {
             if (bytes == null) {
                 return r.withDocument(null, true, MatchDocumentLaws.REASON_OVERSIZE + " text");
             }
-            String text;
-            try {
-                text = StandardCharsets.UTF_8.newDecoder()
-                        .onMalformedInput(CodingErrorAction.REPORT)
-                        .onUnmappableCharacter(CodingErrorAction.REPORT)
-                        .decode(ByteBuffer.wrap(bytes)).toString();
-            } catch (CharacterCodingException notUtf8) { // the refusal on the Result is its one record
+            String text = strictUtf8OrNull(bytes);
+            if (text == null) { // the refusal on the Result is its one record
                 return r.withDocument(null, true, MatchDocumentLaws.REASON_MALFORMED + " utf8");
             }
             return r.withDocument(text, true, null);
         }
 
-        /** {@code true} = the payload was a document chunk this fetch's opener authenticated (held or dropped, both
-         * counted); {@code false} = not one (no opener, or the opener refused it).
+        /** {@code true} = the payload was a document chunk one of this fetch's openers authenticated (held or
+         * dropped, both counted); {@code false} = not one (no opener, or every opener refused it). The match
+         * document's opener is tried first, then the settings sheet's; the CHUNK's own kind picks the holder.
          *
+         * <p>
          * */
         private boolean offerDocument(byte[] payload) {
             MatchDocFrameCodec.Chunk c = opener == null ? null : opener.openOrNull(payload);
+            if (c == null && lunaOpener != null) {
+                c = lunaOpener.openOrNull(payload);
+            }
             if (c == null) {
                 return false;
+            }
+            if (c.kind() == MatchDocFrameCodec.Kind.LUNA) {
+                sawLuna = true;
+                if (luna.offer(c)) {
+                    lunaChunksHeld++;
+                } else {
+                    lunaDropped++;
+                }
+                return true;
             }
             sawDocument = true;
             if (doc.offer(c)) {
@@ -554,6 +638,71 @@ public final class DoorProbe {
                 docDropped++;
             }
             return true;
+        }
+
+        /**
+         * The announce row's term as this fetch holds it: null = the modset listing's frame 0 never arrived; ""
+         * = frame 0 arrived but its FIRST row is not the announce row; else that row's version label, unparsed.
+         *
+         */
+        private String announce() {
+            ClientListingRecord first = modFrames.get(0);
+            if (first == null) {
+                return null;
+            }
+            List<ClientListingRecord.Entry> rows = first.entries();
+            if (rows.isEmpty() || !LunaSheetCodec.ANNOUNCE_TOKEN.equals(rows.get(0).token())) {
+                return "";
+            }
+            String term = rows.get(0).targetLabel();
+            return term == null ? "" : term;
+        }
+
+        /**
+         * The reply's settings-sheet state on {@code r} (a served outcome): the announce row first (lost = {@code
+         * incomplete}, absent or malformed = {@code announce}; the no-sheet term = {@code none} unless a sheet chunk
+         * arrived anyway), then the held set (not whole = {@code incomplete}), the exact-length inflate, a STRICT
+         * UTF-8 decode, the sheet codec's laws (its class word), the announced row count and the announced digest.
+         * Only a sheet that passed every step reaches {@link Result#lunaText}; a refusal never carries its bytes.
+         *
+         */
+        private Result lunaResult(Result r) {
+            String term = announce();
+            if (term == null) {
+                return r.withLuna(null, LUNA_REFUSED + "incomplete");
+            }
+            if (LunaSheetCodec.NO_SHEET_TERM.equals(term)) {
+                return r.withLuna(null, sawLuna ? LUNA_REFUSED + "announce" : LUNA_NONE);
+            }
+            int count = termCount(term);
+            if (count < 0) {
+                return r.withLuna(null, LUNA_REFUSED + "announce");
+            }
+            byte[] deflated = luna.deflatedOrNull();
+            if (deflated == null) {
+                return r.withLuna(null, LUNA_REFUSED + "incomplete");
+            }
+            byte[] bytes = MatchDocFrameCodec.inflateExact(MatchDocFrameCodec.Kind.LUNA, deflated, luna.textTotal());
+            if (bytes == null) {
+                return r.withLuna(null, LUNA_REFUSED + "inflate");
+            }
+            String text = strictUtf8OrNull(bytes);
+            if (text == null) {
+                return r.withLuna(null, LUNA_REFUSED + "utf8");
+            }
+            LunaSheetCodec.Decoded sheet = LunaSheetCodec.decode(text);
+            if (!sheet.ok()) {
+                String why = sheet.refusal();
+                int space = why.indexOf(' ');
+                return r.withLuna(null, LUNA_REFUSED + (space < 0 ? why : why.substring(0, space)));
+            }
+            if (sheet.rows().size() != count) {
+                return r.withLuna(null, LUNA_REFUSED + "count");
+            }
+            if (!LunaSheetCodec.digest16(text).equals(term.substring(0, term.indexOf(':')))) {
+                return r.withLuna(null, LUNA_REFUSED + "digest");
+            }
+            return r.withLuna(text, LUNA_OK);
         }
 
         /** A datagram past the listing while {@link #wantsHold()}: the same source / envelope / CTRL gate as
@@ -678,12 +827,21 @@ public final class DoorProbe {
             List<ModRow> mods = new ArrayList<>();
             int modsAvailable = 0;
             boolean modsComplete = true;
+            // The settings announce is a reserved row, never a mod: the FIRST
+            // row of frame 0 is skipped here (and counted back into the listing's totals below); a '~' token anywhere
+            // else fails the mod-id law and refuses the whole listing, so no announce row reaches the mod diff
+            String term = announce();
+            boolean announceRow = term != null && !term.isEmpty();
             if (!modFrames.isEmpty()) {
                 ClientListingRecord first = modFrames.firstEntry().getValue();
-                modsAvailable = first.totalAvailable();
+                modsAvailable = first.totalAvailable() - (announceRow ? 1 : 0);
                 int wanted = Math.min(first.seqCount(), MAX_MODSET_FRAMES);
-                for (ClientListingRecord frame : modFrames.values()) {
-                    for (ClientListingRecord.Entry entry : frame.entries()) {
+                for (Map.Entry<Integer, ClientListingRecord> held : modFrames.entrySet()) {
+                    List<ClientListingRecord.Entry> rows = held.getValue().entries();
+                    if (held.getKey() == 0 && announceRow) {
+                        rows = rows.subList(1, rows.size());
+                    }
+                    for (ClientListingRecord.Entry entry : rows) {
                         // The honest serve's own mod-id law
                         // (ModSet.lawfulId == offerable, char for char; the decode law admits <>/=) -
                         // an unlawful id refuses the WHOLE listing, by row index, never echoed.
@@ -695,12 +853,69 @@ public final class DoorProbe {
                                 entry.markCode() == ClientListingReader.MARK_MODSET_OPTIONAL));
                     }
                 }
-                modsComplete = modFrames.size() >= wanted && mods.size() == first.totalEntries()
+                modsComplete = modFrames.size() >= wanted
+                        && mods.size() + (announceRow ? 1 : 0) == first.totalEntries()
                         && first.totalEntries() == first.totalAvailable();
             }
-            return Result.served(ids, hidden,
+            return lunaResult(Result.served(ids, hidden,
                     frames.firstEntry().getValue().totalAvailable(), defaultId, mods, modsAvailable,
-                    modsComplete, names, hulls);
+                    modsComplete, names, hulls));
+        }
+    }
+
+    /** {@link Result#lunaStatus}: the sheet passed every receive law. */
+    public static final String LUNA_OK = "ok";
+    /** {@link Result#lunaStatus}: the server announced no sheet and sent none. */
+    public static final String LUNA_NONE = "none";
+    /** {@link Result#lunaStatus}'s refusal prefix; the class word follows. */
+    public static final String LUNA_REFUSED = "refused:";
+
+    /**
+     * The row count of a lawful announce term {@code <16 lowercase hex>:<count>} (a canonical decimal, 0..
+     * {@link LunaSheetCodec#ROWS_MAX}), else -1 (the no-sheet term included). Pure.
+     *
+     */
+    static int termCount(String term) {
+        if (term == null || term.length() < 18 || term.length() > 20 || term.charAt(16) != ':') {
+            return -1;
+        }
+        for (int i = 0; i < 16; i++) {
+            char ch = term.charAt(i);
+            if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+                return -1;
+            }
+        }
+        String n = term.substring(17);
+        if (n.length() > 1 && n.charAt(0) == '0') {
+            return -1;
+        }
+        int v = 0;
+        for (int i = 0; i < n.length(); i++) {
+            char ch = n.charAt(i);
+            if (ch < '0' || ch > '9') {
+                return -1;
+            }
+            v = v * 10 + (ch - '0');
+        }
+        return v <= LunaSheetCodec.ROWS_MAX ? v : -1;
+    }
+
+    /** {@code term} when it announces a sheet ({@link #termCount} >= 0), else null. */
+    static String announcedSheet(String term) {
+        return termCount(term) >= 0 ? term : null;
+    }
+
+    /** {@code bytes} as STRICT UTF-8 (malformed or unmappable input refused), else null — the caller records the
+     *  refusal once; the match document's decode and the settings sheet's share it.
+     * */
+    static String strictUtf8OrNull(byte[] bytes) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes)).toString();
+        } catch (CharacterCodingException notUtf8) {
+            return null;
         }
     }
 
@@ -769,12 +984,16 @@ public final class DoorProbe {
                     // The document opens under THIS try's live roots only;
                     // the opener is cleared before the abandon zeroes them
                     collector.opener(flight::openDocumentOrNull);
+                    // The settings sheet opens under the same live roots
+                    Handshake13Flight live = flight;
+                    collector.lunaOpener(p -> live.openDocumentOrNull(MatchDocFrameCodec.Kind.LUNA, p));
                     if (held != null) {
                         flight.adoptCookie(held);
                     }
                     listen13(socket, server, packet, flight, collector);
                 } finally {
                     collector.opener(null);
+                    collector.lunaOpener(null);
                     flight.abandon();
                     lastFetch13Flight = flight;
                     Handshake13.Cookie13 unit = flight.heldCookieOrNull();

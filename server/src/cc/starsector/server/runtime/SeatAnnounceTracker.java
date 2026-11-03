@@ -104,10 +104,16 @@ public final class SeatAnnounceTracker {
             NPeerHooks.FlyInResult flyIn, Map<Integer, SeatAnnounce> lastAnnouncedVariantBySeat,
             List<byte[]> roundRosterAppendFrames,
             List<RosterAppendFrameCodec.AppendRow> deferFanOrNull) throws IOException {
+        // A realized-loadout VDEF the roster minted for this fly-in reaches
+        // every live window BEFORE the RAPP row below names it (the one CTRL FIFO keeps the order; a no-op without a
+        // mint). The fielded mark and the join-pick compare key on the STOCK id a realized mint stands for: the
+        // listing and the requested pick name stock ids, so a mint is neither a lost mark nor a pick fallback.
+        RealizedLoadoutLane.flushToDoor(door);
         if (flyIn.variantId() == null) {
             return false;
         }
-        door.recordSeatFieldedVariant(seatId, flyIn.variantId());
+        String fieldedStockId = RealizedLoadoutLane.goalOf(flyIn.variantId());
+        door.recordSeatFieldedVariant(seatId, fieldedStockId);
         // The tracker value is the last announced ROW.
         SeatAnnounce lastAnnounce = lastAnnouncedVariantBySeat.get(seatId);
         String believed = lastAnnounce != null
@@ -120,7 +126,7 @@ public final class SeatAnnounceTracker {
         // duplicate for every other window. One-shot: taken at the seat's first fly-in.
         String requested = door.takeRequestedVariantPickOrNull(seatId);
         boolean requestDiffers = requested != null && !requested.isEmpty()
-                && !requested.equals(flyIn.variantId());
+                && !requested.equals(fieldedStockId);
         if (flyIn.variantId().equals(believed) && !requestDiffers) {
             return false;
         }

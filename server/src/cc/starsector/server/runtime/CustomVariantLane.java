@@ -165,6 +165,18 @@ public final class CustomVariantLane implements PilotIntentDatagramServer.Varian
         default Verdict register(VariantDefinition canonical, boolean overwrite) {
             return register(canonical);
         }
+
+        /**
+         * The REALIZED posture — the same engine pass over a body the server
+         * serialized from its OWN member after a mod hook ran ({@code RealizedLoadoutLane}), never peer text. WHY a
+         * second entry point: such a hook may write a weapon into a built-in slot of the variant (a swap hullmod
+         * rolling the hull's own built-in-type mounts), which the peer tier ({@link #register}) rightly refuses for
+         * a submitted body; the realized body is the engine's own output, so the engine half may accept it there.
+         * The posture is chosen by the CALL SITE, never by the id. Default = the plain pass (fixtures).
+         */
+        default Verdict registerRealized(VariantDefinition canonical) {
+            return register(canonical);
+        }
     }
 
     /** A registrar verdict: {@code reasonToken == null} means ACCEPTED; {@code unusedOp} = the

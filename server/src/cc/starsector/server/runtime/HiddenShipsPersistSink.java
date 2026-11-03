@@ -173,10 +173,13 @@ public final class HiddenShipsPersistSink implements AutoCloseable {
             }
             log.accept("hidden_ships_persisted path=" + file + " ids=" + idLines);
         } catch (IOException | RuntimeException failed) {
-            persistFailed++;
+            // the row lands BEFORE the counter: persistFailed is the done-signal a reader waits on, so the
+            // row must already be logged when it ticks (the contract row hsp-persist-failed-counts raced
+            // the old order: counter seen, row not yet logged)
             log.accept("hidden_ships_persist_failed path=" + file + " err=" + failed.getClass().getName()
                     + ": " + (failed.getMessage() == null ? "" : failed.getMessage())
                     + " (memory stays authoritative; the next hide or show rewrites)");
+            persistFailed++;
         }
     }
 

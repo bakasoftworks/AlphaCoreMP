@@ -31,6 +31,7 @@ import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -97,6 +98,7 @@ public final class KitPackerSelftest {
     private static final String MANIFEST = KitPackRules.MANIFEST_ENTRY;
     private static final String README = KitPackRules.README_ENTRY;
     private static final String JAR_ENTRY = KitPackRules.JAR_ENTRY;
+    private static final String AGENT_ENTRY = KitPackRules.AGENT_ENTRY;
     /** The reproducible write's pinned zip entry time, spelled here (not read off the product) so a moved product constant flips a row. */
     private static final LocalDateTime PINNED_TIME = LocalDateTime.of(2026, 1, 1, 0, 0, 0);
     private static final byte[] JAR = fixtureJar(300, 7);
@@ -142,6 +144,7 @@ public final class KitPackerSelftest {
         row("kit-check-zip", KitPackerSelftest::checkZip);
         row("kit-zip-reproducible", KitPackerSelftest::zipReproducible);
         row("kit-rules-twin", dir -> rulesTwin());
+        row("kit-agent-row", KitPackerSelftest::agentRow);
         row("kit-pack-dir", KitPackerSelftest::packDir);
         row("kit-commit-gate", KitPackerSelftest::commitGate);
         row("kit-ships-every-variant", KitPackerSelftest::shipsEveryVariant);
@@ -519,13 +522,28 @@ public final class KitPackerSelftest {
                 + " - flips if a row, its order, the CRLF or the jarMd5 case moves");
         require(m.split("\r\n", -1).length == 6 && m.replace("\r\n", "").indexOf('\n') < 0
                 && m.replace("\r\n", "").indexOf('\r') < 0, "the manifest is not 5 CRLF rows");
+        // The six-row shape of a kit that ships the agent jar - ONE agentMd5 row,
+        // UPPERCASE, right after jarMd5, every other byte the five-row text's; a null agent = the five-row text itself
+        String agentLower = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+        String measured6 = "kitStamp=20261007-104647\r\njarMd5=982EEC69225C69EA346C43AC0FBE3A19\r\n"
+                + "agentMd5=0F1E2D3C4B5A69788796A5B4C3D2E1F0\r\nmodVersion=0.1.0\r\ngameVersion=0.98a-RC8\r\nsource=kit\r\n";
+        String m6 = KitPackRules.manifestText("982eec69225c69ea346c43ac0fbe3a19", agentLower, "20261007-104647",
+                MOD_VERSION, GAME_VERSION);
+        require(m6.equals(measured6) && m6.length() == 163, "the six-row manifest != the 120 B text plus ONE CRLF row"
+                + " agentMd5=<UPPER> after jarMd5 (163 B) - flips if the agent row moves, keeps the md5's case, or"
+                + " drops its CRLF");
+        require(m.equals(KitPackRules.manifestText("982eec69225c69ea346c43ac0fbe3a19", null, "20261007-104647",
+                MOD_VERSION, GAME_VERSION)), "manifestText with no agent != the five-row text - flips if a kit"
+                + " without the agent jar gets an empty agentMd5 row or another shape");
+        rulesGoldens();
         Map<String, String> rows = new LinkedHashMap<>();
-        for (String row : m.split("\r\n")) {
+        for (String row : m6.split("\r\n")) {
             rows.put(row.substring(0, row.indexOf('=')), row.substring(row.indexOf('=') + 1));
         }
-        require(rows.get("jarMd5").matches("[0-9A-F]{32}"), "the jarMd5 row is not UPPERCASE hex");
+        require(rows.get("jarMd5").matches("[0-9A-F]{32}") && rows.get("agentMd5").matches("[0-9A-F]{32}"),
+                "the jarMd5 / agentMd5 row is not UPPERCASE hex");
         Pattern vguard = Pattern.compile("[0-9A-Za-z][0-9A-Za-z._:-]{0,255}");
-        for (String name : List.of("kitStamp", "jarMd5")) {
+        for (String name : List.of("kitStamp", "jarMd5", "agentMd5")) {
             require(rows.containsKey(name) && vguard.matcher(rows.get(name)).matches(), name + " is missing or fails"
                     + " join-cc.bat's vguard charset - flips if the bat would hard-stop on a fresh kit");
         }
@@ -546,7 +564,18 @@ public final class KitPackerSelftest {
                     + " is renamed or dropped");
         } else {
             System.out.println("NOTE kit-rules-twin: client-mod/mod/join-cc.bat is not under the cwd - the bat's row"
-                    + " names were checked against the fixed pair (kitStamp, jarMd5) only");
+                    + " names were checked against the fixed rows (kitStamp, jarMd5, agentMd5) only");
+        }
+        for (String badAgent : List.of("xyz", "0f1e2d3c4b5a69788796a5b4c3d2e1fg", "")) {
+            boolean threw = false;
+            try {
+                KitPackRules.manifestText("982eec69225c69ea346c43ac0fbe3a19", badAgent, "20261007-104647",
+                        MOD_VERSION, GAME_VERSION);
+            } catch (IllegalArgumentException refused) {
+                threw = true;
+            }
+            require(threw, "manifestText accepted agentMd5 '" + badAgent + "' - flips if an agent row the bat's"
+                    + " vguard / md5 compare would choke on (or an empty agentMd5= row) is written");
         }
         for (String[] bad : new String[][] {{"xyz", "20261007-104647", "0.1.0"}, {"982eec69225c69ea346c43ac0fbe3a19",
                 "2026-10-07", "0.1.0"}, {"982eec69225c69ea346c43ac0fbe3a19", "20261007-104647", "0.1\n.0"}}) {
@@ -580,9 +609,12 @@ public final class KitPackerSelftest {
             }
             require(!text.contains(jreHeading) && !text.contains("(Eclipse Temurin"), v + ": a JRE block with no"
                     + " bundled runtime - flips if the null-runtime README stops leaving the JRE section out");
-            require(text.contains("send it to the host.\n\n## Updating the kit\n"), v + ": the no-runtime README does"
-                    + " not hold exactly ONE blank line between the last troubleshooting bullet and the updating"
-                    + " section - flips if the null-runtime composer leaves an empty JRE gap");
+            // The shape, not a bullet's tail - the old literal pinned the sound row, which stopped being the
+            // last troubleshooting bullet when the pilot.off row landed after it (the chain's SUITE red).
+            int updatingAt = text.indexOf("\n## Updating the kit\n");
+            require(updatingAt > 1 && text.charAt(updatingAt - 1) == '\n' && text.charAt(updatingAt - 2) != '\n',
+                    v + ": the no-runtime README does not hold exactly ONE blank line between the last troubleshooting"
+                    + " bullet and the updating section - flips if the null-runtime composer leaves an empty JRE gap");
         }
         require(distinct.size() == 1, "the " + KitPackRules.SessionBlock.values().length + " postures compose "
                 + distinct.size() + " READMEs - flips if a posture's README differs again");
@@ -605,6 +637,92 @@ public final class KitPackerSelftest {
         require("cc-joiner-kit-20261009-171500-match-b.zip".equals(KitPackRules.kitFileName(STAMP, "match-b"))
                 && "match-b".equals(KitPackRules.slugOf("match-b.txt")) && KitPackRules.slugOf("Match.txt") == null,
                 "the kit file name / shape slug grammar moved");
+    }
+
+    /**
+     * The kit-rules fixture's two manifest goldens - the five-row one the roll's pack twin has compared since the
+     * port, and the six-row one of a kit whose stage ships the agent jar - equal manifestText over the fixture's own
+     * inputs (its stamp, the md5 of its jar / agent text, its mod_info versions), read from the cwd like the bat
+     * above; the roll's self-test packs the same inputs through the real pack call and compares the zip to the
+     * same files. Not under the cwd = ONE NOTE line, the in-class texts above still pin both shapes.
+     *
+     */
+    private static void rulesGoldens() throws IOException {
+        Path fx = Paths.get("local", "fixtures", "kit-rules");
+        if (!Files.isRegularFile(fx.resolve("inputs.psd1"))) {
+            System.out.println("NOTE kit-rules-twin: the kit-rules fixture is not under the cwd - its two manifest"
+                    + " goldens were not read (the in-class five- and six-row texts still pin both shapes)");
+            return;
+        }
+        String in = Files.readString(fx.resolve("inputs.psd1"), StandardCharsets.UTF_8);
+        String stamp = psd1Value(in, "Stamp");
+        String jarMd5 = ContentFingerprints.md5Hex(ascii(psd1Value(in, "JarText")));
+        String agentMd5 = ContentFingerprints.md5Hex(ascii(psd1Value(in, "AgentText")));
+        String[] v = KitPackRules.modInfoVersions(psd1Value(in, "ModInfoJson"));
+        require(v != null, "SETUP: the fixture's ModInfoJson carries no version / gameVersion");
+        for (String[] golden : new String[][] {{"kit-manifest.golden.txt", null},
+                {"kit-manifest.agent.golden.txt", agentMd5}}) {
+            byte[] want = Files.readAllBytes(fx.resolve(golden[0]));
+            byte[] got = ascii(KitPackRules.manifestText(jarMd5, golden[1], stamp, v[0], v[1]));
+            require(Arrays.equals(want, got), golden[0] + " != manifestText over the fixture inputs - flips if a"
+                    + " manifest row, its order, its CRLF or an md5's case moves (the five-row golden is re-pinned only"
+                    + " with its byte-exact why)");
+        }
+        String agentRow = "agentMd5=" + agentMd5.toUpperCase(Locale.ROOT) + "\r\n";
+        String five = new String(Files.readAllBytes(fx.resolve("kit-manifest.golden.txt")), StandardCharsets.US_ASCII);
+        String six = new String(Files.readAllBytes(fx.resolve("kit-manifest.agent.golden.txt")), StandardCharsets.US_ASCII);
+        int jarEnd = five.indexOf("\r\n", five.indexOf("jarMd5=")) + 2;
+        require(jarEnd > 1 && six.equals(five.substring(0, jarEnd) + agentRow + five.substring(jarEnd)), "the agent"
+                + " golden is not the five-row golden plus ONE agentMd5 row after jarMd5 - flips if the two goldens"
+                + " fork in any other byte");
+    }
+
+    /** A {@code Key = '<text>'} row of the fixture's psd1 (single-quoted, no embedded quote); throws when absent. */
+    private static String psd1Value(String psd1, String key) {
+        Matcher m = Pattern.compile("(?m)^\\s*" + key + "\\s*=\\s*'([^']*)'").matcher(psd1);
+        if (!m.find()) {
+            throw new SetupFailure("the kit-rules fixture's inputs.psd1 carries no " + key + " = '...' row");
+        }
+        return m.group(1);
+    }
+
+    /**
+     * The agent jar through the REAL pack, both modes: a kit carrying {@code jars/cc-compat-agent.jar} packs a
+     * manifest whose sixth row is {@code agentMd5=} that entry's md5 UPPERCASE right after {@code jarMd5} (the
+     * five-row text with ONE row spliced in, built here without the six-row overload), and ships the entry byte for
+     * byte; {@code kit-repack-roundtrip} pins the five-row text of the fixture without it.
+     *
+     */
+    private static void agentRow(Path dir) throws Exception {
+        Fx f = fx(dir, KitPackRules.SessionBlock.REDACTED_NO_PASSWORD);
+        byte[] agent = fixtureJar(40, 23);
+        try {
+            f.put(AGENT_ENTRY, agent);
+            writeKit(f.kit, f.entries);
+        } catch (IOException e) {
+            throw new SetupFailure("the agent fixture kit did not stage (" + e.getClass().getSimpleName() + ")");
+        }
+        String jarRow = "jarMd5=" + f.jarMd5.toUpperCase(Locale.ROOT) + "\r\n";
+        String five = KitPackRules.manifestText(f.jarMd5, STAMP, MOD_VERSION, GAME_VERSION);
+        require(five.contains(jarRow), "SETUP: the five-row text carries no " + jarRow.trim() + " row");
+        byte[] want = ascii(five.replace(jarRow, jarRow + "agentMd5="
+                + ContentFingerprints.md5Hex(agent).toUpperCase(Locale.ROOT) + "\r\n"));
+        Path zipOut = f.out("match-b");
+        KitPacker.Result z = seen(KitPacker.pack(f.request(f.descB, zipOut)));
+        require(z.ok() && KitPacker.MADE.equals(z.token()), "a zip: re-pack of a kit carrying the agent jar answered "
+                + z.token() + " - flips if the packer refuses a kit for its agent entry");
+        Map<String, byte[]> zk = entries(zipOut);
+        require(Arrays.equals(zk.get(MANIFEST), want), "the zip: re-pack's kit-manifest.txt is not the five rows plus"
+                + " agentMd5=<the agent entry's md5> after jarMd5 - flips if KitPacker stops reading the agent entry"
+                + " into the manifest, or the row moves / keeps the md5 lowercase");
+        require(Arrays.equals(zk.get(AGENT_ENTRY), agent), "the zip: re-pack did not ship the agent entry byte for"
+                + " byte - flips if the packer drops or rewrites the agent jar");
+        Path dirOut = f.out("match-b-dir");
+        KitPacker.Result d = seen(KitPacker.pack(new KitPacker.Request(f.stage, true, f.descB,
+                KitPacker.Posture.REDACT, dirOut, null, STAMP, null, f.game, new ArrayList<>(f.entries.keySet()), 0)));
+        require(d.ok() && Arrays.equals(entries(dirOut).get(MANIFEST), want), "the dir: pack of a stage listing the"
+                + " agent jar answered " + d.token() + " without the agentMd5 row - flips if the roll's stage pack"
+                + " forks from the zip: re-pack on the agent row");
     }
 
     private static void packDir(Path dir) throws Exception {

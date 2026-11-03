@@ -1022,6 +1022,37 @@ public final class ServerOpsCoreSelftest {
                 && modsBothRefusalOrNull("a, b", "c;b").contains("never both"),
                 "modsBothRefusalOrNull: an id in both lists is refused by name, else null");
 
+        // The OFF-OPTIONAL memory row (the kind-memory fix: an unticked
+        // optional mod re-ticked as required because nothing kept its kind) - the optional row's grammar and
+        // surgery (one shared withIdsRow now serves all three Mods rows), parseModsOptional's id law.
+        check(modsOffOptionalRowValue(modsBase) == null && "".equals(modsOffOptionalFieldPrefill(modsBase)),
+                "mods.offOptional absent -> null row, blank prefill");
+        List<String> offOptSet = List.of("# header", "server.portFile=x", "other=2",
+                MODS_OFF_OPTIONAL_COMMENT, MODS_OFF_OPTIONAL_KEY + "=gfx,rubric");
+        check(withModsOffOptionalRow(modsBase, "gfx,rubric").equals(offOptSet),
+                "mods.offOptional write appends marker + row");
+        check(withModsOffOptionalRow(offOptSet, null) == offOptSet,
+                "null off-optional leaves an existing row alone (an Add / rescan never strips it)");
+        check(withModsOffOptionalRow(offOptSet, "").equals(modsBase),
+                "blank off-optional write removes row + marker (back to canonical bytes)");
+        check(withModsOffOptionalRow(List.of(MODS_OFF_OPTIONAL_KEY + "=a", "x=1", MODS_OFF_OPTIONAL_KEY
+                        + "=b"), "c").equals(List.of(MODS_OFF_OPTIONAL_COMMENT, MODS_OFF_OPTIONAL_KEY + "=c", "x=1"))
+                        && "gfx, rubric".equals(modsOffOptionalFieldPrefill(List.of(
+                                MODS_OFF_OPTIONAL_KEY + "=a", MODS_OFF_OPTIONAL_KEY + "= gfx, rubric "))),
+                "mods.offOptional replace-in-place drops shadowed duplicates; prefill trims, last row wins");
+        check(withModsOffOptionalRow(withModsOptionalRow(withModsEnabledRow(modsBase, "a"), "b"), "c").equals(
+                        List.of("# header", "server.portFile=x", "other=2", MODS_ENABLED_COMMENT,
+                                MODS_ENABLED_KEY + "=a", MODS_OPTIONAL_COMMENT, MODS_OPTIONAL_KEY + "=b",
+                                MODS_OFF_OPTIONAL_COMMENT, MODS_OFF_OPTIONAL_KEY + "=c")),
+                "all three mod rows compose in one line list, each under its own marker");
+        String offOptRefusal = thrownMessage(() -> parseModsOffOptional("cc_client"));
+        check("a,b".equals(parseModsOffOptional(" a ; b ")) && "".equals(parseModsOffOptional(null))
+                        && offOptRefusal != null && offOptRefusal.startsWith("off-optional mods: ")
+                        && thrownMessage(() -> parseModsOffOptional("a,a")) != null
+                        && thrownMessage(() -> parseModsOffOptional("bad id!")) != null,
+                "parseModsOffOptional: parseModsOptional's law (canonical join; cc_client / duplicate / unlawful"
+                        + " refused), the refusal names the off-optional list; got " + offOptRefusal);
+
         // InstalledModScan over a temp root - two mod
         // folders (string + object version), one junk folder (no mod_info.json), one malformed
         // mod_info.json (no id: skipped with a System.err line, never a throw), a loose file, an
@@ -1111,6 +1142,7 @@ public final class ServerOpsCoreSelftest {
             System.out.println("InstalledModScan default-roots mirror pin skipped (not run from"
                     + " the repo root)");
         }
+        modsKindMemoryRows(); // The kind-memory rows
 
         // wave-category row editor + LIVE verb minter (the wave-scale /
         // joiner-default idioms: default identity removes row + marker; the LIVE line keeps
@@ -3009,6 +3041,7 @@ public final class ServerOpsCoreSelftest {
         configRngPinsRows(cfgJson);
         configMagicSeamRows(cfgJson);
         configPilotShipRows(cfgJson);
+        configPilotReplicasRows(cfgJson);
 
         // review wf_0eb7945a: non-finite doubles are not JSON — a foreign/hand-edited ops
         // file carrying util_pct=NaN passes the lenient parse, so the raw block must emit
@@ -4445,11 +4478,12 @@ public final class ServerOpsCoreSelftest {
      * default; off while new) right after {@code magicSeam}, before
      * {@code selectedIndex}; over a props file holding
      * {@code pilotship.enabled=true} beside {@code magicseam.enabled=false} it reads {@code "on"} while
-     * {@code magicSeam} still reads {@code "off"}, and over the swapped pair the reverse.
+     * {@code magicSeam} still reads {@code "off"}, and over the swapped pair the reverse. Re-pinned:
+     * {@code pilotReplicas} now follows it, before {@code selectedIndex}.
      */
     private static void configPilotShipRows(String cfgJson) {
         String row = "config-pilotship";
-        check(cfgJson.contains("\"magicSeam\":\"on\",\"pilotShip\":\"on\",\"selectedIndex\":"),
+        check(cfgJson.contains("\"magicSeam\":\"on\",\"pilotShip\":\"on\",\"pilotReplicas\":"),
                 row + ": an absent row serves pilotShip 'on' right after magicSeam (flips if the member is dropped,"
                         + " moved, or an absent row stops reading on, the shipped default)");
         Path dir = rigDir(row, "cc-ops-config-pilotship");
@@ -4466,6 +4500,52 @@ public final class ServerOpsCoreSelftest {
                     row + ": the =true / =false rows serve on / off beside the opposite MagicLib word (flips if the"
                             + " prefill ignores its row, reads the MagicLib row, or the word map inverts); got "
                             + on.substring(0, Math.min(300, on.length())));
+        } finally {
+            rig(row, () -> {
+                Files.deleteIfExists(props);
+                Files.deleteIfExists(dir);
+            });
+        }
+        System.out.println("  PASS " + row);
+    }
+
+    /**
+     * Row {@code config-pilotreplicas} - {@code /api/config}'s replicas
+     * prefill: over the flow props (no {@code pilotship.replicas} row) the member reads {@code "on"} (the serve
+     * reader's fallback) right after {@code pilotShip}, before {@code selectedIndex}; over a props file holding
+     * {@code pilotship.replicas=false} beside {@code pilotship.enabled=true} it reads {@code "off"} while
+     * {@code pilotShip} still reads {@code "on"}, and over the swapped pair the reverse (opposite words side by side, so
+     * a prefill reading the player-ship row flips it). A hand-typed {@code =off} or {@code =No} reads {@code "off"}
+     * too: the serve's loose false set, so a Start from the GUI keeps the host's off.
+     */
+    private static void configPilotReplicasRows(String cfgJson) {
+        String row = "config-pilotreplicas";
+        check(cfgJson.contains("\"pilotShip\":\"on\",\"pilotReplicas\":\"on\",\"selectedIndex\":"),
+                row + ": an absent row serves pilotReplicas 'on' right after pilotShip (flips if the member is dropped,"
+                        + " moved, or an absent row stops reading on, the serve's default)");
+        Path dir = rigDir(row, "cc-ops-config-pilotreplicas");
+        Path props = dir.resolve("cc-server.properties");
+        try {
+            rig(row, () -> Files.writeString(props, OpsMatchRows.PILOT_REPLICAS_KEY + "=false\n"
+                    + OpsMatchRows.PILOT_SHIP_KEY + "=true\n", StandardCharsets.UTF_8));
+            String off = named(row, () -> configJson(props, 50.0));
+            rig(row, () -> Files.writeString(props, OpsMatchRows.PILOT_REPLICAS_KEY + "=true\n"
+                    + OpsMatchRows.PILOT_SHIP_KEY + "=false\n", StandardCharsets.UTF_8));
+            String on = named(row, () -> configJson(props, 50.0));
+            check(off.contains("\"pilotShip\":\"on\",\"pilotReplicas\":\"off\"")
+                            && on.contains("\"pilotShip\":\"off\",\"pilotReplicas\":\"on\""),
+                    row + ": the =false / =true rows serve off / on beside the opposite player-ship word (flips if the"
+                            + " prefill ignores its row, reads the player-ship row, or the word map inverts); got "
+                            + off.substring(0, Math.min(300, off.length())));
+            // A hand-typed loose off serves off through the real config route
+            for (String looseOff : new String[] {"off", "No"}) {
+                rig(row, () -> Files.writeString(props, OpsMatchRows.PILOT_REPLICAS_KEY + "=" + looseOff + "\n"
+                        + OpsMatchRows.PILOT_SHIP_KEY + "=true\n", StandardCharsets.UTF_8));
+                String loose = named(row, () -> configJson(props, 50.0));
+                check(loose.contains("\"pilotShip\":\"on\",\"pilotReplicas\":\"off\""),
+                        row + ": =" + looseOff + " serves pilotReplicas off (flips if the prefill reads the row"
+                                + " stricter than the serve); got " + loose.substring(0, Math.min(300, loose.length())));
+            }
         } finally {
             rig(row, () -> {
                 Files.deleteIfExists(props);
@@ -4685,7 +4765,7 @@ public final class ServerOpsCoreSelftest {
                     + " variants-inbox/) for the variant mint flow"},
             {unbanPickPrompt(3, false), "Ban to lift (3 more not listed - ops-cmd unban):"},
             {unbanPickPrompt(0, false), "Ban to lift:"},
-            {modsRootsTip(repoRoot, false), "the mods.roots row; absent = local/drills;generated/foreign-mods."
+            {modsRootsTip(repoRoot, false), "the mods.roots row; absent = local/drills;../CC_foreign-mods."
                     + " Relative entries resolve under C:\\work\\repo"},
             {shapeHint(false), "writes match.descriptor; a different match means the joiner kit must be"
                     + " re-packed against it before remote players can join"},
@@ -6048,6 +6128,86 @@ public final class ServerOpsCoreSelftest {
         } catch (IOException unexpected) {
             return "IOException: " + unexpected.getMessage();
         }
+    }
+
+    /**
+     * The Mods tab's KIND MEMORY over the real op chain
+     * ({@code OpsConsole.modsEdit} -> {@code withModsEditRows} -> {@code modsJson} = the POST's own composition minus
+     * the file write) on its own temp root: installed {@code alpha_mod} "Alpha" 1.4.0 and {@code zed_mod} "Zed Mod"
+     * 2.0.1, no malformed folder (each op re-scans, so the InstalledModScan fixture's skip-loud folders would print
+     * a {@code [mods-scan]} line per call). WHY (the kind-memory fix): the page rebuilds every row from the console's
+     * answer after each write and re-ticks with the kind its greyed select shows, so an unticked OPTIONAL mod (the
+     * package README's GraphicsLib) came back {@code required} - the serve would then load it.
+     */
+    private static void modsKindMemoryRows() throws IOException {
+        Path base = Files.createTempDirectory("cc-mods-kind");
+        Path root = base.resolve("mods-k");
+        writePkgMod(root.resolve("Alpha"), "{\"id\":\"alpha_mod\",\"name\":\"Alpha\",\"version\":\"1.4.0\"}");
+        writePkgMod(root.resolve("Zed"), "{\"id\":\"zed_mod\",\"name\":\"Zed Mod\",\"version\":\"2.0.1\"}");
+        String rootTok = root.toAbsolutePath().normalize().toString().replace('\\', '/');
+        List<String> lines = List.of("# header", InstalledModScan.MODS_ROOTS_KEY + "=" + rootTok,
+                MODS_ENABLED_KEY + "=zed_mod", MODS_OPTIONAL_KEY + "=alpha_mod,ghost_mod");
+        Path luna = base.resolve("luna-none");
+        String alpha = "\"id\":\"alpha_mod\",\"version\":\"1.4.0\",\"use\":";
+        String zed = "\"id\":\"zed_mod\",\"version\":\"2.0.1\",\"use\":";
+        // (ii) an INSTALLED optional row unticked: its id is remembered and leaves mods.optional
+        OpsConsole.ModsEdit untick = OpsConsole.modsEdit("use", useForm("alpha_mod", "off"), base, lines, null);
+        List<String> off = OpsConsole.withModsEditRows(lines, untick);
+        check(untick.refusal() == null && untick.writes() && "alpha_mod".equals(untick.offOptional())
+                        && "alpha_mod".equals(modsOffOptionalRowValue(off)) && off.contains(MODS_OFF_OPTIONAL_COMMENT)
+                        && "ghost_mod".equals(modsOptionalRowValue(off)) && "zed_mod".equals(modsEnabledRowValue(off)),
+                "mods-kind-untick: use optional->off on an installed row writes mods.offOptional=<id> (marker"
+                        + " above) and drops it from mods.optional (flips if the untick forgets the kind,"
+                        + " the kind-memory law); got " + off);
+        OpsConsole.ModsEdit ghost = OpsConsole.modsEdit("use", useForm("ghost_mod", "off"), base, lines, null);
+        OpsConsole.ModsEdit zedOff = OpsConsole.modsEdit("use", useForm("zed_mod", "off"), base, off, null);
+        check(OpsConsole.modsEdit("use", useForm("alpha_mod", "off"), base, off, null) == OpsConsole.ModsEdit.NONE
+                        && ghost.refusal() == null && ghost.offOptional() == null && "alpha_mod".equals(ghost.optional())
+                        && zedOff.refusal() == null && zedOff.offOptional() == null && "".equals(zedOff.enabled()),
+                "mods-kind-untick-other: an unchanged untick composes nothing; a NOT-installed optional row going"
+                        + " off and a required row going off leave mods.offOptional untouched (null) (flips if a"
+                        + " ghost row or a required kind is remembered as optional)");
+        // (iii) re-tick: the memory id leaves mods.offOptional (row + marker removed), the kind row gets it back
+        OpsConsole.ModsEdit retick = OpsConsole.modsEdit("use", useForm("alpha_mod", "optional"), base, off, null);
+        List<String> back = OpsConsole.withModsEditRows(off, retick);
+        check("".equals(retick.offOptional()) && modsOffOptionalRowValue(back) == null
+                        && !back.contains(MODS_OFF_OPTIONAL_COMMENT)
+                        && "alpha_mod,ghost_mod".equals(modsOptionalRowValue(back))
+                        && "".equals(OpsConsole.modsEdit("use", useForm("alpha_mod", "required"), base, off, null)
+                                .offOptional()),
+                "mods-kind-retick: use off->optional drops the id from mods.offOptional and adds it to"
+                        + " mods.optional; off->required forgets it too (flips if a re-tick leaves a stale memory"
+                        + " id); got " + back);
+        // (iv) Remove forgets the kind; removing a mod the memory never held leaves the row alone
+        OpsConsole.ModsEdit rm = OpsConsole.modsEdit("remove", Map.of("id", List.of("alpha_mod")), base, off, null);
+        check(rm.refusal() == null && "".equals(rm.offOptional())
+                        && modsOffOptionalRowValue(OpsConsole.withModsEditRows(off, rm)) == null
+                        && OpsConsole.modsEdit("remove", Map.of("id", List.of("zed_mod")), base, off, null)
+                                .offOptional() == null
+                        && OpsConsole.modsEdit("rescan", Map.of(), base, off, null) == OpsConsole.ModsEdit.NONE,
+                "mods-kind-remove: remove drops the id from mods.offOptional; a remove of an un-remembered id and"
+                        + " a rescan leave it alone (flips if a removed mod keeps a memory id, or another op"
+                        + " strips the row)");
+        // (v) the JSON row's kind: the live choice while on, else the memory (optional) or required
+        String jsonOff = OpsConsole.modsJson(base, off, true, luna);
+        String jsonZedOff = OpsConsole.modsJson(base, OpsConsole.withModsEditRows(off, zedOff), true, luna);
+        String jsonBack = OpsConsole.modsJson(base, back, true, luna);
+        String jsonStale = OpsConsole.modsJson(base, withModsOffOptionalRow(lines, "zed_mod"), true, luna);
+        check(jsonOff.contains(alpha + "\"off\",\"kind\":\"optional\",")
+                        && jsonOff.contains(zed + "\"required\",\"kind\":\"required\",")
+                        && jsonZedOff.contains(zed + "\"off\",\"kind\":\"required\",")
+                        && jsonZedOff.contains(alpha + "\"off\",\"kind\":\"optional\",")
+                        && jsonBack.contains(alpha + "\"optional\",\"kind\":\"optional\",")
+                        && jsonStale.contains(zed + "\"required\",\"kind\":\"required\","),
+                "mods-kind-json: an off id in mods.offOptional rows \"kind\":\"optional\", an off id not in it"
+                        + " \"kind\":\"required\", an on row its own choice (a stale memory id never overrides a"
+                        + " live row) (flips if the page's greyed select loses the kind); got " + jsonOff + " | "
+                        + jsonZedOff + " | " + jsonBack + " | " + jsonStale);
+    }
+
+    /** An {@code op=use} form for {@link #modsKindMemoryRows}. */
+    private static Map<String, List<String>> useForm(String id, String use) {
+        return Map.of("op", List.of("use"), "id", List.of(id), "use", List.of(use));
     }
 
     /** One row: a failure prints {@code FAIL <what>} and counts into {@link #failures}, then the chain goes on.

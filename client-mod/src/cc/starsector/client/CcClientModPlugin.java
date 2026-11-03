@@ -76,7 +76,9 @@ public class CcClientModPlugin extends BaseModPlugin {
         // game's own ModManagerAPI) the HELLO fingerprint folds beside vtab; the server mints the
         // same set from the launcher's list, so a joiner whose mods differ is refused at the door.
         ClientModSetBoot.snapshotAtApplicationLoad();
+        cc.starsector.client.luna.LunaSyncApply.loadSidecarAtApplicationLoad(); // served LunaLib sheet + link; never throws
         magicSeamAtApplicationLoad();
+        replicaWindowAtApplicationLoad();
         // Watch-socket placement: the legacy faithful-pilot watch
         // socket opens HERE at application load and PilotIntentCombatPlugin only consumes it. The
         // original reason ("combat's SecurityManager denies socket opens") was a misread — the
@@ -269,6 +271,24 @@ public class CcClientModPlugin extends BaseModPlugin {
         PilotWatchLog.info("onApplicationLoad: magic seam MagicLib=" + lib + " define=" + define + " probe=" + probe
                 + " hook=" + hook + " " + adopters + " seam_applied=" + applied
                 + " ms=" + ((System.nanoTime() - t0) / 1_000_000L));
+    }
+
+    /**
+     * The replica-window holder's PRE-TOUCH at application load: its static initializer (the stack and index arrays,
+     * the counters) runs here on the loading thread, never inside a rewritten mod class's first window enter on the
+     * combat thread. Touches no MagicLib class and no engine class beyond the log; never throws; ONE row with
+     * bounded tokens (a boolean, a SimpleName, and the agent receipt's bounded token — the classes the pass had
+     * rewritten by application load; the teardown meter row carries the match-end value).
+     *
+     */
+    private static void replicaWindowAtApplicationLoad() {
+        try {
+            boolean l = cc.starsector.client.replica.ReplicaPilotWindow.latched();
+            PilotWatchLog.info("predict replica-window pre-touch: ok latched=" + l
+                    + " receipt=" + cc.starsector.client.replica.ReplicaPilotWindow.receiptToken());
+        } catch (Throwable t) {
+            PilotWatchLog.info("predict replica-window pre-touch: " + t.getClass().getSimpleName());
+        }
     }
 
     /** Reentrancy guard for {@link #pickWeaponAutofireAI}: the vanilla-acquire below re-invokes

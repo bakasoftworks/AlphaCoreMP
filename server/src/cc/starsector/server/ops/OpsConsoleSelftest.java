@@ -270,6 +270,7 @@ final class OpsConsoleSelftest {
         row(fails, "page-rngpins", () -> rngPinsPageRow(html, js));
         row(fails, "page-magicseam", () -> magicSeamPageRow(html, js));
         row(fails, "page-pilotship", () -> pilotShipPageRow(html, js));
+        row(fails, "page-pilotreplicas", () -> pilotReplicasPageRow(html, js));
         row(fails, "status-magic-line", () -> statusMagicLineRow(html, js));
         row(fails, "status-magic-cell", () -> statusMagicCellRow(html, js));
         row(fails, "status-pilot-line", () -> statusPilotLineRow(html, js));
@@ -547,6 +548,49 @@ final class OpsConsoleSelftest {
             bad.add("#hint-pilot-ship lacks its text (the row it writes)");
         }
         for (String need : List.of("['f-pilot-ship', 'pilotShip']", "pilotShip: CC.el('f-pilot-ship').value")) {
+            if (!js.contains(need)) {
+                bad.add("the script lacks " + need + " (the saved row stops prefilling or Start stops writing it)");
+            }
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /** {@code page-pilotreplicas} - over the SERVED html + js: the replicas
+     * select ({@code setup.mods.pilotReplicas}, on / off with ON selected = the row's absent default, labelled
+     * {@link OpsMatchRows#PILOT_REPLICAS_LABEL}) sits inside {@code #pre-start} right after the player-ship select
+     * (locked while a server runs: the serve reads its config file once and caches it), its hint names the props row,
+     * the player-ship select it needs and the exclude row that holds it off, and has its help row, and it rides the
+     * config prefill list and the Start payload under its own key (a payload sending the word as {@code pilotShip}
+     * would flip the player-ship row instead). */
+    static String pilotReplicasPageRow(String html, String js) {
+        List<String> bad = new ArrayList<>();
+        int pre = html.indexOf("<fieldset id=\"pre-start\"");
+        int preEnd = pre < 0 ? -1 : html.indexOf("</fieldset>", pre);
+        int pilot = html.indexOf("<select id=\"f-pilot-ship\"");
+        int sel = html.indexOf("<select id=\"f-pilot-replicas\" data-cc=\"setup.mods.pilotReplicas\"");
+        if (sel < 0 || pre < 0 || sel < pre || sel > preEnd || pilot < 0 || sel < pilot
+                || html.indexOf("<select", pilot + 1) != sel
+                || !html.startsWith("<option selected>on</option><option>off</option></select>",
+                        html.indexOf('>', sel) + 1)) {
+            bad.add("no replicas select (on selected, off) with its twin id right after the player-ship select inside"
+                    + " #pre-start (flips if it moves out of the boot-time lock group, or stops opening at on)");
+        }
+        if (!html.contains("<label for=\"f-pilot-replicas\">" + OpsMatchRows.PILOT_REPLICAS_LABEL + "</label>")
+                || !html.contains("<dt>" + OpsMatchRows.PILOT_REPLICAS_LABEL
+                        + "</dt><dd data-hint=\"hint-pilot-replicas\"></dd>")) {
+            bad.add("the select's label or its help row drifted from '" + OpsMatchRows.PILOT_REPLICAS_LABEL + "'");
+        }
+        int hint = html.indexOf("<p class=\"hint\" id=\"hint-pilot-replicas\">writes " + OpsMatchRows.PILOT_REPLICAS_KEY
+                + "; on = ");
+        int hintEnd = hint < 0 ? -1 : html.indexOf("</p>", hint);
+        String hintText = hint < 0 || hintEnd < 0 ? "" : html.substring(hint, hintEnd);
+        if (!hintText.contains("needs the select above on") || !hintText.contains("pilotship.exclude")
+                || !hintText.contains("; off = other players see these abilities through the server's corrections")) {
+            bad.add("#hint-pilot-replicas lacks its text (the row it writes, the player-ship select it needs, the"
+                    + " exclude row that holds it off, or the off sentence)");
+        }
+        for (String need : List.of("['f-pilot-replicas', 'pilotReplicas']",
+                "pilotReplicas: CC.el('f-pilot-replicas').value")) {
             if (!js.contains(need)) {
                 bad.add("the script lacks " + need + " (the saved row stops prefilling or Start stops writing it)");
             }
@@ -1073,19 +1117,20 @@ final class OpsConsoleSelftest {
     }
 
     /**
-     * {@code draft-ids-parity} - {@link OpsSetupDraft#DRAFT_IDS} holds 24
-     * ids: 22 of {@link OpsParity#PACKAGE_IDS} and exactly two of {@link OpsParity#PAGE_ONLY_IDS} (the
+     * {@code draft-ids-parity} - {@link OpsSetupDraft#DRAFT_IDS} holds 25
+     * ids: 23 of {@link OpsParity#PACKAGE_IDS} and exactly two of {@link OpsParity#PAGE_ONLY_IDS} (the
      * second game folder and the PvP mode select); none is {@link OpsSetupDraft#NEVER_DRAFTED}; the 4 page-only ids
      * are disjoint from every other parity list, match the page's {@code data-cc} grammar, and the shape's Players pair is
      * not drafted. Re-pinned for the PvP select; re-pinned for the
-     * MagicLib select; re-pinned for the player-ship select.
+     * MagicLib select; re-pinned for the player-ship select; re-pinned
+     * for the replicas select.
      */
     static String draftIdsParityRow() {
         List<String> bad = new ArrayList<>();
         long pkg = OpsSetupDraft.DRAFT_IDS.stream().filter(OpsParity.PACKAGE_IDS::contains).count();
         List<String> pageOnly = OpsSetupDraft.DRAFT_IDS.stream().filter(OpsParity.PAGE_ONLY_IDS::contains)
                 .sorted().toList();
-        if (OpsSetupDraft.DRAFT_IDS.size() != 24 || pkg != 22
+        if (OpsSetupDraft.DRAFT_IDS.size() != 25 || pkg != 23
                 || !pageOnly.equals(List.of("setup.gameRootSecond", "setup.match.pvp"))) {
             bad.add("draft ids " + OpsSetupDraft.DRAFT_IDS.size() + " = package " + pkg + " + page-only " + pageOnly
                     + " (flips if a draft id drifts from the page's parity ids, or the PvP select stops being drafted)");
@@ -1308,6 +1353,7 @@ final class OpsConsoleSelftest {
             row(fails, "web-start-rngpins", () -> startRngPinsRow(rig));
             row(fails, "web-start-magicseam", () -> startMagicSeamRow(rig));
             row(fails, "web-start-pilotship", () -> startPilotShipRow(rig));
+            row(fails, "web-start-pilotreplicas", () -> startPilotReplicasRow(rig));
             row(fails, "web-start-pvp", () -> startPvpRow(rig));
             row(fails, "web-start-descriptor-overcap", () -> startDescriptorOverCapRow(rig));
             row(fails, "web-start-gameroot", () -> startGameRootRow(rig));
@@ -1332,6 +1378,7 @@ final class OpsConsoleSelftest {
             row(fails, "api-verb-keep", () -> apiVerbKeepRow(rig));
             row(fails, "forms-ship-hide", () -> formsShipHideRow(rig));
             row(fails, "api-verb-ship-hide", () -> apiVerbShipHideRow(rig));
+            row(fails, "api-status-ships-row-cap", () -> apiStatusShipsRowCapRow(rig));
             row(fails, "web-kill-confirm", () -> killConfirmRow(rig));
             row(fails, "web-quit-confirm", () -> quitConfirmRow(rig));
             row(fails, "web-kill-single-flight", () -> killSingleFlightRow(rig));
@@ -1340,6 +1387,7 @@ final class OpsConsoleSelftest {
             row(fails, "web-mods-add", () -> modsAddRow(rig));
             row(fails, "web-mods-remove", () -> modsRemoveRow(rig));
             row(fails, "web-mods-use", () -> modsUseRow(rig));
+            row(fails, "web-mods-luna", () -> modsLunaRow(rig));
             row(fails, "web-draft-survives-own-writes", () -> draftSurvivesOwnWritesRow(rig));
             row(fails, "web-draft-settled-by-fill", () -> draftSettledByFillRow(rig));
             row(fails, "web-draft-fill-mints-nothing", () -> draftFillMintsNothingRow(rig));
@@ -4276,6 +4324,89 @@ final class OpsConsoleSelftest {
         return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
     }
 
+    /**
+     * Row {@code api-status-ships-row-cap} - the shipped-ships row bound end
+     * to end: {@link OpsStatusFile#composeLines} writes the ids into the followed status file and the REAL
+     * {@code /api/status} answer over the rig's loopback console reads them back. WHY: the console lists one Hide row
+     * per id it is sent, so (a) 1024 shipped ids of the 64-char worst case (a 66,574-byte row, past a 64 KiB line)
+     * all reach the page, in order, with no over-cap word; (b) one id past {@link OpsStatusFile#SHIP_ID_ROW_CAP} cuts
+     * the row at the bound (the last listed id is the cap's own) and raises the over-cap word; (c) the launcher's
+     * running-serve guard, which reads only the file's head, still finds the live writer's pid in that larger file.
+     * The rig's status file is restored to the seat lines the earlier rows left.
+     */
+    private static String apiStatusShipsRowCapRow(Rig rig) throws Exception {
+        String r = "api-status-ships-row-cap";
+        int floor = 1024; // the measured need, written out: a bound regressed below it (the old 64) flips (a)
+        int cap = OpsStatusFile.SHIP_ID_ROW_CAP;
+        List<String> atFloor = shipCapLines(rig.cmd.toString(), floor);
+        setup(r, () -> Files.write(rig.roots.opsFile(), atFloor, StandardCharsets.UTF_8));
+        long floorBytes = Files.size(rig.roots.opsFile());
+        Resp full = call(rig, "GET", "/api/status", rig.boot.token(), null);
+        long guardPid = ServeLauncher.liveStatusWriter(rig.roots.opsFile(),
+                new PrintStream(OutputStream.nullOutputStream(), true, StandardCharsets.UTF_8));
+        List<String> pastCap = shipCapLines(rig.cmd.toString(), cap + 1);
+        setup(r, () -> Files.write(rig.roots.opsFile(), pastCap, StandardCharsets.UTF_8));
+        Resp cut = call(rig, "GET", "/api/status", rig.boot.token(), null);
+        setup(r, () -> Files.write(rig.roots.opsFile(), keptSeatLines(rig.cmd.toString()), StandardCharsets.UTF_8));
+        List<String> fullIds = statusShipIds(full.body());
+        List<String> cutIds = statusShipIds(cut.body());
+        List<String> bad = new ArrayList<>();
+        List<String> wantFull = new ArrayList<>(floor);
+        for (int i = 0; i < floor; i++) {
+            wantFull.add(capShipId(i));
+        }
+        if (full.code() != 200 || !wantFull.equals(fullIds) || !full.body().contains("\"shipsOverCap\":false")) {
+            bad.add("(a) " + floor + " ids: status " + full.code() + " listed " + fullIds.size() + " over_cap="
+                    + full.body().contains("\"shipsOverCap\":true") + " (flips if the row bound drops below " + floor
+                    + ", a reader cuts a long line, the order changes, or a full row at the bound reads as over cap)");
+        }
+        String lastListed = cutIds.isEmpty() ? "<none>" : cutIds.get(cutIds.size() - 1);
+        if (cut.code() != 200 || cutIds.size() != cap || !capShipId(cap - 1).equals(lastListed)
+                || !cut.body().contains("\"shipsOverCap\":true")) {
+            bad.add("(b) " + (cap + 1) + " ids: status " + cut.code() + " listed " + cutIds.size() + " last "
+                    + PeerText.bound(lastListed, 70) + " over_cap=" + cut.body().contains("\"shipsOverCap\":true")
+                    + " (flips if the row loses its bound or the cut stops raising the over-cap word)");
+        }
+        if (floorBytes <= ServeLauncher.MAX_STATUS_SCAN_BYTES || guardPid != ProcessHandle.current().pid()) {
+            bad.add("(c) a " + floorBytes + "-byte status file: the guard read pid " + guardPid + " (flips if the"
+                    + " plant stops reaching past the guard's head scan, or the pid / stamp rows move after the ships"
+                    + " rows)");
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /** The {@code i}-th 64-char ship id of {@link #apiStatusShipsRowCapRow} (the id law's longest, order-stable). */
+    private static String capShipId(int i) {
+        String head = String.format(Locale.ROOT, "cap_%04d_", i);
+        return head + "x".repeat(64 - head.length());
+    }
+
+    /** A live-stamped run snapshot whose {@code ships.base_ids} source holds {@code ids} of {@link #capShipId}. */
+    private static List<String> shipCapLines(String commandFile, int ids) {
+        List<String> base = new ArrayList<>(ids);
+        for (int i = 0; i < ids; i++) {
+            base.add(capShipId(i));
+        }
+        return OpsStatusFile.composeLines(System.currentTimeMillis(), ProcessHandle.current().pid(), "run",
+                "127.0.0.1", 51337, 7, 1, 2, 2L, 4, 60.0, 12.5, 3.2, 1000L, 500L, 100L, 50L, 0, 0.0, 0L,
+                commandFile, List.of(), new long[0][], PhaseWindowStats.Snapshot.EMPTY, OpsStatusFile.CustomStats.NONE,
+                null, new OpsStatusFile.ShipStats(base, List.of(), false, "", 0L));
+    }
+
+    /** The {@code shipsBaseIds} array of a {@code /api/status} body, unquoted (ids carry no quote or comma). */
+    private static List<String> statusShipIds(String body) {
+        String head = "\"shipsBaseIds\":[";
+        int at = body.indexOf(head);
+        int end = at < 0 ? -1 : body.indexOf(']', at);
+        List<String> ids = new ArrayList<>();
+        if (end > at + head.length()) {
+            for (String quoted : body.substring(at + head.length(), end).split(",")) {
+                ids.add(quoted.length() >= 2 ? quoted.substring(1, quoted.length() - 1) : quoted);
+            }
+        }
+        return ids;
+    }
+
     /** Kill asks Swing's confirm (key {@code kill}, naming the live writer's pid) before the order runs. */
     private static String killConfirmRow(Rig rig) throws Exception {
         AtomicInteger calls = new AtomicInteger();
@@ -5133,6 +5264,123 @@ final class OpsConsoleSelftest {
     }
 
     /**
+     * {@code web-mods-luna} - the Mods tab's LunaSettings host surface over
+     * the REAL route (the rig = a package). Two mods under one searched root, one whose folder holds
+     * {@code data/config/LunaSettings.csv}. (a) GET: {@code "lunaSyncExclude":""} (no row), a {@code settings} key on
+     * every row, the CSV mod's cell = {@code <pkg>/luna-settings/<id>.json.data (defaults)} (no seed file; the folder
+     * and suffix spelled here, not read from the console, so a drift from the launcher's seed folder flips it), the
+     * other's blank. (b) the seed file placed: the bare path. (c) {@code op=exclude} with a lawful list (spaces, a blank
+     * item, a repeat, a colon inside a mod id): ok, the row read back from the props lines = the normalized list and
+     * the answer's {@code lunaSyncExclude} the same. (d) a malformed THIRD item: 400, a Mods refusal naming
+     * {@code item 3} and never the typed text, no line changed; 1025 characters: 400, no line changed. (e) an empty
+     * list: the row and its marker removed (the lines = the staged lines). Props file + seed folder restored after.
+     */
+    private static String modsLunaRow(Rig rig) throws Exception {
+        String r = "web-mods-luna";
+        Path props = rig.roots.config();
+        Path seedDir = rig.roots.pkg().resolve("luna-settings");
+        Path seed = seedDir.resolve("cc_selftest_luna.json.data");
+        byte[][] saved = {null};
+        boolean[] seedDirMade = {false};
+        List<List<String>> staged = new ArrayList<>();
+        setup(r, () -> {
+            saved[0] = Files.readAllBytes(props);
+            Path root = rig.root.resolve("mods-luna").toAbsolutePath().normalize();
+            Path withCsv = stageMod(root.resolve("cc_selftest_luna"), "cc_selftest_luna");
+            Path config = Files.createDirectories(withCsv.resolve("data").resolve("config"));
+            Files.writeString(config.resolve("LunaSettings.csv"), "fieldID,fieldName,fieldType\n", StandardCharsets.UTF_8);
+            stageMod(root.resolve("cc_selftest_plain"), "cc_selftest_plain");
+            Files.write(props, withRows(saved[0], InstalledModScan.MODS_ROOTS_KEY + "=" + root));
+            staged.add(Files.readAllLines(props, StandardCharsets.UTF_8));
+            seedDirMade[0] = !Files.exists(seedDir);
+        });
+        try {
+            List<String> bad = new ArrayList<>();
+            Resp first = call(rig, "GET", "/api/mods", rig.boot.token(), null);
+            String lunaRow = modRowJson(first.body(), "cc_selftest_luna");
+            String plainRow = modRowJson(first.body(), "cc_selftest_plain");
+            String defaults = "\"settings\":\"" + OpsConsoleForms.jsonEscape(seed + " (defaults)") + "\"";
+            if (first.code() != 200 || !first.body().contains("\"lunaSyncExclude\":\"\"")
+                    || occurrences(first.body(), "\"settings\":\"") != occurrences(first.body(), "\"id\":\"")
+                    || lunaRow == null || !lunaRow.endsWith(defaults)
+                    || plainRow == null || !plainRow.endsWith("\"settings\":\"\"")) {
+                bad.add("(a) GET " + first.code() + " " + PeerText.bound(first.body(), 240) + " (flips if the answer"
+                        + " loses lunaSyncExclude or a row its settings key, or the CSV mod's cell stops naming the"
+                        + " package's luna-settings seed with (defaults), or a mod without the CSV gets a cell)");
+            }
+            setup(r, () -> {
+                Files.createDirectories(seedDir);
+                Files.writeString(seed, "{}", StandardCharsets.UTF_8);
+            });
+            Resp placed = call(rig, "GET", "/api/mods", rig.boot.token(), null);
+            String placedRow = modRowJson(placed.body(), "cc_selftest_luna");
+            if (placedRow == null || !placedRow.endsWith("\"settings\":\"" + OpsConsoleForms.jsonEscape(seed.toString())
+                    + "\"")) {
+                bad.add("(b) " + PeerText.bound(String.valueOf(placedRow), 200) + " (flips if a present seed file"
+                        + " still reads (defaults) or the cell names another file)");
+            }
+            String lawful = "cc_selftest_luna:alpha_1 , ,MagicLib:magiclib_x,cc_selftest_luna:alpha_1,a:b:c.d-e";
+            String normal = "cc_selftest_luna:alpha_1,MagicLib:magiclib_x,a:b:c.d-e";
+            Resp save = post(rig, "/api/mods", "op=exclude&lunaSyncExclude=" + enc(lawful));
+            String row = propsRow(props, "luna.sync.exclude");
+            List<String> afterSave = Files.readAllLines(props, StandardCharsets.UTF_8);
+            if (save.code() != 200 || !save.body().startsWith("{\"ok\":true,")
+                    || !save.body().contains("\"lunaSyncExclude\":\"" + normal + "\"") || !normal.equals(row)) {
+                bad.add("(c) " + save.code() + " " + PeerText.bound(save.body(), 160) + " | row "
+                        + (row == null ? "absent" : PeerText.bound(row, 120)) + " (flips if a lawful list is refused,"
+                        + " not written to luna.sync.exclude, not normalized, or split at the wrong colon)");
+            }
+            Resp third = post(rig, "/api/mods", "op=exclude&lunaSyncExclude="
+                    + enc("cc_selftest_luna:alpha_1,,zz bad!item,MagicLib:x"));
+            boolean thirdSilent = afterSave.equals(Files.readAllLines(props, StandardCharsets.UTF_8));
+            Resp longText = post(rig, "/api/mods", "op=exclude&lunaSyncExclude=" + enc("a:" + "b".repeat(1023)));
+            boolean longSilent = afterSave.equals(Files.readAllLines(props, StandardCharsets.UTF_8));
+            if (third.code() != 400 || !third.body().contains("\"title\":\"Mods\"") || !third.body().contains("item 3 ")
+                    || third.body().contains("bad!item") || !thirdSilent
+                    || longText.code() != 400 || !longText.body().contains("\"title\":\"Mods\"") || !longSilent) {
+                bad.add("(d) third " + third.code() + " " + PeerText.bound(third.body(), 160) + " silent " + thirdSilent
+                        + " | long " + longText.code() + " silent " + longSilent + " (flips if a malformed item or an"
+                        + " over-long list is written, answers other than 400, names the wrong position, or echoes"
+                        + " the typed text)");
+            }
+            Resp clear = post(rig, "/api/mods", "op=exclude&lunaSyncExclude=");
+            List<String> afterClear = Files.readAllLines(props, StandardCharsets.UTF_8);
+            if (clear.code() != 200 || !clear.body().contains("\"lunaSyncExclude\":\"\"")
+                    || !afterClear.equals(staged.get(0))) {
+                bad.add("(e) " + clear.code() + " " + PeerText.bound(clear.body(), 120) + " | " + afterClear.size()
+                        + " lines vs staged " + staged.get(0).size() + " (flips if an empty list leaves the row or"
+                        + " its marker behind)");
+            }
+            return bad.isEmpty() ? null : String.join(" | ", bad);
+        } finally {
+            Files.deleteIfExists(seed);
+            if (seedDirMade[0]) {
+                Files.deleteIfExists(seedDir);
+            }
+            if (saved[0] != null) {
+                Files.write(props, saved[0]);
+            }
+        }
+    }
+
+    /** One Mods answer row's JSON from its {@code "id"} key to the row's
+     * closing brace (exclusive), or null when the id is not listed. */
+    private static String modRowJson(String body, String id) {
+        int at = body.indexOf("\"id\":\"" + id + "\"");
+        int end = at < 0 ? -1 : body.indexOf('}', at);
+        return end < 0 ? null : body.substring(at, end);
+    }
+
+    /** How many times {@code needle} (non-empty) occurs in {@code text}. */
+    private static int occurrences(String text, String needle) {
+        int n = 0;
+        for (int at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length())) {
+            n++;
+        }
+        return n;
+    }
+
+    /**
      * {@code web-draft-survives-own-writes} - the console's OWN writes of the
      * two config files re-stamp the unsaved Setup draft instead of dropping it (a load drops a draft whose base is
      * older than the newer config file, which must stay a hand edit's privilege). Both files' times are set 10 s back
@@ -5776,6 +6024,87 @@ final class OpsConsoleSelftest {
                     + " slot, or the two slots are crossed)");
         }
         if (!config1.body().contains("\"pilotShip\":\"on\"")) {
+            bad.add("config after " + PeerText.bound(config1.body(), 80) + " (the written row stops prefilling)");
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /**
+     * {@code web-start-pilotreplicas} - the replicas word through the REAL
+     * {@code POST /api/start} over the rig's package props (the {@code web-start-pilotship} shape): over the props with
+     * the {@code pilotship.replicas} row removed, {@code /api/config} serves {@code "pilotReplicas":"on"} (an absent row
+     * is on in the serve's reader); a crafted {@code pilotReplicas=maybe} is refused with the replicas sentence before
+     * anything is written or spawned; {@code pilotReplicas=off} sent beside {@code pilotShip=on} and
+     * {@code magicSeam=on} reaches the spawn and writes {@code pilotship.replicas=false}, {@code pilotship.enabled=true}
+     * and {@code magicseam.enabled=true} exactly once each (no launch argument: the serve's own config read takes the
+     * file) - crossed StartFields slots, or one word written through a neighbour's key, flip one of the three values -
+     * and {@code /api/config} then serves {@code "pilotReplicas":"off"}. The props bytes are restored in
+     * {@code finally}.
+     */
+    private static String startPilotReplicasRow(Rig rig) throws Exception {
+        String r = "web-start-pilotreplicas";
+        Path props = rig.pkg.resolve(ServeLauncher.DEFAULT_CONFIG);
+        String fields = startFields("match-web-pkg.txt");
+        AtomicReference<byte[]> prior = new AtomicReference<>();
+        AtomicReference<byte[]> stripped = new AtomicReference<>();
+        setup(r, () -> {
+            awaitStaging();
+            prior.set(Files.readAllBytes(props));
+        });
+        Resp config0;
+        Resp refused;
+        Resp set;
+        Resp config1;
+        int spawns0;
+        int spawns1;
+        int spawns2;
+        byte[] afterRefused;
+        List<String> afterSet;
+        try {
+            setup(r, () -> {
+                List<String> kept = Files.readAllLines(props, StandardCharsets.UTF_8).stream()
+                        .filter(l -> !l.startsWith(OpsMatchRows.PILOT_REPLICAS_KEY + "=")).toList();
+                Files.writeString(props, String.join("\n", kept) + "\n", StandardCharsets.UTF_8);
+                stripped.set(Files.readAllBytes(props));
+            });
+            config0 = call(rig, "GET", "/api/config", rig.boot.token(), null);
+            spawns0 = rig.spawned.size();
+            refused = post(rig, "/api/start", fields + "&pilotReplicas=maybe");
+            awaitStaging();
+            spawns1 = rig.spawned.size();
+            afterRefused = Files.readAllBytes(props);
+            set = post(rig, "/api/start", fields + "&pilotReplicas=off&pilotShip=on&magicSeam=on");
+            awaitStaging();
+            spawns2 = rig.spawned.size();
+            afterSet = Files.readAllLines(props, StandardCharsets.UTF_8);
+            config1 = call(rig, "GET", "/api/config", rig.boot.token(), null);
+        } finally {
+            setup(r, () -> Files.write(props, prior.get()));
+        }
+        List<String> bad = new ArrayList<>();
+        if (!config0.body().contains("\"pilotReplicas\":\"on\"")) {
+            bad.add("config with no row " + PeerText.bound(config0.body(), 80) + " (flips if an absent row stops"
+                    + " prefilling on, the serve's default)");
+        }
+        if (!refused.body().contains(OpsMatchRows.R_PILOT_REPLICAS) || spawns1 != spawns0
+                || !Arrays.equals(stripped.get(), afterRefused)) {
+            bad.add("pilotReplicas=maybe " + PeerText.bound(refused.body(), 120) + " spawns " + spawns0 + "/" + spawns1
+                    + " (flips if a crafted word is ignored, written or spawned)");
+        }
+        long replicaRows = afterSet.stream().filter(l -> l.startsWith(OpsMatchRows.PILOT_REPLICAS_KEY + "=")).count();
+        if (!set.body().startsWith("{\"ok\":true") || spawns2 <= spawns1 || replicaRows != 1
+                || !afterSet.contains(OpsMatchRows.PILOT_REPLICAS_KEY + "=false")) {
+            bad.add("off " + PeerText.bound(set.body(), 120) + " spawns " + spawns1 + "/" + spawns2 + " rows="
+                    + replicaRows + " (flips if the ops GUI's Start drops the replicas word)");
+        }
+        long pilotRows = afterSet.stream().filter(l -> l.startsWith(OpsMatchRows.PILOT_SHIP_KEY + "=")).count();
+        long magicRows = afterSet.stream().filter(l -> l.startsWith(OpsMatchRows.MAGIC_SEAM_KEY + "=")).count();
+        if (pilotRows != 1 || !afterSet.contains(OpsMatchRows.PILOT_SHIP_KEY + "=true") || magicRows != 1
+                || !afterSet.contains(OpsMatchRows.MAGIC_SEAM_KEY + "=true")) {
+            bad.add("player-ship rows=" + pilotRows + " MagicLib rows=" + magicRows + " (flips if the replicas word is"
+                    + " written through a neighbour's slot, or the slots are crossed)");
+        }
+        if (!config1.body().contains("\"pilotReplicas\":\"off\"")) {
             bad.add("config after " + PeerText.bound(config1.body(), 80) + " (the written row stops prefilling)");
         }
         return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);

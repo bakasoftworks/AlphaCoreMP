@@ -88,7 +88,7 @@ public final class BootVariantRegistry {
      * The most DISTINCT ids one served session may fold into
      * {@link #folded} — four times the server's VDEF admission budget of 960
      * ({@code VariantDefinitionFrameCodec.VDEF_BUDGET_TOTAL}: boot catalog 256 + accepted customs 64 +
-     * live wave bodies 640, every VDEF producer summed under it). That budget bounds one admission
+     * live wave bodies 576 + server-realized mod loadouts 64, every VDEF producer summed under it). That budget bounds one admission
      * burst, not a session: a wave category switch parks the retired chain's never-fielded bodies
      * uncounted and registers fresh ids, so a long serve's distinct ids can pass 960; four full
      * catalogs of distinct ids stay foldable. Past the cap a NEW id is skipped ({@link #foldCapSkip}); a boot

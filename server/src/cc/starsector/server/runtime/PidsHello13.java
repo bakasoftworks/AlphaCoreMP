@@ -250,7 +250,8 @@ final class PidsHello13 {
                 "", bits, seal.cookie());
         boolean probe = clear.probe();
         Hs13 hs = new Hs13();
-        hs.magicBits = seal.flags() & (Handshake13.FLAG_MAGIC_UP | Handshake13.FLAG_MAGIC_REPLICA);
+        hs.magicBits = seal.flags()
+                & (Handshake13.FLAG_MAGIC_UP | Handshake13.FLAG_MAGIC_REPLICA | Handshake13.FLAG_PILOT_REPLICA);
         DoorGuessLedger.Verdict verdict = null; // assigned below on every path that reaches the open
         boolean rechallenge = false;
         lookup:
@@ -310,6 +311,11 @@ final class PidsHello13 {
                     // A stale-term probe's document term is asked first;
                     // a denial is silence with nothing stamped (the probe budget unasked, budgetAsked unset).
                     if (door.matchDocHeldLocked(hs, from, now)) {
+                        return null;
+                    }
+                    // Then the sheet's term, every proven probe on a door
+                    // holding one, the same silence on a denial.
+                    if (door.lunaDocHeldLocked(hs, from, now)) {
                         return null;
                     }
                     if (!door.probeBudget.admit(from.toString(), now)) {
@@ -461,10 +467,11 @@ final class PidsHello13 {
          *  door ignores it at the claim). A byte outside 0..2 never lands here: it fails the body decode.
          * */
         int team = 0;
-        /** The F2's MagicLib report bits ({@code FLAG_MAGIC_UP | FLAG_MAGIC_REPLICA} of the parsed flags, 0x00..0x18):
-         *  the joiner's own claims about its game, read from the cleartext head the AEAD binds; copied onto the
-         *  admitted session by {@link #onAdmittedLocked}, never into the cleartext {@code HelloPayload} the reject
-         *  paths share. */
+        /** The F2's HELLO report bits ({@code FLAG_MAGIC_UP | FLAG_MAGIC_REPLICA | FLAG_PILOT_REPLICA} of the parsed
+         *  flags, 0x00..0x38): the joiner's own claims about its game, read from the cleartext head the AEAD binds;
+         *  copied onto the admitted session by {@link #onAdmittedLocked}, never into the cleartext
+         *  {@code HelloPayload} the reject paths share. The pilot-replica bit is printed on the seat row only; no
+         *  serve behaviour keys on it. */
         int magicBits;
         /** The sealed F2 body's pilot keymap packed ({@code keymapLo} = control bytes 0..7, {@code keymapHi} = 8..15,
          *  byte i at bits {@code ((i & 7) << 3)..+7}; any sign): set at the open beside {@link #team}, copied onto

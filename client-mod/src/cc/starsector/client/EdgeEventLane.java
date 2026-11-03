@@ -618,6 +618,8 @@ final class EdgeEventLane {
                 + " predict_event_rebase_replay_ship_nonweapon_damager=" + plugin.replayShipNonWeaponDamagers
                 + " predict_event_rebase_replay_ship_weaponless_spawn=" + plugin.replayShipWeaponlessSpawns
                 + plugin.leakRemover.meterToken() // Removed == the census total while cc.predict.leakRemove is ON
+                + plugin.scriptSpawnMeterTokens() // script-spawned missiles kept + replica script damage zeroed: in neither total above
+                + ReplicaPresentedFireRelay.meterTokens() // presented-shot onFire relay: runs, throws, weapons off, classes refused
                 + SubstepHoldAI.meterToken() // The per-sub-step hold's count-only meter
                 // The census tokens ride THIS line because it is the segment the
                 // axis-6 grader parses (watch-verdict.ps1 Get-WvKv is a name-agnostic tokenizer).

@@ -187,7 +187,7 @@ public final class PilotApplyState {
      * The seat's HELLO keymap sources (packed: {@code lo} = control bytes 0..7, {@code hi} = 8..15), read ONCE per
      * hull tenure at the re-point beside the flags into {@link #pilotKeymapLo} / {@link #pilotKeymapHi} and pushed
      * with every applied frame's held state; null = 0 = the serve's own map (rows, probes, any serve that never wires
-     * it, an older reel). Main-written
+     * it, an older reel).
      */
     java.util.function.LongSupplier pilotKeymapLoSource, pilotKeymapHiSource;
     long pilotKeymapLo, pilotKeymapHi;
@@ -196,6 +196,8 @@ public final class PilotApplyState {
     int pilotMarkWrites; // fresh arrays put into a hull AND read back by identity (one per hull tenure)
     int pilotMarkLostWrites; // first writes the hull's getter did not hand back (the detached-map case; retried next frame)
     int pilotMarkClears; // removal edges that reached clearPilotMark
+    int pilotMarkForeign; // hull tenures in which a write OUTSIDE the mark's defined flags bits (3..7, a mod's) was seen
+    boolean pilotMarkForeignSeen; // this tenure already counted (reset at the re-point; the row prints once per tenure)
     int abilityEdgeQuarantined; // non-zero ability masks withheld inside the post-re-key quarantine
     int abilityQuarantineClear; // consecutive applied frames with no ability bit since the last re-point
     boolean pilotMarkUnbound;
@@ -2264,7 +2266,7 @@ public final class PilotApplyState {
 
     /**
      * Install the sources of this seat's packed HELLO keymap (null = 0 = the serve's own map); the serve sets them
-     * once, when it mints the state, beside {@link #pilotMarkFlagsSource}. Main-written
+     * once, when it mints the state, beside {@link #pilotMarkFlagsSource}.
      */
     public void pilotKeymapSources(java.util.function.LongSupplier loOrNull, java.util.function.LongSupplier hiOrNull) {
         this.pilotKeymapLoSource = loOrNull;
@@ -2284,6 +2286,15 @@ public final class PilotApplyState {
     /** Pilot-mark meter: seat-leaves-hull edges that reached the mark clear. */
     public int pilotMarkClears() {
         return pilotMarkClears;
+    }
+
+    /**
+     * Pilot-mark meter: hull tenures in which some other writer set a flags bit outside the defined 0..2 in the mark's
+     * own array (counted once per tenure; the maneuver read canonicalizes such a mark, never throws on it).
+     *
+     */
+    public int pilotMarkForeign() {
+        return pilotMarkForeign;
     }
 
     /** Pilot-mark meter: non-zero ability masks withheld inside the post-re-key quarantine. */

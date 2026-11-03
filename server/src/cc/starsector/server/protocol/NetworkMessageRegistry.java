@@ -159,6 +159,7 @@ public final class NetworkMessageRegistry {
                             ServerVariantReceiptMessage.registryEntry(EVERY_COMPLETED_TICK),
                             ServerListingDataMessage.registryEntry(EVERY_COMPLETED_TICK),
                             MatchDocumentMessage.registryEntry(EVERY_COMPLETED_TICK),
+                            LunaSheetMessage.registryEntry(EVERY_COMPLETED_TICK),
                             ServerSeatStateEventMessage.registryEntry(EVERY_COMPLETED_TICK),
                             SnapshotStreamCompletedMessage.registryEntry(EVERY_COMPLETED_TICK)),
                     List.of(
@@ -783,6 +784,13 @@ public final class NetworkMessageRegistry {
         return require(
                 MatchDocumentMessage.MESSAGE_ID,
                 MatchDocumentMessage.SCHEMA_VERSION);
+    }
+
+    /** {@code LUNA} schema 2: the LunaSettings-sheet probe reply (codec {@code MatchDocFrameCodec}, LUNA kind). */
+    public ProtocolRegistryEntry lunaSheetWireEntry() {
+        return require(
+                LunaSheetMessage.MESSAGE_ID,
+                LunaSheetMessage.SCHEMA_VERSION);
     }
 
     public ProtocolRegistryEntry serverSeatStateEventWireEntry() {

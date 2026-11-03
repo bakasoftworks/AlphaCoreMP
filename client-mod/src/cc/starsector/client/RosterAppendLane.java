@@ -188,6 +188,10 @@ final class RosterAppendLane {
     /** Own rows the registry deduped while the LIVE hull disagreed (each armed
      *  the alive re-field) — non-zero in a debrief = a refused/forked join pick was healed. */
     private int ownPickForks;
+    /** Own rows this round that re-pointed the live hull to
+     *  the server's realized loadout of the same goal variant (each armed the alive re-field; not a
+     *  fork). Render thread; printed and cleared by {@link #onRoundReset}'s summary row. */
+    private int ownRealizedRefields;
 
     /** The LIVE own hull's variant id, or null when there is no own body / the
      *  engine read throws (a null never dedups — the caller falls through to count-ignored). */
@@ -620,7 +624,8 @@ final class RosterAppendLane {
      * The round reset re-arms the per-round bounds — the
      * refusal counts (so the next round's first refusal logs again) and every entry's spawn
      * budget (the reset itself clears each surviving entry's dead flag). A round that refused,
-     * spent or retired anything closes with ONE summary row so its counts outlive the clear.
+     * spent or retired anything, or re-fielded the own hull to a realized loadout, closes with ONE
+     * summary row so its counts outlive the clear.
      * Render thread.
      */
     void onRoundReset() {
@@ -632,11 +637,14 @@ final class RosterAppendLane {
             framesRefusedAtIntake = 0;
             rowsRefusedAtIntake = 0;
         }
-        if (rowsRefusedAtCap > 0 || intakeFrames > 0 || spawnBudgetsSpent > 0 || entriesRetiredDead > 0) {
+        if (rowsRefusedAtCap > 0 || intakeFrames > 0 || spawnBudgetsSpent > 0 || entriesRetiredDead > 0
+                || ownRealizedRefields > 0) {
             PilotWatchLog.info("predict roster-append: round bounds closed: entity-cap refused rows="
                     + rowsRefusedAtCap + " intake refused frames=" + intakeFrames + " rows=" + intakeRows
-                    + " spawn budgets spent=" + spawnBudgetsSpent + " retiredDead=" + entriesRetiredDead);
+                    + " spawn budgets spent=" + spawnBudgetsSpent + " retiredDead=" + entriesRetiredDead
+                    + " own_realized_refields=" + ownRealizedRefields);
         }
+        ownRealizedRefields = 0;
         rowsRefusedAtCap = 0;
         spawnBudgetsSpent = 0;
         entriesRetiredDead = 0;
@@ -711,6 +719,19 @@ final class RosterAppendLane {
                         if (live != null && !live.equals(row.variantId())
                                 && plugin.ownMountedModule == null && !plugin.xfer.ownTransit()) {
                             plugin.ownRefieldPending = true;
+                            if (RealizedVariantId.isRealized(row.variantId())
+                                    && RealizedVariantId.goalOf(row.variantId()).equals(live)) {
+                                // NOT a pick fork. The row names
+                                // the server's realized loadout of the very variant the live hull flies
+                                // (a mod rolled its slot weapons at member creation); the re-field builds
+                                // the minted definition, so it is armed quietly and counted, never announced.
+                                ownRealizedRefields++;
+                                PilotWatchLog.info("predict roster-append: OWN seat " + row.wireId()
+                                        + " REALIZED LOADOUT: live " + FallbackAnnounce.sanitize(live, 64)
+                                        + " -> server " + FallbackAnnounce.sanitize(row.variantId(), 64)
+                                        + " (alive re-field ARMED; own_realized_refields=" + ownRealizedRefields + ")");
+                                continue;
+                            }
                             ownPickForks++;
                             String fork = "OWN seat " + row.wireId() + " PICK FORK: live hull "
                                     + FallbackAnnounce.sanitize(live, 64) + " != server fielded "

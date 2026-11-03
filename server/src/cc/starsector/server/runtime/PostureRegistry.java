@@ -93,6 +93,9 @@ public final class PostureRegistry {
             // The client-OPTIONAL mod ids (comma list) the serve publishes on the probe
             // (MARK_MODSET_OPTIONAL) but never loads nor folds; the wrapper mirrors them (serve-mods-lib).
             new Knob("cc.mods.optional", "CC_MODS_OPTIONAL", "mods.optional", KnobClass.BEHAVIOR),
+            // The host's LunaSettings rows never pushed to a joiner
+            // (<modId>:<fieldId>, comma list) on top of the built-in table; it changes the minted sheet, so BEHAVIOR.
+            new Knob("cc.luna.sync.exclude", "CC_LUNA_SYNC_EXCLUDE", "luna.sync.exclude", KnobClass.BEHAVIOR),
             // The foe-cloak lead/wait A/B (WireKnob.FOE_CLOAK_LEAD) — the boot value of
             // the wire-delivered client knob (WireKnobState); /knob flips it live.
             new Knob("cc.predict.foeCloakLead", "CC_PREDICT_FOE_CLOAK_LEAD", "predict.foeCloakLead", KnobClass.BEHAVIOR),
@@ -226,6 +229,11 @@ public final class PostureRegistry {
             // the player-ship window's host row (DEFAULT ON; OFF while new): registered BEFORE its premain landed, so no postured
             // serve refuses it as an unknown sysprop (the magicseam row's first merged build did exactly that)
             new Knob("cc.pilotship.enabled", "CC_PILOTSHIP_ENABLED", "pilotship.enabled", KnobClass.BEHAVIOR),
+            // The replica row "other players' screens run each pilot's ship
+            // scripts as the pilot's" = bit 2 of the serve pilot mark (PilotShipReplicaFollow reads it through
+            // ServerConfig.resolveBoolean at every mark tenure edge; DEFAULT ON, the FILE row = the host's OFF lever).
+            // BEHAVIOR: it picks which branch every viewer's rewritten scripts take. LITERALS (the census reads TEXT).
+            new Knob("cc.pilotship.replicas", "CC_PILOTSHIP_REPLICAS", "pilotship.replicas", KnobClass.BEHAVIOR),
             // The Math.random() caller census window (sim ticks) — premain-read
             // (sysprop / env, no file tier), a diagnostic re-sim delta; the stream is untouched.
             new Knob("cc.rngpin.census", "CC_RNGPIN_CENSUS", null, KnobClass.INSTRUMENT),
@@ -259,6 +267,11 @@ public final class PostureRegistry {
             // sysprop-or-env read (FlareGlowProbe.ARMED); the headless flare glow
             // census (ACCELERATE command flag vs the engine glow's own flag + flame level) — never config.
             new Knob("cc.probe.flareGlow", "CC_PROBE_FLARE_GLOW", null, KnobClass.INSTRUMENT),
+            // sysprop-only read (PilotShipWindow.KEY_EDGE_LOG_ARMED, class init); the T15
+            // key-edge log (a row per pushed control-bit / key-slot transition) — a one-serve -ExtraJvmFlags delta
+            // (`run-cat-serve.ps1 -ReplicaLog`), never config. Unregistered it REFUSED every POSTURED serve:
+            // the drill's serve is unpostured, so only this row + PilotShipRows R9f catch it.
+            new Knob("cc.pilot.keyEdgeLog", null, null, KnobClass.INSTRUMENT),
             // env-only read today (PPICS getenv site); sysprop key reserved for the M2 cascade
             new Knob("cc.rig.waveProbe", "CC_RIG_WAVE_PROBE", null, KnobClass.INSTRUMENT),
             new Knob("cc.serve.overrunLog", "CC_SERVE_OVERRUN_LOG", "serve.overrunLog", KnobClass.INSTRUMENT),

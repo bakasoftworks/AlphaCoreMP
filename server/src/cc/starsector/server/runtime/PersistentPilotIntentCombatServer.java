@@ -10,6 +10,7 @@ import cc.starsector.server.bridge.EngineBackedCombatStepBoundary;
 import cc.starsector.server.bridge.EngineBackedCombatWorldState;
 import cc.starsector.server.bridge.EngineBackedLiveWorldSnapshotSource;
 import cc.starsector.server.bridge.EngineCombatBinding;
+import cc.starsector.server.bridge.FlyInTravelDriveWatch;
 import cc.starsector.server.bridge.PilotApplyState;
 import cc.starsector.server.bridge.RealEngineDemoRoster;
 import cc.starsector.server.bridge.TransferPodSpawner;
@@ -1674,7 +1675,9 @@ public final class PersistentPilotIntentCombatServer {
         /**
          * One fly-in's identity: the seat's wire id + the engine ship's deploy-recorded stable
          * id. W7 B1b widened it with the deploy-recorded HULL identity the variant-repoint fan
-         * needs ({@code variantId} = deployed, {@code descriptorVariantId} = the seat's
+         * needs ({@code variantId} = deployed — a realized {@code cc_real_} mint when a mod's roll
+         * left the seat member's variant different from stock, its stock id = {@code RealizedLoadoutLane.goalOf};
+         * {@code descriptorVariantId} = the seat's
          * descriptor truth, + the RAPP row fields). The 2-arg ctor keeps every legacy mint
          * compiling: {@code variantId == null} marks a legacy result — the fan check SKIPS it
          * (nothing truthful to announce).
@@ -2841,6 +2844,9 @@ public final class PersistentPilotIntentCombatServer {
                 finaleCreep.tick(fixedDt);
             }
             baseStep.step(fixedDt, simTick);
+            // The round-start travel-drive watch polls POST-STEP (the engine's advance
+            // just ran the mods' scripts); one isEmpty() while nothing is armed. Never throws.
+            FlyInTravelDriveWatch.tick(fixedDt);
             // The facing law's POST-STEP half — the step's hullmod pass
             // re-armed the root's axial ω after the integrate; zero it again so the post-step
             // pose sample (what the wire carries) reads ω=0. No-op while disarmed.

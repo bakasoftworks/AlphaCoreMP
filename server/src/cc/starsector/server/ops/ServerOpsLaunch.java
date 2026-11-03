@@ -1276,6 +1276,12 @@ public final class ServerOpsLaunch {
      * ({@link OpsMatchRows#PILOT_SHIP_KEY}, {@link OpsMatchRows#parsePilotShip} on|off): parsed
      * before any write, upserted in the ONE props write, read only by the serve JVM's startup.
      *
+     *
+     * <p>{@code pilotReplicasText} — the same law for the replicas row
+     * ({@link OpsMatchRows#PILOT_REPLICAS_KEY}, {@link OpsMatchRows#parsePilotReplicas} on|off):
+     * parsed before any write, upserted in the ONE props write right after the player-ship row,
+     * read only by the serve JVM's own config read (never a launch argument).
+     *
      */
     public static boolean runStartFlow(Ui ui, SpawnFn spawn, Path propsFile,
             OpsWindowModel.StartFields f) {
@@ -1358,6 +1364,7 @@ public final class ServerOpsLaunch {
         String rngPins; // "true" | "false"; null = no control here (the row untouched)
         String magicSeam; // "true" | "false"; null = no control here (the row untouched)
         String pilotShip; // "true" | "false"; null = no control here (the row untouched)
+        String pilotReplicas; // "true" | "false"; null = no control here (the row untouched)
         Boolean pvpWant; // the PvP select; null = no control here (the picked file's mode stands)
         try {
             validateBind(bindHost, bindPort);
@@ -1468,6 +1475,7 @@ public final class ServerOpsLaunch {
             rngPins = f.rngPinsText() == null ? null : parseRngPins(f.rngPinsText());
             magicSeam = f.magicSeamText() == null ? null : parseMagicSeam(f.magicSeamText());
             pilotShip = f.pilotShipText() == null ? null : parsePilotShip(f.pilotShipText());
+            pilotReplicas = f.pilotReplicasText() == null ? null : parsePilotReplicas(f.pilotReplicasText());
             // PvP mode (on|off), thrown BEFORE any write like its neighbours
             pvpWant = f.pvpText() == null ? null : OpsMatchApply.parsePvpMode(f.pvpText());
         } catch (IllegalArgumentException bad) {
@@ -1602,6 +1610,7 @@ public final class ServerOpsLaunch {
         propsWant = upsertRow(propsWant, RNG_PINS_KEY, rngPins, RNG_PINS_COMMENT);
         propsWant = upsertRow(propsWant, MAGIC_SEAM_KEY, magicSeam, MAGIC_SEAM_COMMENT);
         propsWant = upsertRow(propsWant, PILOT_SHIP_KEY, pilotShip, PILOT_SHIP_COMMENT);
+        propsWant = upsertRow(propsWant, PILOT_REPLICAS_KEY, pilotReplicas, PILOT_REPLICAS_COMMENT);
         // The debug-watch posture row rides the SAME single write,
         // ALWAYS, in both modes: a plain Start writes false, so no later serve life inherits a debug watch's
         // true (Kill, then this write, then the spawn). The serve reads it from this file as its own config

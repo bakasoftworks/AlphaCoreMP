@@ -758,7 +758,7 @@ public interface PredictSession extends AutoCloseable {
      *  the map every later re-HELLO seals, handed over BEFORE {@link #armReAdmission} so the kept-open takeover
      *  re-HELLO carries the bindings the sampler polls, never the dial-time ones. Default no-op: a
      *  transport without the version-13 re-HELLO pump (the retired TCP twin) seals no keymap.
-     *  Main-written */
+     * */
     default void setPilotKeymap(byte[] keymapOrNull) {
     }
 

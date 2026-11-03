@@ -91,7 +91,7 @@ public final class TransformRegistry {
          * around the holder {@link PilotShipWindow}): a static call at entry, one before every return and a
          * catch-all handler appended last to the exception table, no frame or local of the original touched.
          * Engine half: fail-CLOSED (the eager gate refuses a launch on a fingerprint drift, naming the host
-         * row); armed by its host row only; kept out of {@link #entries()}. Main-written.
+         * row); armed by its host row only; kept out of {@link #entries()}.
          */
         SCOPED_WINDOW,
         /**
@@ -99,7 +99,7 @@ public final class TransformRegistry {
          * static call of the same stack shape (HOOK-0055: {@code CombatEngineAPI.getPlayerShip()} to the typed
          * target in the probe-api unit), decided per class by a byte classifier with counted exclusion
          * reasons. Fail-OPEN per class (original bytes + one row), generic (no target class named in the
-         * entry), armed by its host row only; kept out of {@link #entries()}. Main-written.
+         * entry), armed by its host row only; kept out of {@link #entries()}.
          */
         FOREIGN_CALL_SITE_REDIRECT
     }
@@ -129,7 +129,7 @@ public final class TransformRegistry {
 
     /**
      * The player-ship window's host row, sysprop tier (the magicseam.enabled shape). DEFAULT ON;
-     * OFF while new. Main-written.
+     * OFF while new.
      */
     public static final String PILOT_SHIP_ENABLED_SYSPROP = "cc.pilotship.enabled";
     /** The player-ship window's host row, env tier. */
@@ -554,7 +554,7 @@ public final class TransformRegistry {
 
     /** The MagicLib pilot seam's id (a {@link Kind#FOREIGN_LOAD_TIME_SEAM} entry). */
     public static final String MAGIC_SEAM_ID = "HOOK-0053";
-    /** The player-ship window's id (a {@link Kind#SCOPED_WINDOW} entry on {@code Ship.advance(F)V}). Main-written. */
+    /** The player-ship window's id (a {@link Kind#SCOPED_WINDOW} entry on {@code Ship.advance(F)V}). */
     public static final String PILOT_SHIP_WINDOW_ID = "HOOK-0054";
     /** The player-ship call-site redirect's id (a {@link Kind#FOREIGN_CALL_SITE_REDIRECT} entry, generic). */
     public static final String PILOT_SHIP_REDIRECT_ID = "HOOK-0055";

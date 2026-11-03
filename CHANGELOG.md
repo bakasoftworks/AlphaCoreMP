@@ -2,6 +2,18 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.4.0 - 2026-11-03
+
+- The 0.4.0 kit is required. A 0.3.0 or older kit is told at the door that it is outdated.
+- Other players' screens follow each pilot ("Setup", "Advanced"; `pilotship.replicas`, on as shipped): a player whose game runs on the kit's own Java runs a pilot's ship hullmods, ship system and weapon scripts from that pilot's held keys, so cables, smoke, debris and jets show on their screen as the pilot fires them. Other starts see them through the server's corrections.
+- MagicLib abilities of other pilots fire on your screen too, on the kit's own Java start: the kit's agent changes MagicLib's ability class in memory as it loads. The host can turn the server half off.
+- Mod ships are pickable: ships kept in a mod's variant subfolders (boss ones included) are on the pick list. Hide the ones you do not want on the ops GUI's "Players" tab; the hide list now holds every shipped ship.
+- LunaLib settings: the server's values come from `luna-settings\<modId>.json.data` (the "Mods" tab names the file) and are kept across server updates. The host README's LunaLib section has the three things to know.
+- Keys stay in the game: keys typed while the game window is not active, or while a game dialog is open, never leave your game.
+- A mod ship's loadout no longer swaps on respawn, and the Aleste's travel drive fires on the server.
+- The ops GUI: an "on" box per mod on the "Mods" tab, a narrow layout that fits one seat card, and a named message when Windows has reserved the chosen port.
+- Linux hosts: a `stop.sh` followed within a second by `serve.sh` no longer stops the new server at boot.
+
 ## 0.3.0 - 2026-10-30
 
 - Every player needs the 0.3.0 kit. An older kit is refused when it joins and the join window says the kit is outdated.

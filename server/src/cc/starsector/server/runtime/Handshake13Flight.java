@@ -245,7 +245,7 @@ public final class Handshake13Flight {
      * LWJGL key code the pilot's binding resolves to, 0xF0..0xF7 a mouse button), copied; null = 16 zeros (no map: the
      * serve's own table answers, the fail-safe for a kit that resolved nothing); {@code IllegalArgumentException}
      * "keymap" on a non-null array that is not 16 lawful bytes, after the team check. The ten-argument constructor
-     * above is this one at no keymap. Every other parameter as there. Main-written
+     * above is this one at no keymap. Every other parameter as there.
      */
     public Handshake13Flight(Lane lane, byte[] secret, int flags, String print, String cid, long desiredShipId,
             String variantId, int team, byte[] keymapOrNull, Handshake13PairBudget.Host budget, SecureRandom rng) {
@@ -430,8 +430,23 @@ public final class Handshake13Flight {
      * once — no root would mend it; a BAD_TAG under every root = a chunk of another flight, a forgery or a replay. No
      * root byte leaves the flight; a seal at or below the MARK (its roots zeroed) and an ENDED flight open nothing. The
      * caller counts each null once. Only the collector of a PROBE flight calls it, never with a WELCOME-channel payload.
+     * This is the DESC form of {@link #openDocumentOrNull(MatchDocFrameCodec.Kind, byte[])}.
      */
     public synchronized MatchDocFrameCodec.Chunk openDocumentOrNull(byte[] payload) {
+        return openDocumentOrNull(MatchDocFrameCodec.Kind.DESC, payload);
+    }
+
+    /**
+     * The same open for a document of {@code kind} (DESC = the match document, LUNA = the settings sheet): the same
+     * seal walk and roots, decoded under the kind's magic, wire type and label. A frame of the other kind is a
+     * structural refusal (its envelope names another magic / wire type) and ends the trial at once, so a caller holding
+     * both kinds tries each opener and keeps the non-null chunk. A null {@code kind} is the caller's bug
+     * ({@code IllegalArgumentException}).
+     */
+    public synchronized MatchDocFrameCodec.Chunk openDocumentOrNull(MatchDocFrameCodec.Kind kind, byte[] payload) {
+        if (kind == null) {
+            throw new IllegalArgumentException("kind");
+        }
         if (payload == null || ended) {
             return null;
         }
@@ -442,7 +457,7 @@ public final class Handshake13Flight {
                 continue;
             }
             for (byte[] root : new byte[][] {seal.rootM(), seal.rootA()}) {
-                MatchDocFrameCodec.Decoded d = MatchDocFrameCodec.decode(root, payload);
+                MatchDocFrameCodec.Decoded d = MatchDocFrameCodec.decode(kind, root, payload);
                 if (d.reason() == MatchDocFrameCodec.OK) {
                     return d.chunk();
                 }

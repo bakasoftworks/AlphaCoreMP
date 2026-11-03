@@ -10,6 +10,7 @@ import cc.starsector.server.platform.OfficerAttach;
 import cc.starsector.server.platform.RegistryVariantClone;
 import cc.starsector.server.runtime.PickableVariants;
 import cc.starsector.server.runtime.ServerConfig;
+import cc.starsector.server.runtime.VariantPolicy;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -109,6 +110,7 @@ public final class RealEngineDemoRoster {
     private static final String FLEET_MEMBER_TYPE_API = "com.fs.starfarer.api.fleet.FleetMemberType";
     private static final String FLEET_MEMBER_API = "com.fs.starfarer.api.fleet.FleetMemberAPI";
     static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
+    private static final String SHIP_SYSTEM_API = "com.fs.starfarer.api.combat.ShipSystemAPI";
     /** The cr_effect deploy-CR seed read (stat getters resolve on the PUBLIC interfaces). */
     private static final String MUTABLE_SHIP_STATS_API =
             "com.fs.starfarer.api.combat.MutableShipStatsAPI";
@@ -995,6 +997,11 @@ public final class RealEngineDemoRoster {
                 throw new RealEngineDemoRosterException(
                         "deployed ship count " + deployedCount + " != expected " + specs.size());
             }
+            // The round-start travel-drive watch takes the fly-in lane's hulls (none on
+            // the teleport lane = this round watches nothing). The spawn-time helper cannot run here: the
+            // create-round deploy is PAUSED and the strand forms after the unpause (the watch's javadoc).
+            FlyInTravelDriveWatch.arm(loader, shipClass, deployContext.flyInDeployedShips(),
+                    deployContext.flyInDeployedShipNames());
             // Player-seat readback conditional on >=1 deployed ship: only the
             // occupancy-gated path can deploy zero hulls (N-boot pre-first-claim); every legacy
             // deploy has >=1 spec, so this readback is behavior-identical there.
@@ -1446,7 +1453,25 @@ public final class RealEngineDemoRoster {
             // normalization can rewrite it). The seat autofire STRIP was reaped once the
             // defect attribution to it was overturned; the runtime disarm at the
             // fly-in site is the FIRE-only bar — groups_off there counts real disarms again.
-            variant = RegistryVariantClone.cloneVariant(variant, "midDeploySeat seat=" + seatId);
+            Object stockVariant = variant; // the registry's stock variant: the realized-loadout compare's baseline
+            // The STICKY roll — one roll per seat per match. While the seat's
+            // pick is still the goal of its last minted realized body, the member is built from that registered
+            // body: the mod's hook finds its selector state already there and does not roll again, and the realize
+            // below (the goal id + the stock baseline, unchanged) lands on the lane's content cache = the same id,
+            // no new body for any window. No sticky id, or any miss, = the pick's own variant (a fresh roll).
+            String memberVariantId = variantId;
+            Object memberBase = variant;
+            try {
+                String stickyId = cc.starsector.server.runtime.RealizedLoadoutLane.stickyIdForSeat(seatId, variantId);
+                if (stickyId != null) {
+                    memberBase = resolveVariantById(loader, hullVariantClass, stickyId);
+                    memberVariantId = stickyId;
+                }
+            } catch (Exception | LinkageError stickyMiss) {
+                System.out.println("real-engine-demo-roster midDeploySeat seat=" + seatId
+                        + " sticky_roll=unread " + stickyMiss.getClass().getSimpleName());
+            }
+            variant = RegistryVariantClone.cloneVariant(memberBase, "midDeploySeat seat=" + seatId);
             if (deployedVariantId.isEmpty()) {
                 deployedVariantId = variantId; // diagnostics: zero-hull boot — first hull this round
             }
@@ -1489,6 +1514,23 @@ public final class RealEngineDemoRoster {
             if (side == 0 || slot.side() == 0) {
                 AllSkillsAttach.installFleetContext(member);
             }
+            // The REALIZED loadout. The member ctor above ran every
+            // hullmod's applyEffectsBeforeShipCreation on this clone, and a mod hook may have rolled a weapon
+            // into it; each window builds its own member from the stock id and rolls again. A difference from
+            // the stock variant mints ONE server VDEF and the returned id (the RAPP row's) names it; equal, an
+            // absent engine half or any fault = the stock id. Read before the spawn: the variant the hull is
+            // built from. A read miss never aborts the fly-in — a LinkageError included (the lane class
+            // failing to LINK on a json-free classpath was an Error, not an Exception, so it fell through to the
+            // outer catch and ended the serve; the lane's own LINK LAW now keeps it linkable, this catch is the law).
+            String fieldedVariantId = variantId;
+            try {
+                fieldedVariantId = cc.starsector.server.runtime.RealizedLoadoutLane.realizeSeatOrGoal(seatId,
+                        seat.shipId(), variantId, stockVariant,
+                        fleetMemberClass.getMethod("getVariant").invoke(member));
+            } catch (ReflectiveOperationException | RuntimeException | LinkageError realizeMiss) {
+                System.out.println("real-engine-demo-roster midDeploySeat seat=" + seatId
+                        + " realized_loadout=unread " + realizeMiss.getClass().getSimpleName());
+            }
 
             // The engine's own reinforcement spawn through the round's REAL addFleet-registered
             // manager (the gated deploy registered every descriptor side — W4/W5).
@@ -1516,6 +1558,10 @@ public final class RealEngineDemoRoster {
                         "midDeploySeat(" + seatId + "): spawnFleetMember returned "
                                 + (ship == null ? "null" : ship.getClass().getName()));
             }
+            // A mod script that switched the drive off
+            // mid-burn would block this hull's ship system for its whole life.
+            clearStrandedTravelDrive(loader, shipClass, ship, "midDeploySeat",
+                    "seat" + seatId + "/" + variantId);
             List<?> deployedLedger =
                     (List<?>) manager.getClass().getMethod("getDeployedCopy").invoke(manager);
             if (!deployedLedger.contains(member)) {
@@ -1564,6 +1610,7 @@ public final class RealEngineDemoRoster {
             System.out.println("real-engine-demo-roster midDeploySeat seat=" + seatId
                     + " wireId=" + seat.shipId() + " side=" + side
                     + " variant=" + variantId + " stableId=" + stable
+                    + (memberVariantId.equals(variantId) ? "" : " sticky_roll=" + memberVariantId)
                     + " burnDur=" + FLY_IN_BURN_DUR
                     + hullPhys(shipClass, ship)
                     + " (pending-add until next advance)");
@@ -1575,7 +1622,7 @@ public final class RealEngineDemoRoster {
             } else if (pick.fallbackReasonOrNull() != null) {
                 overrideFallbackCount++;
             }
-            return new SeatDeployResult(ship, variantId, slot.descriptorVariantId(), side,
+            return new SeatDeployResult(ship, fieldedVariantId, slot.descriptorVariantId(), side,
                     DescriptorLayout.seatShipName(seatId), DescriptorLayout.crPerMille(chosenCr),
                     seat.shipId(), stable);
         } catch (RealEngineDemoRosterException e) {
@@ -1591,7 +1638,9 @@ public final class RealEngineDemoRoster {
     }
 
     /** One seat fly-in's deploy-recorded identity (W7 B1b): the live engine ship + the DEPLOYED
-     * variant (override or descriptor), the seat's descriptor truth, and the RAPP row fields
+     * variant (override or descriptor; the realized {@code cc_real_} mint when a mod's roll left the member's
+     * variant different from stock — the id the RAPP row names, its stock id = {@code RealizedLoadoutLane.goalOf}),
+     * the seat's descriptor truth, and the RAPP row fields
      * the serve loop's variant-repoint fan sends.
      * {@code wireId} (the seat's descriptor ship id) + {@code stableId} (the spawned hull's
      * engine id) — the round-reset lane builds its fly-in results from these directly. */
@@ -1630,10 +1679,88 @@ public final class RealEngineDemoRoster {
         }
     }
 
+    /**
+     * The guard of {@link #clearStrandedTravelDrive} —
+     * a drive that is not running (its state is IDLE or COOLDOWN, not the IN / ACTIVE / OUT of a
+     * burn and its charge-down) on a hull that is not retreating. Public only so the game-free
+     * contract rows can pin the table.
+     */
+    public static boolean travelDriveStranded(boolean driveRunning, boolean retreating) {
+        return !driveRunning && !retreating;
+    }
+
+    /**
+     * Pairs a mod's travel-drive switch-off with the
+     * engine's own zeroing verb, once, right after a fly-in spawn.
+     *
+     * <p>WHY: the engine blocks the primary ship system on every frame while the drive's private
+     * remaining-burn timer is above zero, for any system that changes the engine flame (plasma
+     * jets, maneuvering jets, burn drives), and it counts that timer down ONLY while the drive is
+     * on. Arma Armatura's travel-drive script calls
+     * {@code ShipSystemAPI.deactivate()} on the drive when a same-side carrier exists, inside the
+     * deploy's own pre-advances, so the timer stays above zero for good and the hull never uses its
+     * system again (the Aleste's plasma jets never fired on the server). The client zeroes the
+     * same timer when it adopts its hull, so this also matches what the client runs.
+     *
+     *
+     *
+     * <p>The verb, {@code turnOffTravelDrive()}, only sets that timer to zero;
+     * the engine runs it on vent, and this server already runs it on the
+     * retreat falling edge and in the seat transfer. The guard ({@link #travelDriveStranded})
+     * skips a drive still IN, ACTIVE or OUT (the vanilla fly-in burn is still running here) and a
+     * retreating hull (its retreat burn must survive). It reads the drive's STATE, not
+     * {@code ShipSystemAPI.isActive()}: the drive's system class keeps {@code isActive()} true
+     * after a {@code deactivate()} until the hull has slowed below its top speed, which would skip
+     * exactly the stranded hull.
+     * An unknown state counts as running (no clear). A vanilla drive that already
+     * ended went through the engine's arrival, collision or flameout exit, and each of those
+     * zeroes the timer, so the call is a no-op there.
+     *
+     * <p>ONE stdout row when it clears, none on a skip. Never throws: any failure prints one
+     * {@code clear skipped} row and returns false, because a drive quirk must never fail a deploy.
+     * Public only so the contract rows can drive it on a real hull.
+     *
+     * @return true when the guard passed and the verb ran
+     */
+    public static boolean clearStrandedTravelDrive(ClassLoader loader, Class<?> shipClass,
+            Object ship, String site, String label) {
+        try {
+            Class<?> shipApi = Class.forName(SHIP_API, false, loader);
+            Object drive = shipApi.getMethod("getTravelDrive").invoke(ship);
+            if (drive == null) {
+                return false;
+            }
+            Class<?> systemApi = Class.forName(SHIP_SYSTEM_API, false, loader);
+            Object state = systemApi.getMethod("getState").invoke(drive);
+            String stateName = state instanceof Enum<?> e ? e.name() : String.valueOf(state);
+            boolean running = !"IDLE".equals(stateName) && !"COOLDOWN".equals(stateName);
+            boolean retreating = Boolean.TRUE.equals(shipApi.getMethod("isRetreating").invoke(ship));
+            if (!travelDriveStranded(running, retreating)) {
+                return false;
+            }
+            shipClass.getMethod("turnOffTravelDrive").invoke(ship);
+            System.out.println("[roster] travel-drive cleared site=" + site + " ship=" + label
+                    + " drive=" + stateName);
+            return true;
+        } catch (Throwable t) {
+            System.out.println("[roster] travel-drive clear skipped site=" + site + " ship=" + label
+                    + " reason=" + unwrap(t).getClass().getSimpleName());
+            return false;
+        }
+    }
+
     /** Resolves a pick id to an engine variant (throws = unresolvable). */
     @FunctionalInterface
     public interface PickResolver {
         Object resolve(String variantId) throws Exception;
+    }
+
+    /** The engine's own station read on a wave-lane variant ({@code HullVariantSpec.isStation}, lazily cached). */
+    private static boolean isStationVariant(WaveMintHandles h, Object variant) throws Exception {
+        if (waveIsStation == null) {
+            waveIsStation = h.hullVariantClass.getMethod("isStation");
+        }
+        return Boolean.TRUE.equals(waveIsStation.invoke(variant));
     }
 
     /** The station refusal predicate (engine {@code isStation} OR the mint predicate). */
@@ -1908,10 +2035,7 @@ public final class RealEngineDemoRoster {
      */
     private static List<String> readStationModuleStableIds(WaveMintHandles h, Object variant,
             Object ship, String variantId, String site, String shipName) throws Exception {
-        if (waveIsStation == null) {
-            waveIsStation = h.hullVariantClass.getMethod("isStation");
-        }
-        if (!Boolean.TRUE.equals(waveIsStation.invoke(variant))) {
+        if (!isStationVariant(h, variant)) {
             return List.of();
         }
         int expectedModules = EngineBornGrowthSeam.stationModuleVariantIds(variantId).size();
@@ -2079,6 +2203,12 @@ public final class RealEngineDemoRoster {
                 throw new RealEngineDemoRosterException(
                         site + "(" + shipName + "): spawnFleetMember returned "
                                 + (ship == null ? "null" : ship.getClass().getName()));
+            }
+            // The same pairing for AI hulls. A burn under
+            // 1 s arms no drive (the engine deploy's own threshold), so there is nothing to strand;
+            // nor does a STATION — the fleet manager zeroes its burn.
+            if (burnDur >= 1.0f && !isStationVariant(h, variant)) {
+                clearStrandedTravelDrive(loader, h.shipClass, ship, site, variantId);
             }
             List<?> deployedLedger = (List<?>) waveGetDeployedCopy.invoke(manager);
             if (!deployedLedger.contains(member)) {
@@ -2556,6 +2686,118 @@ public final class RealEngineDemoRoster {
     }
 
     /**
+     * The player pick predicate for the {@code /ship} list and the
+     * join page — the variant resolves in the engine registry (the {@link #variantResolvable} lookup), AND,
+     * while the hull law is on, its hull is one a player may fly
+     * ({@link VariantPolicy#playerHullRefusalOrNull}).
+     *
+     * <p>WHY: a mod's variant folders also hold fighters, station bases, station modules and default-D
+     * twins; they resolve in the registry, so a resolvable-only predicate offered them as player ships. The
+     * hull id is read off the RESOLVED variant ({@code getHullSpec().getHullId()}), so a skin's variant keys
+     * its own skin hull's facts. A hull missing from the facts map, or a fault on those reads, is refused
+     * and counted {@code unknown}: an unclassifiable hull is never offered.
+     *
+     * <p>The hull law is OFF (resolvability alone, one {@code pick_hull_law=off} line at construction) when
+     * no facts were snapshotted (an engine-less boot) or the reflective handles fail to resolve. Refusals
+     * are counted per class and printed as ONE line by {@link #logDropped()}, never a line per id (a scan
+     * over three mods refuses on the order of a hundred and forty). Not thread-safe: the counters are plain
+     * ints because the boot scan calls {@link #test} from one thread only.
+     */
+    public static final class PlayerPickable implements java.util.function.Predicate<String> {
+        /** Hull id (skin ids included) to facts; null = the hull law is off. */
+        private final Map<String, VariantPolicy.HullFacts> hulls;
+        /** {@code HullVariantSpec.getHullSpec()}; null when the hull law is off. */
+        private final Method getHullSpec;
+        /** The hull spec's {@code getHullId()}; null when the hull law is off. */
+        private final Method getHullId;
+        private int fighter;
+        private int station;
+        private int module;
+        private int dhull;
+        private int unknown;
+
+        private PlayerPickable(Map<String, VariantPolicy.HullFacts> hullsOrNull) {
+            Map<String, VariantPolicy.HullFacts> law = hullsOrNull;
+            Method hullSpec = null;
+            Method hullId = null;
+            String offReason = law == null ? "no_facts" : null;
+            if (law != null) {
+                try {
+                    ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
+                    Class<?> variantClass = Class.forName(HULL_VARIANT_SPEC_CLASS, false, loader);
+                    hullSpec = variantClass.getMethod("getHullSpec");
+                    hullId = hullSpec.getReturnType().getMethod("getHullId");
+                } catch (Throwable t) {
+                    offReason = unwrap(t).getClass().getSimpleName();
+                    law = null;
+                    hullSpec = null;
+                    hullId = null;
+                }
+            }
+            this.hulls = law;
+            this.getHullSpec = hullSpec;
+            this.getHullId = hullId;
+            if (offReason != null) {
+                System.out.println("pickable-variants pick_hull_law=off reason=" + offReason);
+            }
+        }
+
+        @Override
+        public boolean test(String id) {
+            Object variant;
+            try {
+                variant = resolveVariantById(id);
+            } catch (Throwable t) {
+                return false;
+            }
+            if (hulls == null) {
+                return true;
+            }
+            VariantPolicy.HullFacts facts;
+            try {
+                String hullId = (String) getHullId.invoke(getHullSpec.invoke(variant));
+                facts = hullId == null ? null : hulls.get(hullId);
+            } catch (Throwable t) {
+                facts = null;
+            }
+            if (facts == null) {
+                unknown++;
+                return false;
+            }
+            String refusal = VariantPolicy.playerHullRefusalOrNull(facts);
+            if (refusal == null) {
+                return true;
+            }
+            switch (refusal) {
+                case "fighter": fighter++; break;
+                case "station": station++; break;
+                case "module": module++; break;
+                case "dhull": dhull++; break;
+                default: unknown++; break;
+            }
+            return false;
+        }
+
+        /**
+         * Prints exactly ONE line of this predicate's refusal counts (all zero while the hull law is off);
+         * the caller invokes it once, after the scan.
+         */
+        public void logDropped() {
+            System.out.println("pickable-variants hull_law dropped fighter=" + fighter + " station=" + station
+                    + " module=" + module + " dhull=" + dhull + " unknown=" + unknown);
+        }
+    }
+
+    /**
+     * A {@link PlayerPickable} over the boot hull facts
+     * ({@code VariantPolicy.Catalog.hulls()}), or with the hull law off when {@code hullsOrNull} is null
+     * (an engine-less boot). Resolves its reflective handles once, here.
+     */
+    public static PlayerPickable playerPickable(Map<String, VariantPolicy.HullFacts> hullsOrNull) {
+        return new PlayerPickable(hullsOrNull);
+    }
+
+    /**
      * The FULL engine variant-registry keyset (every registered
      * {@code HullVariantSpec} id — hulls, npc, modules, stations, fighters), the
      * {@code /debugships} debug-catalogue source. The no-arg registry overload returns a FRESH
@@ -2588,17 +2830,39 @@ public final class RealEngineDemoRoster {
     }
 
     /**
-     * W7 B1b: every enabled mod's existing {@code data/variants} dir — the KIT's root FIRST, found by its
-     * mod ID ({@link PickableVariants#kitRootFirst}; the launcher's own order is by display NAME, so the kit
-     * led the walk only by luck), then the rest in launcher order — the reflective
-     * {@code ModManager} walk ({@code RealEngineContentInit}
-     * {@code registerEnabledModDataDirsIntoResourceRegistry} idiom). Fail-soft to EMPTY with a
-     * loud line: the {@code /ship} allowlist is a player nicety and must never fail a serve
-     * boot (the caller replies "picking unavailable" off an empty scan).
+     * W7 B1b: every enabled mod's existing {@code data/variants} dir in the order of
+     * {@link #enabledModVariantRootsWithKit()} (the KIT's root first, by mod id), without the separate kit
+     * root. Fail-soft to EMPTY with the same loud line.
      */
     public static List<java.io.File> enabledModVariantRoots() {
+        return enabledModVariantRootsWithKit().roots();
+    }
+
+    /**
+     * The enabled mods' {@code data/variants} roots, plus the kit's
+     * own root on its own. {@code roots} = the kit's root FIRST, by mod id, then the rest in launcher
+     * order ({@link PickableVariants#kitRootFirst}); {@code kitRootOrNull} = the root of the mod whose id
+     * is {@link PickableVariants#KIT_MOD_ID}, null when no enabled mod with that id has a
+     * {@code data/variants} dir. WHY the kit root rides separately: only the kit's own root feeds the wire
+     * catalog, and the pick scan excludes the kit's {@code npc/} folder by path — with no kit root,
+     * {@code roots.get(0)} is a foreign mod's root and must never stand in for the kit.
+     */
+    public record VariantRoots(List<java.io.File> roots, java.io.File kitRootOrNull) {}
+
+    /**
+     * Every enabled mod's existing {@code data/variants} dir — the
+     * KIT's root FIRST, found by its mod ID ({@link PickableVariants#kitRootFirst}; the launcher's own order
+     * is by display NAME, so the kit would lead the walk only by luck), then the rest in launcher order —
+     * plus the kit's root on its own ({@link VariantRoots#kitRootOrNull()}). The reflective
+     * {@code ModManager} walk ({@code RealEngineContentInit}
+     * {@code registerEnabledModDataDirsIntoResourceRegistry} idiom). Fail-soft to EMPTY roots and a null
+     * kit root with a loud line: the {@code /ship} allowlist is a player nicety and must never fail a serve
+     * boot (the caller replies "picking unavailable" off an empty scan).
+     */
+    public static VariantRoots enabledModVariantRootsWithKit() {
         List<String> ids = new ArrayList<>();
         List<java.io.File> roots = new ArrayList<>();
+        java.io.File kitRoot = null;
         try {
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
             Class<?> modManagerClass =
@@ -2613,6 +2877,9 @@ public final class RealEngineDemoRoster {
                 if (root.isDirectory()) {
                     ids.add(modId == null ? "" : modId);
                     roots.add(root);
+                    if (kitRoot == null && PickableVariants.KIT_MOD_ID.equals(modId)) {
+                        kitRoot = root;
+                    }
                 }
             }
         } catch (Throwable t) {
@@ -2620,9 +2887,9 @@ public final class RealEngineDemoRoster {
             System.out.println("real-engine-demo-roster enabled_mod_variant_roots_failed "
                     + cause.getClass().getName() + ": "
                     + (cause.getMessage() == null ? "" : cause.getMessage()));
-            return Collections.emptyList();
+            return new VariantRoots(List.of(), null);
         }
-        return PickableVariants.kitRootFirst(ids, roots);
+        return new VariantRoots(PickableVariants.kitRootFirst(ids, roots), kitRoot);
     }
 
     static Object resolveVariantById(ClassLoader loader, Class<?> hullVariantClass,

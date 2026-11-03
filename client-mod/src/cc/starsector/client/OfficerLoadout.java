@@ -247,6 +247,8 @@ public final class OfficerLoadout {
      */
     public static synchronized PersonAPI captainOrNull(String variantId,
             String seatDescriptorVariantIdOrNull, boolean seat) {
+        // a server-realized loadout id (cc_real_<goal>_<hex8>) keys the officer tables by its GOAL id
+        variantId = RealizedVariantId.goalOf(variantId);
         if (seat && allSkillsEnabled()) {
             return mintAllSkillsCaptain(variantId, seatDescriptorVariantIdOrNull);
         }

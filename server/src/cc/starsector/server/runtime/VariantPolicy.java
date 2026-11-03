@@ -469,6 +469,41 @@ public final class VariantPolicy {
         return null;
     }
 
+    /**
+     * The PLAYER-PICK hull law — the refusal class of a hull a
+     * player may not take as their own ship, or null when it is flyable. Classes: {@code fighter}
+     * (FIGHTER size), {@code station} (the STATION hint), {@code module} (the MODULE hint, a module
+     * anchor, or a {@code module_} id prefix), {@code dhull} (a default-D twin).
+     *
+     * <p>WHY a law of its own beside {@link #hullBase}: a station-module SLOT does not make a hull a
+     * station — some mods' flyable combat hulls carry one, and a slot-based refusal took them off the
+     * pick list. So {@link HullFacts#hasStationModuleSlot()} is NOT consulted here; a real station base
+     * is refused by its STATION hint. {@code hullBase} keeps the slot rule for the custom-variant tiers.
+     */
+    public static String playerHullRefusalOrNull(HullFacts h) {
+        if ("FIGHTER".equals(h.hullSize())) {
+            return "fighter";
+        }
+        if (h.hints().contains("STATION")) {
+            return "station";
+        }
+        if (h.hints().contains("MODULE") || h.hasModuleAnchor() || h.id().startsWith("module_")) {
+            return "module";
+        }
+        if (h.defaultDHull() || h.id().endsWith("_default_D")) {
+            return "dhull";
+        }
+        return null;
+    }
+
+    /**
+     * May a player pick a variant of this hull as their ship?
+     * True exactly when {@link #playerHullRefusalOrNull} names no refusal class.
+     */
+    public static boolean isPlayerHull(HullFacts h) {
+        return playerHullRefusalOrNull(h) == null;
+    }
+
     static String weaponBase(WeaponFacts w) {
         if (BASE_DENIED_WEAPON_TYPES.contains(w.type())) {
             return "type_" + w.type().toLowerCase(Locale.ROOT);

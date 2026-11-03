@@ -3,6 +3,8 @@ package cc.starsector.server.probes;
 import cc.starsector.server.transform.PilotShipWindow;
 import com.fs.starfarer.api.SettingsAPI;
 import com.fs.starfarer.api.combat.CombatEngineAPI;
+import com.fs.starfarer.api.combat.CombatEntityAPI;
+import com.fs.starfarer.api.combat.ShipAIPlugin;
 import com.fs.starfarer.api.combat.ShipAPI;
 
 /**
@@ -12,9 +14,10 @@ import com.fs.starfarer.api.combat.ShipAPI;
  * human-flown hull being advanced; everywhere else the engine's own getter answers, shuttle fabrication
  * included. Lives in the probe-api unit because it must be compiled against the game's API types, which the
  * product unit never links (reflection only); it lands in the server classes beside the holder, on the
- * system class path every mod loader delegates to. Main-written. The same class is the target of the redirected
+ * system class path every mod loader delegates to. The same class is the target of the redirected
  * LWJGL keyboard and mouse call sites and of the one {@code SettingsAPI.getControlStringForEnumName} interface call
- * (HOOK-0056, the ten twins below), so a rewritten class's pool gains one class reference whichever family it uses.
+ * (HOOK-0056, the ten twins below) and of the four pilot-state interface calls (the AI reads and the autopilot read,
+ * at the end), so a rewritten class's pool gains one class reference whichever family it uses.
  */
 public final class PilotShipCall {
 
@@ -72,7 +75,7 @@ public final class PilotShipCall {
      * whose hull's pilot sent a non-zero keymap, a control name among the 16 answers the pilot's OWN binding as the
      * engine would name it (null = unbound, the engine's own answer for an unbound control; the host's key is never
      * substituted); everywhere else — outside a window, a seat that sent no map, a name not among the 16 — the
-     * engine's own answer, its throw for an unknown name kept. Main-written
+     * engine's own answer, its throw for an unknown name kept.
      */
     public static String controlStringForEnumName(SettingsAPI settings, String name) {
         int entry = PilotShipWindow.controlEntryOrMinusOne(name);
@@ -80,5 +83,48 @@ public final class PilotShipCall {
             return settings.getControlStringForEnumName(name);
         }
         return entry == 0 ? null : PilotShipWindow.controlNameOrNull(entry);
+    }
+
+    // The pilot-state twins: the receiver-first shapes of the redirected ShipAPI.getAI / CombatEntityAPI.getAI /
+    // ShipAPI.getShipAI / CombatEngineAPI.isUIAutopilotOn interface calls. WHY: every seat hull on the serve carries a
+    // fast-time shim in its ship-AI slot, so a mod's "is this ship AI-driven?" branch (getAI() != null) would run its AI
+    // logic on a human-flown hull whose pilot's own screen has no AI. Inside an open window on the sim thread the AI
+    // reads answer null for the window's ROOT only (the real client nulls the piloted ship's AI and nothing else: a
+    // station module keeps its own AI, and in a module's window the answer is already the root), and the autopilot
+    // read answers true (the engine getter is inverted: true while a human flies the player ship); every other
+    // receiver and every call outside a window is the real call, the serve's own machinery untouched. A null receiver
+    // falls through to the real call's own throw. No allocation; a substituted answer counts ai_reads.
+    //
+
+    public static Object getAI(ShipAPI ship) {
+        if (ship != null && ship == PilotShipWindow.answerOrNull()) {
+            PilotShipWindow.countAiRead();
+            return null;
+        }
+        return ship.getAI();
+    }
+
+    public static Object getAI(CombatEntityAPI entity) {
+        if (entity != null && entity == PilotShipWindow.answerOrNull()) {
+            PilotShipWindow.countAiRead();
+            return null;
+        }
+        return entity.getAI();
+    }
+
+    public static ShipAIPlugin getShipAI(ShipAPI ship) {
+        if (ship != null && ship == PilotShipWindow.answerOrNull()) {
+            PilotShipWindow.countAiRead();
+            return null;
+        }
+        return ship.getShipAI();
+    }
+
+    public static boolean isUIAutopilotOn(CombatEngineAPI engine) {
+        if (engine != null && PilotShipWindow.answerOrNull() != null) {
+            PilotShipWindow.countAiRead();
+            return true;
+        }
+        return engine.isUIAutopilotOn();
     }
 }

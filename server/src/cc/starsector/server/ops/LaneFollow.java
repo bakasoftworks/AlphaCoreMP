@@ -283,7 +283,8 @@ public final class LaneFollow {
     }
 
     /** The launcher's own refusal sentence: the last {@code serve-launcher refused:} line of the
-     * start log's tail (both Start spawns append there), one printable line ≤ 320 chars; none =
+     * start log's tail (both Start spawns append there), one printable line of at most
+     * {@link ServeSupervisor#LAST_LINE_MAX_CHARS} chars (the one host-line bound); none =
      * {@code ""}. */
     public static String refusalSentence(Path log) {
         String prefix = ServeLauncher.REFUSED_PREFIX.trim();
@@ -291,7 +292,7 @@ public final class LaneFollow {
         for (int i = tail.size() - 1; i >= 0; i--) {
             String t = tail.get(i).trim();
             if (t.startsWith(prefix)) {
-                return oneLine(t, 320);
+                return oneLine(t, ServeSupervisor.LAST_LINE_MAX_CHARS);
             }
         }
         return "";
@@ -344,7 +345,7 @@ public final class LaneFollow {
             stateKey = "gone";
             List<String> tail = logTail(Paths.get(launch.logPath()), 1);
             text = (life == null ? "" : life.detailText() + " - ") + launchFailureHead(launch, phase)
-                    + (tail.isEmpty() ? "" : " - last log line: " + oneLine(tail.get(0).trim(), 320));
+                    + (tail.isEmpty() ? "" : " - last log line: " + oneLine(tail.get(0).trim(), ServeSupervisor.LAST_LINE_MAX_CHARS));
         }
         return "{\"phase\":\"" + phase.name() + "\",\"headline\":" + jsonText(headline)
                 + ",\"stateKey\":" + jsonText(stateKey)
@@ -418,7 +419,8 @@ public final class LaneFollow {
         return life > 0 && exit != 0 ? new LifeFailure(life, exit, exhausted, "") : null;
     }
 
-    /** The first head line of a life's stderr, as ONE printable ASCII line (≤ 320 chars, so the
+    /** The first head line of a life's stderr, as ONE printable ASCII line (at most
+     * {@link ServeSupervisor#LAST_LINE_MAX_CHARS} chars, the ops GUI's bound too, so the
      * key gate's 253-char line survives whole), reading at most the file's first
      * 64 KB; none/missing = {@code ""}. Two heads count and the first in file order wins: a stack
      * trace's first line ({@link #EXCEPTION_LINE}) as printed, and a premain seam's refusal row
@@ -429,11 +431,12 @@ public final class LaneFollow {
         for (String line : readHead(errLog, 65_536).lines().toList()) {
             String t = line.trim();
             if (EXCEPTION_LINE.matcher(t).matches()) {
-                return oneLine(t, 320);
+                return oneLine(t, ServeSupervisor.LAST_LINE_MAX_CHARS);
             }
             Matcher refused = PREMAIN_REFUSAL_LINE.matcher(t);
             if (refused.matches()) {
-                return oneLine(premainRefusalHostLine(refused.group(1), refused.group(2), t), 320);
+                return oneLine(premainRefusalHostLine(refused.group(1), refused.group(2), t),
+                        ServeSupervisor.LAST_LINE_MAX_CHARS);
             }
         }
         return "";

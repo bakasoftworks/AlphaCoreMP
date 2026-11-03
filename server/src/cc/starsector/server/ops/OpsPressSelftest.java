@@ -522,7 +522,7 @@ public final class OpsPressSelftest {
     /**
      * The launcher's verdicts as the window sees
      * them — the receipt's terminal rows ({@link LaneFollow#parseTerminalRow}), the exit-78 text,
-     * the 320 cut, the STAGING-guarded exit-0 verdict, the PENDING-Kill fold, and the REFUSED /
+     * the host-line cut, the STAGING-guarded exit-0 verdict, the PENDING-Kill fold, and the REFUSED /
      * STOPPED renders. Temp fixtures only (never owner mode's live package); every
      * FakeProcess ends exited.
      */
@@ -569,17 +569,20 @@ public final class OpsPressSelftest {
                 "exit78-text: '" + t78 + "' (flips if exit 78 reads 'supervisor relaunching' again"
                         + " or the 78 branch swallows other codes)");
 
-        // (3) cut-320: a 300-char exception head survives whole; a 400-char one is cut at 320
-        String head300 = "java.lang.IllegalStateException: " + "k".repeat(300 - 33);
+        // (3) cut-at-bound: a 500-char exception head survives whole; a 600-char one is cut at the one host-line
+        // bound, 512 since the reserved-port remedy; the fit row pins the longest line under it
+        int bound = ServeSupervisor.LAST_LINE_MAX_CHARS;
+        String head500 = "java.lang.IllegalStateException: " + "k".repeat(500 - 33);
         Path err = dir.resolve("life-1.err.log");
-        Files.writeString(err, "[cc-transform] armed\n" + head300 + "\n\tat x.y(Unknown Source)\n",
+        Files.writeString(err, "[cc-transform] armed\n" + head500 + "\n\tat x.y(Unknown Source)\n",
                 StandardCharsets.US_ASCII);
-        String got300 = LaneFollow.firstExceptionLine(err);
-        Files.writeString(err, head300 + "q".repeat(100) + "\n", StandardCharsets.US_ASCII);
-        String got400 = LaneFollow.firstExceptionLine(err);
-        check(head300.length() == 300 && got300.equals(head300) && got400.length() == 320,
-                "cut-320: a 300-char line came back " + got300.length() + " chars, a 400-char one "
-                        + got400.length() + " (flips if the cut reverts to 240 or is dropped)");
+        String got500 = LaneFollow.firstExceptionLine(err);
+        Files.writeString(err, head500 + "q".repeat(100) + "\n", StandardCharsets.US_ASCII);
+        String got600 = LaneFollow.firstExceptionLine(err);
+        check(bound == 512 && head500.length() == 500 && got500.equals(head500) && got600.length() == bound,
+                "cut-at-bound: a 500-char line came back " + got500.length() + " chars, a 600-char one "
+                        + got600.length() + ", bound " + bound + " (flips if the cut reverts below 512 - the"
+                        + " reserved-port remedy is 484 chars - or is dropped)");
 
         // (4) phase-exit0-staging: the pure decision, then the model's own STAGING wiring
         LaneFollow.LaneLaunch pub = LaneFollow.LaneLaunch.publicServe(1_000_000L, null);

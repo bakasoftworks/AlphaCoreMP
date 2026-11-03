@@ -83,7 +83,7 @@ public final class OpsSnapshot {
     private final boolean customKeptOverCap;
     private final boolean customInboxOverCap;
     /** The OPTIONAL shipped-ships rows {@code OpsStatusFile} writes for the
-     *  host's Hide / Show list - {@code ships.base_ids=} (the ids that come with the server, at most the writer's 64,
+     *  host's Hide / Show list - {@code ships.base_ids=} (the ids that come with the server, at most the row cap,
      *  hidden ones included), {@code ships.hidden_ids=}, {@code ships.over_cap=} (0/1), {@code ships.last=} (the last
      *  hide / show verdict, sanitized by the writer) and {@code ships.persist_failed=} (saves of the hidden list that
      *  failed). A pre-ships writer's file still parses: false / empty / {@code "-"} / 0, and {@link #shipsKnown} false. */
@@ -574,8 +574,8 @@ public final class OpsSnapshot {
         return shipsKnown;
     }
 
-    /** {@code ships.base_ids=}: the ids that come with the server, hidden ones included (at most the writer's 64;
-     *  empty when absent or {@code -}). */
+    /** {@code ships.base_ids=}: the ids that come with the server, hidden ones included (at most the writer's
+     *  {@value OpsStatusFile#SHIP_ID_ROW_CAP}; empty when absent or {@code -}). */
     public List<String> shipsBaseIds() {
         return shipsBaseIds;
     }
@@ -585,7 +585,8 @@ public final class OpsSnapshot {
         return shipsHiddenIds;
     }
 
-    /** {@code ships.over_cap=1}: the server has more shipped ids than the listed ones. */
+    /** {@code ships.over_cap=1}: the server has more shipped (or hidden) ids than the listed ones (a row cut at
+     *  {@value OpsStatusFile#SHIP_ID_ROW_CAP}), or its hidden-ships file holds ids past that file's own cap. */
     public boolean shipsOverCap() {
         return shipsOverCap;
     }

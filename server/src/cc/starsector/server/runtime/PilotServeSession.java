@@ -626,7 +626,10 @@ public final class PilotServeSession {
                 // for; an unservable document throws here and the open fails loud like the sibling door mints.
                 matchPassword == null ? null : ProbeMatchDoc.of(MatchDocPreflight.prepare(authority.descriptor())),
                 // The PvP shape places joiners by team (the door's team table)
-                MatchDescriptors.isPvpShape(authority.descriptor().shape()));
+                MatchDescriptors.isPvpShape(authority.descriptor().shape()),
+                // The LunaSettings sheet minted at boot (installServed) is HELD by
+                // this door — the one construction site a live serve walks; without it no probe reply ever carries LUNA.
+                LunaSheetMint.servedOrNull());
         try (PilotIntentDatagramServer door = replayFeed != null
                 ? PilotIntentDatagramServer.openReplay(authority, descriptorSeatCount, doorParams)
                 : PilotIntentDatagramServer.openMultiPeer(bindHost, bindPort, authority, descriptorSeatCount,
@@ -2356,11 +2359,15 @@ public final class PilotServeSession {
             // (bit 0x08 = its game reports its subsystem states, 0x10 = its subsystem class was patched), read
             // off the admitting F2 per NEW session, so a re-HELLO re-reads it. Bounded tokens only (a seat
             // number and two bits, never a name); observers (seat 0) have no hull and no row.
+            // + pilot=<0|1> = the HELLO's 0x20 report (its game's pilot-replica
+            // arm is applied), so a viewer whose replicas never applied is told apart from the host's log at once;
+            // a report only, nothing below keys on it. A replay session's recorded bits carry no such report (pilot=0).
             if (session.seatId() >= 1) {
                 int magicBits = session.helloMagicBits;
                 System.out.println("magic-seat seat=" + session.seatId()
                         + " up=" + ((magicBits & Handshake13.FLAG_MAGIC_UP) != 0 ? 1 : 0)
-                        + " replica=" + ((magicBits & Handshake13.FLAG_MAGIC_REPLICA) != 0 ? 1 : 0));
+                        + " replica=" + ((magicBits & Handshake13.FLAG_MAGIC_REPLICA) != 0 ? 1 : 0)
+                        + " pilot=" + ((magicBits & Handshake13.FLAG_PILOT_REPLICA) != 0 ? 1 : 0));
                 // Record the bits for the mark's FOLLOW flag (this session's
                 // boundary above already cleared the seat's mark, so the next applied frame re-points and reads
                 // them), and say once per admission why MagicLib abilities will NOT follow this pilot — only

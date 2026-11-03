@@ -51,7 +51,12 @@ final class CcReplicaEffectGate {
         mainThread = thread;
     }
 
-    /** Drop the dying window's binding — wrappers fall back to vanilla ({@code prebind} counts). */
+    /** Drop the dying window's binding — wrappers fall back to vanilla ({@code prebind} counts).
+     *  The onFire relay's combat-boundary reset is NOT here any more: the teardown calls this method BEFORE its
+     *  eventReplay meter line, so a reset here zeroed every per-combat relay token on the {@code [teardown]} row.
+     *  {@code PredictReconcileCombatPlugin.teardownActiveBody} resets the relay right AFTER that line; the next window's
+     *  presenter constructor resets it again at birth. An unbound gate already keeps the relay idle in between
+     *  ({@link #isTreatedReplica} answers false). */
     static void unbind() {
         consumer = null;
         mainThread = null;

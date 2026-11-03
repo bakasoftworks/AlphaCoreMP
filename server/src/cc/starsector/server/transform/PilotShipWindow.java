@@ -19,7 +19,7 @@ import cc.starsector.server.runtime.PilotControlNames;
  * the match and writes the receipt {@code latched:<reason>} — fail-safe towards today's behaviour. The mirror
  * (hull -> answer) is written by the pilot-mark writer at its re-point and clear edges only, never per frame;
  * a station module is marked with its root as the answer, so module code sees the root as the player, as in
- * single player. Main-written (the player-ship design: the window, the mirrored mark, the receipt; the holder
+ * single player. (the player-ship design: the window, the mirrored mark, the receipt; the holder
  * sits in the transform package so cc-premain.jar and cc-server.jar both pack it).
  *
  * <p>The pilot's held input rides beside the mirror, one slot per entry: the held LWJGL key codes (packed eight to
@@ -66,6 +66,8 @@ public final class PilotShipWindow {
     private static final long[] PILOT_KEYS = new long[MIRROR_CAPACITY];
     private static final int[] PILOT_MOUSE = new int[MIRROR_CAPACITY];
     private static final int[] PILOT_CONTROLS = new int[MIRROR_CAPACITY];
+    /** Per entry, per tenure: the control bits this hull's scripts asked about inside its window (zeroed on mark). */
+    private static final int[] PILOT_ASKED = new int[MIRROR_CAPACITY];
     /**
      * The pilot's own binding of each control, packed as the seat's HELLO carries it: {@code PILOT_MAP_LO} = control
      * bytes 0..7, {@code PILOT_MAP_HI} = 8..15, byte i at bits {@code ((i & 7) << 3)..+7}; 0/0 = no map, the serve's
@@ -90,7 +92,42 @@ public final class PilotShipWindow {
     private static long keyPushes;
     private static long keyReads;
     private static long nameReads;
+    private static long aiReads;
     private static long pushUnmarked;
+
+    /**
+     * The serve key-edge log: one {@code System.out} row per transition of the levels the serve answers a hull's own
+     * key polls from (a control bit of the applied frame, a key code entering or leaving its eight slots), stamped
+     * with the sim tick and seat {@link #noteApplied} stored for that frame. WHY: a hull mod that decides on a key
+     * edge (a double tap) decides on the serve from these pushed levels and on a watching replica from the mark it
+     * receives; counting the edges each side saw per bit tells which side judged a different input, and no other
+     * per-frame record of the pushed levels exists. Laws: default OFF ({@code -Dcc.pilot.keyEdgeLog=true} arms it,
+     * read once at class init), and OFF costs {@link #pushPilotState} one boolean test; ON prints at most
+     * {@link #KEY_EDGE_ROW_CAP} rows per process, then one {@code key-edge ROW CAP reached} line and nothing more;
+     * a row is written only past the push's own thread gate, so never off the bound sim thread; rows carry bounded
+     * tokens only (ticks, seat numbers, bit indexes, key codes, hex levels). The census probes' sink laws (sysprop
+     * arm, {@code System.out}, one cap line) are mirrored here rather than shared: this holder is packed into the
+     * premain jar too and links nothing in the bridge package.
+     *
+     */
+    public static final String KEY_EDGE_LOG_SYSPROP = "cc.pilot.keyEdgeLog";
+    /** The key-edge log's arm as the JVM started (read once). */
+    private static final boolean KEY_EDGE_LOG_ARMED =
+            "true".equalsIgnoreCase(System.getProperty(KEY_EDGE_LOG_SYSPROP));
+    /** Key-edge rows per process; the row that reaches it carries the one cap line. */
+    public static final int KEY_EDGE_ROW_CAP = 4096;
+    /**
+     * The live gate {@link #pushPilotState} tests: the class-init arm, flipped only by {@link #keyEdgeLogForTests}
+     * (a static final would fold, but no row could then drive the armed path in the suite's own JVM).
+     */
+    private static boolean keyEdgeLog = KEY_EDGE_LOG_ARMED;
+    private static int keyEdgeRows;
+    /**
+     * The applied frame's sim tick (&gt;= 0) and seat (&gt;= 1, -1 = unknown) the next push's rows carry; 0/0 = never
+     * noted.
+     */
+    private static long appliedTick;
+    private static int appliedSeat;
 
     private PilotShipWindow() {
     }
@@ -214,6 +251,7 @@ public final class PilotShipWindow {
         PILOT_KEYS[i] = 0L;
         PILOT_MOUSE[i] = 0;
         PILOT_CONTROLS[i] = 0;
+        PILOT_ASKED[i] = 0;
         PILOT_MAP_LO[i] = 0L;
         PILOT_MAP_HI[i] = 0L;
     }
@@ -251,6 +289,7 @@ public final class PilotShipWindow {
             PILOT_KEYS[w] = PILOT_KEYS[i];
             PILOT_MOUSE[w] = PILOT_MOUSE[i];
             PILOT_CONTROLS[w] = PILOT_CONTROLS[i];
+            PILOT_ASKED[w] = PILOT_ASKED[i];
             PILOT_MAP_LO[w] = PILOT_MAP_LO[i];
             PILOT_MAP_HI[w] = PILOT_MAP_HI[i];
             w++;
@@ -268,7 +307,8 @@ public final class PilotShipWindow {
      * {@code hull}'s own entry (the root and its station modules), so module code hears its root's pilot, as it sees
      * its root as the player. Sim thread only, the {@link #mark} rule: a call off the bound thread is ignored and
      * counted ({@code off_thread}); a hull with no entry is ignored and counted ({@link #pushUnmarkedCount}). At most
-     * {@link #MIRROR_CAPACITY} identity compares and three stores per entry; no allocation. {@code keyCodes} = up to
+     * {@link #MIRROR_CAPACITY} identity compares and five stores per entry; no allocation while the key-edge log
+     * ({@link #KEY_EDGE_LOG_SYSPROP}) is OFF. {@code keyCodes} = up to
      * eight LWJGL codes, one per byte (ascending, zero pad, as the pilot frame packs them); {@code mouseButtons} bit b
      * = button b; {@code controlKeys} bit i = the pilot's own key for control bit i. This form carries no keymap:
      * it is {@link #pushPilotState(Object, long, int, int, long, long)} at 0/0, so the serve's own key for each
@@ -285,7 +325,8 @@ public final class PilotShipWindow {
      * stale map, and it costs two more stores per entry. {@code mapLo} = control bytes 0..7, {@code mapHi} = 8..15,
      * byte i at bits {@code ((i & 7) << 3)..+7}: 0 = unbound, 1..0xDF an LWJGL key code, 0xF0..0xF7 mouse button
      * 0..7; 0/0 = no map, the serve's own table answers. The bytes are taken as given (the handshake refuses an
-     * unlawful one); the reads stay inside their own ranges whatever a byte holds.
+     * unlawful one); the reads stay inside their own ranges whatever a byte holds. Armed, the key-edge log
+     * ({@link #logKeyEdges}) names this push's transitions against the root's entry before the store.
      *
      */
     public static void pushPilotState(Object hull, long keyCodes, int mouseButtons, int controlKeys, long mapLo,
@@ -312,6 +353,9 @@ public final class PilotShipWindow {
         }
         int mouse = mouseButtons & 0xFF;
         int controls = controlKeys & 0xFFFF;
+        if (keyEdgeLog) {
+            logKeyEdges(root, n, keyCodes, controls);
+        }
         for (int i = 0; i < n; i++) {
             if (ROOTS[i] == root) {
                 PILOT_KEYS[i] = keyCodes;
@@ -322,6 +366,122 @@ public final class PilotShipWindow {
             }
         }
         keyPushes++;
+    }
+
+    /**
+     * Stamps the applied pilot frame the next {@link #pushPilotState} belongs to: {@code simTick} (&gt;= 0, the serve's
+     * tick the frame applies at) and {@code seat} (&gt;= 1, -1 = unknown), carried by the key-edge rows that push
+     * prints. Two plain stores whatever the log's arm, so the stamp is true the moment a log arms; sim thread only
+     * (the applier calls it right before its push).
+     */
+    public static void noteApplied(long simTick, int seat) {
+        appliedTick = simTick;
+        appliedSeat = seat;
+    }
+
+    /**
+     * The armed key-edge log for one push: compares {@code keyCodes} / {@code controls} (already masked to 16 bits)
+     * with what the FIRST entry answering {@code root} holds before the store (the root and its modules receive the
+     * same levels, so one row set per root), and prints one row per changed control bit (ascending), then per key
+     * code that entered the eight slots, then per code that left them (zero bytes are padding, never a code):
+     * {@code pilotship key-edge tick=<t> seat=<s> bit=<i> <rise|fall> controls=0x<hex4>} and
+     * {@code pilotship key-edge tick=<t> seat=<s> key=<code> <rise|fall> keys=0x<hex16>}, each carrying the NEW level.
+     * An entry re-marked (its levels zeroed at the re-point) or compacted compares against whatever its slot holds,
+     * so a stale slot yields at most one spurious edge per bit or code on the first push after it. Never throws; the
+     * caller already passed the thread gate and found the root.
+     */
+    private static void logKeyEdges(Object root, int n, long keyCodes, int controls) {
+        if (keyEdgeRows >= KEY_EDGE_ROW_CAP) {
+            return;
+        }
+        int e = -1;
+        for (int i = 0; i < n; i++) {
+            if (ROOTS[i] == root) {
+                e = i;
+                break;
+            }
+        }
+        if (e < 0) {
+            return;
+        }
+        long oldKeys = PILOT_KEYS[e];
+        int changed = PILOT_CONTROLS[e] ^ controls;
+        if (changed == 0 && oldKeys == keyCodes) {
+            return;
+        }
+        String head = "pilotship key-edge tick=" + appliedTick + " seat=" + appliedSeat;
+        for (int b = 0; b < CONTROL_BITS && changed != 0; b++) {
+            if (((changed >>> b) & 1) != 0) {
+                keyEdgeRow(head + " bit=" + b + (((controls >>> b) & 1) != 0 ? " rise" : " fall") + " controls=0x"
+                        + hex(controls, 4));
+            }
+        }
+        if (oldKeys == keyCodes) {
+            return;
+        }
+        for (int s = 0; s < KEY_SLOTS; s++) {
+            int code = slotCode(keyCodes, s);
+            if (code != 0 && !holdsBefore(keyCodes, s, code) && !holdsCode(oldKeys, code)) {
+                keyEdgeRow(head + " key=" + code + " rise keys=0x" + hex(keyCodes, 16));
+            }
+        }
+        for (int s = 0; s < KEY_SLOTS; s++) {
+            int code = slotCode(oldKeys, s);
+            if (code != 0 && !holdsBefore(oldKeys, s, code) && !holdsCode(keyCodes, code)) {
+                keyEdgeRow(head + " key=" + code + " fall keys=0x" + hex(keyCodes, 16));
+            }
+        }
+    }
+
+    /** One counted key-edge row; the row that reaches {@link #KEY_EDGE_ROW_CAP} carries the one cap line. */
+    private static void keyEdgeRow(String text) {
+        if (keyEdgeRows >= KEY_EDGE_ROW_CAP) {
+            return;
+        }
+        keyEdgeRows++;
+        System.out.println(text);
+        if (keyEdgeRows == KEY_EDGE_ROW_CAP) {
+            System.out.println("key-edge ROW CAP reached (" + KEY_EDGE_ROW_CAP + "); further rows suppressed");
+        }
+    }
+
+    private static int slotCode(long packed, int slot) {
+        return (int) ((packed >>> (8 * slot)) & 0xFF);
+    }
+
+    /** Whether {@code code} sits in a slot below {@code slot} (a repeated code yields one row, not one per slot). */
+    private static boolean holdsBefore(long packed, int slot, int code) {
+        for (int s = 0; s < slot; s++) {
+            if (slotCode(packed, s) == code) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean holdsCode(long packed, int code) {
+        return holdsBefore(packed, KEY_SLOTS, code);
+    }
+
+    /** {@code v}'s low {@code digits} nibbles as lowercase hex, zero-padded. */
+    private static String hex(long v, int digits) {
+        char[] c = new char[digits];
+        long x = v;
+        for (int d = digits - 1; d >= 0; d--) {
+            c[d] = Character.forDigit((int) (x & 0xF), 16);
+            x >>>= 4;
+        }
+        return new String(c);
+    }
+
+    /**
+     * Test-only: sets the key-edge log's live arm (the class-init sysprop read cannot be flipped) and answers the prior
+     * one so the row restores it; {@link #resetForTests} returns it to the class-init arm.
+     */
+    public static boolean keyEdgeLogForTests(boolean armed) {
+        boolean prior = keyEdgeLog;
+        keyEdgeLog = armed;
+        return prior;
     }
 
     /**
@@ -342,28 +502,52 @@ public final class PilotShipWindow {
             return false;
         }
         keyReads++;
+        long lo = PILOT_MAP_LO[e];
+        long hi = PILOT_MAP_HI[e];
+        // a mouse byte (0xF0..) or an out-of-domain byte never names a key
+        int asked = (lo | hi) == 0L ? (CONTROL_BIT_FOR_KEY[code] < 0 ? 0 : 1 << CONTROL_BIT_FOR_KEY[code])
+                : code > PilotControlNames.KEY_MAX ? 0 : controlBitsFor(code, lo, hi);
+        PILOT_ASKED[e] |= asked;
         long keys = PILOT_KEYS[e];
         for (int slot = 0; slot < KEY_SLOTS; slot++) {
             if ((int) ((keys >>> (slot << 3)) & 0xFFL) == code) {
                 return true;
             }
         }
-        int controls = PILOT_CONTROLS[e];
-        long lo = PILOT_MAP_LO[e];
-        long hi = PILOT_MAP_HI[e];
-        if ((lo | hi) == 0L) {
-            int bit = CONTROL_BIT_FOR_KEY[code];
-            return bit >= 0 && ((controls >>> bit) & 1) != 0;
-        }
-        if (code > PilotControlNames.KEY_MAX || controls == 0) {
-            return false; // a mouse byte (0xF0..) or an out-of-domain byte never names a key
-        }
+        return (PILOT_CONTROLS[e] & asked) != 0;
+    }
+
+    /**
+     * The control bits whose keymap byte is {@code entry} (sixteen compares). WHY the reads record them: the held
+     * controls go to other screens masked by what this hull's own scripts asked about, so a control no script polls
+     * never leaves the serve.
+     */
+    private static int controlBitsFor(int entry, long lo, long hi) {
+        int bits = 0;
         for (int i = 0; i < CONTROL_BITS; i++) {
-            if (((controls >>> i) & 1) != 0 && PilotControlNames.entry(lo, hi, i) == code) {
-                return true;
+            if (PilotControlNames.entry(lo, hi, i) == entry) {
+                bits |= 1 << i;
             }
         }
-        return false;
+        return bits;
+    }
+
+    /**
+     * The control bits the windows of {@code hull}'s root asked about since its entries were marked (the OR over
+     * every entry answering that root; 0 for an unmarked hull). Sim thread, the mark writer's per-frame read: at most
+     * two passes of {@link #MIRROR_CAPACITY} identity compares, no allocation.
+     */
+    public static int askedControls(Object hull) {
+        int n = marked;
+        Object root = null;
+        for (int j = 0; j < n && root == null; j++) {
+            root = HULLS[j] == hull ? ROOTS[j] : null;
+        }
+        int asked = 0;
+        for (int i = 0; root != null && i < n; i++) {
+            asked |= ROOTS[i] == root ? PILOT_ASKED[i] : 0;
+        }
+        return asked;
     }
 
     /**
@@ -380,22 +564,11 @@ public final class PilotShipWindow {
             return false;
         }
         keyReads++;
-        if (((PILOT_MOUSE[e] >>> b) & 1) != 0) {
-            return true;
-        }
-        int controls = PILOT_CONTROLS[e];
         long lo = PILOT_MAP_LO[e];
         long hi = PILOT_MAP_HI[e];
-        if ((lo | hi) == 0L || controls == 0) {
-            return false;
-        }
-        int want = PilotControlNames.MOUSE_BASE + b;
-        for (int i = 0; i < CONTROL_BITS; i++) {
-            if (((controls >>> i) & 1) != 0 && PilotControlNames.entry(lo, hi, i) == want) {
-                return true;
-            }
-        }
-        return false;
+        int asked = (lo | hi) == 0L ? 0 : controlBitsFor(PilotControlNames.MOUSE_BASE + b, lo, hi);
+        PILOT_ASKED[e] |= asked;
+        return ((PILOT_MOUSE[e] >>> b) & 1) != 0 || (PILOT_CONTROLS[e] & asked) != 0;
     }
 
     /**
@@ -539,16 +712,27 @@ public final class PilotShipWindow {
     }
 
     /**
+     * Counts one pilot-state read the redirect target answered for the window's pilot (an AI read answered null for
+     * the window's root, the autopilot read answered true). Called on the sim thread only, inside an open window: the
+     * twins substitute an answer nowhere else.
+     */
+    public static void countAiRead() {
+        aiReads++;
+    }
+
+    /**
      * One bounded off-frame row per match: {@code pilotship windows=.. scoped=.. max_depth=.. leaks=.. off_thread=..
-     * overflows=.. [latched=..] name_reads=.. key_pushes=.. key_reads=..} — {@code name_reads} = by-name control
-     * reads answered from a pilot's keymap inside its window, {@code key_pushes} = applied pilot frames written into an
-     * entry, {@code key_reads} = redirected key / button reads answered from a pilot's entry inside its window. The two
-     * key counters stay LAST (readers pin the row's tail).
+     * overflows=.. [latched=..] name_reads=.. key_pushes=.. key_reads=.. ai_reads=..} — {@code name_reads} = by-name
+     * control reads answered from a pilot's keymap inside its window, {@code key_pushes} = applied pilot frames written
+     * into an entry, {@code key_reads} = redirected key / button reads answered from a pilot's entry inside its window,
+     * {@code ai_reads} = pilot-state reads answered for the window's pilot ({@link #countAiRead}). The two key counters
+     * stay adjacent and in order; {@code ai_reads} closes the row (readers pin the tail).
      */
     public static String metersRow() {
         return "pilotship windows=" + windows + " scoped=" + scoped + " max_depth=" + maxDepth + " leaks=" + leaks
                 + " off_thread=" + offThread + " overflows=" + overflows + (latched ? " latched=" + latchReason : "")
-                + " name_reads=" + nameReads + " key_pushes=" + keyPushes + " key_reads=" + keyReads;
+                + " name_reads=" + nameReads + " key_pushes=" + keyPushes + " key_reads=" + keyReads
+                + " ai_reads=" + aiReads;
     }
 
     private static void latch(String reason) {
@@ -583,6 +767,7 @@ public final class PilotShipWindow {
         java.util.Arrays.fill(PILOT_KEYS, 0L);
         java.util.Arrays.fill(PILOT_MOUSE, 0);
         java.util.Arrays.fill(PILOT_CONTROLS, 0);
+        java.util.Arrays.fill(PILOT_ASKED, 0);
         java.util.Arrays.fill(PILOT_MAP_LO, 0L);
         java.util.Arrays.fill(PILOT_MAP_HI, 0L);
         java.util.Arrays.fill(CONTROL_BIT_FOR_KEY, -1);
@@ -600,6 +785,11 @@ public final class PilotShipWindow {
         keyPushes = 0;
         keyReads = 0;
         nameReads = 0;
+        aiReads = 0;
         pushUnmarked = 0;
+        keyEdgeLog = KEY_EDGE_LOG_ARMED;
+        keyEdgeRows = 0;
+        appliedTick = 0L;
+        appliedSeat = 0;
     }
 }

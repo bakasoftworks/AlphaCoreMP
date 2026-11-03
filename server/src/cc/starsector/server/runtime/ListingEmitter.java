@@ -223,6 +223,27 @@ public final class ListingEmitter {
         return entries;
     }
 
+    /**
+     * The door probe's KIND_MODSET rows behind a reserved FIRST row, the LunaSettings announce: token
+     * {@link LunaSheetCodec#ANNOUNCE_TOKEN} (token-lawful but never a mod id, which starts alphanumeric), mark REQUIRED,
+     * version label = {@code term} (the served sheet's {@code <digest16>:<rows>}, or {@link LunaSheetCodec#NO_SHEET_TERM}),
+     * files word 0; then {@link #modSetEntries(ModSet, ModSet)}. WHY first: the frame cap cuts a listing's tail, never
+     * its head, so the announce survives any set width. A null set = the announce row alone (a set-less door still
+     * announces; the optional rows ride only beside a required set, as before). A {@code term} outside the
+     * target-label law (1..24 printable ASCII, trimmed) throws at the encode, never here.
+     *
+     */
+    public static List<ListingEntry> modSetEntriesWithAnnounce(String term, ModSet setOrNull, ModSet optionalOrNull) {
+        Objects.requireNonNull(term, "term");
+        List<ListingEntry> entries = new ArrayList<ListingEntry>();
+        entries.add(new ListingEntry(LunaSheetCodec.ANNOUNCE_TOKEN, ListingFrameCodec.MARK_MODSET_REQUIRED, false,
+                term, null, 0L));
+        if (setOrNull != null) {
+            entries.addAll(modSetEntries(setOrNull, optionalOrNull));
+        }
+        return entries;
+    }
+
     /** {@code /module} rows: occupancy → kind-scoped mark; the claim rides the flag bit
      * (orthogonal axes); occupant label only on TAKEN, emission-stripped. */
     public static List<ListingEntry> moduleEntries(List<SeatRebindArbiter.ModuleRow> rows) {

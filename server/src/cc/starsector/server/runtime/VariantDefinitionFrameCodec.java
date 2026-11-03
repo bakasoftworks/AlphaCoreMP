@@ -97,13 +97,15 @@ public final class VariantDefinitionFrameCodec {
     public static final int MAX_VARIANTS_TOTAL = 256;
     /**
      * ONE admission-burst budget every VDEF producer sums under. A late
-     * joiner's catch-up spools boot frames (≤ {@link #MAX_VARIANTS_TOTAL}) + accepted customs
+     * joiner's catch-up spools boot frames (≤ {@link #MAX_VARIANTS_TOTAL} 256) + accepted customs
      * (≤ {@code SubmittedVariantLedger.GLOBAL_CAP} 64) + live wave bodies
-     * (≤ {@code WaveLoadoutInflater.REGISTER_CAP}) back-to-back into ONE CTRL spool whose death
+     * (≤ {@code WaveLoadoutInflater.REGISTER_CAP} 576) + realized seat loadouts
+     * (≤ {@code RealizedLoadoutLane.REGISTER_CAP} 64, carved from the wave term) back-to-back into ONE
+     * CTRL spool whose death
      * bound is the reliability window + {@code PilotIntentDatagramServer.CTRL_SPOOL_BOUND} (512 + 512
      * = 1024 frames, then {@code ctrl_window_stall} kills the session); this budget leaves
      * {@link #VDEF_CTRL_MARGIN} frames of that spool to the other admission traffic (PSTB, RAPP,
-     * seat baseline). The three producers' caps are asserted to sum under it
+     * seat baseline). The four producers' caps are asserted to sum to it, 256 + 64 + 576 + 64 = 960
      * ({@code WaveInflateContractRows.budgetRows}) and the client queue derives from it
      * ({@link #VDEF_CLIENT_QUEUE_CAP}, mirrored by {@code CcClientVdefVerifier}).
      */

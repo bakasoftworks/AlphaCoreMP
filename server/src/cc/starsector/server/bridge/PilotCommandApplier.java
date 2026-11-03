@@ -9,6 +9,7 @@ import static cc.starsector.server.bridge.EngineCombatBinding.numberAsInt;
 import cc.starsector.server.adapter.ShipCommandSink;
 import cc.starsector.server.bridge.EngineCombatBinding.EngineBindingException;
 import cc.starsector.server.bridge.EngineCombatBinding.PilotApplyResult;
+import cc.starsector.server.transform.PilotShipReplicaFollow;
 import cc.starsector.server.transform.PilotShipWindow;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -344,11 +345,12 @@ final class PilotCommandApplier {
         // (the engine's own capture/reinject filter law).
         int cancelPressesBefore = state.systemCancelPresses;
         int ventPressesBefore = state.ventsIssued + state.ventRePresses;
-        applyPilotMark(ship, held, state.seatId, state); // pre-advance: a mod's every-frame plugin reads it this tick
+        applyPilotMark(ship, held, frame.controlKeys(), state.seatId, state); // pre-advance: a mod's plugin reads it this tick
         // The pilot's held keys, mouse buttons and control keys, AFTER the mark
         // (its first write publishes the mirror entry this lands in), so the hull's own redirected key polls hear
         // this frame's input inside this tick's advance window; the mark's clear edges drop it with the entry. The
         // seat's keymap (read once per hull tenure at the mark's re-point) rides with it.
+        PilotShipWindow.noteApplied(simTick, state.seatId);
         PilotShipWindow.pushPilotState(ship, frame.keyCodes(), frame.mouseButtons(), frame.controlKeys(),
                 state.pilotKeymapLo, state.pilotKeymapHi);
         boolean systemActivated = applySystemBit(ship, held, simTick, frame.shipId(), state);
@@ -1848,8 +1850,15 @@ final class PilotCommandApplier {
      * answers itself and each of its station modules answers the hull), so the ship-advance window scopes the
      * hull's own code from the same tick, and every edge that removes the mark unmarks it.
      *
+     *
+     * <p>The mark is 5 long when the replica gate's bit 1 holds at the re-point ({@link PilotShipReplicaFollow});
+     * flags bits 1-2 are that gate's, re-evaluated every frame. {@code [4]} = the frame's {@code controlKeys}: masked
+     * by the controls the hull's scripts asked about ({@link PilotShipWindow#askedControls}) while bit 2 holds, the
+     * full u16 while bit 1 holds alone (an adopter reads the mark outside any window). A flags
+     * bit outside 0..2 (another writer's) is counted once per tenure ({@link PilotApplyState#pilotMarkForeign}; S2-2).
+     *
      */
-    void applyPilotMark(Object ship, int held, int seatId, PilotApplyState state) {
+    void applyPilotMark(Object ship, int held, int controlKeys, int seatId, PilotApplyState state) {
         if (seatId < 1 || shipGetCustomData == null) {
             state.pilotMarkUnbound = true;
             return;
@@ -1866,7 +1875,9 @@ final class PilotCommandApplier {
             // frame (a null source = 0 = the serve's own map); every applied frame's held-state push carries it.
             state.pilotKeymapLo = state.pilotKeymapLoSource == null ? 0L : state.pilotKeymapLoSource.getAsLong();
             state.pilotKeymapHi = state.pilotKeymapHiSource == null ? 0L : state.pilotKeymapHiSource.getAsLong();
-            int[] mark = new int[] {seatId, 0, 0, flags};
+            replicaTerms = PilotShipReplicaFollow.readServeTerms(); // match-wide terms, refreshed at every tenure edge
+            int[] mark = PilotShipReplicaFollow.controlsPresent(replicaFlags()) ? new int[] {seatId, 0, 0, flags, 0}
+                    : new int[] {seatId, 0, 0, flags};
             try {
                 if (shipSetCustomData != null) {
                     invoke(shipSetCustomData, ship, "ShipAPI.setCustomData(pilot mark)", PILOT_MARK_KEY, mark);
@@ -1885,8 +1896,11 @@ final class PilotCommandApplier {
             state.pilotMark = mark;
             state.pilotMarkShip = ship;
             state.pilotMarkWrites++;
+            state.pilotMarkForeignSeen = false;
             state.abilityQuarantineClear = 0;
             mirrorPilotShip(ship);
+            printReplicaPilotOnChange(seatId, mark.length > PILOT_CONTROLS_SLOT && (replicaFlags()
+                    & PilotShipReplicaFollow.REPLICA_FOLLOW) != 0);
         }
         boolean quarantined = state.abilityQuarantineClear < ABILITY_EDGE_QUARANTINE_CLEAR_FRAMES;
         if (quarantined) {
@@ -1898,6 +1912,67 @@ final class PilotCommandApplier {
             }
         }
         state.pilotMark[1] = quarantined ? 0 : mask;
+        // Bits 1-2 and [4] re-evaluated on EVERY applied frame and
+        // stored in place, so a mid-match latch drops bit 2 on the next frame rather than at the next tenure. A
+        // 4-long mark (bit 1 clear at its re-point) never claims bits 1-2; a 5-long one whose bit 1 fell holds 0.
+        int[] m = state.pilotMark;
+        countForeignFlagsOncePerTenure(m[3], seatId, state);
+        int gate = m.length > PILOT_CONTROLS_SLOT ? replicaFlags() : 0;
+        m[3] = (m[3] & ~PilotShipReplicaFollow.GATE_BITS) | gate;
+        if (m.length > PILOT_CONTROLS_SLOT) {
+            // The asked mask applies ONLY on the window path (bit 2 with no
+            // adopter term): there [4] is read by rewritten scripts, whose own polls inside the serve's window fill the
+            // asked set, so it carries only the controls the hull's scripts asked about. Whenever the adopter term
+            // holds, the full u16 rides whatever bit 2 says: an adopter reads the mark outside any window, nothing is
+            // ever asked, and a masked slot would read 0 forever on the serve and on every replica.
+            m[PILOT_CONTROLS_SLOT] = !PilotShipReplicaFollow.controlsPresent(gate) ? 0
+                    : (gate & PilotShipReplicaFollow.REPLICA_FOLLOW) != 0
+                            && (replicaTerms & PilotShipReplicaFollow.T_ADOPTER) == 0
+                            ? controlKeys & PilotShipWindow.askedControls(ship) & 0xFFFF
+                            : controlKeys & 0xFFFF;
+        }
+    }
+
+    /**
+     * A flags bit outside the defined 0..2 in the mark's own array = some other writer's (a mod on the serve can reach
+     * the hull's custom data): counted once per hull tenure on the state and printed once per tenure as the row
+     * {@code pilot-mark seat=<n> mark_foreign=<tenures>}. The bits stay as written (evidence for the log); the
+     * maneuver read canonicalizes them before the wire ({@code EngineCombatBinding.readPilotMark}), so no capture
+     * ever throws on them.
+     */
+    private static void countForeignFlagsOncePerTenure(int flags, int seatId, PilotApplyState state) {
+        if (state.pilotMarkForeignSeen
+                || (flags & ~cc.starsector.server.protocol.ShipManeuverCommandSnapshot.PILOT_FLAGS_DEFINED) == 0) {
+            return;
+        }
+        state.pilotMarkForeignSeen = true;
+        state.pilotMarkForeign++;
+        System.out.println("pilot-mark seat=" + seatId + " mark_foreign=" + state.pilotMarkForeign);
+    }
+
+    /** The mark's slot for the pilot's applied held controls (present iff the mark is 5 long). */
+    static final int PILOT_CONTROLS_SLOT = 4;
+    /** The replica gate's match-wide terms ({@link PilotShipReplicaFollow#readServeTerms}), read at each re-point. */
+    private int replicaTerms;
+    /** Per seat 1..255: the last printed {@code replica_pilot} value + 1 (0 = never printed). */
+    private final byte[] replicaPilotPrinted = new byte[256];
+
+    /** This frame's gate: the tenure-edge terms, the frame applied, and the window latch's one volatile read. */
+    private int replicaFlags() {
+        return PilotShipReplicaFollow.flags(replicaTerms, true, PilotShipWindow.latched());
+    }
+
+    /**
+     * The per-seat row {@code pilot-mark seat=<n> replica_pilot=<0|1>} (1 = other screens may run this pilot's hull
+     * scripts as the pilot's), printed at a tenure edge only when the seat's value changed: never per frame, at most
+     * a few rows per seat per match.
+     */
+    private void printReplicaPilotOnChange(int seatId, boolean follow) {
+        byte v = (byte) (follow ? 2 : 1);
+        if (seatId >= 1 && seatId < replicaPilotPrinted.length && replicaPilotPrinted[seatId] != v) {
+            replicaPilotPrinted[seatId] = v;
+            System.out.println("pilot-mark seat=" + seatId + " replica_pilot=" + (follow ? 1 : 0));
+        }
     }
 
     /**

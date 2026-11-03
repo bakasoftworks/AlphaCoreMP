@@ -10,6 +10,7 @@ import cc.starsector.server.match.WaveSchedule;
 import cc.starsector.server.runtime.ModSet; //
 import cc.starsector.server.runtime.OperatorCommandFile;
 import cc.starsector.server.runtime.WireKnob; //
+import cc.starsector.server.transform.PilotShipReplicaFollow;
 import cc.starsector.server.transform.RngPinKnobs;
 import cc.starsector.server.transform.TransformRegistry;
 
@@ -461,6 +462,73 @@ public final class OpsMatchRows {
      * an absent row as on - three places that agree. */
     public static String pilotShipFieldPrefill(List<String> lines) {
         return "false".equals(fieldPrefill(lines, PILOT_SHIP_KEY, "true")) ? "off" : "on";
+    }
+
+    // ---------------------------------------------- other players' screens follow each pilot's keys
+
+    /**
+     * The host's replicas switch, {@link PilotShipReplicaFollow#REPLICAS_FILE_KEY} (never a second
+     * literal): {@code true} = other players' screens run each pilot's ship scripts as that pilot's,
+     * reading the pilot's keys; {@code false} = other players see those abilities through the server's
+     * corrections. It only acts while {@link #PILOT_SHIP_KEY} is on and {@code pilotship.exclude} lists
+     * nothing. DEFAULT ON: an absent row is on in the serve's tiered reader (its fallback is true), in
+     * the shipped template and here. The row is load-time only: the serve reads its config file once
+     * and caches it, so the select locks while a server runs. The window only WRITES the row (no launch
+     * argument is composed from it) and writes exactly {@code true|false}, though the serve's reader
+     * also takes the loose words. Label: {@link #PILOT_REPLICAS_LABEL}. The {@link #PILOT_SHIP_KEY}
+     * row's twin, field for field.
+     */
+    public static final String PILOT_REPLICAS_KEY = PilotShipReplicaFollow.REPLICAS_FILE_KEY;
+    /** The control's label on the ops GUI. */
+    public static final String PILOT_REPLICAS_LABEL = "Other players' screens follow each pilot's keys";
+    /** The comment a file without the row gets above it when Start appends it: the shipped template's own
+     * three comment lines, word for word, on the one line every Start-appended comment takes (the flow joins
+     * rows with the file's own line ending, so an embedded line break would write a mixed one). */
+    public static final String PILOT_REPLICAS_COMMENT =
+            "# true = other players' screens run each pilot's ship scripts as that pilot's, reading the pilot's"
+                    + " keys (needs pilotship.enabled). false = other screens run those scripts as an AI ship's.";
+    /** The refusal's stem; the message appends the typed text. */
+    public static final String R_PILOT_REPLICAS = PILOT_REPLICAS_LABEL + " must be on or off";
+
+    /** Replicas combo word ({@code on} / {@code off}, case-folded, trimmed) to the row value
+     * ({@code "true"} / {@code "false"}); anything else is refused. */
+    public static String parsePilotReplicas(String text) {
+        String trimmed = text == null ? "" : text.trim();
+        String folded = trimmed.toLowerCase(Locale.ROOT);
+        if (folded.equals("on")) {
+            return "true";
+        }
+        if (folded.equals("off")) {
+            return "false";
+        }
+        throw new IllegalArgumentException(R_PILOT_REPLICAS + " (got '" + echo(trimmed) + "').");
+    }
+
+    /**
+     * Whether a boolean row value is in the serve's LOOSE false set: {@code false}, {@code 0}, {@code no} or
+     * {@code off}, case-insensitive, after a trim - exactly the false half of the runtime's tiered boolean reader
+     * ({@code ServerConfig.resolveBoolean}, the replicas row's one reader). Null or blank is NOT off: the serve reads a
+     * blank row as absent and falls back to its default. WHY one shared predicate: the ops GUI prefill, the launcher's
+     * row check and its {@code launch.txt} stamp must read the row the way the serve does - a GUI that read only an
+     * exact {@code false} would open a host's hand-typed {@code off} as on, and the next Start (which always writes the
+     * select's word before the launcher checks the rows) would rewrite that hand edit to {@code true}. The serve's own
+     * reader is not called here: it resolves sysprop and environment tiers first, and in the ops process those are the
+     * ops JVM's, not the serve's.
+     */
+    public static boolean isLooseOff(String value) {
+        if (value == null) {
+            return false;
+        }
+        String v = value.trim();
+        return v.equalsIgnoreCase("false") || v.equals("0") || v.equalsIgnoreCase("no") || v.equalsIgnoreCase("off");
+    }
+
+    /** Replicas combo prefill: {@code off} for a row in the serve's loose false set ({@link #isLooseOff}), else
+     * {@code on}. An ABSENT row reads {@code on} here AND in the serve (its tiered reader falls back to true), the
+     * shipped template says {@code true}, and the launcher's receipt stamps an absent row as on.
+     * */
+    public static String pilotReplicasFieldPrefill(List<String> lines) {
+        return isLooseOff(fieldPrefill(lines, PILOT_REPLICAS_KEY, "true")) ? "off" : "on";
     }
 
     // ---------------------------------------------- fortress wave scale
@@ -1420,6 +1488,22 @@ public final class OpsMatchRows {
      * untouched — a shell without the field (a web Start) must never strip the file's live set.
      */
     public static List<String> withModsEnabledRow(List<String> lines, String value) {
+        // The body moved verbatim into withIdsRow (shared by the
+        // three Mods-tab rows; the kind-memory fix added the third) - behaviour byte-identical
+        return withIdsRow(lines, MODS_ENABLED_KEY, MODS_ENABLED_COMMENT, value);
+    }
+
+    //
+    /**
+     * The ONE comma-id row surgery the Mods tab's three rows share ({@link #withModsEnabledRow},
+     * {@link #withModsOptionalRow}, {@link #withModsOffOptionalRow}). WHY one helper: the three were
+     * copies of the same loop, and the kind-memory fix added a third (the off-optional memory row). {@code null} = leave the lines
+     * alone (the SAME list returned); blank REMOVES every uncommented {@code key=} row and the
+     * {@code comment} marker directly above each (the {@code comment + " - "} stem counts as a marker
+     * too); a value replaces the first row in place (marker re-written above it, shadowed duplicates
+     * dropped), else marker + row are appended.
+     */
+    private static List<String> withIdsRow(List<String> lines, String key, String comment, String value) {
         if (value == null) {
             return lines;
         }
@@ -1427,14 +1511,13 @@ public final class OpsMatchRows {
         List<String> out = new ArrayList<>();
         boolean placed = false;
         for (String line : lines) {
-            if (line.startsWith(MODS_ENABLED_KEY + "=")) {
-                if (!out.isEmpty() && isMarker(out.get(out.size() - 1), MODS_ENABLED_COMMENT,
-                        MODS_ENABLED_COMMENT + " - ")) {
+            if (line.startsWith(key + "=")) {
+                if (!out.isEmpty() && isMarker(out.get(out.size() - 1), comment, comment + " - ")) {
                     out.remove(out.size() - 1);
                 }
                 if (keep && !placed) {
-                    out.add(MODS_ENABLED_COMMENT);
-                    out.add(MODS_ENABLED_KEY + "=" + value);
+                    out.add(comment);
+                    out.add(key + "=" + value);
                     placed = true;
                 }
             } else {
@@ -1442,8 +1525,8 @@ public final class OpsMatchRows {
             }
         }
         if (keep && !placed) {
-            out.add(MODS_ENABLED_COMMENT);
-            out.add(MODS_ENABLED_KEY + "=" + value);
+            out.add(comment);
+            out.add(key + "=" + value);
         }
         return out;
     }
@@ -1503,38 +1586,66 @@ public final class OpsMatchRows {
      * surgery verbatim (null = leave the lines alone, blank REMOVES row + marker, a value replaces
      * the first row in place dropping shadowed duplicates, else appends marker + row). */
     public static List<String> withModsOptionalRow(List<String> lines, String value) {
-        if (value == null) {
-            return lines;
-        }
-        boolean keep = !value.isEmpty();
-        List<String> out = new ArrayList<>();
-        boolean placed = false;
-        for (String line : lines) {
-            if (line.startsWith(MODS_OPTIONAL_KEY + "=")) {
-                if (!out.isEmpty() && isMarker(out.get(out.size() - 1), MODS_OPTIONAL_COMMENT,
-                        MODS_OPTIONAL_COMMENT + " - ")) {
-                    out.remove(out.size() - 1);
-                }
-                if (keep && !placed) {
-                    out.add(MODS_OPTIONAL_COMMENT);
-                    out.add(MODS_OPTIONAL_KEY + "=" + value);
-                    placed = true;
-                }
-            } else {
-                out.add(line);
-            }
-        }
-        if (keep && !placed) {
-            out.add(MODS_OPTIONAL_COMMENT);
-            out.add(MODS_OPTIONAL_KEY + "=" + value);
-        }
-        return out;
+        // Delegates to the shared surgery (the kind-memory fix) - byte-identical
+        return withIdsRow(lines, MODS_OPTIONAL_KEY, MODS_OPTIONAL_COMMENT, value);
     }
 
     //
     /** The optional-row prefill: the explicit row trimmed, else {@code ""}. */
     public static String modsOptionalFieldPrefill(List<String> lines) {
         String row = modsOptionalRowValue(lines);
+        return row == null ? "" : row.trim();
+    }
+
+    //
+    /**
+     * The Mods tab's OFF-OPTIONAL memory row: the ids whose On box is unticked while their kind was
+     * {@code optional}. WHY (the kind-memory fix):
+     * an unticked mod is in neither {@link #MODS_ENABLED_KEY} nor {@link #MODS_OPTIONAL_KEY}, and every
+     * Mods write re-reads the rows from the console, so without a stored kind an optional mod (the
+     * package README's GraphicsLib) re-ticked as {@code required} - the serve would then load a mod that
+     * refuses a window-less JVM. LAUNCHER-ONLY: the ops GUI alone writes and reads it; the serve and
+     * the package launcher never load or read it (so it is no posture knob and no
+     * {@code ServeLauncher.UNREGISTERED_KNOWN_KEYS} row - that list is serve-READ rows only, T11-stale;
+     * {@code ServeLauncher.CONSOLE_ONLY_KEYS} keeps the unknown-row warning off it). An id in it that
+     * is also in either live row is ignored by the console (the live row wins).
+     */
+    public static final String MODS_OFF_OPTIONAL_KEY = "mods.offOptional";
+    /** Marker above the off-optional row (the {@link #MODS_ENABLED_COMMENT} idiom). */
+    public static final String MODS_OFF_OPTIONAL_COMMENT =
+            "# mod ids whose Mods-tab On box is unticked while set optional (the ops GUI's memory so a"
+                    + " re-tick restores optional; the serve never loads or reads them)";
+
+    //
+    /** Raw value of the LAST uncommented {@code mods.offOptional=} row ({@code null} when absent) -
+     * the {@link #modsOptionalRowValue} grammar ({@link #rowValue}). */
+    public static String modsOffOptionalRowValue(List<String> lines) {
+        return rowValue(lines, MODS_OFF_OPTIONAL_KEY);
+    }
+
+    //
+    /** The strict off-optional parse: {@link #parseModsOptional}'s law ({@link #parseModsEnabled}
+     * verbatim), the refusal prefixed {@code "off-optional mods: "}. The console writes only canonical
+     * comma-joined ids into the row, so this gates a hand-edited row's SHAPE only. */
+    public static String parseModsOffOptional(String text) {
+        try {
+            return parseModsEnabled(text);
+        } catch (IllegalArgumentException bad) {
+            throw new IllegalArgumentException("off-optional mods: " + bad.getMessage(), bad);
+        }
+    }
+
+    //
+    /** The lines with the {@code mods.offOptional} row upserted - {@link #withIdsRow}, the
+     * {@link #withModsOptionalRow} surgery (null = leave alone, blank REMOVES row + marker). */
+    public static List<String> withModsOffOptionalRow(List<String> lines, String value) {
+        return withIdsRow(lines, MODS_OFF_OPTIONAL_KEY, MODS_OFF_OPTIONAL_COMMENT, value);
+    }
+
+    //
+    /** The off-optional prefill: the explicit row trimmed, else {@code ""}. */
+    public static String modsOffOptionalFieldPrefill(List<String> lines) {
+        String row = modsOffOptionalRowValue(lines);
         return row == null ? "" : row.trim();
     }
 

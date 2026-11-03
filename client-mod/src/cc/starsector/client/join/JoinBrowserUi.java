@@ -179,6 +179,8 @@ final class JoinBrowserUi implements JoinRoutes.Session {
     private volatile String companionLine;
     private volatile String editorUrl;
     private volatile boolean companionSeenLive;
+    /** The running game's settings read-back ({@link #lunaSyncOf} of its last live ping); null before the first. */
+    private volatile String companionLuna;
     /** Iteration 9 (c): the once-per-launch editor auto-open latch (set on the first live ping). */
     private volatile boolean editorAutoOpened;
 
@@ -560,7 +562,36 @@ final class JoinBrowserUi implements JoinRoutes.Session {
                 .put("editor", editorUrl)
                 .put("seenLive", companionSeenLive)
                 .put("autoOpened", editorAutoOpened)
+                .put("lunaSync", companionLuna)
                 .toString();
+    }
+
+    /** "Settings: ..." on the launch face: the kit's own read-back value. */
+    static final String LUNA_SYNC_OLDER_KIT = "unknown (older kit)";
+    static final String LUNA_SYNC_UNREADABLE = "unreadable";
+    private static final java.util.regex.Pattern LUNA_SYNC =
+            java.util.regex.Pattern.compile("\"lunaSync\"\\s*:\\s*\"((?:[A-Za-z0-9_:/ .-]|\\\\/){1,96})\"");
+
+    /**
+     * The running game's settings read-back out of its {@code api/ping} body: the {@code lunaSync} value
+     * ({@code set:<rows>/<mods> missing:<k> skipped:<j> digest:<hex>}, {@code absent}, {@code lunalib off},
+     * {@code refused:<class>}) when it is one bounded line of that charset; {@link #LUNA_SYNC_OLDER_KIT} when the key
+     * is absent from a body that was not cut at the read cap (a kit that predates the read-back); else
+     * {@link #LUNA_SYNC_UNREADABLE}. A narrow reader like {@code JoinCore.pingField}: never a path, a URL or a log
+     * line; the page lands it as text only.
+     *
+     *
+     */
+    static String lunaSyncOf(String body) {
+        if (body == null) {
+            return LUNA_SYNC_UNREADABLE;
+        }
+        java.util.regex.Matcher m = LUNA_SYNC.matcher(body);
+        if (m.find()) {
+            return m.group(1).replace("\\/", "/");
+        }
+        boolean cut = body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length >= JoinCore.PING_BODY_MAX;
+        return body.contains("\"lunaSync\"") || cut ? LUNA_SYNC_UNREADABLE : LUNA_SYNC_OLDER_KIT;
     }
 
     /** api/paste: the connect code — a brick fills three fields; an empty box clears the stage; anything
@@ -752,8 +783,16 @@ final class JoinBrowserUi implements JoinRoutes.Session {
         // during customVerdicts (the second network call) must not key the launch gates to its host:port.
         fetchedDefault = result.defaultId;
         probed = new JoinLaunchGates.Probed(h, portNo, result.defaultId, modDiff);
+        // The reply's settings sheet (the final reply's, like the
+        // listing) rides the outcome into the launch gate; with the cache current it binds to the id this probe
+        // presented. A refusal is logged once by OUR class word, never the sheet's bytes
+        String lunaLine = JoinLaunchGates.lunaLine(result);
+        boolean lunaOk = JoinLaunchGates.lunaOk(result);
+        if (!lunaOk) {
+            log("join-browser: the served settings sheet was " + result.lunaStatus);
+        }
         lastProbe = new JoinLaunchGates.ProbeOutcome(JoinLaunchGates.ProbeOutcome.Kind.SERVED, h, portNo, line, docOk,
-                docLine, cacheCurrent);
+                docLine, cacheCurrent, result.lunaText, lunaLine, cacheCurrent ? presented : null);
         // iteration 9 (owner #4): the editor's SERVER BUILDS panel reads this served list off one published file
         JoinCore.publishServerBuilds(installRoot, result.ids, result.defaultId, System.currentTimeMillis());
         // The ship rows' display labels as {id: name} — the page's ship list paints the name,
@@ -766,6 +805,7 @@ final class JoinBrowserUi implements JoinRoutes.Session {
                 .putStrings("localCustoms", local.ids).putStrings("customsNotes", local.notes)
                 .putRaw("customsVerdicts", verdicts)
                 .put("modsLine", modDiff.line).put("modsOk", modDiff.ok)
+                .put("lunaLine", lunaLine).put("lunaOk", lunaOk)
                 .putRaw("mods", JoinModStage.rowsJson(modDiff))
                 .put("docLine", docLine).put("docOk", docOk).putRaw("staged", stagedHere ? stagedSummaryJson : null)
                 .put("sides", sides)
@@ -1009,6 +1049,7 @@ final class JoinBrowserUi implements JoinRoutes.Session {
             editorUrl = isLive ? ping.base : null;
             if (isLive) {
                 companionSeenLive = true;
+                companionLuna = lunaSyncOf(ping.body);
                 // iteration 9 (c): the editor opens by itself on the FIRST live answer — once per launch, a
                 // Java Desktop.browse (never a page-side window.open outside a click); the page's Open editor
                 // button stays the fallback when the browse fails or the opt-out is set

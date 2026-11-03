@@ -224,8 +224,19 @@ public final class OpsStatusFile {
         return (helloBits & Handshake13.FLAG_MAGIC_UP) != 0 ? MAGIC_REPORTS : MAGIC_NONE;
     }
 
-    /** The {@code ships.base_ids} / {@code ships.hidden_ids} bound (more = {@code ships.over_cap=1}). */
-    public static final int SHIP_ID_ROW_CAP = 64;
+    /**
+     * The {@code ships.base_ids} / {@code ships.hidden_ids} bound (more = {@code ships.over_cap=1}). WHY 1024: the
+     * console lists a Hide row per id written here, and a modded server already ships well past the old 64: 149
+     * pickable ids with lunalib + armaa, most of them then without a row. Size: an id is
+     * 1..64 chars of {@code [A-Za-z0-9._:-]} (the console's verb-token law), so a full base row is at most
+     * 15 + 1024 * 64 + 1023 = 66,574 bytes (25,614 at a 24-char average); the hidden row also holds at most the
+     * hidden-ships file's 128 ids in effect (17 + 128 * 64 + 127 = 8,336 bytes). Written at most once per
+     * {@link #WRITE_INTERVAL_MILLIS}. No reader bounds a line: {@link OpsSnapshot#parseFile} reads whole lines, and
+     * the launcher's running-serve guard reads only the first {@link ServeLauncher#MAX_STATUS_SCAN_BYTES} bytes for
+     * the 2nd / 3rd rows ({@code stamp_ms=} / {@code pid=}).
+     *
+     */
+    public static final int SHIP_ID_ROW_CAP = 1024;
     /** The {@code ships.last} bound (the cut keeps a visible ellipsis inside it). */
     public static final int SHIP_LAST_MAX_CHARS = 160;
     private static final java.util.concurrent.atomic.AtomicBoolean SHIP_ID_SKIP_LOGGED =

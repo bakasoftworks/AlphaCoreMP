@@ -250,6 +250,7 @@ public final class ServerEntityPose {
     private final int pilotSeat;
     private final int pilotMask;
     private final int pilotFlags;
+    private final int pilotControls;
 
     /**
      * Back-compat constructor (pre-v5 callers / kinematics-only poses): the combat-side
@@ -345,6 +346,7 @@ public final class ServerEntityPose {
         this.pilotSeat = b.pilotSeat;
         this.pilotMask = b.pilotMask;
         this.pilotFlags = b.pilotFlags;
+        this.pilotControls = b.pilotControls;
     }
 
     /**
@@ -419,6 +421,7 @@ public final class ServerEntityPose {
         private int pilotSeat = PILOT_UNKNOWN;
         private int pilotMask = PILOT_UNKNOWN;
         private int pilotFlags; // 0 unless an AWSD v14 frame carried the triple's third byte
+        private int pilotControls; // 0 unless an AWSD v15 frame carried the pilot's held controls (EXT_CONTROLS / the keyframe's conditional u16)
 
         public Builder entityId(long entityId) {
             this.entityId = entityId;
@@ -622,6 +625,11 @@ public final class ServerEntityPose {
             return this;
         }
 
+        public Builder pilotControls(int pilotControls) {
+            this.pilotControls = pilotControls;
+            return this;
+        }
+
         /** The one all-fields construction site (assignment lives in the private constructor). */
         public ServerEntityPose build() {
             return new ServerEntityPose(this);
@@ -674,7 +682,8 @@ public final class ServerEntityPose {
                 .fighterReplacementPct(fighterReplacementPct)
                 .pilotSeat(pilotSeat)
                 .pilotMask(pilotMask)
-                .pilotFlags(pilotFlags);
+                .pilotFlags(pilotFlags)
+                .pilotControls(pilotControls);
     }
 
     public long entityId() {
@@ -1100,6 +1109,18 @@ public final class ServerEntityPose {
      */
     public int pilotFlags() {
         return pilotFlags;
+    }
+
+    /**
+     * The pilot's APPLIED held-controls u16 (bit i = the pilot holds their own binding of
+     * {@code PilotIntentFrame.CONTROL_KEY_NAMES[i]}; meaningful only while {@link #pilotSeat()} ≥ 1 and
+     * {@link #pilotFlags()} bit 1 is set) — the serve mark's {@code [4]}, carried by AWSD v15 {@code EXT_CONTROLS}
+     * so the other screens' rewritten mod scripts can answer the pilot's keys through the viewer's own bindings
+     * (the reader that fills it = lane W2, the holder that reads it = lane K). 0 for an AWSS pose
+     * and for every frame before v15. The pre-landed compile seam.
+     */
+    public int pilotControls() {
+        return pilotControls;
     }
 
     /** True when this pose carries the AWSD v14 pilot triple (never true for an AWSS pose). */

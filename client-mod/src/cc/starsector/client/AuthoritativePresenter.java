@@ -1,6 +1,7 @@
 package cc.starsector.client;
 
 import cc.starsector.client.net.ClientGameplayEdgeEvent;
+import com.fs.starfarer.api.SoundAPI;
 import com.fs.starfarer.api.combat.CollisionClass;
 import com.fs.starfarer.api.combat.CombatEngineAPI;
 import com.fs.starfarer.api.combat.CombatEntityAPI;
@@ -195,6 +196,7 @@ final class AuthoritativePresenter {
     AuthoritativePresenter(CombatEngineAPI engine, int logMax) {
         this.engine = engine;
         this.logMax = logMax;
+        ReplicaPresentedFireRelay.reset(); // one presenter per combat window: the relay's per-weapon state never crosses one
     }
 
     void setGodMirror(GodMirrorLane godMirror) {
@@ -478,6 +480,9 @@ final class AuthoritativePresenter {
      * {@code presentedOwnProj} exclusion set (so the scan never re-counts or — critically —
      * re-DECLARES the server's own shot back up the PDCL lane); null ⇒
      * {@code adopt_skip_unresolved}. Foe counters/logs untouched.
+     * Residue: the onFire relay never runs on an adopted own shot (the replica damage door never
+     * rides the own ship), so its pilot sees flash, sound and projectile but no onFire FX.
+     * The residue line
      */
     CombatEntityAPI presentOwnAdoptedDischarge(ClientGameplayEdgeEvent event, ShipAPI shooter, long ageTicks) {
         return presentDischarge(event, shooter, ageTicks, true);
@@ -691,6 +696,14 @@ final class AuthoritativePresenter {
                             spawned.setFacing(aim);
                         }
                     }
+                    // The presented shot's onFire, in the engine's own order (spawn, then onFire, then
+                    // flight): an onFire that scales the shot's velocity or anchors FX at its place
+                    // sees the shot where it was minted, before the catch-up below moves it. Foe
+                    // shots on a treated replica only; the own server_only discharge stays out.
+                    //
+                    if (!ownAdopt && spawned != null) {
+                        ReplicaPresentedFireRelay.onPresentedShot(spawned, weapon, shooter, engine);
+                    }
                     // Catch-up advance (armed by the
                     // age_max=12 real-hairpin measurement): the discharge happened
                     // (T_s−T)·dt seconds before the applied anchor, so advance the spawned projectile
@@ -747,12 +760,13 @@ final class AuthoritativePresenter {
                     }
                     // vanilla spawns the flash at the barrel's launch angle = the wire
                     // facing.
-                    presentFireFx(shooter, weapon, point, aim, ownAdopt);
+                    SoundAPI fireSound = presentFireFx(shooter, weapon, point, aim, ownAdopt);
                     if (!ownAdopt && spawned != null) {
                         decrementPresentedAmmo(weapon, shooter, event.simTick());
-                        // Our CcWrap* effects derive their arc from this presented
-                        // shot (spawnProjectile never runs onFire); vanilla effects are never relayed.
-                        ReplicaPresentedFireRelay.onPresented(spawned, weapon, shooter, engine);
+                        // The relay keeps this handle when the weapon spec stops the previous fire sound;
+                        // the next present of this weapon stops it first, as the engine's fire does.
+                        //
+                        ReplicaPresentedFireRelay.onFireSoundPlayed(weapon, fireSound);
                     }
                     return spawned;
                 }
@@ -1043,10 +1057,13 @@ final class AuthoritativePresenter {
      * a discharged projectile is a full-power shot). No local fire cycle runs — that remains the
      * double-spawn/ammo/flux guard; force-firing for free FX stays REJECTED. Each FX
      * piece fails soft independently (counted + capped-logged) and never blocks the projectile
-     * presentation, which has already happened when this runs.
+     * presentation, which has already happened when this runs. Returns the fire sound's handle
+     * ({@code null} when no sound played), which the onFire relay keeps for the next present's
+     * previous-sound stop. The handle return
      */
-    private void presentFireFx(ShipAPI shooter, WeaponAPI weapon, Vector2f point, float aim,
+    private SoundAPI presentFireFx(ShipAPI shooter, WeaponAPI weapon, Vector2f point, float aim,
             boolean ownAdopt) {
+        SoundAPI played = null;
         try {
             engine.spawnMuzzleFlashOrSmoke(shooter, point, weapon.getSpec(), aim);
             if (!ownAdopt) {
@@ -1060,7 +1077,7 @@ final class AuthoritativePresenter {
             if (soundId == null) {
                 fireFxSkip("no fire sound id on spec", weapon, ownAdopt);
             } else {
-                com.fs.starfarer.api.Global.getSoundPlayer()
+                played = com.fs.starfarer.api.Global.getSoundPlayer()
                         .playSound(soundId, 1f, 1f, point, shooter.getVelocity());
                 if (!ownAdopt) {
                     foeFireFxSound++;
@@ -1073,6 +1090,7 @@ final class AuthoritativePresenter {
         } catch (Throwable t) {
             fireFxSkip("sound threw " + t, weapon, ownAdopt);
         }
+        return played;
     }
 
     /** Fail-soft counter + capped log for a skipped {@link #presentFireFx} piece

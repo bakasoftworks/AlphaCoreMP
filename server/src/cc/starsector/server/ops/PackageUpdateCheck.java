@@ -79,7 +79,11 @@ public final class PackageUpdateCheck {
             PackageFolderWriter.NOTICES_REL, PackageFolderWriter.LICENSE_REL, "README.md",
             "serve.bat", "stop.bat", "ops-web.bat", "update.bat", "serve.sh", "stop.sh", "ops-web.sh", "update.sh",
             PackageFolderWriter.PROPS_TEMPLATE, "launcher.template.properties",
-            PackageFolderWriter.MOD_INFO_REL, PackageFolderWriter.MOD_PREFIX + "LICENSE.txt");
+            PackageFolderWriter.MOD_INFO_REL, PackageFolderWriter.MOD_PREFIX + "LICENSE.txt",
+            // the LunaLib seed folder's packed README. WHY here: a packed file this set lacks is
+            // refused by every UPDATE of a package built with it; the selftest's
+            // pfw-layout-packed row now walks every PACKED listed rel through inProgramSet so the next one flips a row.
+            PackageFolderWriter.LUNA_README_REL);
     /**
      * The manifest meta row a package zip declares its own program set in: comma-joined, no spaces, each element an
      * exact name or a tree ending in {@code /}. WHY: this check is frozen in every installed folder, so its own

@@ -60,11 +60,13 @@ public final class Handshake13 {
      * at HELLO instead of a drop at its first frame.
      * In place at 16 (unshipped): + the pilot's 16-byte control keymap closing the sealed F2 body.
      *
+     * 17 = the {@code LUNA} probe document beside {@code DESC} + the {@code KMAP} family reservation; no F1 byte changed.
+     * 18 = the HELLO report bit {@code 0x20} ({@link #FLAG_PILOT_REPLICA}) is defined; no other F1 byte changed.
      * A bump re-mints the {@code Handshake13KatRows} K0..K7 goldens in the SAME commit (two temporary hex-print
      * passes, never committed): the byte heads every frozen message, so the 15 and 16 bumps both went red on it.
      *
      */
-    public static final int VERSION = 16;
+    public static final int VERSION = 18;
     /** The highest lawful {@code team} byte; a sealed 3..255 opens as {@code bodyOk == false}. */
     public static final int TEAM_MAX = 2;
     /** The sealed F2 body's trailing pilot keymap: one byte per {@link PilotIntentFrame#CONTROL_KEY_NAMES} entry. */
@@ -77,12 +79,19 @@ public final class Handshake13 {
      * mark; a false bit hands the liar's OWN hull the pilot's held bits and reaches no other seat.
      * {@code 0x10} = this game's MagicLib subsystem class was patched: a report only (the host's view of a
      * client-side disarm), no serve behaviour keys on it. Both folded into hs 15 in place (no kit released before
-     * them sent 15) and stay defined since; bits {@code 0x20..0x80} stay undefined and every decoder refuses them.
+     * them sent 15) and stay defined since.
+     *
+     * {@code 0x20} = this game's pilot-replica agent arm is applied (the kit replays each remote pilot's held keys
+     * through the engine's own ship-control path): a REPORT the sender makes about its own game, printed on the
+     * host's per-seat row so a viewer whose replicas never applied is told apart at once. No serve behaviour keys
+     * on it (the {@code 0x10} precedent): no send, gate or mark reads it, so a false bit only mislabels the liar's
+     * own row and reaches no other seat. Defined with hs 18 (the bump that also gates the snapshot schema a
+     * version-17 kit cannot read); bits {@code 0x40..0x80} stay undefined and every decoder refuses them.
      *
      */
-    public static final int FLAG_MAGIC_UP = 0x08, FLAG_MAGIC_REPLICA = 0x10;
+    public static final int FLAG_MAGIC_UP = 0x08, FLAG_MAGIC_REPLICA = 0x10, FLAG_PILOT_REPLICA = 0x20;
     public static final int FLAGS_DEFINED = FLAG_PROBE | FLAG_OBSERVER | FLAG_NO_SECRET | FLAG_MAGIC_UP
-            | FLAG_MAGIC_REPLICA;
+            | FLAG_MAGIC_REPLICA | FLAG_PILOT_REPLICA;
     /** The bits a CALLER may hand the F2 sealer and the flight: every defined bit but {@link #FLAG_NO_SECRET},
      *  which only the sealer sets (from an empty secret). */
     public static final int CALLER_FLAGS = FLAGS_DEFINED & ~FLAG_NO_SECRET;
@@ -580,7 +589,7 @@ public final class Handshake13 {
      * {@code keymapOrNull} = one byte per {@link PilotIntentFrame#CONTROL_KEY_NAMES} entry (0 unmapped, 1..0xDF an
      * LWJGL key code, 0xF0..0xF7 a mouse button), null = 16 zeros (no map: the serve's own table answers);
      * {@code IllegalArgumentException} "keymap" on a non-null array that is not 16 lawful bytes, after the team check.
-     * Same returns and other {@code IllegalArgumentException}s as the team entry above. Main-written
+     * Same returns and other {@code IllegalArgumentException}s as the team entry above.
      */
     public static ClientSeal sealHelloOrNull(long nonce, int flags, Cookie13 cookie, String print, String cid,
             long desiredShipId, String variantId, int team, byte[] keymapOrNull, byte[] prs, byte[] mix,
@@ -627,7 +636,7 @@ public final class Handshake13 {
     /**
      * {@link #sealHelloOnGeneratorOrNull} with the pilot's keymap after the team byte (the keymap law of the
      * {@link #sealHelloOrNull} keymap form: null = 16 zeros, "keymap" on a non-null array that is not 16 lawful bytes)
-     * — the join flight's one sealer. Main-written
+     * — the join flight's one sealer.
      */
     public static ClientSeal sealHelloOnGeneratorOrNull(long nonce, int flags, Cookie13 cookie, String print, String cid,
             long desiredShipId, String variantId, int team, byte[] keymapOrNull, byte[] generator, boolean prsEmpty,
@@ -779,9 +788,10 @@ public final class Handshake13 {
     /**
      * The door's FIRST step: a fixed-layout parse of an F2 payload, NO crypto and no allocation proportional
      * to anything but the payload — so the door can run its own checks (cookie, ledger, print) before it pays for an
-     * open. {@code null} unless: length 184..{@value #SEAL_PAYLOAD_MAX_BYTES}, {@code [0] == VERSION}, flags within
-     * {@link #FLAGS_DEFINED} (all five bits accepted), cookieLen 1..32 (so an F1, whose {@code [10]} is 0, never
-     * parses here), the print an A-string(128), and a sealed body of 27..155 B (an 11..139 B body + its tag).
+     * open. {@code null} unless: length {@value #SEAL_PAYLOAD_MIN_BYTES}..{@value #SEAL_PAYLOAD_MAX_BYTES}, {@code [0]
+     * == VERSION}, flags within {@link #FLAGS_DEFINED} (all six bits accepted), cookieLen 1..32 (so an F1, whose
+     * {@code [10]} is 0, never parses here), the print an A-string(128), and a sealed body of 43..171 B (a
+     * {@value #BODY_MIN_BYTES}..{@value #BODY_MAX_BYTES} B body + its 16 B tag; the keymap closes the body).
      */
     public static Seal13 parseSealOrNull(byte[] payload) {
         if (payload == null || payload.length < SEAL_PAYLOAD_MIN_BYTES || payload.length > SEAL_PAYLOAD_MAX_BYTES) {
@@ -888,7 +898,7 @@ public final class Handshake13 {
         }
 
         /** The sealed 16-byte pilot keymap (0 unmapped, 1..0xDF a key code, 0xF0..0xF7 a mouse button; all zeros
-         *  = no map), a fresh copy; {@code null} when {@code !bodyOk}. Main-written */
+         *  = no map), a fresh copy; {@code null} when {@code !bodyOk}. */
         public byte[] keymap() {
             return keymap == null ? null : keymap.clone();
         }

@@ -18,8 +18,10 @@ import java.util.function.Consumer;
  * never touches the file: it hands the rendered lines to {@link #persist} (replaces ONE pending
  * slot — coalescing, the latest render wins — and signals; never blocks, never does I/O) and this
  * daemon writes {@code <file>.tmp} then {@code ATOMIC_MOVE}s it over the file (the
- * {@link CustomVariantPersistSink} / {@code OpsStatusFile} idiom). A failed write/move (an AV
- * lock) = one {@code bans_persist_failed} row + {@code persistFailed++}; memory stays
+ * {@link CustomVariantPersistSink} / {@code OpsStatusFile} idiom); the rename gets
+ * {@value #MOVE_ATTEMPTS} attempts with a short backoff ({@link #moveWithRetry}).
+ * A write/move still failed after them (a held lock) = one
+ * {@code bans_persist_failed} row + {@code persistFailed++}; memory stays
  * authoritative and the next ban/unban retries with the then-current render. Before each write
  * the file's mtime is compared with the mtime this sink last saw (open or its own last write): a
  * change = the {@code bans_sidecar_external_edit_overwritten} row (the runbook law: edit the file
@@ -29,6 +31,10 @@ public final class BanPersistSink implements AutoCloseable {
 
     public static final String THREAD_NAME = "cc-bans-persist";
     static final long CLOSE_DRAIN_MILLIS = 2_000L;
+    /** The {@code .tmp} → file rename's attempts. */
+    public static final int MOVE_ATTEMPTS = 3;
+    /** The backoff before attempt n+1 = n × this (50 ms, then 100 ms: ≤ 150 ms added to a write that fails, off-frame). */
+    static final long MOVE_BACKOFF_MILLIS = 50L;
 
     private final Path file;
     private final Path tmp;
@@ -43,6 +49,8 @@ public final class BanPersistSink implements AutoCloseable {
     private FileTime lastSeenMtime;
     private volatile long persisted;
     private volatile long persistFailed;
+    /** Rename attempts that failed and were retried (the last attempt's failure counts in {@link #persistFailed}). */
+    private volatile long moveRetries;
     private volatile long coalesced;
     private volatile long externalEdits;
     private volatile long refusedClosed;
@@ -94,6 +102,10 @@ public final class BanPersistSink implements AutoCloseable {
 
     public long persistFailed() {
         return persistFailed;
+    }
+
+    public long moveRetries() {
+        return moveRetries;
     }
 
     /** 1 while a render waits for the writer, else 0. */
@@ -156,12 +168,7 @@ public final class BanPersistSink implements AutoCloseable {
             }
             Files.write(tmp, lines, StandardCharsets.UTF_8, StandardOpenOption.CREATE,
                     StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-            try {
-                Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE,
-                        StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException noAtomic) {
-                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
-            }
+            moveWithRetry();
             lastSeenMtime = mtimeOrNull();
             persisted++;
             int entries = 0;
@@ -176,6 +183,44 @@ public final class BanPersistSink implements AutoCloseable {
             log.accept("bans_persist_failed path=" + file + " err=" + failed.getClass().getName()
                     + ": " + (failed.getMessage() == null ? "" : failed.getMessage())
                     + " (memory stays authoritative; the next ban/unban rewrites)");
+        }
+    }
+
+    /**
+     * The {@code .tmp} → file rename, {@value #MOVE_ATTEMPTS} attempts. WHY: on Windows an AV scanner or the indexer
+     * holds a share-lock on the just-written temp or on the target for a few milliseconds and {@code Files.move}
+     * answers {@code AccessDeniedException}; with no retry the render waited for the NEXT ban/unban, which before a
+     * restart may never come — that ban lived in memory only. Every failed attempt but the last = one
+     * {@code bans_persist_move_retry} row + {@link #moveRetries}{@code ++} + a backoff of attempt × {@value
+     * #MOVE_BACKOFF_MILLIS} ms; the last rethrows into {@link #writeOnce}'s failed row. Writer thread only — the sleep
+     * never touches the frame loop. An interrupt during the backoff re-sets the flag and gives up this write. The
+     * fixture = {@code BanSetContractRows} A10 (a held reader on the target).
+     *
+     */
+    private void moveWithRetry() throws IOException {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                try {
+                    Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException noAtomic) {
+                    Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+                }
+                return;
+            } catch (IOException failed) {
+                if (attempt >= MOVE_ATTEMPTS) {
+                    throw failed;
+                }
+                moveRetries++;
+                long backoff = MOVE_BACKOFF_MILLIS * attempt;
+                log.accept("bans_persist_move_retry path=" + file + " attempt=" + attempt + "/" + MOVE_ATTEMPTS
+                        + " err=" + failed.getClass().getName() + " backoff_ms=" + backoff);
+                try {
+                    Thread.sleep(backoff);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw failed;
+                }
+            }
         }
     }
 
@@ -206,7 +251,7 @@ public final class BanPersistSink implements AutoCloseable {
             hung = writer.isAlive() && (writing || pendingLines != null);
         }
         log.accept("bans_persist_sink_closed path=" + file + " persisted=" + persisted
-                + " failed=" + persistFailed + " coalesced=" + coalesced
+                + " failed=" + persistFailed + " move_retries=" + moveRetries + " coalesced=" + coalesced
                 + " refused_closed=" + refusedClosed + (hung ? " state=writer_hung" : ""));
     }
 }

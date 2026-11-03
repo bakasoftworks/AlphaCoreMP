@@ -307,6 +307,22 @@ public final class PackageFolderWriter {
     static final String LAUNCHER_TEMPLATE = "launcher.template.properties";
     static final String LICENSE_REL = "LICENSE.txt";
     static final String NOTICES_REL = "THIRD-PARTY-NOTICES.txt";
+    /**
+     * The one file a PACKED folder ships under the LunaLib seed folder: LISTED, so an update's same-name copy refreshes
+     * it while the host's {@code <modId>.json.data} seeds beside it are never shipped and never overwritten. Built from
+     * {@link ServeLauncher}'s own names, so the seed intake's skip of this file and the route can never name two
+     * different files.
+     */
+    static final String LUNA_README_REL = ServeLauncher.LUNA_SEED_DIR + "/" + ServeLauncher.LUNA_SEED_README;
+    /** The {@link #LUNA_README_REL} text: US-ASCII, one LF per line; it names the file law the seed intake applies. */
+    static final String LUNA_README = "This folder holds LunaLib mod settings this server starts with.\n"
+            + "Name each file <modId>.json.data (LunaLib's own file for that mod): a JSON object, one key per setting"
+            + " id (the fieldID column of the mod's LunaSettings.csv).\n"
+            + "List only the settings you change; LunaLib fills the rest with the mod's defaults.\n"
+            + "An update never overwrites the files placed here (it ships only this README).\n"
+            + "Edits take effect at the next start of the server.\n"
+            + "The ops GUI's Mods tab names the file for each mod that has LunaLib settings.\n"
+            + "Do not edit or remove this README: the server checks it at every start.\n";
     static final String JRE_STAMP = "cc-serve-jre.txt";
     static final String NATIVE_PREFIX = "native/linux/";
     /** The classes route leaves this tree home (the export's allow-list). */
@@ -332,10 +348,11 @@ public final class PackageFolderWriter {
             //
             "README.md");
     /** The listed single files a SOURCE base supplies (the two templates + the two update scripts ride a base that
-     *  lists every file; an older base holds none of them). */
+     *  lists every file; an older base holds none of them). {@link #LUNA_README_REL} rides a base packed with it; left
+     *  off this set, such a base would refuse (R13) as an unrouted entry. */
     static final Set<String> BASE_LISTED_SINGLES = Set.of(MOD_INFO_REL, ARGV_REL, LICENSE_REL, NOTICES_REL,
             NATIVE_PREFIX + "liblwjgl64.so", NATIVE_PREFIX + "libjawt.so", PROPS_TEMPLATE, LAUNCHER_TEMPLATE,
-            "update.bat", "update.sh");
+            "update.bat", "update.sh", LUNA_README_REL);
     /** The writer's OWN trees: the only places a SOURCE re-run deletes. */
     static final List<String> OWN_TREES = List.of("classes/", "jre/", DATA_PREFIX, MOD_PREFIX + "jars/", "native/");
     /** The Mesa pair a Windows serve JRE carries in {@code bin/}. */
@@ -1354,6 +1371,9 @@ public final class PackageFolderWriter {
                     }
                 }
             }
+            // The seed folder's README, LISTED like the root README (a host edit refuses the start as manifest_mismatch);
+            // the folder's seeds are host files and never routed.
+            r.add(new Route(LUNA_README_REL, Source.bytes(LUNA_README.getBytes(StandardCharsets.US_ASCII)), true, false));
             r.sort(Comparator.comparing(Route::rel));
             table.addAll(r);
         }

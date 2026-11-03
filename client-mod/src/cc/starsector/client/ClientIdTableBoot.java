@@ -30,9 +30,10 @@ import cc.starsector.server.runtime.IdTablesJson;
  * {@code getAllShipHullSpecs()} hull with a non-empty id (last duplicate wins, as the server's
  * {@code LinkedHashMap.put}), its EVERY slot id in {@code getAllWeaponSlotsCopy()} order (built-in,
  * decorative, system, hidden, station-module and launch-bay slots included), its
- * {@code getBuiltInWeapons()} pairs (non-null key and value); every {@code getAllWeaponSpecs()} /
+ * {@code getBuiltInWeapons()} pairs (non-null key and value); every {@code getActuallyAllWeaponSpecs()} /
  * {@code getAllHullModSpecs()} / {@code getAllFighterWingSpecs()} id (SYSTEM-hinted weapons
- * INCLUDED). {@link IdTables#of} sorts and digests with the ONE recipe (the class itself
+ * INCLUDED).
+ * {@link IdTables#of} sorts and digests with the ONE recipe (the class itself
  * is bundled from the server tree — one law, never a mirror), so an equal universe yields an equal
  * {@code vtab}; a differing one is refused AT THE DOOR ({@code content_fingerprint_mismatch}).
  *
@@ -120,7 +121,10 @@ public final class ClientIdTableBoot {
             builtIns.put(id, pairs);
         }
         List<String> weapons = new ArrayList<String>();
-        for (WeaponSpecAPI w : settings.getAllWeaponSpecs()) {
+        // The UNFILTERED walk, mirrored call for call with RealEngineVariantFacts.weapons —
+        // getAllWeaponSpecs() drops every SYSTEM-hinted spec (the engine's own filter), and the server's realized
+        // loadout mint carries them (the Aleste's rolled arm weapons); an unequal universe = an unequal vtab.
+        for (WeaponSpecAPI w : settings.getActuallyAllWeaponSpecs()) {
             String id = w.getWeaponId();
             if (id != null && !id.isEmpty()) {
                 weapons.add(id);

@@ -183,6 +183,20 @@ public final class ChatInputLaw {
     private int caret;
     private boolean open;
     private String sentText;
+    /**
+     * Why the box last closed, one bounded token (never
+     * the typed text): {@code "sent"} (a line went out), {@code "blank"} (Return on an empty
+     * buffer), {@code "esc"}, {@code "tab"}, or {@code "reset"} = never closed by a key (a fresh
+     * law, which is also how the lane force-closes a faulted box). The box edge log names it, so a
+     * held key can be placed inside or outside an open box after the fact.
+     */
+    private String lastCloseCause = CLOSE_RESET;
+
+    private static final String CLOSE_RESET = "reset";
+    private static final String CLOSE_SENT = "sent";
+    private static final String CLOSE_BLANK = "blank";
+    private static final String CLOSE_ESC = "esc";
+    private static final String CLOSE_TAB = "tab";
 
     private double tokens = BUCKET_BURST;
     private long bucketRefillMillis; // 0 = never stamped (the server's lazy-stamp idiom)
@@ -232,6 +246,11 @@ public final class ChatInputLaw {
         return sentText;
     }
 
+    /** Why the box last closed: {@code sent | blank | esc | tab}, or {@code reset} before any key closed it. */
+    public String lastCloseCause() {
+        return lastCloseCause;
+    }
+
     /**
      * Feed one keyboard event (mouse events are never fed — aim/fire stay live by design).
      * {@code keyDown}/{@code repeat} = {@code InputEventAPI.isKeyDownEvent()}/{@code isRepeat()}
@@ -256,7 +275,7 @@ public final class ChatInputLaw {
         if (keyDown && !repeat && keyCode == KEY_RETURN) {
             String line = buffer.toString().trim();
             if (line.isEmpty()) {
-                close();
+                close(CLOSE_BLANK);
                 return Result.PASS;
             }
             if (!takeToken(nowMillis)) {
@@ -264,17 +283,17 @@ public final class ChatInputLaw {
             }
             sentText = line;
             history.record(line); // The SENT path is the one recording seam
-            close();
+            close(CLOSE_SENT);
             return Result.SENT;
         }
         if (keyDown && !repeat && keyCode == KEY_ESCAPE) {
-            close();
+            close(CLOSE_ESC);
             return Result.CONSUMED;
         }
         if (keyDown && !repeat && keyCode == KEY_TAB) {
             // The player pressed Tab FOR the tab map — get out of the way and
             // let the press through (Escape parity on the buffer: the draft is discarded).
-            close();
+            close(CLOSE_TAB);
             return Result.PASS;
         }
         if (keyDown && !repeat && (keyCode == KEY_UP || keyCode == KEY_DOWN)) {
@@ -525,8 +544,10 @@ public final class ChatInputLaw {
         return (cp >= 0x0A && cp <= 0x0D) || cp == 0x85 || cp == 0x2028 || cp == 0x2029;
     }
 
-    private void close() {
+    /** Every close path names its cause (one of the {@code CLOSE_*} tokens); past construction this is the one write of {@link #lastCloseCause}. */
+    private void close(String cause) {
         open = false;
+        lastCloseCause = cause;
         buffer.setLength(0);
         caret = 0;
         detachHistory(); // A re-opened box starts its next Up from the newest entry

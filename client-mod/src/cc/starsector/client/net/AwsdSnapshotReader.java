@@ -50,6 +50,14 @@ public final class AwsdSnapshotReader {
     /**
      * The current schema — strict single-version by design (see class doc).
      * Mirrors {@code AwsdSnapshotMessage.SCHEMA_VERSION}.
+     * v15 = the pilot's held controls: a u16
+     * {@code pilotControls} (16 control bits, never raw key codes) rides the KEYFRAME right after
+     * {@code pilotFlags} IFF flags bit 1 ({@link #PILOT_FLAG_CONTROLS_WIRE}) is set (absent = 0;
+     * 68 B + 2 on such a record), and the delta ext bit {@link #EXT_CONTROLS} carries it ABSOLUTE
+     * after the triple's bytes (hold-last when absent); the mark's canonical form is refused on
+     * the RESOLVED record only (seat 0 carries mask, flags and controls 0; flags bits 3..7
+     * undefined; bit 2 needs bit 1; a clear bit 1 carries controls 0), never on which ext bits
+     * rode — a keyframe fails the frame closed, an applied delta is the merger's per-record drop;
      * v14 = the pilot triple:
      *{@code pilotSeat u8 + pilotMask u8 + pilotFlags u8}
      * (flags bit 0 = the serve follows the pilot's MagicLib decision on that hull)
@@ -94,7 +102,7 @@ public final class AwsdSnapshotReader {
      * cloak block, KEYFRAME 49→54 B; deltas hold-last); v2 = the
      * pose-grid widen.
      */
-    public static final int SCHEMA_VERSION = 14;
+    public static final int SCHEMA_VERSION = 15;
     public static final int HEADER_BYTES = 16;
     /** Body bytes preceding the records: simTick u64 + recordCount u16 + simSpeedPermille u16. */
     public static final int BODY_PREFIX_BYTES = 12;
@@ -150,10 +158,32 @@ public final class AwsdSnapshotReader {
     private static final int ALL_SECTION_BITS = 0xFF;
     /** Ext bit: the pilot triple ({@code pilotSeat u8, pilotMask u8, pilotFlags u8}), ABSOLUTE; hold-last when absent. */
     public static final int EXT_PILOT = 0x01;
+    /**
+     * Ext bit (v15), mirrors
+     * {@code AwsdSnapshotCodec.EXT_CONTROLS}: the hull's {@code pilotControls} u16, ABSOLUTE,
+     * after EXT_PILOT's bytes (ascending bit order); hold-last when absent. The serve sends it
+     * while the value differs from the anchor's, so it repeats until a keyframe re-anchors and a
+     * lost datagram never loses a held control. Its PRESENCE is never refused: the flags bit that
+     * licenses a non-zero value may live in the anchor, and a seat leaving its hull rides the
+     * triple with CONTROLS clear plus this bit carrying the fall to 0 — a routine edge. The
+     * canonical form is checked on the resolved record instead.
+     */
+    public static final int EXT_CONTROLS = 0x02;
     /** Every ext bit this schema defines; any other is refused. */
-    public static final int ALL_EXT_BITS = 0x01;
+    public static final int ALL_EXT_BITS = EXT_PILOT | EXT_CONTROLS;
     /** The wire's "no human pilot" seat (mirrors {@code AwsdEntityBaseline.PILOT_SEAT_NONE_WIRE}). */
     public static final int PILOT_SEAT_NONE_WIRE = 0;
+    /**
+     * Pilot flags bit 1 (CONTROLS), mirrors
+     * {@code AwsdEntityBaseline.PILOT_FLAG_CONTROLS_WIRE}: the serve delivers the pilot's held
+     * controls on this hull. A KEYFRAME carries the controls u16 exactly when it is set, and a
+     * clear bit pins the resolved controls to 0 ("nothing held" has one shape).
+     */
+    public static final int PILOT_FLAG_CONTROLS_WIRE = 0x02;
+    /** Pilot flags bit 2 (REPLICA_FOLLOW): only legal with {@link #PILOT_FLAG_CONTROLS_WIRE} set. */
+    public static final int PILOT_FLAG_REPLICA_FOLLOW_WIRE = 0x04;
+    /** Every pilot flags bit this schema defines (bits 0..2); bits 3..7 are refused. */
+    public static final int PILOT_FLAGS_DEFINED = 0x07;
 
     // Per-section field-mask bits (fields serialize in ascending bit order).
     public static final int POSE_X = 1;
@@ -377,6 +407,13 @@ public final class AwsdSnapshotReader {
         int pilotSeat = WireBytes.readUnsignedByte(data);
         int pilotMask = WireBytes.readUnsignedByte(data);
         int pilotFlags = WireBytes.readUnsignedByte(data);
+        //
+        // v15: the controls u16 rides IFF flags bit 1 is set. A keyframe re-anchors every remote
+        // copy, so a CONTROLS record must carry what is held (dropping it would replay as a
+        // release and a fresh press); a clear bit means nothing held, so no bytes are spent.
+        // A non-canonical shape (an undefined flags bit included) fails the ctor = IOException.
+        int pilotControls = (pilotFlags & PILOT_FLAG_CONTROLS_WIRE) != 0
+                ? WireBytes.readUnsignedShort(data) : 0;
         int mountCount = WireBytes.readUnsignedByte(data);
         List<AwsdKeyframe.Mount> mounts = new ArrayList<>(mountCount);
         try {
@@ -400,7 +437,7 @@ public final class AwsdSnapshotReader {
                     maneuverMask, sysStateCode, sysEffectLevel, qSysCd, sysAmmoWire,
                     cloakStateWire, cloakEffectFrac, qCloakCd, cloakAmmoWire,
                     crU8, depHalfSecU16, peakHalfSecU16, fighterRatePct, pilotSeat, pilotMask, pilotFlags,
-                    mounts);
+                    pilotControls, mounts);
         } catch (IllegalArgumentException corrupt) {
             throw new IOException(
                     "AWSD keyframe for entity " + entityId + " failed wire validation", corrupt);
@@ -533,6 +570,7 @@ public final class AwsdSnapshotReader {
         int pilotSeat = 0;
         int pilotMask = 0;
         int pilotFlags = 0;
+        int pilotControls = 0;
         if ((sectionMask & SECTION_EXT) != 0) {
             extMask = WireBytes.readUnsignedByte(data);
             if ((extMask & ~ALL_EXT_BITS) != 0) {
@@ -550,6 +588,12 @@ public final class AwsdSnapshotReader {
                             + Integer.toHexString(pilotMask) + " flags 0x" + Integer.toHexString(pilotFlags));
                 }
             }
+            if ((extMask & EXT_CONTROLS) != 0) {
+                //
+                // v15: ABSOLUTE u16 with NO check against the flags here — they may live in the
+                // anchor; applyDelta refuses a non-canonical RESOLVED record, per record.
+                pilotControls = WireBytes.readUnsignedShort(data);
+            }
         }
         return new AwsdDelta(
                 sectionMask,
@@ -562,7 +606,7 @@ public final class AwsdSnapshotReader {
                 engineFieldMask, engineDisabledMask, enginePermDisabledMask, engineControllerState,
                 maneuverMask,
                 sysFieldMask, sysStateCode, sysEffectLevel, sysCdSteps, sysAmmoWire,
-                extMask, pilotSeat, pilotMask, pilotFlags);
+                extMask, pilotSeat, pilotMask, pilotFlags, pilotControls);
     }
 
     /**
@@ -608,8 +652,9 @@ public final class AwsdSnapshotReader {
      * vs the anchor keyframe, so applying an age-k delta directly is identical to having
      * applied every intermediate delta. Throws {@code IllegalArgumentException} on an
      * entity or epoch mismatch — the D5 drop signal the merger turns into
-     * hold-last (+ NACK later), and on a dirty mount index absent from the anchor roster
-     * (roster changes always ride a keyframe). Mirrors the server codec exactly.
+     * hold-last (+ NACK later), on a dirty mount index absent from the anchor roster
+     * (roster changes always ride a keyframe), and on a RESOLVED pilot mark the canonical-form
+     * law refuses (the {@link AwsdKeyframe} ctor). Mirrors the server codec exactly.
      */
     public static AwsdKeyframe applyDelta(AwsdRecord record, AwsdKeyframe anchor) {
         if (record == null || anchor == null) {
@@ -666,6 +711,7 @@ public final class AwsdSnapshotReader {
         boolean engine = (sectionMask & SECTION_ENGINE) != 0;
         boolean system = (sectionMask & SECTION_SYSTEM) != 0;
         boolean pilot = (sectionMask & SECTION_EXT) != 0 && (delta.extMask() & EXT_PILOT) != 0;
+        boolean controls = (sectionMask & SECTION_EXT) != 0 && (delta.extMask() & EXT_CONTROLS) != 0;
         return new AwsdKeyframe(
                 anchor.entityId(),
                 anchor.epoch(),
@@ -732,6 +778,14 @@ public final class AwsdSnapshotReader {
                 pilot ? delta.pilotSeat() : anchor.pilotSeat(),
                 pilot ? delta.pilotMask() : anchor.pilotMask(),
                 pilot ? delta.pilotFlags() : anchor.pilotFlags(),
+                //
+                // v15 held controls: ABSOLUTE when EXT_CONTROLS rode, else the anchor's (hold-last
+                // — the serve repeats the value on every delta while it differs from the anchor,
+                // so an absent bit means "the anchor's value"). The AwsdKeyframe ctor checks the
+                // mark's canonical form on these RESOLVED values (the flags may come from the
+                // anchor, the controls from the delta, or the reverse): a delta that resolves to a
+                // refused shape throws here = the merger's per-record drop + hold-last + NACK.
+                controls ? delta.pilotControls() : anchor.pilotControls(),
                 mounts);
     }
 
@@ -816,8 +870,10 @@ public final class AwsdSnapshotReader {
             pose.fighterReplacementPct(kf.fighterRatePct());
         }
         // v14: every keyframe carries the pilot triple, so an AWSD pose ALWAYS
-        // mints it (seat 0 = no human pilot); only an AWSS pose reads PILOT_UNKNOWN.
-        pose.pilotSeat(kf.pilotSeat()).pilotMask(kf.pilotMask()).pilotFlags(kf.pilotFlags());
+        // mints it (seat 0 = no human pilot); only an AWSS pose reads PILOT_UNKNOWN. v15: the
+        // held controls ride with it (0 whenever flags bit 1 is clear — the ctor's law).
+        pose.pilotSeat(kf.pilotSeat()).pilotMask(kf.pilotMask()).pilotFlags(kf.pilotFlags())
+                .pilotControls(kf.pilotControls());
         return pose.build();
     }
 
@@ -860,6 +916,49 @@ public final class AwsdSnapshotReader {
                     + Integer.toHexString(fieldMask));
         }
         return fieldMask;
+    }
+
+    /**
+     * The pilot mark's canonical-form law, a mirror of
+     * the serve's {@code ShipManeuverCommandSnapshot.pilotMarkRefusalOrNull} restated locally so
+     * the kit's decode path keeps no dependency on the server protocol package (the two change
+     * together). Checked on the RESOLVED values (the record a keyframe or an applied delta
+     * produces), never on which delta fields rode: a seat leaving its hull changes the triple
+     * while its controls may be held at the anchor's, so a presence rule would refuse a routine
+     * edge on every screen. One bit pattern per meaning: seat 0 (no mark) carries mask, flags and
+     * controls 0; flags bits 3..7 are undefined; REPLICA_FOLLOW (bit 2) needs CONTROLS (bit 1),
+     * because a screen that follows the pilot's ship change must also hear the held controls; a
+     * clear CONTROLS bit carries controls 0. Returns the refused rule's name or null; the reason
+     * never quotes a value (the controls are a pilot's held input).
+     */
+    private static String pilotMarkRefusalOrNull(int pilotSeat, int pilotMask, int pilotFlags, int pilotControls) {
+        if (pilotSeat < 0 || pilotSeat > 0xFF) {
+            return "pilotSeat outside 0..255";
+        }
+        if ((pilotMask & ~0xFF) != 0) {
+            return "pilotMask outside one byte";
+        }
+        if ((pilotFlags & ~0xFF) != 0) {
+            return "pilotFlags outside one byte";
+        }
+        if ((pilotControls & ~0xFFFF) != 0) {
+            return "pilotControls outside u16";
+        }
+        if (pilotSeat == PILOT_SEAT_NONE_WIRE
+                && (pilotMask != 0 || pilotFlags != 0 || pilotControls != 0)) {
+            return "pilotSeat 0 (no mark) must carry mask, flags and controls 0";
+        }
+        if ((pilotFlags & ~PILOT_FLAGS_DEFINED) != 0) {
+            return "pilotFlags carries an undefined bit (3..7)";
+        }
+        boolean controlsFlag = (pilotFlags & PILOT_FLAG_CONTROLS_WIRE) != 0;
+        if ((pilotFlags & PILOT_FLAG_REPLICA_FOLLOW_WIRE) != 0 && !controlsFlag) {
+            return "pilotFlags REPLICA_FOLLOW set without CONTROLS";
+        }
+        if (!controlsFlag && pilotControls != 0) {
+            return "pilotControls non-zero while flags CONTROLS is clear";
+        }
+        return null;
     }
 
     private static void requireU8(String label, int value) {
@@ -1044,6 +1143,7 @@ public final class AwsdSnapshotReader {
             int pilotSeat,
             int pilotMask,
             int pilotFlags,
+            int pilotControls,
             List<Mount> mounts) {
 
         /** v12 {@code fighterRatePct} absent sentinel (mirrors the server's
@@ -1135,14 +1235,14 @@ public final class AwsdSnapshotReader {
                 throw new IllegalArgumentException(
                         "fighterRatePct outside 0..100 | 0xFF: " + fighterRatePct);
             }
-            requireU8("pilotSeat", pilotSeat);
-            requireU8("pilotMask", pilotMask);
-            requireU8("pilotFlags", pilotFlags);
-            if (pilotSeat == PILOT_SEAT_NONE_WIRE && (pilotMask != 0 || pilotFlags != 0)) {
-                // One bit pattern per meaning: "no pilot" rides mask 0 and flags 0 (the server
-                // baseline ctor enforces the same law).
-                throw new IllegalArgumentException("pilot triple non-canonical: seat 0 with mask 0x"
-                        + Integer.toHexString(pilotMask) + " flags 0x" + Integer.toHexString(pilotFlags));
+            // The pilot mark's canonical form on the
+            // RESOLVED values: a keyframe decode and an applied delta both land here, so a delta
+            // that would resolve to a refused shape is the merger's per-record drop, never a frame
+            // refusal (the server baseline ctor enforces the same law). The message names the
+            // rule only: the controls are a pilot's held input.
+            String pilotRefusal = pilotMarkRefusalOrNull(pilotSeat, pilotMask, pilotFlags, pilotControls);
+            if (pilotRefusal != null) {
+                throw new IllegalArgumentException("pilot mark refused: " + pilotRefusal);
             }
             if (sysStateCode == SYS_NONE_WIRE) {
                 // Canonical absent shape (one bit pattern per meaning) — the server
@@ -1224,7 +1324,8 @@ public final class AwsdSnapshotReader {
             int extMask,
             int pilotSeat,
             int pilotMask,
-            int pilotFlags) {
+            int pilotFlags,
+            int pilotControls) {
         public AwsdDelta {
             if ((sectionMask & ~ALL_SECTION_BITS) != 0) {
                 throw new IllegalArgumentException(
@@ -1246,6 +1347,17 @@ public final class AwsdSnapshotReader {
                 }
             } else if (pilotSeat != 0 || pilotMask != 0 || pilotFlags != 0) {
                 throw new IllegalArgumentException("pilot triple set without EXT_PILOT");
+            }
+            //
+            // v15: only the u16 carriage is a delta-level law (the serve's delta record refuses
+            // the same two shapes); the canonical form against the triple is a RESOLVED-value
+            // check in the AwsdKeyframe ctor, because the triple may live in the anchor.
+            if ((extMask & EXT_CONTROLS) != 0) {
+                if (pilotControls < 0 || pilotControls > 0xFFFF) {
+                    throw new IllegalArgumentException("pilotControls outside u16");
+                }
+            } else if (pilotControls != 0) {
+                throw new IllegalArgumentException("pilotControls set without EXT_CONTROLS");
             }
             if ((poseFieldMask & ~POSE_FIELD_BITS) != 0
                     || (fluxFieldMask & ~FLUX_FIELD_BITS) != 0

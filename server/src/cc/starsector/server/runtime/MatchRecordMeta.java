@@ -73,6 +73,15 @@ public final class MatchRecordMeta {
     public static final String PILOT_SHIP_UNSET = "unset";
 
     /**
+     * The LunaSettings sheet receipt the boot publishes at the mod-set moment ({@link LunaSheetMint#termOf}): the
+     * served sheet's {@code <digest16>:<rows>}, or {@link LunaSheetCodec#NO_SHEET_TERM} for none; absent (no engine
+     * booted) is recorded as {@code NO_SHEET_TERM} too. The sheet changes the joiners' mod settings, so the recording
+     * stamps it and the re-simulation gate ({@link ReplayBoot#lunaSheetRefusalOrNull}) compares it.
+     *
+     */
+    public static final String LUNA_SHEET_SYSPROP = "cc.luna.sheet";
+
+    /**
      * playedMatchId middle component: the JVM boot second — two serves of the same
      * descriptor in different boots mint distinct ids with no cross-boot persistence.
      */
@@ -316,6 +325,9 @@ public final class MatchRecordMeta {
         // boot's defines, so an ON serve reads applied:<k>; a leak latched before the open reads latched:leak).
         String pilotShip = System.getProperty(PILOT_SHIP_SYSPROP);
         meta.put("pilot.ship", pilotShip == null ? PILOT_SHIP_UNSET : pilotShip);
+        // The LunaSettings sheet term as read at the sink open (after the boot's mint).
+        String lunaSheet = System.getProperty(LUNA_SHEET_SYSPROP);
+        meta.put("luna.sheet", lunaSheet == null ? LunaSheetCodec.NO_SHEET_TERM : lunaSheet);
         meta.put("warmup.passes", Integer.toString(ServeWarmupRound.lastPassesOrNeg()));
         meta.put("warmup.ticks", Integer.toString(ServeWarmupRound.lastTicksOrNeg()));
         meta.put("wave.seed.effective", Long.toString(ctx.waveSeedEffective()));

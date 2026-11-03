@@ -11,7 +11,7 @@ link, which JDK 25 removed (the JDK moved to `java.lang.classfile`).
 | source | `https://repo1.maven.org/maven2/org/ow2/asm/asm/9.10.1/asm-9.10.1.jar` |
 | sha256 | `ed825d10ab1399c8c0cb669e688cf0c8c82629b4c8399b58352b68e92ca10fcb` (Central's published `.jar.sha256`, re-verified on download 2026-08-29; 126151 B) |
 | license | BSD-3-Clause — `LICENSE.txt` (ASM's own text; keep it beside the jar) |
-| class files | reads through JDK 25+ (`Opcodes.V25`); our visitors use the `ASM8` API level |
+| class files | reads through JDK 25+ (`Opcodes.V25`); the code here uses the `ASM8` API level |
 
 ## Refresh recipe (a JDK-family bump that outgrows this ASM)
 

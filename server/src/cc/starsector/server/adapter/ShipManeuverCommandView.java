@@ -89,4 +89,21 @@ public interface ShipManeuverCommandView {
      * re-deciding.
      */
     int pilotFlags();
+
+    /** The mark's flags bit 1: {@code [4]} (the pilot's held controls) is present and meaningful. */
+    int PILOT_FLAG_CONTROLS = 0x02;
+    /** The mark's flags bit 2: the serve's pilot-ship change is live for this hull (other screens may follow). */
+    int PILOT_FLAG_REPLICA_FOLLOW = 0x04;
+
+    /**
+     * The pilot's APPLIED held-controls u16 (bit i = the pilot holds their own binding of
+     * {@code PilotIntentFrame.CONTROL_KEY_NAMES[i]}), the serve mark's {@code [4]}; 0 when the hull carries no mark,
+     * a mark shorter than 5, or flags bit 1 ({@link #PILOT_FLAG_CONTROLS}) clear. WHY it rides the view: the AWSD
+     * codec reads the mark through this one view (never the engine), so the wire's DOWN field and the HOOK-0056
+     * answer on the serve cannot disagree. The pre-landed compile seam: the
+     * engine-backed view answers the mark, the codec carries it; a view that knows no mark answers 0.
+     */
+    default int pilotControls() {
+        return 0;
+    }
 }

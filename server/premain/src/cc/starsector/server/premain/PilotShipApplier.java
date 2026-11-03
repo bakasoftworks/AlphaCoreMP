@@ -84,10 +84,19 @@ public final class PilotShipApplier implements ClassFileTransformer {
     private static final byte[] INPUT_PREFIX = PilotShipClassifier.LWJGL_INPUT_PREFIX.getBytes(StandardCharsets.US_ASCII);
     /** The tenth twin's name: a pool Utf8 EQUAL to it admits a class to the key family's redirect. */
     private static final byte[] CONTROL_NAME = PilotShipClassifier.GET_CONTROL_STRING.getBytes(StandardCharsets.US_ASCII);
+    /**
+     * The pilot-state twins' names: a pool Utf8 EQUAL to one admits a class the same way. Without them a class whose
+     * only sites are AI-state reads would load untouched and uncounted.
+     */
+    private static final byte[][] AI_STATE_NAMES = {
+            PilotShipClassifier.GET_AI.getBytes(StandardCharsets.US_ASCII),
+            PilotShipClassifier.GET_SHIP_AI.getBytes(StandardCharsets.US_ASCII),
+            PilotShipClassifier.IS_UI_AUTOPILOT_ON.getBytes(StandardCharsets.US_ASCII)};
     /** {@link #poolNames} bits. */
     static final int NAMES_CALL = 1;
     static final int NAMES_INPUT = 2;
     static final int NAMES_CONTROL = 4;
+    static final int NAMES_AI_STATE = 8;
 
     // Match-wide counters: one applier per JVM, read off-frame by countsRow (atomic: defines run concurrently).
     private static final AtomicInteger CLASSES = new AtomicInteger();
@@ -171,8 +180,9 @@ public final class PilotShipApplier implements ClassFileTransformer {
 
     /**
      * The script half: one verdict per candidate class, original bytes on any miss or Throwable. A class admitted only
-     * by the LWJGL input prefix ({@code namesCall} false) that the rewriter finds no subject (no site of either family)
-     * loads untouched with no row: before the key family it never reached this point.
+     * by a non-ship name - the LWJGL input prefix, the control name or a pilot-state name ({@code namesCall} false) -
+     * that the rewriter finds no subject (no redirect site) loads untouched with no row: before those families it never
+     * reached this point.
      */
     private byte[] redirect(String className, ProtectionDomain domain, byte[] in, boolean namesCall) {
         String jar = "unknown";
@@ -268,13 +278,14 @@ public final class PilotShipApplier implements ClassFileTransformer {
      * The pool pre-scan of both redirect families, a walk of the pool's entry table (no parse):
      * {@link #NAMES_CALL} when a Utf8 entry EQUALS {@code getPlayerShip}, {@link #NAMES_INPUT} when a Utf8 entry
      * STARTS WITH {@code org/lwjgl/input/} (the Keyboard / Mouse class entries), {@link #NAMES_CONTROL} when a Utf8
-     * entry EQUALS {@code getControlStringForEnumName} (the tenth twin); 0 for none or no class file. An
-     * unknown tag or a truncated pool answers every bit, so the rewriter (fail-open) decides.
+     * entry EQUALS {@code getControlStringForEnumName} (the tenth twin), {@link #NAMES_AI_STATE} when a Utf8
+     * entry EQUALS {@code getAI}, {@code getShipAI} or {@code isUIAutopilotOn} (the pilot-state twins); 0 for
+     * none or no class file. An unknown tag or a truncated pool answers every bit, so the rewriter (fail-open) decides.
      *
      *
      */
     static int poolNames(byte[] b) {
-        int all = NAMES_CALL | NAMES_INPUT | NAMES_CONTROL;
+        int all = NAMES_CALL | NAMES_INPUT | NAMES_CONTROL | NAMES_AI_STATE;
         try {
             if (b == null || b.length < 10 || (b[0] & 0xff) != 0xCA || (b[1] & 0xff) != 0xFE
                     || (b[2] & 0xff) != 0xBA || (b[3] & 0xff) != 0xBE) {
@@ -297,6 +308,13 @@ public final class PilotShipApplier implements ClassFileTransformer {
                         } else if (len == CONTROL_NAME.length
                                 && java.util.Arrays.equals(b, p + 3, p + 3 + len, CONTROL_NAME, 0, len)) {
                             names |= NAMES_CONTROL;
+                        } else {
+                            for (byte[] n : AI_STATE_NAMES) {
+                                if (len == n.length && java.util.Arrays.equals(b, p + 3, p + 3 + len, n, 0, len)) {
+                                    names |= NAMES_AI_STATE;
+                                    break;
+                                }
+                            }
                         }
                         p += 3 + len;
                     }
@@ -327,7 +345,7 @@ public final class PilotShipApplier implements ClassFileTransformer {
      * loader delegates to: {@code {reason, boundary}} on a miss ({@code holder_missing} = a class absent,
      * {@code holder_abi} = a method absent or of the wrong shape), else null. The typed target's methods are read
      * from its class bytes, so no game API type loads before the game does: EVERY twin of the redirect table
-     * ({@link PilotShipClassifier#TWINS}, both families), public static, by name + descriptor - a rewritten class
+     * ({@link PilotShipClassifier#TWINS}, every family), public static, by name + descriptor - a rewritten class
      * linking a missing twin would throw NoSuchMethodError inside a hull's update, uncaught.
      */
     static String[] holderProbeRefusal() {
@@ -350,6 +368,7 @@ public final class PilotShipApplier implements ClassFileTransformer {
             requireStatic(holder.getMethod("buttonDown", int.class), boolean.class);
             requireStatic(holder.getMethod("controlEntryOrMinusOne", String.class), int.class);
             requireStatic(holder.getMethod("controlNameOrNull", int.class), String.class);
+            requireStatic(holder.getMethod("countAiRead"), void.class);
         } catch (NoSuchMethodException | IllegalStateException e) {
             return new String[] {"holder_abi", HOLDER_CLASS + " lacks " + e.getMessage()};
         }

@@ -15,16 +15,30 @@ public final class EngineBackedShipManeuverCommandView implements ShipManeuverCo
     private final int pilotSeat;
     private final int pilotMask;
     private final int pilotFlags;
+    private final int pilotControls;
+
+    /** The view with no held-controls value (0): a mark shorter than 5 or with flags bit 1 clear. */
+    public EngineBackedShipManeuverCommandView(long shipId, int maneuverMask, int pilotSeat, int pilotMask,
+            int pilotFlags) {
+        this(shipId, maneuverMask, pilotSeat, pilotMask, pilotFlags, 0);
+    }
 
     /**
      * The pilot triple
      * is the hull's mark as the serve's mod reads it this tick
      * ({@link ShipManeuverCommandView#PILOT_SEAT_NONE}, 0, 0 when unmarked); the binding already
      * mapped any malformed mark to (0, 0, 0), so an out-of-range value here is a programming
-     * error and throws.
+     * error and throws. {@code pilotControls} = the mark's {@code [4]} u16, non-zero only on a seat's mark with flags
+     * bit 1 set (the binding reads 0 otherwise).
      */
     public EngineBackedShipManeuverCommandView(long shipId, int maneuverMask, int pilotSeat, int pilotMask,
-            int pilotFlags) {
+            int pilotFlags, int pilotControls) {
+        if ((pilotControls & ~0xFFFF) != 0 || (pilotControls != 0 && (pilotSeat == PILOT_SEAT_NONE
+                || (pilotFlags & PILOT_FLAG_CONTROLS) == 0))) {
+            throw new IllegalArgumentException("pilotControls must be a u16 on a seat's mark with flags bit 1; got 0x"
+                    + Integer.toHexString(pilotControls) + " seat " + pilotSeat + " flags 0x"
+                    + Integer.toHexString(pilotFlags));
+        }
         if (pilotSeat < 0 || pilotSeat > 0xFF) {
             throw new IllegalArgumentException("pilotSeat must be 0..255; got " + pilotSeat);
         }
@@ -41,6 +55,12 @@ public final class EngineBackedShipManeuverCommandView implements ShipManeuverCo
         this.pilotSeat = pilotSeat;
         this.pilotMask = pilotMask;
         this.pilotFlags = pilotFlags;
+        this.pilotControls = pilotControls;
+    }
+
+    @Override
+    public int pilotControls() {
+        return pilotControls;
     }
 
     @Override

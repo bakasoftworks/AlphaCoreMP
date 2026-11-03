@@ -48,9 +48,15 @@ import java.util.Objects;
  * AWSS wire stays byte-identical — a domain field AWSS never serialises, like the CR record's
  * fighter percent. The non-canonical shapes (seat 0 with a non-zero mask or flags) are refused.
  *
+ *
+ * <p><b>{@code pilotControls} (schema v15, AWSD only)</b>
+ * is the pilot's APPLIED held-controls u16 the serve's mark carries (bit i = the pilot holds their
+ * own binding of the i-th ship control); it is meaningful only while flags bit 1 (CONTROLS) is
+ * set. The whole mark obeys ONE canonical-form law, {@link #pilotMarkRefusalOrNull}, shared with
+ * the AWSD baseline so the serve's capture and every decode refuse the same shapes.
  */
 public record ShipManeuverCommandSnapshot(long entityId, int maneuverMask, int pilotSeat, int pilotMask,
-        int pilotFlags) {
+        int pilotFlags, int pilotControls) {
 
     /**
      * Wire bit of the engine-flare flag — the free top bit of the maneuver
@@ -61,6 +67,17 @@ public record ShipManeuverCommandSnapshot(long entityId, int maneuverMask, int p
     /** The 8 legal bits (7 maneuver commands + bit 7 flare); anything above is rejected. */
     public static final int MANEUVER_MASK_BITS = 0xFF;
 
+    /**
+     * The mark's flags bits schema v15 defines: FOLLOW (bit 0), CONTROLS (bit 1), REPLICA_FOLLOW
+     * (bit 2). Bits 3..7 are refused, so a later meaning for them rides a new version instead of
+     * being silently dropped by a reader that predates it.
+     */
+    public static final int PILOT_FLAGS_DEFINED = ShipManeuverCommandView.PILOT_FLAG_FOLLOW
+            | ShipManeuverCommandView.PILOT_FLAG_CONTROLS | ShipManeuverCommandView.PILOT_FLAG_REPLICA_FOLLOW;
+
+    /** The legal width of {@code pilotControls}: u16, bit i = the i-th ship control. */
+    public static final int PILOT_CONTROLS_BITS = 0xFFFF;
+
     public ShipManeuverCommandSnapshot {
         if (entityId <= 0L) {
             throw new IllegalArgumentException("entityId must be > 0; got " + entityId);
@@ -70,21 +87,51 @@ public record ShipManeuverCommandSnapshot(long entityId, int maneuverMask, int p
                     "maneuverMask must fit the 8-bit maneuver byte (mask <= 0xff); got 0x"
                             + Integer.toHexString(maneuverMask));
         }
+        String refusal = pilotMarkRefusalOrNull(pilotSeat, pilotMask, pilotFlags, pilotControls);
+        if (refusal != null) {
+            throw new IllegalArgumentException("pilot mark refused: " + refusal);
+        }
+    }
+
+    /**
+     * The pilot mark's canonical-form law, checked on
+     * the RESOLVED values (the record a keyframe or an applied delta produces), never on which
+     * delta fields happened to ride: a seat leaving its hull is a triple change whose controls are
+     * held at the anchor's, so a presence-based rule would refuse a routine edge on every screen.
+     * One bit pattern per meaning: seat 0 (no mark) carries mask, flags and controls 0; flags
+     * bits 3..7 are undefined; REPLICA_FOLLOW (bit 2) needs CONTROLS (bit 1), because a remote
+     * screen that follows the pilot's ship change must also hear the pilot's held controls; a
+     * clear CONTROLS bit carries controls 0, so "nothing held" has one shape. Returns the refused
+     * rule's name or null. The reason never quotes the controls value: it is a pilot's held input.
+     */
+    public static String pilotMarkRefusalOrNull(int pilotSeat, int pilotMask, int pilotFlags, int pilotControls) {
         if (pilotSeat < 0 || pilotSeat > 0xFF) {
-            throw new IllegalArgumentException("pilotSeat must be 0..255; got " + pilotSeat);
+            return "pilotSeat outside 0..255";
         }
         if ((pilotMask & ~ShipManeuverCommandView.PILOT_MASK_BITS) != 0) {
-            throw new IllegalArgumentException(
-                    "pilotMask must fit one byte (mask <= 0xff); got 0x" + Integer.toHexString(pilotMask));
+            return "pilotMask outside one byte";
         }
         if ((pilotFlags & ~0xFF) != 0) {
-            throw new IllegalArgumentException(
-                    "pilotFlags must fit one byte (flags <= 0xff); got 0x" + Integer.toHexString(pilotFlags));
+            return "pilotFlags outside one byte";
         }
-        if (pilotSeat == ShipManeuverCommandView.PILOT_SEAT_NONE && (pilotMask != 0 || pilotFlags != 0)) {
-            throw new IllegalArgumentException("pilotSeat 0 (no mark) must carry pilotMask 0 and pilotFlags 0; got 0x"
-                    + Integer.toHexString(pilotMask) + "/0x" + Integer.toHexString(pilotFlags));
+        if ((pilotControls & ~PILOT_CONTROLS_BITS) != 0) {
+            return "pilotControls outside u16";
         }
+        if (pilotSeat == ShipManeuverCommandView.PILOT_SEAT_NONE
+                && (pilotMask != 0 || pilotFlags != 0 || pilotControls != 0)) {
+            return "pilotSeat 0 (no mark) must carry mask, flags and controls 0";
+        }
+        if ((pilotFlags & ~PILOT_FLAGS_DEFINED) != 0) {
+            return "pilotFlags carries an undefined bit (3..7)";
+        }
+        boolean controlsFlag = (pilotFlags & ShipManeuverCommandView.PILOT_FLAG_CONTROLS) != 0;
+        if ((pilotFlags & ShipManeuverCommandView.PILOT_FLAG_REPLICA_FOLLOW) != 0 && !controlsFlag) {
+            return "pilotFlags REPLICA_FOLLOW set without CONTROLS";
+        }
+        if (!controlsFlag && pilotControls != 0) {
+            return "pilotControls non-zero while flags CONTROLS is clear";
+        }
+        return null;
     }
 
     /**
@@ -92,7 +139,7 @@ public record ShipManeuverCommandSnapshot(long entityId, int maneuverMask, int p
      * shape every AWSS decode and every pre-v14 fixture mints.
      */
     public ShipManeuverCommandSnapshot(long entityId, int maneuverMask) {
-        this(entityId, maneuverMask, ShipManeuverCommandView.PILOT_SEAT_NONE, 0, 0);
+        this(entityId, maneuverMask, ShipManeuverCommandView.PILOT_SEAT_NONE, 0, 0, 0);
     }
 
     /**
@@ -101,19 +148,28 @@ public record ShipManeuverCommandSnapshot(long entityId, int maneuverMask, int p
      * form.
      */
     public ShipManeuverCommandSnapshot(long entityId, int maneuverMask, int pilotSeat, int pilotMask) {
-        this(entityId, maneuverMask, pilotSeat, pilotMask, 0);
+        this(entityId, maneuverMask, pilotSeat, pilotMask, 0, 0);
+    }
+
+    /**
+     * A marked record with the flags byte but no held
+     * controls (pilotControls 0) — the triple-shaped callers' form.
+     */
+    public ShipManeuverCommandSnapshot(long entityId, int maneuverMask, int pilotSeat, int pilotMask,
+            int pilotFlags) {
+        this(entityId, maneuverMask, pilotSeat, pilotMask, pilotFlags, 0);
     }
 
     /**
      * Build the per-ship maneuver-command snapshot from the project-owned
      * {@link ShipManeuverCommandView} read model, keyed to the ship's already-resolved
      * network {@code entityId} (distinct from the view's within-tick repository
-     * {@code shipId()}). The view's pilot triple rides along for the AWSD encoder.
+     * {@code shipId()}). The view's pilot triple and held controls ride along for the AWSD encoder.
      */
     public static ShipManeuverCommandSnapshot fromView(ShipManeuverCommandView view, long entityId) {
         Objects.requireNonNull(view, "view");
         return new ShipManeuverCommandSnapshot(entityId, view.maneuverMask(), view.pilotSeat(), view.pilotMask(),
-                view.pilotFlags());
+                view.pilotFlags(), view.pilotControls());
     }
 
     /**
@@ -143,5 +199,16 @@ public record ShipManeuverCommandSnapshot(long entityId, int maneuverMask, int p
     public static ShipManeuverCommandSnapshot fromWire(long entityId, int maneuverMask, int pilotSeat, int pilotMask,
             int pilotFlags) {
         return new ShipManeuverCommandSnapshot(entityId, maneuverMask, pilotSeat, pilotMask, pilotFlags);
+    }
+
+    /**
+     * Reconstruct an AWSD v15 record with its pilot
+     * triple and held controls, fail-closed through the canonical constructor
+     * ({@link #pilotMarkRefusalOrNull}).
+     */
+    public static ShipManeuverCommandSnapshot fromWire(long entityId, int maneuverMask, int pilotSeat, int pilotMask,
+            int pilotFlags, int pilotControls) {
+        return new ShipManeuverCommandSnapshot(entityId, maneuverMask, pilotSeat, pilotMask, pilotFlags,
+                pilotControls);
     }
 }

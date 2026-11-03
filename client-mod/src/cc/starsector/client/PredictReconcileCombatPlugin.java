@@ -7,6 +7,7 @@ import cc.starsector.client.net.ClientRosterAppend;
 import cc.starsector.client.net.PredictSession;
 import cc.starsector.client.net.ServerEntityPose;
 import cc.starsector.client.net.ServerSnapshotFrame;
+import cc.starsector.client.replica.ReplicaPilotWindow;
 import cc.starsector.client.voice.VoiceClientSettings;
 import cc.starsector.server.runtime.ClientPostureRegistry;
 import cc.starsector.server.runtime.PilotControlNames;
@@ -47,6 +48,7 @@ import com.fs.starfarer.api.ui.Alignment;
 import com.fs.starfarer.api.ui.LabelAPI;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
+import org.lwjgl.opengl.Display;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.util.vector.Vector2f;
 
@@ -222,6 +224,59 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             ShipCommand.HOLD_FIRE,
             ShipCommand.PULL_BACK_FIGHTERS,
     };
+    private static final ShipCommand[] NO_COMMANDS = {};
+    /**
+     * The held-input latch's COMMAND half: per {@code PilotIntentFrame.CONTROL_KEY_NAMES}
+     * index, the engine-POLLED ship commands that control name issues, blocked for the frame while the pilot's key for
+     * it is latched from a TEXT edge ({@link #blockLatchedControlCommands}). INDEX-ALIGNED to that name table, row for
+     * row: a name inserted there without its set here shifts every later name onto the wrong verbs.
+     * TURN_LEFT / TURN_RIGHT carry their strafe twin and
+     * SHIP_STRAFE_KEY both strafes (the modifier turns A / D into strafes). EMPTY by law: SHIP_FIRE (the fire level's
+     * own (re)entry swallow), SHIP_TARGET_SHIP and C2_TOGGLE_AUTOPILOT (no {@link ShipCommand} — a latched R / U
+     * still targets / toggles until its key-up; the recorded residue). Same lever as
+     * {@link #TYPING_BLOCKED_TAP_COMMANDS}: consumption never reaches polled keys.
+     */
+    static final ShipCommand[][] CONTROL_NAME_COMMANDS = {
+            { ShipCommand.ACCELERATE },                            // SHIP_ACCELERATE
+            { ShipCommand.ACCELERATE_BACKWARDS },                  // SHIP_ACCELERATE_BACKWARDS
+            { ShipCommand.DECELERATE },                            // SHIP_DECELERATE
+            { ShipCommand.TURN_LEFT, ShipCommand.STRAFE_LEFT },    // SHIP_TURN_LEFT
+            { ShipCommand.TURN_RIGHT, ShipCommand.STRAFE_RIGHT },  // SHIP_TURN_RIGHT
+            { ShipCommand.STRAFE_LEFT, ShipCommand.STRAFE_RIGHT }, // SHIP_STRAFE_KEY
+            { ShipCommand.STRAFE_LEFT },                           // SHIP_STRAFE_LEFT_NOTURN
+            { ShipCommand.STRAFE_RIGHT },                          // SHIP_STRAFE_RIGHT_NOTURN
+            NO_COMMANDS,                                           // SHIP_FIRE
+            { ShipCommand.TOGGLE_SHIELD_OR_PHASE_CLOAK },          // SHIP_SHIELDS
+            { ShipCommand.USE_SYSTEM },                            // SHIP_USE_SYSTEM
+            { ShipCommand.VENT_FLUX },                             // SHIP_VENT_FLUX
+            { ShipCommand.PULL_BACK_FIGHTERS },                    // SHIP_PULL_BACK_FIGHTERS
+            { ShipCommand.HOLD_FIRE },                             // SHIP_HOLD_FIRE
+            NO_COMMANDS,                                           // SHIP_TARGET_SHIP
+            NO_COMMANDS,                                           // C2_TOGGLE_AUTOPILOT
+    };
+    /**
+     * Per {@link #MANEUVER_COMMAND_FOR_BIT} bit b: the mask of {@link #CONTROL_NAME_COMMANDS} indices whose set names
+     * that command, derived once from the two tables. {@link #captureOwnCommands} drops movement bit b from the
+     * {@link #heldControls} mirror while any of those names is latched.
+     */
+    private static final int[] MANEUVER_BIT_CONTROL_NAMES = deriveManeuverBitControlNames();
+
+    private static int[] deriveManeuverBitControlNames() {
+        int[] masks = new int[MANEUVER_COMMAND_FOR_BIT.length];
+        for (int b = 0; b < masks.length; b++) {
+            int mask = 0;
+            for (int i = 0; i < CONTROL_NAME_COMMANDS.length && i < 32; i++) {
+                for (ShipCommand verb : CONTROL_NAME_COMMANDS[i]) {
+                    if (verb == MANEUVER_COMMAND_FOR_BIT[b]) {
+                        mask |= 1 << i;
+                        break;
+                    }
+                }
+            }
+            masks[b] = mask;
+        }
+        return masks;
+    }
     // ------------------------------------------------------------------ hulk-split sync
 
     /** Hulk-split sync — the whole {@code HKFR} fracture-family lane (state + drivers)
@@ -641,7 +696,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     /** The 16-byte keymap {@link #controlKeyIndex} was built from at this {@link #init} — the ONE game-thread
      *  resolution ({@link #resolvePilotKeymap}): handed to the kept-open session's re-HELLO holder BEFORE the takeover
      *  re-HELLO is armed and to every session this window binds, so the bits the sampler polls and the map the serve
-     *  reads them by are the same resolution. Main-written */
+     *  reads them by are the same resolution. */
     private byte[] pilotKeymap;
     /** Render thread only: polls run by {@link #captureOwnInputLevels} (the gated EMPTY frames do not count). */
     private long inputLevelPolls;
@@ -651,6 +706,53 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     private long keyOverflowDrops;
     /** Render thread only: polls that threw (the three levels read EMPTY that frame; the first is logged). */
     private long inputLevelPollFailures;
+    /**
+     * Render thread only: frames EMPTY by the window-focus gate alone (the own read, chat and picker gates clear;
+     * counted before the dialog gate, {@link InputLevelGate#emptyCause}).
+     */
+    private long keysEmptyUnfocused;
+    /** Render thread only: frames EMPTY by the vanilla-dialog gate alone (the window active, the other gates clear). */
+    private long keysEmptyDialog;
+    /** Render thread only: frames EMPTY by the codex gate alone (the window active, no dialog, the other gates clear). */
+    private long keysEmptyCodex;
+    /** Render thread only: frames whose focus read threw (failed closed, also counted as unfocused; the first is logged). */
+    private long focusReadFailures;
+    /** Render thread only: the one info row at the first unfocused EMPTY frame, once per process (later frames are
+     *  counted, not logged). */
+    private static boolean keysUnfocusedLogged;
+    /**
+     * Render thread only: the keys and buttons already held at the sample gate's falling edge, dropped from all three
+     * levels until each one's own release ({@link HeldInputLatch} = the WHY and the law; armed in
+     * {@link #captureOwnInputLevels}).
+     */
+    private final HeldInputLatch heldLatch = new HeldInputLatch();
+    /** Render thread only: the last {@link #captureOwnInputLevels} frame was gated EMPTY. Starts true, so the first
+     *  sampled frame of a combat is a falling edge too (keys and buttons held from the menu or the join click). */
+    private boolean sampleGatedLastFrame = true;
+    /** Render thread only: falling edges latched (every edge counts, an edge that found nothing held included). */
+    private long keysLatchEdges;
+    /** Render thread only: latched codes and buttons read NOT held, one per code / button per frame it stays down. */
+    private long keysLatchDropped;
+    /** Render thread only: the one info row at the first edge that latched anything, once per plugin. */
+    private boolean keysLatchLogged;
+    /**
+     * Render thread only: bit i = this pilot's key for {@code CONTROL_KEY_NAMES[i]} is latched AND the latch was minted
+     * at a text edge (the COMMAND half): written at the end of each {@link #captureOwnInputLevels} (0 on
+     * a gated or failed frame, and on every frame of a latch minted at a non-text edge, {@link #latchCommandScope}),
+     * read by the next pre-core pass's {@link #blockLatchedControlCommands} and by this frame's mirror mask.
+     */
+    private int latchedControlBits;
+    /**
+     * Render thread only: does the current latch carry its COMMAND half? The last gated frame decides (a chat box,
+     * picker, dialog or codex on it = yes; only a respawn / transfer / death own-read gate or the focus gate = no); a
+     * fresh scope reads no, so the combat-start edge never blocks a held movement key (vanilla steers on it,
+     * {@link InputLevelGate#commandLatchApplies} = the WHY).
+     */
+    private final InputLevelGate.CommandLatchScope latchCommandScope = new InputLevelGate.CommandLatchScope();
+    /** Render thread only: {@code blockCommandForOneFrame} calls made for latched controls (one per command per frame). */
+    private long keysLatchCmdBlocks;
+    /** Render thread only: movement bits dropped from the {@link #heldControls} mirror because their name was latched. */
+    private long keysLatchMirrorMasked;
     /** The poll whose cost is the WARM sample of the one-off cost row (the first poll is the cold one). */
     private static final long INPUT_LEVEL_WARM_POLL = 100L;
     /**
@@ -2189,6 +2291,9 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     // Persists across round resets (contentIds are match-scoped — the server registry lives
     // outside the round loop); cleared at teardownActive with the session. Render-thread only.
     final Map<Integer, String> contentCatalog = new HashMap<>();
+    /** The once-per-tenure replica-loadout FORK check at the
+     *  bind; server weapon ids resolve through {@link #contentCatalog}. */
+    private final ReplicaLoadoutCheck replicaLoadout = new ReplicaLoadoutCheck(contentCatalog);
     // own-ship CR/PPT clock census (frozen- vs slow-clock discriminator).
     private final CrClockCensus crCensus = new CrClockCensus();
     // per-Merlon armor census — the at-load chew discriminator.
@@ -2215,6 +2320,15 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     // the engine's DamagingExplosion hardcodes null for both getWeapon and getProjectileSpecId).
     int replayShipWeaponlessSpawns;  // predict_event_rebase_replay_ship_weaponless_spawn
     private int replayShipWeaponlessLogLines; // capped like the sibling autonomous arm
+    /** The script-spawn split's meters ({@link #enrollScriptSpawn}):
+     *  enrolled = a replica script's missile kept as a wire-linked puppet instead of leak-removed (counted
+     *  in NEITHER the autonomous bar nor the remover census); unresolved = no registry id or no live mount
+     *  (the leak arm as before); spec_unread = the weapon's own spec id unreadable (the leak arm as before). */
+    int scriptSpawnEnrolled;
+    int scriptSpawnUnresolved;
+    int scriptSpawnSpecUnread;
+    private int scriptSpawnLogLines;
+    final ReplicaScriptDamageGate scriptDamageGate = new ReplicaScriptDamageGate(this);
     boolean autofireSuppressLogged;
 
     // === The declared-discharge fire lane, client send half: the same
@@ -2425,6 +2539,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     @Override
     public void init(CombatEngineAPI engine) {
         teardownActive();
+        cc.starsector.server.match.MatchDescriptor lunaDesc = MatchMissionBuilder.cachedDescriptor(); // served LunaLib values: AFTER teardown's restore mark, before every other plugin's init
+        cc.starsector.client.luna.LunaSyncApply.applyAtCombatInit(lunaDesc == null ? null : lunaDesc.matchId(), engine);
         CcClientModPlugin.noteClaimSettled(); // W13 leg 2c: a fresh init voids any stale claim banner state
         CcClientModPlugin.noteRoundStartedWithoutSession(false);
         // The late-attach hold flags start clear every init
@@ -2434,6 +2550,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         lateAttachPolling = false;
         this.engine = engine;
         HullCapBound.resetReplicaFallback(); // The static slot never outlives its combat
+        ReplicaPilotWindow.clearForMatch(); // new combat: empty stack/index/own ship, zeroed meters; a latch stays
+        cc.starsector.client.replica.OwnInputSample.reset(); // own key twins: the real call until this combat's first sample
         ObserverFrameDump.registerIfArmed(engine, this); // no-op unless observer + frameDir
         PlayerCameraLock.registerIfArmed(engine); // no-op unless -Dcc.watch.cameraLockPlayer=true (rig windows)
         MarkFrameRing.registerIfArmed(engine, this); // no-op unless -Dcc.markframes.dir armed at load
@@ -2485,6 +2603,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // re-arm the (re)entry fire-swallow here too — construction covers
         // the normal fresh-instance path; this covers any harness that re-inits an instance.
         swallowFireUntilMouseRelease = true;
+        sampleGatedLastFrame = true; // a re-initialised instance samples its next frame as a latch edge too
+        latchCommandScope.reset(); // that edge is a combat-start one: no command half
         cc.starsector.server.match.MatchDescriptor vanillaDesc = MatchMissionBuilder.cachedDescriptor();
         vanillaWindow = vanillaDesc != null && vanillaDesc.shape().startsWith("vanilla:");
         if (vanillaWindow) {
@@ -2513,7 +2633,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // ONE game-thread resolution of the pilot's bindings per init: the sampler's control bits (PINT v7) AND the
         // map the session's re-HELLOs seal. The kept-open session gets it BEFORE predictSessionForMissionInit arms
         // the takeover re-HELLO, so a rebind made at the mission menu (ESC, Settings > Controls, re-pick) reaches
-        // the serve with the same keys the sampler now polls. Main-written
+        // the serve with the same keys the sampler now polls.
         pilotKeymap = resolvePilotKeymap();
         controlKeyIndex = resolveControlKeyIndex(pilotKeymap);
         PredictSession kept = CcClientModPlugin.predictSession;
@@ -3498,6 +3618,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // through combat's last frames is a hold/mash, never a list click.
         CcClientModPlugin.markCombatFrame();
         weaponLists.nextFrame(); // Stamp BEFORE the first consumer (the hold re-assert)
+        // Depth belt OUTSIDE every window, ahead of each early return: a leaked enter latches before a stale answer.
+        ReplicaPilotWindow.assertDepthZeroEachFrame();
         beamPres.beginRelayFrame(); // Last frame's relay set is spent (SubstepHoldAI read it on the fast passes)
         // W-PLUGIN-GAP kill: the replay-driven hold re-assert runs UNCONDITIONALLY
         // ahead of every early-return in this method (pre-feed hold, paused, combat-over, boundary
@@ -3640,7 +3762,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // client owns the clock. Suppress this engine's local pause CONTINUOUSLY so a non-owner guest's
         // instinctive ESC/command-map cannot dark-stall the predictor (the early-return below) while the
         // server marches — the overlay still shows, combat runs underneath. Runs BEFORE the early-return so
-        // the unpaused frame proceeds normally; subsumes the bots one-shot above when ON. Default OFF.
+        // the unpaused frame proceeds normally; subsumes the bots one-shot above when ON. compiled ON (PredictKnobConfig.SHARED_TIME_GUARD).
         if (SHARED_TIME_GUARD && !vanillaWindow && engine != null && engine.isPaused()) {
             engine.setPaused(false);
             if (!sharedTimeGuardLogged) {
@@ -3704,10 +3826,12 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                 // A kicked latch landing after the per-frame poll above must drive before teardown nulls session
                 kickedNoticeLane.advance(session != null ? session.kickedNoticeReason() : -1);
                 teardownActive();
+                cc.starsector.client.luna.LunaSyncState.drainOnGameThread(); // game thread: the served LunaLib values go back now
             }
         }
         if (engine.isCombatOver()) {
             teardownActive();
+            cc.starsector.client.luna.LunaSyncState.drainOnGameThread(); // game thread: the served LunaLib values go back now
             return;
         }
         // Put queued chat relays on the HUD feed (live frames only; a null
@@ -3912,6 +4036,9 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     frameLedger.note("spawn"); // replica-mint frames (client first-exec candidates)
                 }
             }
+            if (freshSnapshot) {
+                replicaLoadout.recheck(snapshot); // bounded re-read of tenures whose server weapon ids were unresolved at the bind
+            }
             // The XFER heavy pump AFTER spawn-on-sight — pod
             // adoption, own/remote COMMIT re-points and the swap/return waits need this frame's
             // bound replica bodies.
@@ -4065,6 +4192,11 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                                             + " not a death explosion, not a weapon discharge)");
                                 }
                             }
+                        } else if (p instanceof MissileAPI && enrollScriptSpawn((MissileAPI) p)) {
+                            // A replica script's missile (its spec differs
+                            // from its weapon's own) is not a hold-fire leak — it is kept as a wire-linked
+                            // puppet so the script bound to it (a tether, its cable and arcs) survives. Counted
+                            // in neither the autonomous bar nor the remover census, so both stay exact.
                         } else {
                             replayShipAutonomousDischarges++;
                             // Classify the counted object (weapon id,
@@ -4685,7 +4817,12 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // The pilot-mark frame brackets the remote walk —
         // the own adopt (applyStaged) already ran, so an adopted body is skipped and swept here,
         // before the mod's ship systems read the mark this frame.
-        remotePilotMark.beginFrame(ownShip, engine != null ? engine.getPlayerShip() : null);
+        // The frame's own-ship truth is read HERE, once per frame —
+        // the replica-window holder never answers for the own ship, and the mark lane skips the hull the own
+        // seat is adopting (the seat is -1 before the SEAT event, so nothing is skipped by seat until then).
+        ReplicaPilotWindow.bindOwn(ownShip);
+        remotePilotMark.beginFrame(ownShip, engine != null ? engine.getPlayerShip() : null,
+                session != null ? session.ownSeatIdOrMinusOne() : -1);
         if (registryShape) {
             // Every non-own wire entity gets the proven single-foe treatment, per entity.
             foeState.maintainRemoteEntities(snapshot, foeAlpha, freshSnapshot);
@@ -5551,6 +5688,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         picker.feedPickerInput(events);
         chat.feedChatInput(events);
         voiceHud.feedInput(events); // PTT keys AFTER the text lanes — a typed Space is theirs
+        blockLatchedControlCommands(); // A key latched at the last sample steers nothing this frame
         // Transit input gate (b), AFTER the chat feed
         // (chat/acks/F11 keep riding): while the seat rides the transfer pod the server has
         // parked its intents — aim/fire capture parks too, and the fire level + edge baseline
@@ -5663,6 +5801,48 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     }
 
     /**
+     * The held-input latch's COMMAND half. {@link HeldInputLatch} drops a key still held at
+     * ANY falling edge of the sample gate from the wire levels — but ship controls are engine-POLLED, so a letter still
+     * held as a TEXT surface closes (the chat box, the picker, a dialog, the codex), bound to a ship control, kept
+     * steering the hull until its key-up and rode up as the mirror's movement bit. Same lever as
+     * {@link #blockShipKeyCommandsWhileTyping}: for every control name {@link #latchedControlBits} marks (the previous
+     * advance's sample) block its {@link #CONTROL_NAME_COMMANDS} on {@code engine.getPlayerShip()} for THIS frame.
+     * TEXT EDGES ONLY: at a combat start, a respawn / transfer arrival or a refocus the bits stay 0, because vanilla
+     * steers on a movement key held across those edges (a per-frame level read, {@link InputLevelGate#commandLatchApplies}
+     * = the WHY and the cite) — blocking it there left a held W dead until re-pressed. Latency: no press is delayed
+     * unless it issues a verb a latched name also issues — the strafe twins share one ({@link #CONTROL_NAME_COMMANDS}: a
+     * latched turn-left blocks STRAFE_LEFT, so a fresh strafe-left key waits for that release); and the text lanes' own
+     * closing frame blocks every ship verb whatever is held. The edge frame itself (the gate fell in this pre-core pass,
+     * the latching sample runs in {@code advance}) is the text lanes' — they block on {@code wasOpen || isOpen()}.
+     * Skipped in a vanilla window (the sampler never runs there). Fail-soft.
+     *
+     */
+    private void blockLatchedControlCommands() {
+        int bits = latchedControlBits;
+        if (bits == 0 || vanillaWindow) {
+            return;
+        }
+        try {
+            CombatEngineAPI eng = engine;
+            ShipAPI target = eng != null ? eng.getPlayerShip() : null;
+            if (target == null) {
+                return;
+            }
+            for (int i = 0; i < CONTROL_NAME_COMMANDS.length && i < 32; i++) {
+                if ((bits >>> i & 1) == 0) {
+                    continue;
+                }
+                for (ShipCommand verb : CONTROL_NAME_COMMANDS[i]) {
+                    target.blockCommandForOneFrame(verb);
+                    keysLatchCmdBlocks++;
+                }
+            }
+        } catch (Throwable ignore) {
+            // presentation-side input; a failed block never breaks the frame (the raw levels already drop the key)
+        }
+    }
+
+    /**
      * The ship whose mod-written ability mask {@link AbilityLocalReadLane} reads: the SAME reference
      * {@link #captureOwnCommands} samples ({@code ownShip}, else the engine's player ship), and NULL whenever one of
      * the movement capture's neutral gates holds. The gates are the law, restated so the two stay one set:
@@ -5693,7 +5873,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
      * count, the unmapped names (enum constants only) and how many names threw. Returns the 16-byte map itself (the
      * session's re-HELLO map, {@link #pilotKeymap}); {@link #resolveControlKeyIndex} derives the sampler's table from
      * it — ONE resolution feeds both.
-     * main-written
+     *
      */
     private static byte[] resolvePilotKeymap() {
         String[] names = PilotIntentFrame.CONTROL_KEY_NAMES;
@@ -5722,7 +5902,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
 
     /** The sampler's per-bit poll table from {@code keymap} (one entry per {@code CONTROL_KEY_NAMES} name; an
      *  unmapped byte stays 0 = never sampled). Pure: no engine read, so the table and the HELLO map can never
-     *  disagree. Main-written */
+     *  disagree. */
     private static int[] resolveControlKeyIndex(byte[] keymap) {
         int[] index = new int[PilotIntentFrame.CONTROL_KEY_NAMES.length];
         for (int i = 0; i < index.length; i++) {
@@ -5734,35 +5914,119 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     /**
      * Sample the pilot's raw input LEVELS into {@link #keyCodes} / {@link #mouseButtons} / {@link #controlKeys} (PINT
      * v7; what the server does with them = the {@code PilotIntentFrame} contract). Render thread, once per frame, from
-     * {@link #captureOwnCommands}. EMPTY (0/0/0) whenever a gate holds: {@link #abilityReadOwnOrNull()}'s three (a
-     * recorded intent source, a command-transfer TRANSIT, the own death latch — the body is not this seat's input) or no
-     * own ship, and while the chat box or the picker panel owns the keyboard (the state whose relays block the ship keys:
-     * typed text must never arrive at the server as held keys). Else: codes 1..{@code KEYBOARD_SIZE}-1 polled ascending
+     * {@link #captureOwnCommands}. EMPTY (0/0/0) whenever one of SIX gates holds ({@link InputLevelGate#sampleAllowed},
+     * the seven facts read once per frame): (1) the own read — {@link #abilityReadOwnOrNull()}'s three (a recorded intent
+     * source, a command-transfer TRANSIT, the own death latch — the body is not this seat's input) or no own ship;
+     * (2) the chat box or (3) the picker panel owns the keyboard (the state whose relays block the ship keys); (4) the
+     * game window is not the active foreground window ({@code Display.isCreated()} then {@code Display.isActive()}; a
+     * read that throws fails closed, counted in {@link #focusReadFailures} and logged once);
+     * (5) a vanilla dialog shows ({@link #engine}{@code .isUIShowingDialog()}; a null engine fails closed); (6) the codex
+     * shows ({@code Global.getSettings().isShowingCodex()}: the hotkey codex the dialog read never sees, the deploy-screen
+     * codex being a dialog already; a null settings fails closed). Typed text, here or in another window, must never
+     * arrive at the server as held keys. Frames gates (4) / (5) / (6) empty are counted disjointly
+     * ({@link #keysEmptyUnfocused} first, then {@link #keysEmptyDialog}, then {@link #keysEmptyCodex}), with one log
+     * row at the first unfocused frame per process and at the first codex frame per plugin. A paused engine never
+     * reaches this method ({@code advance} returns first), so the
+     * last sampled levels stand while paused. Else: codes 1..{@code KEYBOARD_SIZE}-1 polled ascending
      * into the first {@code KEY_SLOTS} held (the canonical pack; a ninth and later are dropped and counted, one log row at
      * the first overflow); buttons 0..min(8, {@code getButtonCount()})-1, button 0 neutral while the (re)entry fire
      * swallow holds (the click that joined is no press, the same rule the fire level obeys); control bits from
      * {@link #controlKeyIndex} (unmapped bits stay 0): a key entry polls {@code Keyboard.isKeyDown(code)}, a mouse entry
      * reads its button's bit in the level just sampled, so a mouse-bound control obeys the same swallow and button count
-     * as the raw button level the server sees beside it. RAW levels, never latched, never a key name or text. Cost (frame
-     * loop residency) measured once: the first poll vs the {@link #INPUT_LEVEL_WARM_POLL}th, one log row. A poll that throws
-     * leaves the three EMPTY that frame, counts, and logs once.
+     * as the raw button level the server sees beside it. The held-input latch ({@link #heldLatch}): on the gate's falling
+     * edge (the first sampled frame after a gated one, the first sampled frame of a combat included) every key and
+     * button held at that instant is dropped from all three levels until its own release, so the tail of a line typed
+     * into the chat box never rides as held keys; a fresh press rides in its own frame. Edges and drops are counted
+     * ({@link #keysLatchEdges}, {@link #keysLatchDropped}), one log row at the first edge that latched anything. Else RAW
+     * levels, never a key name or text. Cost (frame
+     * loop residency) measured once, the gate reads included: the first poll vs the {@link #INPUT_LEVEL_WARM_POLL}th, one
+     * log row. A poll that throws leaves the three EMPTY that frame, counts, and logs once.
+     *
      */
     private void captureOwnInputLevels() {
-        if (abilityReadOwnOrNull() == null || chat.isBoxOpen() || picker.isPanelOpen()) {
+        long poll = inputLevelPolls + 1;
+        boolean timed = poll == 1L || poll == INPUT_LEVEL_WARM_POLL;
+        long t0 = timed ? System.nanoTime() : 0L;
+        boolean ownReadable = abilityReadOwnOrNull() != null;
+        boolean chatOpen = chat.isBoxOpen();
+        boolean pickerOpen = picker.isPanelOpen();
+        boolean displayCreated;
+        boolean displayActive;
+        try {
+            displayCreated = Display.isCreated();
+            displayActive = displayCreated && Display.isActive();
+        } catch (LinkageError | RuntimeException focusUnreadable) {
+            // Fail closed: an unreadable focus signal (no display natives, as in a game-free harness) never samples.
+            displayCreated = false;
+            displayActive = false;
+            if (focusReadFailures++ == 0L) {
+                PilotWatchLog.info("predict keys: focus read threw " + focusUnreadable.getClass().getSimpleName()
+                        + " -> levels EMPTY (later failures counted, not logged)");
+            }
+        }
+        boolean dialogShowing = engine == null || engine.isUIShowingDialog();
+        com.fs.starfarer.api.SettingsAPI settings = Global.getSettings();
+        boolean codexShowing = settings == null || settings.isShowingCodex();
+        if (!InputLevelGate.sampleAllowed(ownReadable, chatOpen, pickerOpen, displayCreated, displayActive,
+                dialogShowing, codexShowing)) {
             keyCodes = PilotIntentFrame.KEYS_EMPTY;
             mouseButtons = 0;
             controlKeys = 0;
+            latchedControlBits = 0;
+            sampleGatedLastFrame = true;
+            latchCommandScope.gatedFrame(ownReadable, chatOpen, pickerOpen, displayCreated, displayActive,
+                    dialogShowing, codexShowing);
+            int cause = InputLevelGate.emptyCause(ownReadable, chatOpen, pickerOpen, displayCreated, displayActive,
+                    dialogShowing, codexShowing);
+            if (cause == InputLevelGate.CAUSE_UNFOCUSED) {
+                keysEmptyUnfocused++;
+                if (!keysUnfocusedLogged) {
+                    keysUnfocusedLogged = true;
+                    PilotWatchLog.info("predict keys: window inactive -> levels EMPTY (later frames counted, not logged)");
+                }
+            } else if (cause == InputLevelGate.CAUSE_DIALOG) {
+                keysEmptyDialog++;
+            } else if (cause == InputLevelGate.CAUSE_CODEX && keysEmptyCodex++ == 0L) {
+                PilotWatchLog.info("predict keys: codex showing -> levels EMPTY (later frames counted, not logged)");
+            }
             return;
         }
-        long poll = ++inputLevelPolls;
-        boolean timed = poll == 1L || poll == INPUT_LEVEL_WARM_POLL;
-        long t0 = timed ? System.nanoTime() : 0L;
+        inputLevelPolls = poll;
         try {
+            int rawButtons = 0;
+            int buttonCount = Math.min(8, Mouse.getButtonCount());
+            for (int b = 0; b < buttonCount; b++) {
+                if (Mouse.isButtonDown(b)) {
+                    rawButtons |= 1 << b;
+                }
+            }
+            // The gate's falling edge. Whatever is held right now was pressed
+            // while the gate held (the tail of a typed chat line, a menu or join click), so it is latched out of all
+            // three levels until its own release. The latch reads the RAW buttons; the (re)entry swallow on button 0
+            // still applies after it.
+            if (sampleGatedLastFrame) {
+                heldLatch.latchFrom(Keyboard::isKeyDown, rawButtons);
+                sampleGatedLastFrame = false;
+                keysLatchEdges++;
+                int latchedCodes = heldLatch.latchedCount();
+                int latchedButtonCount = Integer.bitCount(heldLatch.latchedButtons());
+                if (!keysLatchLogged && latchedCodes + latchedButtonCount > 0) {
+                    keysLatchLogged = true;
+                    PilotWatchLog.info("predict keys: latched " + latchedCodes + " held code(s) + "
+                            + latchedButtonCount + " button(s) at a gate's falling edge -> dropped until released"
+                            + " (later edges counted, not logged)");
+                }
+            }
             long packed = PilotIntentFrame.KEYS_EMPTY;
             int slot = 0;
             int dropped = 0;
             for (int key = 1; key < Keyboard.KEYBOARD_SIZE; key++) {
-                if (Keyboard.isKeyDown(key)) {
+                boolean down = Keyboard.isKeyDown(key);
+                if (heldLatch.keyBlocked(key, down)) {
+                    keysLatchDropped++;
+                    continue;
+                }
+                if (down) {
                     if (slot < PilotIntentFrame.KEY_SLOTS) {
                         packed = PilotIntentFrame.withKeyCode(packed, slot++, key);
                     } else {
@@ -5770,12 +6034,10 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     }
                 }
             }
-            int buttons = 0;
-            int buttonCount = Math.min(8, Mouse.getButtonCount());
-            for (int b = 0; b < buttonCount; b++) {
-                if (Mouse.isButtonDown(b) && !(b == 0 && swallowFireUntilMouseRelease)) {
-                    buttons |= 1 << b;
-                }
+            int buttons = heldLatch.filterButtons(rawButtons);
+            keysLatchDropped += Integer.bitCount(rawButtons & ~buttons);
+            if (swallowFireUntilMouseRelease) {
+                buttons &= ~1;
             }
             int controls = 0;
             int[] index = controlKeyIndex;
@@ -5784,7 +6046,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     int entry = index[i];
                     boolean held = entry >= PilotControlNames.MOUSE_BASE
                             ? (buttons >>> (entry - PilotControlNames.MOUSE_BASE) & 1) != 0
-                            : entry > 0 && Keyboard.isKeyDown(entry);
+                            : entry > 0 && Keyboard.isKeyDown(entry) && !heldLatch.isLatched(entry);
                     if (held) {
                         controls |= 1 << i;
                     }
@@ -5793,6 +6055,11 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             keyCodes = packed;
             mouseButtons = buttons;
             controlKeys = controls;
+            // The command half only for a latch minted at a text edge; a key
+            // held across a combat start, a respawn / transfer or a refocus steers, as vanilla's level poll does.
+            latchedControlBits = latchCommandScope.applies()
+                    ? heldLatch.latchedControls(index, PilotControlNames.MOUSE_BASE)
+                    : 0;
             if (dropped > 0) {
                 if (keyOverflowDrops == 0L) {
                     PilotWatchLog.info("predict keys: key_overflow first held=" + (slot + dropped)
@@ -5805,6 +6072,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             keyCodes = PilotIntentFrame.KEYS_EMPTY;
             mouseButtons = 0;
             controlKeys = 0;
+            latchedControlBits = 0;
             if (inputLevelPollFailures++ == 0L) {
                 PilotWatchLog.info("predict keys: poll threw " + pollFailed.getClass().getSimpleName()
                         + " -> levels EMPTY this frame (later failures counted, not logged)");
@@ -5833,7 +6101,17 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     private void captureOwnCommands(ShipAPI own, float amount) {
         // PINT v7 raw input levels FIRST — the sampler applies this method's gates
         // itself (one set, the abilityReadOwnOrNull law), so a gated frame writes EMPTY, never a stale level riding up.
+        long pollFailuresBefore = inputLevelPollFailures;
         captureOwnInputLevels();
+        // Publish the frame's sample to the own hull's mod key twins, here in the
+        // caller so the gated early return inside the sampler publishes too. EMPTY = the gate's branch (it leaves
+        // sampleGatedLastFrame set; the sampled path clears it at the latch edge before returning) or a poll that threw
+        // this frame. The armed key-edge compare reads the same frame's controlKeys (0 on an EMPTY frame).
+        boolean emptyLevels = sampleGatedLastFrame || inputLevelPollFailures != pollFailuresBefore;
+        cc.starsector.client.replica.OwnInputSample.publish(emptyLevels, heldLatch, swallowFireUntilMouseRelease);
+        if (cc.starsector.client.replica.OwnInputSample.KEY_EDGE_LOG) {
+            cc.starsector.client.replica.OwnInputSample.logOwnKeyEdges(advFrames, controlKeys, emptyLevels);
+        }
         if (INTENT_SOURCE != null) {
             return; // Synthetic seat: the recording owns facing/heldControls (capture counters stay 0)
         }
@@ -5953,6 +6231,19 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                 if (ec.isTurningRight())          { mask |= (1 << BIT_TURN_RIGHT); }
                 if (ec.isStrafingLeft())          { mask |= (1 << BIT_STRAFE_LEFT); }
                 if (ec.isStrafingRight())         { mask |= (1 << BIT_STRAFE_RIGHT); }
+            }
+            // The latch's COMMAND half, mirror side: a movement bit whose control name is
+            // latched from a text edge (a letter still held as a chat box / picker / dialog / codex closed) never
+            // rides the mirror, whatever the controller booleans read this frame (the sampler above wrote this frame's
+            // latchedControlBits; 0 for a latch minted at a combat start, respawn, transfer or refocus).
+            int latchedBits = latchedControlBits;
+            if (latchedBits != 0) {
+                for (int b = 0; b < MANEUVER_BIT_CONTROL_NAMES.length; b++) {
+                    if ((mask & 1 << b) != 0 && (MANEUVER_BIT_CONTROL_NAMES[b] & latchedBits) != 0) {
+                        mask &= ~(1 << b);
+                        keysLatchMirrorMasked++;
+                    }
+                }
             }
             // The SHARED bits-7/10/11 lockout-contamination mask guard
             // (the authoritative shield drop at 99.6% flux): a LOCAL-only
@@ -6175,6 +6466,10 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                 + " cloakFrames=" + capCloakFrames
                 + " inputLevelPolls=" + inputLevelPolls + " keyOverflowDrops=" + keyOverflowDrops
                 + " inputLevelPollFailures=" + inputLevelPollFailures
+                + " keys_empty_unfocused=" + keysEmptyUnfocused + " keys_empty_dialog=" + keysEmptyDialog
+                + " keys_empty_codex=" + keysEmptyCodex + " focusReadFailures=" + focusReadFailures
+                + " keys_latch_edges=" + keysLatchEdges + " keys_latch_dropped=" + keysLatchDropped
+                + " keys_latch_cmd_blocks=" + keysLatchCmdBlocks + " keys_latch_mirror_masked=" + keysLatchMirrorMasked
                 + " (engine-controller booleans + getSystem().isOn() + getFluxTracker().isVenting(),"
                 + " no reflection)");
     }
@@ -6255,11 +6550,88 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         return -1L;
     }
 
+    /**
+     * The script-spawn split, called from the projectile scan's
+     * weapon-backed arm for a replay-driven source's NON-presented missile. A missile whose spec differs from
+     * its weapon's own projectile spec was minted by a script through that weapon (a mod's on-hit rod, its
+     * every-frame spawn) — the weapon's own fire never carries another spec, and the split lane's children
+     * never reach this arm (they are consumed as presented). Such a missile is ENROLLED as a pose puppet
+     * keyed (source registry id, mount index) exactly as a presented foe missile is, so the existing link
+     * pass pairs it with its wire twin the same frame, before any presence mint — instead of being removed
+     * as a leak, which killed the script bound to it (the harpoon tether: cable, arcs, pull). Nothing waits:
+     * the body exists from its local spawn on.
+     *
+     * <p>Returns true when enrolled (the caller then skips the leak arm). False = the leak arm as before:
+     * the weapon's own spec ({@code scriptSpawnSpecUnread} when its id is unreadable), or a source with no
+     * registry id / no live mount for the weapon ({@code scriptSpawnUnresolved}). The mount index is the
+     * inverse of the presence-adopt mount resolve (the source's {@code getAllWeapons()} order). Accepted:
+     * the puppet AI replaces the mod's missile AI at once (its blink / dislodge effects go, as on the
+     * pilot's own window after its handoff); an unpaired local-only rod ends at the link window's expiry.
+     */
+    private boolean enrollScriptSpawn(MissileAPI m) {
+        WeaponAPI weapon = m.getWeapon();
+        String specId = null;
+        Object weaponSpec = null;
+        try {
+            specId = m.getProjectileSpecId();
+            weaponSpec = weapon == null || weapon.getSpec() == null ? null : weapon.getSpec().getProjectileSpec();
+        } catch (Throwable unread) {
+            // counted below: a null read classes SPEC_UNREAD
+        }
+        int verdict = ReplicaScriptDamageGate.scriptSpawnSpec(specId, weaponSpec);
+        if (verdict == ReplicaScriptDamageGate.SPEC_OWN) {
+            return false;
+        }
+        if (verdict == ReplicaScriptDamageGate.SPEC_UNREAD) {
+            scriptSpawnSpecUnread++;
+            return false;
+        }
+        ShipAPI src = m.getSource();
+        long srcId = remoteEntityIdOf(src);
+        int mountIdx = -1;
+        try {
+            mountIdx = src == null || weapon == null ? -1 : src.getAllWeapons().indexOf(weapon);
+        } catch (Throwable unresolved) {
+            mountIdx = -1; // counted below as unresolved
+        }
+        if (srcId < 0L || mountIdx < 0) {
+            scriptSpawnUnresolved++;
+            return false;
+        }
+        // register BEFORE enroll: the class read needs the factory AI the enroll replaces
+        mtrack.register(m, srcId, mountIdx, lastSnapshotSimTick, "foe", null);
+        missileLane.enroll(m, srcId, mountIdx, lastSnapshotSimTick);
+        scriptSpawnEnrolled++;
+        if (scriptSpawnLogLines < EVENT_REPLAY_LOG_MAX) {
+            scriptSpawnLogLines++;
+            PilotWatchLog.info("predict script-spawn ENROLL #" + scriptSpawnEnrolled + " spec=" + specId
+                    + " weapon=" + weapon.getId()
+                    + " src=" + Integer.toHexString(System.identityHashCode(src)) + " entity=" + srcId
+                    + " mount=" + mountIdx + " tick=" + lastSnapshotSimTick
+                    + (scriptSpawnLogLines == EVENT_REPLAY_LOG_MAX ? " [log cap reached; counter continues]" : ""));
+        }
+        return true;
+    }
+
+    /** The script-spawn split's + the script-damage door's meter
+     *  tokens; rides the eventReplay-meter line beside the leak remover's. */
+    String scriptSpawnMeterTokens() {
+        return " script_spawn_enrolled=" + scriptSpawnEnrolled
+                + " script_spawn_unresolved=" + scriptSpawnUnresolved
+                + " script_spawn_spec_unread=" + scriptSpawnSpecUnread
+                + scriptDamageGate.meterToken();
+    }
+
     /** The replica-body carve's package
      *  delegates: pure forwards to {@link ReplicaBodyLane} (no guard, no reorder), so every outside
-     *  caller keeps its plugin name. {@link ReplicaBodyLane#neutralizeRemoteBody}. */
+     *  caller keeps its plugin name. {@link ReplicaBodyLane#neutralizeRemoteBody}.
+     *  <p>{@code neutralizeRemoteBody} is the one funnel every
+     *  replica-body treatment passes, so it also puts the script-damage door on the body AFTER the
+     *  forward (idempotent; a no-op unless the treatment ledger now holds the body). */
     boolean neutralizeRemoteBody(ShipAPI ship, RemoteEntity capEntity) {
-        return replicaBody.neutralizeRemoteBody(ship, capEntity);
+        boolean changed = replicaBody.neutralizeRemoteBody(ship, capEntity);
+        scriptDamageGate.install(ship);
+        return changed;
     }
 
     /** {@link ReplicaBodyLane#remoteBodyFullyTreated}. */
@@ -6621,7 +6993,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                         foePose != null ? new Vector2f(foePose.locX(), foePose.locY()) : null,
                         foeFacing, 0f,
                         // W4: legacy 1v1 foe — descriptor-less, curated lane both ends.
-                        OfficerLoadout.captainOrNull(foeVariant, false));
+                        OfficerLoadout.captainOrNull(RealizedVariantId.goalOf(foeVariant), false)); // the curated table keys goal ids
             } finally {
                 feedGate.unmute(foeMgr1v1, foeFeedTok);
             }
@@ -6663,6 +7035,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         feedGate.resetRound(); // Every round has its own spawn burst — window re-arms
         frameLedger.resetRound(); // Flush the ended round's worst-frame rows + tag the rebuild frame
         ownShip = null;
+        ReplicaPilotWindow.clearOwn(); // the swept own hull never stays bound as "not a replica pilot"
         foeShip = null;
         claimPending = false; // W13 leg 2c: a match reset fields its own hulls — no claim in flight across it
         claimHold.release(null); // rider 6: the held body is swept with the round (no restore target)
@@ -7156,6 +7529,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                 }
                 re.ship = ship;
                 rapp.onSpawned(re);
+                replicaLoadout.onBound(re, ship, pose, variantId); // the per-tenure loadout compare (ReplicaLoadoutCheck)
                 re.remounted = false; // The parity burn is per-MINT — spent here, re-armed by the next remount / reset seat re-bind
                 // Probe row 0 BEFORE the first-sight snap below — its drift = the
                 // engine's ten vanilla-AI pre-advances at deploy.
@@ -7298,7 +7672,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         if (remoteUnbound == 0 && !remoteBindCompleteLogged) {
             remoteBindCompleteLogged = true;
             PilotWatchLog.info("predict bots bind: COMPLETE bound=" + remoteEntities.size()
-                    + "/" + remoteEntities.size() + " attempts=" + bindAttempts);
+                    + "/" + remoteEntities.size() + " attempts=" + bindAttempts + " " + replicaLoadout.meters());
         } else if (remoteUnbound > 0 && (bindAttempts == 1 || bindAttempts % 300 == 0)) {
             PilotWatchLog.info("predict bots bind: PARTIAL unbound=" + remoteUnbound
                     + "/" + remoteEntities.size() + " attempt=" + bindAttempts
@@ -7380,7 +7754,9 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         boolean transferPod = OfficerLoadout.isSeatTransferPod(seatRow, podVariant, podFlying);
         // The captain arm: the wire officer line, else none for the transfer pod, else the all-skills
         // bit's seat-shaped mint, else the bare variant-keyed lookup (appendedCaptainArm).
-        appendedCaptainArm(member, re.appendOfficer, re.appendAllSkillsCaptain, variantId,
+        // The officer tables key boot variant ids, so a
+        // server-realized loadout id looks its captain up by its goal id; the member builds the minted one.
+        appendedCaptainArm(member, re.appendOfficer, re.appendAllSkillsCaptain, RealizedVariantId.goalOf(variantId),
                 MatchMissionBuilder.descriptorVariantForShipIdOrNull(re.entityId), seatRow, transferPod,
                 re.entityId);
         if (!transferPod) {
@@ -8966,6 +9342,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // same JVM would field no fighters); FIRST statement so no flush below can skip it.
         com.fs.starfarer.combat.entities.ship.A.C.REFIT_MODE_ADVANCE = false;
         bayKillSwitchLatched = false; // the live mirror follows the engine static, same statement order
+        cc.starsector.client.luna.LunaSyncState.markRestorePending(); // MARK only: the watchdog exits run off the game thread
         // Same law for the vanilla mote table — the served window's generator pin
         // comes off so a later vanilla mission in this JVM keeps its motes.
         prior.moteReplica.restore();
@@ -8980,11 +9357,24 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // The wrapper census line (wsg census …) then the symmetric unbind —
         // wrappers on a dead window fall back to vanilla via the prebind path.
         CcReplicaEffectGate.logCensus("teardown");
+        // The replica-window holder's ONE meter line per window, here off
+        // the frame (never in logSpeedMeter, which also runs on-frame), then the dead window's own ship unbinds.
+        PilotWatchLog.info("predict replica-window meter [teardown]: " + ReplicaPilotWindow.metersRow());
+        ReplicaPilotWindow.clearOwn();
+        cc.starsector.client.replica.OwnInputSample.reset(); // the dead window's sample never gates a later read
         CcReplicaEffectGate.unbind();
         CcServedBombMirror.sweep(); // off-thread-safe (flags, the plugin self-removes)
         prior.logRemoteCensusBackstop("teardown");
         prior.logCaptureTimingSummary("teardown");
         prior.logSpeedMeter("teardown"); // Final local-vs-server speed divergence in the WATCH log
+        // The presented-fire relay's combat-boundary reset runs AFTER the line above (logSpeedMeter →
+        // EdgeEventLane.logEventReplayMeter composes ReplicaPresentedFireRelay.meterTokens()), never before it: an
+        // earlier change ran it inside CcReplicaEffectGate.unbind() a few lines up, so the [teardown] eventReplay row —
+        // the line the flight grader reads — carried fx_onfire_plugin=0 and predict_presented_fire_relayed=0 BY
+        // CONSTRUCTION while the relay had run three times that flight. The next window's AuthoritativePresenter
+        // constructor resets it again at birth. Selftest row PF13 pins the order.
+        //
+        ReplicaPresentedFireRelay.reset();
         prior.logClockMeter("teardown"); // final corrected-clock drift verdict in the log
         prior.frameLedger.flushTeardown(); // A truncated final round still confesses
         MarkFrameRing.onCombatEnd(); // Drop the in-memory frame ring (an open post window finishes itself)

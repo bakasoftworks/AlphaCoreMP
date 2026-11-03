@@ -93,7 +93,30 @@ public final class OpsWindowModel {
             String magicSeamText,
             // The player-ship word (pilotship.enabled; on|off;
             // null = no control = row untouched) - the magicSeamText twin, a boot-time row.
-            String pilotShipText) {
+            String pilotShipText,
+            // The replicas word (pilotship.replicas; on|off;
+            // null = no control = row untouched) - the pilotShipText twin, a boot-time row.
+            String pilotReplicasText) {
+        /** The pre-replicas 27-component shape (every caller before the
+         * replicas select) - no replicas control = {@code null} = the {@code pilotship.replicas} row stays
+         * untouched. */
+        public StartFields(String bindHost, String bindPort, String tickText,
+                String fortressDpText, String passwordText, String selDescriptor,
+                ServerOpsCore.DescriptorInfo selInfo, String joinerDefaultText,
+                String fortressWaveScaleText, String adminPasswordText, String waveCategoryText,
+                String endlessText, String modsEnabledText, String modsOptionalText,
+                String terrainText, String terrainLevelText, String asteroidsText,
+                String waveRosterFullDpText, String waveRosterMultiplierText,
+                String seatsPerSourceText, String allSkillsText, String rngPinsText, boolean debugWatch,
+                String pvpText, String pvpStationText, String magicSeamText, String pilotShipText) {
+            this(bindHost, bindPort, tickText, fortressDpText, passwordText, selDescriptor,
+                    selInfo, joinerDefaultText, fortressWaveScaleText, adminPasswordText,
+                    waveCategoryText, endlessText, modsEnabledText, modsOptionalText, terrainText,
+                    terrainLevelText, asteroidsText, waveRosterFullDpText, waveRosterMultiplierText,
+                    seatsPerSourceText, allSkillsText, rngPinsText, debugWatch, pvpText, pvpStationText,
+                    magicSeamText, pilotShipText, null);
+        }
+
         /** The pre-player-ship 26-component shape (every caller before the
          * player-ship select) - no player-ship control = {@code null} = the {@code pilotship.enabled} row stays
          * untouched. */
@@ -243,7 +266,7 @@ public final class OpsWindowModel {
                     waveRosterFullDpText, //
                     waveRosterMultiplierText, seatsPerSourceText, allSkillsText,
                     rngPinsText, debugWatch, // the copy carries the posture
-                    pvpText, pvpStationText, magicSeamText, pilotShipText);
+                    pvpText, pvpStationText, magicSeamText, pilotShipText, pilotReplicasText);
         }
 
         /** The same fields with the debug-watch posture set — the button's press builds a Start's
@@ -254,7 +277,8 @@ public final class OpsWindowModel {
                     adminPasswordText, waveCategoryText, endlessText, modsEnabledText,
                     modsOptionalText, terrainText, terrainLevelText, asteroidsText,
                     waveRosterFullDpText, waveRosterMultiplierText, seatsPerSourceText,
-                    allSkillsText, rngPinsText, on, pvpText, pvpStationText, magicSeamText, pilotShipText);
+                    allSkillsText, rngPinsText, on, pvpText, pvpStationText, magicSeamText, pilotShipText,
+                    pilotReplicasText);
         }
     }
 

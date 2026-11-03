@@ -40,6 +40,19 @@ package cc.starsector.server.ops;
  * <p>The ships list ({@code #ships-list}) takes the bans list's row
  * layout; a row the host hid ({@code li.ship-hidden}) shows its id struck through and dimmed, so Hide / Show reads
  * from the row itself without a style attribute (the CSP law).
+ *
+ * <p>On a phone the dock must leave room for one whole seat card. Measured at
+ * 390x844 the dock took 397 px and left {@code main} 211 px, less than one seat card (14 lines, about 260 px).
+ * So at {@code max-width: 640px} the bar collapses to Start server, End match and the MATCH cluster's More, then the
+ * seat pick and Seat actions, with one load line above. Opening that More (the same {@code details.more} toggle, read
+ * through {@code :has()}) brings back every other verb, the two match sentences, the sim-speed and customs clusters
+ * and the footer note; the customs detail waits for its own Customs toggle. Every {@code data-cc} id stays in the DOM,
+ * one tap away, and a browser without {@code :has()} skips the whole rule and shows the full bar. The dock is also
+ * capped at {@code max(128px, 17vh)} and scrolls inside: at 844 px tall that leaves {@code main} at least 260 px even
+ * with the strip at its 40vh cap and the two-row nav, so dock content (a long kept list, a new sentence) can never
+ * squeeze the seat cards out again, while the 128 px floor keeps the collapsed dock unscrolled on a shorter phone. The
+ * narrow dock stacks top-down with the load ordered first (the same picture as the wide {@code column-reverse}), so an
+ * opened More grows downward and keeps its own toggle in view.
  */
 final class OpsConsolePageCss {
 
@@ -215,10 +228,10 @@ tr[aria-selected="true"], #seats tbody tr[aria-selected="true"] { background: va
 #seats:focus-visible { outline-offset: -2px; }
 #bans { flex: none; }
 #bans h2, #sec-mods h2, #sec-mods h3 { margin: 4px 0 2px; font-size: 13px; }
-#bans-list { list-style: none; margin: 0; padding: 0; max-height: 10em; overflow-y: auto; }
+#bans-list { list-style: none; margin: 0; padding: 0; }
 #bans-list li { display: flex; align-items: center; gap: 8px; padding: 1px 0; font-family: var(--mono); font-size: 12px; }
 #bans-empty, #bans-more { margin: 2px 0; font-size: 12px; }
-#ships-list { list-style: none; margin: 0; padding: 0; max-height: 14em; overflow-y: auto; }
+#ships-list { list-style: none; margin: 0; padding: 0; }
 #ships-list li { display: flex; align-items: center; gap: 8px; padding: 1px 0; font-family: var(--mono); font-size: 12px; }
 #ships-list li.ship-hidden .ship-label { text-decoration: line-through; opacity: .6; }
 #ships-empty, #ships-last { margin: 2px 0; font-size: 12px; }
@@ -264,11 +277,12 @@ label.check { display: inline-flex; align-items: center; gap: 4px; margin-right:
 }
 #bar {
   display: grid;
-  grid-template-columns: max-content max-content minmax(0, 1fr);
+  grid-template-columns: minmax(min-content, max-content) minmax(min-content, max-content) minmax(20rem, 1fr);
   gap: 4px 14px; align-items: center;
 }
 .cluster { display: flex; flex-wrap: nowrap; align-items: center; gap: 4px; min-width: 0; }
-#cl-seat { grid-column: 1 / span 2; }
+#cl-seat { grid-column: 1 / span 2; flex-wrap: wrap; }
+#cl-simspeed { flex-wrap: wrap; }
 .cap { margin-right: 2px; font-size: 11px; font-weight: 700; letter-spacing: .04em; color: var(--muted); }
 .prefix { color: var(--muted); }
 .chip {
@@ -332,9 +346,17 @@ dialog h3 { margin: 10px 0 4px; font-size: 13px; }
 #palette-list li { padding: 3px 6px; cursor: pointer; }
 #palette-list [aria-selected="true"] { background: var(--pick-bg); }
 
+@media (max-width: 1100px) {
+  #bar { grid-template-columns: minmax(0, 1fr); }
+  #cl-seat, #footer-note { grid-column: auto; }
+  .cluster { flex-wrap: wrap; }
+}
+
 @media (max-width: 640px) {
   :root { --tap: 44px; }
+  #nav { flex-wrap: wrap; }
   #strip { max-height: 40vh; overflow-y: auto; }
+  #dock { flex-direction: column; max-height: max(128px, 17vh); overflow-y: auto; }
   #detail { max-height: none; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   #detail:focus { white-space: pre-wrap; text-overflow: clip; overflow-y: auto; max-height: 9em; }
   #bar { grid-template-columns: minmax(0, 1fr); }
@@ -350,6 +372,12 @@ dialog h3 { margin: 10px 0 4px; font-size: 13px; }
   #bar details.more[open]::details-content {
     content-visibility: visible; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding-top: 4px;
   }
+  @supports selector(:has(a)) {
+    #bar:not(:has(#cl-match > details.more[open])) { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+    #bar:not(:has(#cl-match > details.more[open])) :is(#cl-server > :not(#btn-start), #btn-end-round, #magic-seam,
+      #pilot-ship, #cl-simspeed, #cl-customs, #footer-note) { display: none; }
+    #cl-customs:not(:has(details.more[open])) #customs-detail { display: none; }
+  }
   #seats, #seats tbody, #seats tr, #seats td { display: block; }
   #seats thead { display: none; }
   #seats tbody tr { min-height: 44px; padding: 4px 6px; border-bottom: 1px solid var(--line); }
@@ -359,7 +387,8 @@ dialog h3 { margin: 10px 0 4px; font-size: 13px; }
   }
   #seats .num { text-align: left; }
   #seats td::before { content: attr(data-col); display: inline-block; min-width: 6.5em; color: var(--muted); font-size: 12px; }
-  #load { grid-template-columns: minmax(0, 1fr); cursor: pointer; }
+  #sec-players .table-wrap { max-height: none; }
+  #load { order: -1; grid-template-columns: minmax(0, 1fr); cursor: pointer; }
   #load > .lrow:not(#util) { display: none; }
   #load:focus-within > .lrow:not(#util) { display: flex; }
   .frow, .frow-hint { grid-template-columns: minmax(0, 1fr); }

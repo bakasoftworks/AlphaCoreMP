@@ -131,6 +131,9 @@ public final class HeadlessCombatContext implements AutoCloseable {
     private final EngineDeployRosterConfig engineDeployRosterConfig;
     private final List<Object> engineDeployedMembers = new ArrayList<>();
     private final List<Object> engineDeployedShips = new ArrayList<>();
+    /** The fly-in lane's non-station hulls (+ their spec names), the round-start travel-drive watch's set. */
+    private final List<Object> flyInDeployedShips = new ArrayList<>();
+    private final List<String> flyInDeployedShipNames = new ArrayList<>();
     private final KeyboardKeyDownConfig keyboardKeyDownConfig;
     private final RenderNullTextureConfig renderNullTextureConfig;
     private final boolean graphicsSubstratePresent;
@@ -1786,6 +1789,12 @@ public final class HeadlessCombatContext implements AutoCloseable {
                     verifyAndTreatDeployedShip(c, spec, member, ship, manager,
                             shipGetCurrentCR, shipControlsLocked, deployCr, crReadback,
                             mintedDiags.get(i));
+                    // The hulls deployAll flew in with a drive — the round-start
+                    // travel-drive watch's set (a station spawns direct, no drive).
+                    if (!spec.station) {
+                        flyInDeployedShips.add(ship);
+                        flyInDeployedShipNames.add(spec.shipName);
+                    }
                 }
             } finally {
                 invoke(c.setPreDeploy, c.engine, "CombatEngine.setPreDeploy.post-install",
@@ -1897,6 +1906,19 @@ public final class HeadlessCombatContext implements AutoCloseable {
      */
     public List<Object> engineDeployedShips() {
         return Collections.unmodifiableList(engineDeployedShips);
+    }
+
+    /**
+     * The hulls the battle-start FLY-IN lane flew in with a travel drive (spec order, stations excluded; empty on
+     * the teleport lane and on a zero-hull install) — the round-start travel-drive watch arms exactly these.
+     * Names = {@link #flyInDeployedShipNames()}, index-aligned.
+     */
+    public List<Object> flyInDeployedShips() {
+        return Collections.unmodifiableList(flyInDeployedShips);
+    }
+
+    public List<String> flyInDeployedShipNames() {
+        return Collections.unmodifiableList(flyInDeployedShipNames);
     }
 
     /** FleetMembers spawned by the engine-own deploy lane, in spec order. */
@@ -2756,7 +2778,7 @@ public final class HeadlessCombatContext implements AutoCloseable {
          * the engine's {@code isUIShowingHUD()} reads false. WHY: with the proxy's default false, "HUD showing"
          * was TRUE on the serve and a mod's HUD widgets gated only by "this is the player's ship" would draw on
          * the sim thread once a human-flown hull counts as the player's. Diagnosis only: {@code -Dcc.hud.show=true}
-         * restores the pre-HUD-dark answer. Main-written (HUD-dark first; measured on the mods proof rig).
+         * restores the pre-HUD-dark answer. (HUD-dark first; measured on the mods proof rig).
          */
         static final boolean HUD_HIDDEN = !Boolean.getBoolean("cc.hud.show");
         private final String label;

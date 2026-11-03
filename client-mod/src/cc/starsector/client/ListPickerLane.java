@@ -231,6 +231,9 @@ final class ListPickerLane {
             return;
         }
         try {
+            // The EDGE frame — the panel may close on this pass's key, and the sampler that latches a
+            // still-held key runs later in advance; blocking on wasOpen too covers that frame.
+            boolean wasOpen = law.isOpen();
             for (InputEventAPI event : events) {
                 if (event.isConsumed() || !event.isKeyboardEvent()) {
                     continue;
@@ -274,7 +277,7 @@ final class ListPickerLane {
                             + " (" + command.length() + " chars)");
                 }
             }
-            if (law.isOpen()) {
+            if (wasOpen || law.isOpen()) {
                 plugin.blockShipKeyCommandsWhileTyping();
             }
         } catch (Throwable t) {

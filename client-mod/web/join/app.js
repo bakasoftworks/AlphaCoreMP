@@ -340,12 +340,15 @@
     setText('docLine', j.docLine || '', j.status === 'served' && j.docOk === false && !!j.docLine);
     showCustomVerdicts([], null);
     setText('modsLine', '', false); showMods([]);
+    setText('lunaLine', '', false);
     if (j.status === 'served') {
       fillShips(j.ids, j.localCustoms, j.names, j.hulls);
       showCustoms(j.customsNotes);
       showCustomVerdicts(j.localCustoms, j.customsVerdicts);
       setShipDefault(j.defaultId);
       setText('modsLine', j.modsLine || '', j.modsOk === false);
+      
+      setText('lunaLine', j.lunaLine || '', j.lunaOk === false);
       showMods(j.mods);
     }
   }
@@ -445,6 +448,8 @@
       var c = s.companion;
       if (c) {
         setText('faceLine', c.line || '', false);
+        
+        setText('faceLuna', c.lunaSync ? 'Settings: ' + c.lunaSync : '', false);
         editorUrl = c.editor || null;
         $('openEditor').disabled = !editorUrl;
         if (c.seenLive && s.face) { setText('facePurpose', s.face.live); }

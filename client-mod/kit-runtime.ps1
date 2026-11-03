@@ -47,6 +47,8 @@ $CcKitRuntime = @{
     # case-exact, so a miscased spelling could never start the JVM anyway - stopping here only names it earlier). -Xlog
     # is refused by its OUTPUT (Test-CcXlogWritesFile), not by prefix: the stock -Xlog:async and console outputs stay.
     # A -XX:-<flag> spelling of a refused -XX:+<flag> switches the feature OFF and passes on purpose.
+    # The kit's own compatibility agent (jars\cc-compat-agent.jar) never passes through here: join-cc.bat puts it on the
+    # bundled-Java start line itself, never into kit-jvm.args, so '-javaagent:' stays refused for the minting PC's line.
     Refuse     = @('-XX:+HeapDump', '-XX:HeapDump', '-XX:+FlightRecorder', '-XX:StartFlightRecording',
         '-XX:FlightRecorderOptions', '-XX:ErrorFile', '-XX:OnError', '-XX:OnOutOfMemoryError',
         '-XX:+CreateCoredumpOnCrash', '-XX:LogFile', '-XX:+LogVMOutput', '-XX:+LogCompilation',

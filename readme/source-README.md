@@ -183,9 +183,12 @@ same mod jar runs in single player (where the keys never appear), on the server 
 set the mod to "required", so the server and every player run the same version.
 
 - Abilities built on MagicLib's subsystems need no change on the server: it changes MagicLib's ability class in
-  memory as it loads, so each pilot's abilities do there what they did on that pilot's own screen. Other players'
-  games still run them by the mod's own AI unless the mod reads `cc_client.pilot` (below). A host can turn this
-  off ("MagicLib abilities follow the pilot").
+  memory as it loads, so each pilot's abilities do there what they did on that pilot's own screen. A player whose
+  game `join-cc.bat` starts on the kit's own Java also sees other pilots' MagicLib abilities fire when those pilots
+  fire them (the kit's agent; abilities built on MagicLib's subsystems only, not a mod's own hotkeys, weapons or
+  hullmods). On any other start, with the agent off, or with a MagicLib build that kit does not recognize, that
+  player's game still runs them by the mod's own AI unless the mod reads `cc_client.pilot` (below). A host can turn
+  the server half off ("MagicLib abilities follow the pilot").
 - Any other ability mod reads and writes the two keys in its own ability code (for example, a subclass of its
   ability class).
 
@@ -193,7 +196,7 @@ set the mod to "required", so the server and every player run the same version.
 
 | Key | Written by | Value |
 | --- | --- | --- |
-| `cc_client.pilot` | AlphaCoreMP: the server, and each player's game | `int[]{seat, mask, role, flags}` on a ship a player flies; absent on an AI-flown ship |
+| `cc_client.pilot` | AlphaCoreMP: the server, and each player's game | `int[]{seat, mask, role, flags}` on a ship a player flies, 5 long when `[3]` bit 1 is set; absent on an AI-flown ship |
 | `cc_client.abilityLocal` | Your mod, on the player's own ship, each frame | An `Integer` mask |
 
 `cc_client.pilot` (read it each frame; never write it):
@@ -204,7 +207,14 @@ set the mod to "required", so the server and every player run the same version.
   cue to switch it off.
 - `[2]` role: 0 = the server's own mark on the ship it simulates; 1 = a player's game marking its copy of another
   player's ship. A mod can use 1 to skip a side effect the server already performs, such as spawning something.
-- `[3]` flags: bit 0 = the MagicLib change follows this pilot on this ship; other mods can ignore it.
+- `[3]` flags: bit 0 = the MagicLib change follows this pilot on this ship; bit 1 = `[4]` is present; bit 2 is
+  used by the players' games themselves. Other mods can ignore all three.
+- `[4]` controls: bit i is set while the pilot holds their own key or button for control i: 0 SHIP_ACCELERATE,
+  1 SHIP_ACCELERATE_BACKWARDS, 2 SHIP_DECELERATE, 3 SHIP_TURN_LEFT, 4 SHIP_TURN_RIGHT, 5 SHIP_STRAFE_KEY,
+  6 SHIP_STRAFE_LEFT_NOTURN, 7 SHIP_STRAFE_RIGHT_NOTURN, 8 SHIP_FIRE, 9 SHIP_SHIELDS, 10 SHIP_USE_SYSTEM,
+  11 SHIP_VENT_FLUX, 12 SHIP_PULL_BACK_FIGHTERS, 13 SHIP_HOLD_FIRE, 14 SHIP_TARGET_SHIP, 15 C2_TOGGLE_AUTOPILOT.
+  Held keys, not what the ship does. Absent while the host has "Each pilot's ship counts as the player's" off,
+  and in players' games also while "Other players' screens follow each pilot's keys" is off.
 
 The server writes the key on every frame it applies the pilot's input, before the battle advances, so an every-frame
 plugin sees it in the same frame, and removes it when the player leaves the ship (the ship is lost, or the player
@@ -238,18 +248,51 @@ player flies (it can be an AI ship or a station): in any combat plugin, in class
 themselves, and in classes that read the mouse pointer or input events, draw, or change the battle's time
 multiplier. Check the key there. With the switch on, `Keyboard.isKeyDown` and `Mouse.isButtonDown` in that ship's
 own code answer from the keys and mouse buttons its pilot holds (the pilot's own bindings, whatever keymap they use);
-elsewhere no key is ever down. A check that works everywhere:
+elsewhere no key is ever down. In a player's game that runs on the kit's own Java, with the host's "Other players'
+screens follow each pilot's keys" on, another player's ship's own code (the places listed above) sees
+`getPlayerShip()` as that ship and its keys as the pilot's held ship controls; its status lines, messages, UI sounds
+and camera calls do nothing there. Classes that read `cc_client.pilot` are never changed. A check that works
+everywhere:
 
     Object m = ship.getCustomData().get("cc_client.pilot");
     int[] pilot = m instanceof int[] && ((int[]) m).length >= 2 ? (int[]) m : null;
     // pilot != null: a player flies this ship; pilot[1] holds their ability slots
     // pilot == null: run the mod's own logic unchanged (its key on the local player's ship, its AI elsewhere)
 
+### Keys on a ship a player flies
+
+```java
+// The pilot's held ship controls for this ship (bit i = control i in the list above), or -1 when no player's keys apply.
+static int heldControls(ShipAPI ship) {
+    Object m = ship.getCustomData().get("cc_client.pilot");
+    if (m instanceof int[]) {                       // a player flies it: on the server, or another player's ship here
+        int[] pilot = (int[]) m;
+        return pilot.length >= 5 ? pilot[4] : -1;  // shorter: the controls are not sent; keep the AI branch
+    }
+    if (Global.getCombatEngine().getPlayerShip() != ship) return -1;  // AI-flown
+    return keyboardControls();                      // the local player's ship: your existing Keyboard reads, same bits
+}
+
+// In advanceInCombat, where the mod read the keyboard for the player's ship:
+int held = heldControls(ship);
+if (held >= 0) {
+    boolean forward = (held & 1) != 0, left = (held & 1 << 3) != 0;  // SHIP_ACCELERATE, SHIP_TURN_LEFT
+    // ... the mod's own key logic, unchanged
+}
+// Status lines, HUD bars, UI sounds and the camera stay on getPlayerShip() == ship.
+```
+
+On another player's ship (`[2]` = 1) the server's corrections move the ship: draw the effects there and leave pushes
+to the server. Where the AI branch tests the player's ship, test `heldControls(ship) >= 0` too. Status lines, HUD
+bars, UI sounds and the camera stay on `getPlayerShip() == ship`. Two computers can time two presses differently:
+decide a timed gesture (a double tap) in the pilot's own game and publish it as an ability slot.
+
 ### What stays compatible
 
-The two key names stay. `cc_client.pilot` only ever grows at the end: positions 0 to 3 keep their meaning, so a
-reader that uses `[0]` and `[1]` checks `length >= 2`, one that uses `[3]` checks `length >= 4`, and both accept a
-longer array. A missing key, or a value that is not an `int[]`, means the ship is AI-flown.
+The two key names stay. `cc_client.pilot` only ever grows at the end: positions 0 to 4 keep their meaning, so a
+reader that uses `[0]` and `[1]` checks `length >= 2`, one that uses `[3]` checks `length >= 4`, one that uses `[4]`
+checks `length >= 5`, and all accept a longer array. A missing key, or a value that is not an `int[]`, means the ship
+is AI-flown.
 
 ## Reference
 
