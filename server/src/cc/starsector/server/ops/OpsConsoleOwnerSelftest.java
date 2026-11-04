@@ -2035,7 +2035,7 @@ final class OpsConsoleOwnerSelftest {
 
     /**
      * {@code web-watch-pkg-unchanged} - a PACKAGE console's
-     * {@code /api/watch} with {@code os.name=Linux} still answers the join refusal R9 before any Start (the
+     * {@code /api/watch} with {@code os.name=Mac OS X} still answers the join refusal R9 before any Start (the
      * {@code web-watch-linux} pin): the Arm WATCH seam (a counting recorder) is never reached, no package spawn, no
      * watch row; its status never names the seam's file and carries no {@code watchLane}. {@code os.name} and the seam
      * are restored in {@code finally}.
@@ -2054,7 +2054,7 @@ final class OpsConsoleOwnerSelftest {
         OpsConsole.OwnerWatch prior = OpsConsole.ownerWatch;
         try {
             OpsConsole.ownerWatch = seams;
-            System.setProperty("os.name", "Linux");
+            System.setProperty("os.name", "Mac OS X"); // a host that cannot join: the package route's R9
             out = OpsConsoleSelftest.captureLines(() -> resp[0] = watchPress(pkg, startFields(START_DESCRIPTOR)));
             awaitStaging();
             spawns1 = pkg.spawned.size();

@@ -1,4 +1,6 @@
 client-mod/mod/*.bat text eol=crlf
+client-mod/mod/*.sh text eol=lf
+client-mod/mod/*.args text eol=lf
 *.java text eol=lf
 *.md text eol=lf
 *.ps1 text eol=lf

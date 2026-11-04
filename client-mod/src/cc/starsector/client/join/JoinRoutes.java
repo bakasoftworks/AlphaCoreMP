@@ -27,6 +27,7 @@ import cc.starsector.client.editor.HttpExchange;
  * body, never a URL.
  *
  * <pre>
+ *  GET  /t/&lt;ticket&gt;           OUTSIDE the token: a one-time browser ticket ({@link #ticketRoute}) 303s once
  *  GET  /                     the SPA (web/join/index.html; a bare /&lt;token&gt; 302s to /&lt;token&gt;/)
  *  GET  /app.js /app.css      allowlisted static asset from the jar
  *  GET  /api/ping             liveness (the single-instance check's target)
@@ -118,11 +119,26 @@ final class JoinRoutes implements JoinHost.Router {
         this.session = session;
     }
 
+    /** The host's call: the ticket desk rides along ({@link #dispatch}). */
+    @Override
+    public void handle(HttpExchange req, OutputStream out, JoinHost host) throws IOException {
+        dispatch(req, out, host.token(), host.port(), host);
+    }
+
+    /** The token + port form (in-memory rows): no ticket desk, so {@code /t/...} is a plain token miss. */
     @Override
     public void handle(HttpExchange req, OutputStream out, String token, int port) throws IOException {
+        dispatch(req, out, token, port, null);
+    }
+
+    private void dispatch(HttpExchange req, OutputStream out, String token, int port, JoinHost tickets)
+            throws IOException {
         String host = req.header("host");
         if (host != null && !isOurHost(host, port)) {
             HttpExchange.replyText(out, 403, "forbidden");
+            return;
+        }
+        if (tickets != null && ticketRoute(req, out, tickets)) {
             return;
         }
         String prefix = "/" + token;
@@ -326,6 +342,75 @@ final class JoinRoutes implements JoinHost.Router {
         }
         return acc;
     }
+
+    /**
+     * {@code GET /t/<ticket>} — checked after the Host guard and BEFORE the
+     * token prefix, since the browser that redeems it does not hold the token yet. A ticket this host minted and
+     * still remembers: a GET inside its lifetime ⇒ 303 to the stored address (the page, or the editor); a second
+     * use or a late one ⇒ the host's stolen path ({@link JoinHost#redeem}: token rotated, host closed, one log row)
+     * then 404; any other method ⇒ 405, the ticket untouched. False (not answered) for every other path and for
+     * an unknown ticket, which then meets the token test like any stray path.
+     */
+    static boolean ticketRoute(HttpExchange req, OutputStream out, JoinHost tickets) throws IOException {
+        if (!req.path.startsWith(JoinHost.TICKET_PATH)) {
+            return false;
+        }
+        String ticket = req.path.substring(JoinHost.TICKET_PATH.length());
+        if (!tickets.knowsTicket(ticket)) {
+            return false;
+        }
+        if (!"GET".equals(req.method)) {
+            HttpExchange.replyText(out, 405, "method not allowed");
+            return true;
+        }
+        String to = tickets.redeem(ticket);
+        if (to == null) {
+            HttpExchange.replyText(out, 404, "not found");
+            return true;
+        }
+        replySeeOther(out, to);
+        return true;
+    }
+
+    /** A 303 with the shared security headers; the body never repeats the address (it carries a token). */
+    private static void replySeeOther(OutputStream out, String location) throws IOException {
+        byte[] body = "see other".getBytes(StandardCharsets.US_ASCII);
+        String head = "HTTP/1.0 303 See Other\r\n"
+                + "Content-Type: text/plain; charset=utf-8\r\n"
+                + "Content-Length: " + body.length + "\r\n"
+                + "Cache-Control: no-store\r\n"
+                + "X-Content-Type-Options: nosniff\r\n"
+                + "X-Frame-Options: DENY\r\n"
+                + "Content-Security-Policy: " + HttpExchange.CSP + "\r\n"
+                + "Referrer-Policy: no-referrer\r\n"
+                + "Location: " + location + "\r\n"
+                + "Connection: close\r\n\r\n";
+        out.write(head.getBytes(StandardCharsets.ISO_8859_1));
+        out.write(body);
+        out.flush();
+    }
+
+    /**
+     * The router of a ONE-SHOT host — a host started only to bounce one
+     * browser open (the re-open of another live window, the Swing form's Open editor) to an address it does not
+     * serve. The Host guard, then the ticket route; everything else is a 404 (its token is never published).
+     */
+    static final JoinHost.Router TICKETS_ONLY = new JoinHost.Router() {
+        @Override
+        public void handle(HttpExchange req, OutputStream out, String token, int port) throws IOException {
+            HttpExchange.replyText(out, 404, "not found");
+        }
+
+        @Override
+        public void handle(HttpExchange req, OutputStream out, JoinHost host) throws IOException {
+            String h = req.header("host");
+            if (h != null && !isOurHost(h, host.port())) {
+                HttpExchange.replyText(out, 403, "forbidden");
+            } else if (!ticketRoute(req, out, host)) {
+                HttpExchange.replyText(out, 404, "not found");
+            }
+        }
+    };
 
     /** {@code Host} allow-list: this loopback port under its three spellings. */
     static boolean isOurHost(String host, int port) {

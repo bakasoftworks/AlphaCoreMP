@@ -28,8 +28,8 @@ $CcKitRuntime = @{
     # vmparams tokens the args file leaves out: the launcher token itself; a GC mode gone from Java 25; a modal error box
     # (it would hang the bat's exit wait); preview mode (nothing on the class path is a preview class); the extended crash
     # report (a stranger's crash file would carry more of their PC than needed); and the CPU-feature, compiler-directive
-    # and heap pre-touch tuning some community launch lines pin, which a lesser CPU clamps with warnings and every start
-    # pays for - the game's shipped line has none of them.
+    # and heap pre-touch tuning the launch lines pin, which a lesser CPU clamps with warnings and every start
+    # pays for (the maintainer's own Linux launch line carries the same pins: they are box-specific, not a port's edit).
     Drop       = @('java.exe', '-XX:ShenandoahGCMode=iu', '-XX:+ShowMessageBoxOnError', '--enable-preview', '-XX:+ExtensiveErrorReports',
         '-XX:UseAVX=3', '-XX:AVX3Threshold=0', '-XX:UseSSE=4', '-XX:+UseSSE42Intrinsics', '-XX:+UseFMA',
         '-XX:+UseBMI1Instructions', '-XX:+UseBMI2Instructions', '-XX:+UseCLMUL', '-XX:+UseFastStosb',

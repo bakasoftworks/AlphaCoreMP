@@ -117,11 +117,12 @@ final class OpsJoinSelfSelftest {
      * verb and the dev-tooling words a stranger's console never shows.
      */
     private static final Pattern TEXT_FIELD =
-            Pattern.compile("LABEL|TIP|TITLE|KIT_HINT|SECOND_PREFIX|NOTE_\\w*|R\\d+(_SHAPE)?|L\\d+");
+            Pattern.compile("LABEL|TIP|TITLE|KIT_HINT|SECOND_PREFIX|NOTE_\\w*|R\\d+(_SHAPE|P)?|L\\d+");
     private static final Set<String> KNOWN_TEXTS = Set.of("TITLE", "LABEL", "TIP", "KIT_HINT", "NOTE_OPENED",
             "NOTE_REOPENED", "NOTE_REOPENED_WEB", "R1", "R2", "R4", "R5", "R5_SHAPE", "R6", "R7", "R8", "R9", "R10",
             "R12", "R13", "R14", "R15", "NOTE_KIT_REFRESHED", "NOTE_OPENED_ADMIN", "R16", "R17", "R18",
-            "SECOND_PREFIX", "NOTE_SECOND_LIVE");
+            "SECOND_PREFIX", "NOTE_SECOND_LIVE", "R2P", "R6P", "R7P", "R19", "R20", "NOTE_REOPENED_WEB_POSIX",
+            "NOTE_OPENED_POSIX_LOG");
     private static final Pattern FORMAT_SLOT = Pattern.compile("%(?:([1-9])\\$)?([a-zA-Z%])");
     private static final Pattern ACTION = Pattern.compile(
             "\\b(press|run|set|type|extract|reconnect|start|join from)\\b", Pattern.CASE_INSENSITIVE);
@@ -222,6 +223,15 @@ final class OpsJoinSelfSelftest {
             row(failed, "join-settings-scrub", r -> joinSettingsScrub(r, dir.resolve("scrub")));
             row(failed, "sweep-plain-join-not-recorded", r -> sweepPlainJoinNotRecorded(r, dir.resolve("sweepplain")));
             row(failed, "spawn-result-carries-handle", r -> spawnResultCarriesHandle(r, dir.resolve("spawnhandle")));
+            row(failed, "posix-press-opened", r -> posixPressOpened(r, dir.resolve("pxopened")));
+            row(failed, "posix-ladder", r -> posixLadder(r, dir.resolve("pxladder")));
+            row(failed, "install-root-form", r -> installRootForm(r, dir.resolve("pxroot")));
+            row(failed, "posix-no-kit", r -> posixNoKit(r, dir.resolve("pxnokit")));
+            row(failed, "posix-no-display", r -> posixNoDisplay(r, dir.resolve("pxnodisplay")));
+            row(failed, "posix-spawn-failed", r -> posixSpawnFailed(r, dir.resolve("pxspawnfail")));
+            row(failed, "join-predicates", OpsJoinSelfSelftest::joinPredicates);
+            row(failed, "posix-reopen", r -> posixReopen(r, dir.resolve("pxreopen")));
+            row(failed, "posix-texts", OpsJoinSelfSelftest::posixTexts);
         } finally {
             deleteTree(dir);
         }
@@ -785,9 +795,10 @@ final class OpsJoinSelfSelftest {
         for (OpsJoinSelf.Step step : OpsJoinSelf.STEPS) {
             names.add(step.name());
         }
-        check(r, names.equals(List.of("step1Install", "step1cKitCurrent", "step2LiveWindow", "step3LiveGate",
-                        "step4Password", "step5Dial", "step6Write", "step6bArm", "step7Spawn")),
-                "(i) the press order is the design's: nine steps, the kit check second and the seat-key arm between"
+        check(r, names.equals(List.of("step1Install", "step1bPosixHost", "step1cKitCurrent", "step2LiveWindow",
+                        "step3LiveGate", "step4Password", "step5Dial", "step6Write", "step6bArm", "step7Spawn")),
+                "(i) the press order is the design's: ten steps, the Linux host's checks right after the install"
+                        + " (before the kit check can move a file), the kit check next and the seat-key arm between"
                         + " the settings write and the spawn (flips if a step is dropped, renamed, reordered or added -"
                         + " a kit match-file step back in the list, the kit check after a write, an arm after the spawn"
                         + " reaches the serve after the window's hello, an arm before the write names a key the file"
@@ -1306,9 +1317,9 @@ final class OpsJoinSelfSelftest {
         check(r, texts.getOrDefault("TIP", "").contains("CC_Client"),
                 "TIP names the player kit CC_Client (flips if the tip stops telling a host which mod it needs)");
         String r9 = texts.getOrDefault("R9", "");
-        check(r, r9.contains("Windows") && r9.contains("Copy join brick"),
-                "R9 names Windows and the Copy join brick button (flips if a non-Windows host loses the way to"
-                        + " join): " + r9);
+        check(r, r9.contains("Windows or Linux") && r9.contains("Copy join brick"),
+                "R9 names Windows or Linux and the Copy join brick button (flips if a host the kit cannot run on"
+                        + " loses the way to join, or R9 still says Windows only): " + r9);
         // The R10 sentence, as the design spells it.
         check(r, "ProtonVPN did not answer - reconnect it and press Join from this PC again".equals(texts.get("R10")),
                 "R10 is the design sentence EXACTLY (flips on any edit to the R10 sentence): " + texts.get("R10"));
@@ -2738,6 +2749,301 @@ final class OpsJoinSelfSelftest {
     }
 
     /** {@link OpsJoinSelf#press} with {@code System.out} captured. */
+    // ---- the Linux host's press ----
+
+    /** The Linux host's display ":0" and its X cookie, Wayland unset; the dirs = HOME /home/host, the runtime dir
+     *  /run/user/1000. */
+    private static final OpsJoinSelf.PosixHost POSIX_HOST = new OpsJoinSelf.PosixHost("/home/host", null,
+            "/run/user/1000", true, ":0", "", "/home/host/.Xauthority");
+    private static final Path POSIX_SETTINGS = dataUnder("/home/host").resolve("cc-starsector")
+            .resolve("join-settings.properties");
+
+    /** {@code <home>/.local/share} built by name (the XDG default data base). */
+    private static Path dataUnder(String home) {
+        return Paths.get(home).resolve(".local").resolve("share");
+    }
+    private static final Path POSIX_LOG = Paths.get("/run/user/1000/cc-starsector/join/join-press.log");
+
+    /** A Linux game folder on the REAL disk: the engine jar at its own root (no starsector-core), as installed. */
+    private static Path stagePosixInstall(Path at) throws SetupFailure {
+        try {
+            Files.createDirectories(at);
+            Files.write(at.resolve("starfarer_obf.jar"), new byte[] {1});
+            return at;
+        } catch (IOException e) {
+            throw new SetupFailure("linux install fixture at " + at, e);
+        }
+    }
+
+    /** The Linux kit present in the fake's files (the literal layout, never the core's constants), the parent env
+     *  carrying the console's own virtual display, a cc_ key and JAVA_TOOL_OPTIONS. */
+    private static FakeEffects posixKit(Path install) {
+        FakeEffects fx = new FakeEffects();
+        fx.files.put(install.resolve("starsector.sh"), new byte[] {1});
+        fx.files.put(install.resolve("mods").resolve("CC_Client").resolve("join-cc.sh"), new byte[] {1});
+        fx.env.put("DISPLAY", ":99");
+        fx.env.put("WAYLAND_DISPLAY", "virtual-0");
+        fx.env.put("XAUTHORITY", "/tmp/virtual-auth");
+        fx.env.put("CC_JOIN_DRYRUN", "1");
+        fx.env.put("JAVA_TOOL_OPTIONS", "-Xmx1g");
+        return fx;
+    }
+
+    private static OpsJoinSelf.Inputs posixInputs(Path base, Path install, OpsJoinSelf.PosixHost host) {
+        return inputs(base, install, live("0.0.0.0", 46337), PW, Map.of()).withPosixHost(host);
+    }
+
+    /** {@code posix-press-opened}: a Linux press over a staged kit opens the window.
+     * */
+    private static void posixPressOpened(String r, Path base) throws Exception {
+        Path install = stagePosixInstall(base.resolve("game"));
+        FakeEffects fx = posixKit(install);
+        Pressed p = press(posixInputs(base, install, POSIX_HOST), fx);
+        check(r, p.result.outcome() == Outcome.OPENED, "a Linux press over a staged kit opens (flips if any Linux"
+                + " step refuses a good host): " + p.result);
+        check(r, p.result.text().startsWith("Join window opening (it dials 127.0.0.1:46337) - press Launch in it.")
+                        && p.result.text().endsWith(" If no window appears, the kit's own words are in " + POSIX_LOG + "."),
+                "the Linux OPENED note names the press log after the Windows sentence (flips if a window that dies"
+                        + " after the spawn wait leaves the host no place to look): " + p.result.text());
+        check(r, fx.writes.equals(List.of(POSIX_SETTINGS, POSIX_LOG)),
+                "ONE settings write under HOME's default data folder, then the empty press log under the runtime"
+                        + " dir, nothing under the Windows folders (flips if the ladder drifts or the Windows resolver"
+                        + " is used): " + fx.writes);
+        String text = new String(fx.files.getOrDefault(POSIX_SETTINGS, new byte[0]), StandardCharsets.ISO_8859_1);
+        check(r, text.contains("host=127.0.0.1\r\n") && text.contains("port=46337\r\n")
+                        && text.contains("password=" + PW + "\r\n"),
+                "the settings file holds the dial and the match password (flips if the merge is skipped): " + text);
+        check(r, "dir=0700 file=0600".equals(fx.modes.get(POSIX_SETTINGS))
+                        && "dir=0700 file=0600".equals(fx.modes.get(POSIX_LOG)),
+                "both writes ask owner-only modes 0700 / 0600 (flips if the plain write is used or a mode drifts): "
+                        + fx.modes);
+        check(r, fx.spawns.size() == 1 && fx.spawns.get(0).argv.equals(List.of("/bin/bash", "./join-cc.sh"))
+                        && fx.spawns.get(0).cwd.equals(install.resolve("mods").resolve("CC_Client"))
+                        && fx.spawnLogs.equals(Arrays.asList(POSIX_LOG)),
+                "ONE spawn of /bin/bash ./join-cc.sh in the kit folder, its output to the press log (flips if the argv,"
+                        + " the cwd or the log drift): " + fx.spawns + " logs=" + fx.spawnLogs);
+        Map<String, String> env = fx.spawns.get(0).env;
+        boolean noCc = env.keySet().stream().noneMatch(k -> k.toLowerCase(Locale.ROOT).startsWith("cc_"));
+        check(r, ":0".equals(env.get("DISPLAY")) && "/home/host/.Xauthority".equals(env.get("XAUTHORITY"))
+                        && !env.containsKey("WAYLAND_DISPLAY") && noCc && "-Xmx1g".equals(env.get("JAVA_TOOL_OPTIONS"))
+                        && "p".equals(env.get("PATH")),
+                "the child env carries the HOST display and cookie, drops the empty Wayland key and every cc_ key,"
+                        + " keeps JAVA_TOOL_OPTIONS and PATH (flips if the console's virtual display leaks or the strip"
+                        + " is lost): " + env);
+        boolean clean = !p.stdout.contains(PW) && fx.spawns.get(0).argv.stream().noneMatch(a -> a.contains(PW))
+                && env.values().stream().noneMatch(v -> v.contains(PW));
+        check(r, clean, "the password rides neither argv, env nor stdout (flips if the secret leaves the file)");
+    }
+
+    /** {@code posix-ladder}: the kit's folder ladder, the client's string test, HOME missing = R20.
+     * */
+    private static void posixLadder(String r, Path base) throws Exception {
+        check(r, PosixKitDirs.absoluteOrNull("/home/u") != null && PosixKitDirs.absoluteOrNull("home/u") == null
+                        && PosixKitDirs.absoluteOrNull("") == null && PosixKitDirs.absoluteOrNull(null) == null
+                        && PosixKitDirs.absoluteOrNull("C:\\Users\\u") == null,
+                "absolute = a leading '/' (flips if Path.isAbsolute is used: this Windows JVM would refuse /home/u"
+                        + " and accept C:\\Users\\u)");
+        check(r, Paths.get("/data/x/cc-starsector").equals(new PosixKitDirs("/home/u", "/data/x", null).dataDirOrNull())
+                        && dataUnder("/home/u").resolve("cc-starsector")
+                                .equals(new PosixKitDirs("/home/u", "rel/x", null).dataDirOrNull()),
+                "XDG_DATA_HOME absolute wins, relative is ignored for HOME/.local/share (flips if the ladder drifts)");
+        Path install = stagePosixInstall(base.resolve("game"));
+        FakeEffects fx = posixKit(install);
+        String tag = OpsJoinSelf.installTag(install.toRealPath());
+        Path underRuntime = OpsJoinSelf.endpointFileFor(posixInputs(base, install,
+                new OpsJoinSelf.PosixHost("/home/u", null, "/run/user/7", false, null, null, null)), fx, install);
+        Path underData = OpsJoinSelf.endpointFileFor(posixInputs(base, install,
+                new OpsJoinSelf.PosixHost("/home/u", null, "run/rel", false, null, null, null)), fx, install);
+        check(r, Paths.get("/run/user/7/cc-starsector/join/cc_join_endpoint-" + tag + ".data").equals(underRuntime)
+                        && dataUnder("/home/u").resolve("cc-starsector").resolve("join")
+                                .resolve("cc_join_endpoint-" + tag + ".data").equals(underData),
+                "the endpoint file sits under XDG_RUNTIME_DIR when absolute, else under the data base, tagged over the"
+                        + " real path (flips if the runtime ladder or the tag input drifts): " + underRuntime + " / "
+                        + underData);
+        fx.failOn.put("realPath#3", new IOException("marker"));
+        check(r, OpsJoinSelf.endpointFileFor(posixInputs(base, install, POSIX_HOST), fx, install) == null,
+                "an unresolvable real path = no endpoint file (flips if the tag stops coming from realPath)");
+        for (String home : Arrays.asList(null, "home/rel")) {
+            FakeEffects none = posixKit(install);
+            Pressed p = press(posixInputs(base, install,
+                    new OpsJoinSelf.PosixHost(home, null, "/run/user/7", true, ":0", "", "")), none);
+            check(r, "r20".equals(p.result.reasonToken()) && OpsJoinSelf.R20.equals(p.result.text())
+                            && none.writes.isEmpty() && none.spawns.isEmpty(),
+                    "HOME " + shownEnv(home) + " = R20 with nothing written or started (flips if the press falls back"
+                            + " to another home): " + p.result + " writes=" + none.writes);
+        }
+    }
+
+    /** {@code install-root-form}: the core-form arm only for a starsector-core folder.
+     * */
+    private static void installRootForm(String r, Path base) throws Exception {
+        String row = ServeLauncher.ROW_GAME_ROOT;
+        Path linux = stagePosixInstall(base.resolve("starsector"));
+        check(r, linux.equals(OpsJoinSelf.installOrNull(base, Map.of(row, linux.toString()))),
+                "a jar-at-root install resolves to ITSELF (flips if the core-form arm returns its parent again)");
+        Path win = stageInstall(base.resolve("win"), true, true);
+        check(r, win.equals(OpsJoinSelf.installOrNull(base, Map.of(row, win.resolve("starsector-core").toString()))),
+                "a row naming <install>/starsector-core still resolves to the install (flips if the arm is lost)");
+        Path odd = base.resolve("odd");
+        stagePosixInstall(odd.resolve("Starsector-Core"));
+        check(r, odd.equals(OpsJoinSelf.installOrNull(base, Map.of(row, odd.resolve("Starsector-Core").toString()))),
+                "the core folder's name is matched case-blind (flips if a Windows row in another case loses its"
+                        + " parent)");
+    }
+
+    /** {@code posix-no-kit}: R2P naming the Linux launchers with '/'. */
+    private static void posixNoKit(String r, Path base) throws Exception {
+        Path install = stagePosixInstall(base.resolve("game"));
+        FakeEffects fx = posixKit(install);
+        fx.files.remove(install.resolve("mods").resolve("CC_Client").resolve("join-cc.sh"));
+        Pressed p = press(posixInputs(base, install, POSIX_HOST), fx);
+        String t = p.result.text();
+        check(r, "r2".equals(p.result.reasonToken()) && t.contains(install + "/mods/CC_Client/join-cc.sh")
+                        && t.contains(install + "/starsector.sh") && !t.contains("join-cc.bat")
+                        && fx.writes.isEmpty() && fx.spawns.isEmpty(),
+                "no kit launcher = R2P naming join-cc.sh and starsector.sh with '/', nothing written (flips if the"
+                        + " Linux check or text drifts): " + t);
+        FakeEffects win = FakeEffects.withKit(install);
+        check(r, OpsJoinSelf.installRefusalOrNull(install, win, "kit.zip", true) != null
+                        && OpsJoinSelf.installRefusalOrNull(install, win, "kit.zip", false) == null,
+                "a Windows kit (exe + bat) is no kit on a Linux host and still one on Windows (flips if the branch"
+                        + " is keyed wrong)");
+    }
+
+    /** {@code posix-no-display}: a known empty desktop = R19; unknown = the parent env as is - unless that env sets
+     *  neither display either, then R19. */
+    private static void posixNoDisplay(String r, Path base) throws Exception {
+        for (String shape : List.of("unset", "empty")) {
+            FakeEffects bare = posixKit(stagePosixInstall(base.resolve("game")));
+            bare.env.remove("WAYLAND_DISPLAY");
+            if ("unset".equals(shape)) {
+                bare.env.remove("DISPLAY");
+            } else {
+                bare.env.put("DISPLAY", "");
+            }
+            Pressed b = press(posixInputs(base, base.resolve("game"),
+                    new OpsJoinSelf.PosixHost("/home/host", null, "/run/user/1000", false, null, null, null)), bare);
+            check(r, "r19".equals(b.result.reasonToken()) && OpsJoinSelf.R19.equals(b.result.text())
+                            && bare.writes.isEmpty() && bare.spawns.isEmpty(),
+                    "display unknown and the console's own env with DISPLAY " + shape + " and no WAYLAND_DISPLAY = R19,"
+                            + " nothing written or started (flips if a by-hand console with no display spawns a window"
+                            + " that dies after the wait, unseen): " + b.result);
+        }
+        Path install = stagePosixInstall(base.resolve("game"));
+        FakeEffects fx = posixKit(install);
+        Pressed p = press(posixInputs(base, install,
+                new OpsJoinSelf.PosixHost("/home/host", null, "/run/user/1000", true, "", "", "")), fx);
+        check(r, "r19".equals(p.result.reasonToken()) && OpsJoinSelf.R19.equals(p.result.text())
+                        && fx.writes.isEmpty() && fx.spawns.isEmpty(),
+                "a known desktop with no display = R19, nothing written or started (flips if the press opens a"
+                        + " window nowhere): " + p.result);
+        FakeEffects unknown = posixKit(install);
+        Pressed u = press(posixInputs(base, install,
+                new OpsJoinSelf.PosixHost("/home/host", null, "/run/user/1000", false, null, null, null)), unknown);
+        Map<String, String> env = unknown.spawns.isEmpty() ? Map.of() : unknown.spawns.get(0).env;
+        check(r, u.result.outcome() == Outcome.OPENED && ":99".equals(env.get("DISPLAY"))
+                        && "virtual-0".equals(env.get("WAYLAND_DISPLAY")) && "/tmp/virtual-auth".equals(env.get("XAUTHORITY")),
+                "display unknown (a console started by hand) = the parent's display keys untouched (flips if the"
+                        + " press strips or invents them): " + u.result + " " + env);
+        FakeEffects wayland = posixKit(install);
+        Pressed w = press(posixInputs(base, install,
+                new OpsJoinSelf.PosixHost("/home/host", null, "/run/user/1000", true, "", "wayland-0", "")), wayland);
+        Map<String, String> wenv = wayland.spawns.isEmpty() ? Map.of() : wayland.spawns.get(0).env;
+        check(r, w.result.outcome() == Outcome.OPENED && "wayland-0".equals(wenv.get("WAYLAND_DISPLAY"))
+                        && !wenv.containsKey("DISPLAY") && !wenv.containsKey("XAUTHORITY"),
+                "a Wayland-only desktop opens with DISPLAY and XAUTHORITY removed (flips if an empty capture keeps"
+                        + " the virtual value): " + w.result + " " + wenv);
+    }
+
+    /** {@code posix-spawn-failed}: a quick nonzero exit = R7P with the log's last line, bounded and sanitized.
+     * */
+    private static void posixSpawnFailed(String r, Path base) throws Exception {
+        Path install = stagePosixInstall(base.resolve("game"));
+        FakeEffects fx = posixKit(install);
+        fx.spawnExit = 1;
+        fx.spawnLogText = "Kit check OK\n  Needs xrandr: install it, then run this again.  \n\n";
+        Pressed p = press(posixInputs(base, install, POSIX_HOST), fx);
+        String t = p.result.text();
+        check(r, "spawn_nonzero".equals(p.result.reasonToken())
+                        && t.startsWith("The join window did not start (1): Needs xrandr: install it, then run this"
+                                + " again. - run bash ") && t.endsWith("/mods/CC_Client/join-cc.sh in a terminal to see why.")
+                        && !p.stdout.contains("xrandr"),
+                "exit 1 = R7P carrying the log's LAST non-empty line, trimmed, never on stdout (flips if the tail is"
+                        + " lost, the first line is taken, or it is printed): " + t);
+        FakeEffects big = posixKit(install);
+        big.spawnExit = 2;
+        big.spawnLogText = "\u00e9" + "x".repeat(300) + "\r\n";
+        String bt = press(posixInputs(base, install, POSIX_HOST), big).result.text();
+        String want = "(2): ?" + "x".repeat(OpsJoinSelf.PRESS_LOG_TAIL_MAX - 4) + "... - run bash";
+        check(r, bt.contains(want) && !bt.contains("x".repeat(OpsJoinSelf.PRESS_LOG_TAIL_MAX - 3)),
+                "a 301-char non-ASCII line = '?' for the letter, cut to 160 chars with '...' (flips if the sanitizer"
+                        + " or the bound is lost): " + bt);
+        FakeEffects quiet = posixKit(install);
+        quiet.spawnExit = 3;
+        String qt = press(posixInputs(base, install, POSIX_HOST), quiet).result.text();
+        check(r, qt.startsWith("The join window did not start (3) - run bash "),
+                "an empty log = no tail and no ': ' (flips if an empty tail is still appended): " + qt);
+    }
+
+    /** {@code join-predicates}: joinHere / watchHere / posixHost / windowsHost over os.name.
+     * */
+    private static void joinPredicates(String r) {
+        check(r, ServerOpsCore.joinHere("Linux") && !ServerOpsCore.watchHere("Linux") && ServerOpsCore.posixHost("Linux")
+                        && !ServerOpsCore.windowsHost("Linux"),
+                "Linux joins, never watches (flips if the Linux host loses the button or gains the WATCH)");
+        check(r, ServerOpsCore.joinHere("Windows 11") && ServerOpsCore.watchHere("Windows 11")
+                        && ServerOpsCore.windowsHost("Windows 11") && !ServerOpsCore.posixHost("Windows 11"),
+                "Windows joins and watches (flips if a Windows host loses either)");
+        check(r, !ServerOpsCore.joinHere("Mac OS X") && !ServerOpsCore.watchHere("Mac OS X")
+                        && !ServerOpsCore.joinHere(null) && !ServerOpsCore.joinHere("")
+                        && !ServerOpsCore.posixHost(null) && !ServerOpsCore.windowsHost(null),
+                "macOS, null and blank do neither (flips if a host the kit cannot run on shows the button)");
+    }
+
+    /** {@code posix-reopen}: a live window = REOPENED; the web's reopen spawn tolerates the launcher's exit on
+     *  Linux and not on Windows. */
+    private static void posixReopen(String r, Path base) throws Exception {
+        Path install = stagePosixInstall(base.resolve("game"));
+        FakeEffects fx = posixKit(install);
+        Path endpoint = Paths.get("/run/user/1000/cc-starsector/join/cc_join_endpoint-"
+                + OpsJoinSelf.installTag(install.toRealPath()) + ".data");
+        fx.files.put(endpoint, ascii("46000|" + TOKEN + "|0badf00d"));
+        fx.pings.put(46000, PING_JOIN);
+        OpsJoinSelf.Inputs in = posixInputs(base, install, POSIX_HOST);
+        Pressed p = press(in, fx);
+        check(r, p.result.outcome() == Outcome.REOPENED && fx.writes.isEmpty() && fx.spawns.isEmpty(),
+                "a live window under the Linux runtime dir = REOPENED, nothing written or started (flips if step 2"
+                        + " looks in the Windows folders): " + p.result);
+        fx.spawnExit = 1;
+        OpsJoinSelf.Result re = OpsJoinSelf.reopenSpawn(in, fx);
+        check(r, re.outcome() == Outcome.REOPENED && OpsJoinSelf.NOTE_REOPENED_WEB_POSIX.equals(re.text())
+                        && fx.spawns.size() == 1 && fx.spawns.get(0).argv.equals(List.of("/bin/bash", "./join-cc.sh"))
+                        && ":0".equals(fx.spawns.get(0).env.get("DISPLAY")) && fx.writes.isEmpty(),
+                "the Linux reopen spawns the launcher with the host display and reads its exit 1 as REOPENED (flips"
+                        + " if the cancel exit reads as R7P or the Windows argv is used): " + re + " " + fx.spawns);
+        Path winInstall = stageInstall(base.resolve("win"), true, true);
+        FakeEffects winFx = FakeEffects.withKit(winInstall);
+        winFx.spawnExit = 1;
+        OpsJoinSelf.Result wr = OpsJoinSelf.reopenSpawn(inputs(base, winInstall, live("0.0.0.0", 1), PW, Map.of()),
+                winFx);
+        check(r, "spawn_nonzero".equals(wr.reasonToken()) && wr.text().contains("Windows did not open"),
+                "a Windows reopen's exit 1 is still R7 (flips if the Linux tolerance leaks to Windows): " + wr);
+    }
+
+    /** {@code posix-texts}: the Linux twins use '/', R9W names the WATCH's host.
+     * */
+    private static void posixTexts(String r) {
+        for (String t : List.of(OpsJoinSelf.R2P, OpsJoinSelf.R6P, OpsJoinSelf.R7P)) {
+            check(r, t.contains("/mods/CC_Client/join-cc.sh") && t.indexOf('\\') < 0,
+                    "a Linux text names the kit's shell launcher with '/' and no backslash (flips if a Windows text is"
+                            + " copied): " + t);
+        }
+        check(r, OpsConsole.R9W.contains("Windows host only") && OpsConsole.R9W.contains("Join from this PC works here")
+                        && printableAscii(OpsConsole.R9W),
+                "R9W says the WATCH is Windows-only and that Join from this PC still works (flips if a Linux host is"
+                        + " told it cannot join): " + OpsConsole.R9W);
+    }
+
     private static Pressed press(OpsJoinSelf.Inputs in, OpsJoinSelf.Effects fx) {
         PrintStream original = System.out;
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
@@ -2947,6 +3253,45 @@ final class OpsJoinSelfSelftest {
                 return;
             }
             files.put(file, bytes.clone());
+        }
+
+        /** The Linux write form: an owner-only ask records {@code dir=<octal> file=<octal>} per file in
+         *  {@link #modes} (the octal computed HERE from the core's two mode strings, so a drifted mode string shows),
+         *  then the plain write. The real modes are measured on a Linux host, never here.
+         * */
+        final Map<Path, String> modes = new LinkedHashMap<>();
+
+        @Override
+        public void writeAtomic(Path file, byte[] bytes, boolean ownerOnly) throws IOException {
+            if (ownerOnly) {
+                modes.put(file, "dir=" + octal(OpsJoinSelf.POSIX_DIR_PERMS) + " file="
+                        + octal(OpsJoinSelf.POSIX_FILE_PERMS));
+            }
+            writeAtomic(file, bytes);
+        }
+
+        /** {@code rwxr-x---} as {@code 0750}. */
+        private static String octal(String perms) {
+            int v = 0;
+            for (int i = 0; i < 9; i++) {
+                v = (v << 1) | (perms.charAt(i) == '-' ? 0 : 1);
+            }
+            return String.format(Locale.ROOT, "%04o", v);
+        }
+
+        /** The log each logged spawn was handed ({@link #spawnWindow(List, Path, Map, Path)}, in order); with
+         *  {@link #spawnLogText} set, the spawn "writes" it into that log (the kit's output before a quick exit).
+         * */
+        final List<Path> spawnLogs = new ArrayList<>();
+        String spawnLogText;
+
+        @Override
+        public OpsJoinSelf.Spawned spawnWindow(List<String> argv, Path cwd, Map<String, String> childEnv, Path log) {
+            spawnLogs.add(log);
+            if (log != null && spawnLogText != null) {
+                files.put(log, spawnLogText.getBytes(StandardCharsets.UTF_8));
+            }
+            return spawnWindow(argv, cwd, childEnv);
         }
 
         /** {@code join-ping}'s switch: true = {@link #pingBody} is the REAL loopback GET ({@link OpsJoinSelf#LIVE})

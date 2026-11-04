@@ -47,6 +47,7 @@ import javax.swing.UIManager;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 
+import cc.starsector.client.KitUserDirs;
 import cc.starsector.client.net.DoorProbe;
 import cc.starsector.client.net.DoorVariantCheck;
 
@@ -89,6 +90,7 @@ public final class JoinGui {
     public static void main(String[] args) throws Exception {
         if (args.length >= 1 && "--selftest".equals(args[0])) {
             JoinGuiSelftest.run(); // The battery lives in JoinGuiSelftest
+            JoinTicketSelftest.run();
             System.out.println("join-gui selftest PASS");
             return;
         }
@@ -760,15 +762,39 @@ public final class JoinGui {
         return panel;
     }
 
-    /** Open {@code live} in the default browser; a browser-less box gets the address to paste. */
+    /**
+     * Open {@code live} in the default browser; a browser-less box gets the address to paste.
+     * The {@code Desktop} BROWSE pre-check first (a JVM without it used to
+     * reach the paste text only through the thrown exception). Off Windows the shared opener
+     * ({@link JoinBrowserUi#browse}) hands the browser a one-time ticket of a one-shot host, never this address,
+     * and runs on its own thread — an opener command may take up to 3 s to settle, too long for the event thread.
+     */
     static void browseEditor(Component parent, String live) {
-        try {
-            Desktop.getDesktop().browse(URI.create(live));
-        } catch (IOException | RuntimeException cannot) {
-            SwingPlainText.showMessage(parent,
-                    "Could not open a browser here. Paste this address into one:\n" + live,
-                    "Open editor", javax.swing.JOptionPane.WARNING_MESSAGE);
+        if (!KitUserDirs.isWindows()) {
+            Thread opener = new Thread(() -> {
+                if (!JoinBrowserUi.browse(live, null)) {
+                    SwingUtilities.invokeLater(() -> showPasteEditor(parent, live));
+                }
+            }, "cc-join-open-editor");
+            opener.setDaemon(true);
+            opener.start();
+            return;
         }
+        try {
+            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                Desktop.getDesktop().browse(URI.create(live));
+                return;
+            }
+        } catch (IOException | RuntimeException cannot) {
+            // the paste text below is the answer
+        }
+        showPasteEditor(parent, live);
+    }
+
+    private static void showPasteEditor(Component parent, String live) {
+        SwingPlainText.showMessage(parent,
+                "Could not open a browser here. Paste this address into one:\n" + live,
+                "Open editor", javax.swing.JOptionPane.WARNING_MESSAGE);
     }
 
     /**

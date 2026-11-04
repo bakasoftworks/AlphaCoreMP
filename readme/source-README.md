@@ -334,7 +334,9 @@ details `-ServerFolder`, `-KitZip` and `-KitRuntime`.
 | `client-mod/web` | The join window's pages (`join/`) and the ship editor's. |
 | `client-mod/sound-check` | The sound self-check probe the kit runs, a loose class beside `join-cc.bat`. |
 | `client-mod/kit-runtime.ps1` | The kit's Java runtime: module list, jlink flags, and the rules deriving its JVM options from `vmparams`. |
-| `third-party/asm` | The ASM 9.10.1 jar the agent build bundles into the agent jar. Third-party, own `LICENSE.txt`. |
+| `client-mod/engine-map` | The engine's internal names that differ on the Linux download of the game; the kit's agent renames them at load. |
+| `client-mod/engine-map-codegen.ps1` | Turns the engine map into the mod's name table, `client-mod/gen` (the build runs it). |
+| `third-party/asm` | The two ASM 9.10.1 jars, `asm` and `asm-commons` (the kit's agent only), the build bundles into the agent jars. Third-party, own `LICENSE.txt`. |
 | `build.ps1` | Builds everything. |
 
 ### Native libraries for the Linux server
@@ -373,7 +375,7 @@ change, merge, publish, share, sublicense and sell copies, as long as the copyri
 every copy or substantial part; there is no warranty. Not covered by it:
 
 - Concentus, in `server/vendor/concentus`: BSD-3-Clause, see its `LICENSE`.
-- ASM, in `third-party/asm`: BSD-3-Clause, see its `LICENSE.txt`.
+- ASM (`asm` and `asm-commons`), in `third-party/asm`: BSD-3-Clause, see its `LICENSE.txt`.
 - Files under `client-mod/mod/data` that derive from the game's own data. The MIT grant does not cover
   them; they stay with the game.
 - The game itself.

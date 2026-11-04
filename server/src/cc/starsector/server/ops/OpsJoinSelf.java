@@ -6,6 +6,8 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.Proxy;
 import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
@@ -16,6 +18,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -23,6 +26,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -44,11 +48,13 @@ import cc.starsector.server.runtime.BanSet;
 import cc.starsector.server.runtime.HandshakeCodec;
 
 /**
- * "Join from this PC" - the ONE core both package shells (Swing + web, Windows) call so a host can play on the
- * computer that serves: the player join window opens on this computer, pre-filled with this server's address,
- * port and match password. WHY one core: release parity - a package host reaches what
- * owner mode reaches with its Joiner GUI button ({@code ServerOpsLaunch.spawnJoinerGui}, a pwsh path kept as is),
- * and two shells must never hold two copies of the order below.
+ * "Join from this PC" - the ONE core the package's web console calls so a host can play on the computer that
+ * serves, a Windows or a Linux host: the player join window opens on this computer, pre-filled with this server's
+ * address, port and match password. WHY one core: release parity -
+ * a package host reaches what owner mode reaches with its Joiner GUI button ({@code ServerOpsLaunch.spawnJoinerGui},
+ * a pwsh path kept as is), and no shell holds a second copy of the order below. The host's platform is ONE input
+ * ({@link Inputs#posixHost}), never read here, so one selftest JVM drives both branches.
+ *
  *
  * <p>Shape: pure functions (each a selftest row's subject, {@code OpsJoinSelfSelftest}) + {@link #press}, an
  * ORDERED step list ({@link #STEPS}) over the {@link Effects} seams (files, the loopback ping, the ProtonVPN probe,
@@ -117,6 +123,30 @@ final class OpsJoinSelf {
     static final boolean JOIN_WINDOW_MINIMIZED = Boolean.getBoolean("cc.ops.joinWindowMinimized");
     /** The game's own launcher - its presence (with the kit bat) is what "a game with the kit" means. */
     static final String GAME_EXE = "starsector.exe";
+    /**
+     * The Linux host's twins: {@value #GAME_SH} + the kit's {@value #KIT_SH} (regular files) are "a game with the
+     * kit" there; the spawn runs the kit's launcher through {@value #POSIX_SHELL} by its absolute path (never a PATH
+     * lookup: the console's PATH is the operator's) as {@code ./}{@value #KIT_SH} in the kit folder - the launcher
+     * finds its own folder from its argument, and the zip marks no file executable, hence the shell. Its stdout and
+     * stderr go to the per-press log {@value #PRESS_LOG_NAME} beside the endpoint file (truncated per press, read
+     * only on a quick failure, at most {@value #PRESS_LOG_MAX_BYTES} B, its last non-empty line cut to
+     * {@value #PRESS_LOG_TAIL_MAX} chars) - the operator text the Windows console window would show. The settings
+     * write's folders and files are made owner-only at creation ({@value #POSIX_DIR_PERMS} /
+     * {@value #POSIX_FILE_PERMS}, the kit's own modes), as the file holds the match password. The three system
+     * properties carry the host's own desktop display past the console's virtual one ({@link PosixHost}).
+     *
+     */
+    static final String GAME_SH = "starsector.sh";
+    static final String KIT_SH = "join-cc.sh";
+    static final String POSIX_SHELL = "/bin/bash";
+    static final String PRESS_LOG_NAME = "join-press.log";
+    static final int PRESS_LOG_MAX_BYTES = 64 * 1024;
+    static final int PRESS_LOG_TAIL_MAX = 160;
+    static final String POSIX_DIR_PERMS = "rwx------";
+    static final String POSIX_FILE_PERMS = "rw-------";
+    static final String PROP_HOST_DISPLAY = "cc.ops.host.display";
+    static final String PROP_HOST_WAYLAND = "cc.ops.host.waylandDisplay";
+    static final String PROP_HOST_XAUTHORITY = "cc.ops.host.xauthority";
     /**
      * The installed kit's own stamps, read by the kit check ({@link #kitCheckOf}) before anything is written into the
      * kit folder: {@value #KIT_MANIFEST} (the packer's five CRLF rows, {@code jarMd5} UPPERCASE; a real one is
@@ -269,9 +299,40 @@ final class OpsJoinSelf {
             + " yourself.";
     /** The shells' one-press-in-flight refusal (N6). */
     static final String R8 = "The join window is already being opened - one moment.";
-    /** The web page's {@code #join-linux} line. */
-    static final String R9 = "Joining from this computer needs Windows: the player kit runs on Windows only. Join"
-            + " from a Windows PC with the code from Copy join brick.";
+    /** The web page's {@code #join-linux} line and the press's answer on a host that is neither Windows nor Linux
+     *  (the player kit runs on those two). */
+    static final String R9 = "Joining from this computer needs Windows or Linux: the player kit runs on those. Join"
+            + " from another computer with the code from Copy join brick (Linux: bash mods/CC_Client/join-cc.sh).";
+    /**
+     * The Linux host's sentences (paths with {@code /}, the kit's shell launcher): {@link #R2P} / {@link #R6P} =
+     * {@link #R2} / {@link #R6}'s twins (same slots); {@link #R7P}: {@code %1$s} = the install, {@code %2$s} = the
+     * exit code or the exception's simple name, {@code %3$s} = {@code ": "} + the press log's last line
+     * ({@link #pressLogTail}) or {@code ""}; {@link #R19} = no desktop display to open a window on (the captured
+     * one empty, or none captured and the console's own env bare - {@link #step1bPosixHost}); {@link #R20} = no
+     * usable HOME (the kit's settings have no folder).
+     * {@link #NOTE_REOPENED_WEB_POSIX} = {@link #NOTE_REOPENED_WEB} without the Windows console line.
+     * {@link #NOTE_OPENED_POSIX_LOG} = the Linux OPENED note's tail, {@code %s} = the press log
+     * ({@link #pressLogOrNull}): WHY the page names it - the kit's own words reach the page only for an exit inside
+     * {@value #SPAWN_WAIT_MS} ms ({@link #R7P}); a window that dies later (an opener fallback, a {@code die} after
+     * Launch) writes there and nowhere the host sees.
+     *
+     */
+    static final String R2P = "No player kit in this game: %1$s/mods/CC_Client/join-cc.sh or %1$s/starsector.sh is"
+            + " missing. Extract CC_Client from %2$s into %1$s/mods/, then press Join from this PC again.";
+    static final String R6P = "Your saved join settings could not be updated (%2$s) - nothing was started. Run bash"
+            + " %1$s/mods/CC_Client/join-cc.sh yourself.";
+    static final String R7P = "The join window did not start (%2$s)%3$s - run bash %1$s/mods/CC_Client/join-cc.sh in"
+            + " a terminal to see why.";
+    static final String R19 = "This ops GUI was started without a desktop display, so the join window has nowhere to"
+            + " open: start ops-web.sh from a terminal inside your desktop session, then press Join from this PC"
+            + " again.";
+    static final String R20 = "HOME is not set for the account running this ops GUI, so the join window's settings"
+            + " have no home: start ops-web.sh from a normal login shell.";
+    static final String NOTE_REOPENED_WEB_POSIX = "Your join window is already open on the server computer - its"
+            + " tab is brought back there. After a server restart that window is no longer signed in as host: sign"
+            + " in from the ship editor's 'Ships on this server' card, or close the join window and press Join from"
+            + " this PC again.";
+    static final String NOTE_OPENED_POSIX_LOG = " If no window appears, the kit's own words are in %s.";
     static final String R10 = "ProtonVPN did not answer - reconnect it and press Join from this PC again";
     /**
      * The kit check found the installed player kit is not this server's (its jar md5, or its jar / data / handshake
@@ -356,31 +417,49 @@ final class OpsJoinSelf {
      * {@code kitZipOrNull} = the package's
      * own copy of the joiner kit zip ({@code kits/<pack.kit>}), the refresh source for a stale kit, null = none
      * shipped (the refusal then names the zip to extract by hand).
+     *
+     * <p>{@code posixOrNull} = the Linux host's facts ({@link PosixHost}); null = a Windows host (the
+     * {@code localAppData} / {@code appData} / {@code userHome} locations). The shell sets it from the OS once
+     * per press; the core branches on {@link #posixHost} only.
      */
     record Inputs(Path packageRoot, Map<String, String> launcherRows, OpsSnapshot liveOrNull,
             String passwordOrBlank, String kitHint, String localAppData, String appData, String userHome,
             Path propsPathOrNull, boolean adminArm, String kitJarMd5OrNull,
-            String kitFingerprintOrNull, Path kitZipOrNull) {
+            String kitFingerprintOrNull, Path kitZipOrNull, PosixHost posixOrNull) {
 
         /** The earlier shape: no admin arm, no kit stamps - the rows and shells that predate them. */
         Inputs(Path packageRoot, Map<String, String> launcherRows, OpsSnapshot liveOrNull,
                 String passwordOrBlank, String kitHint, String localAppData, String appData, String userHome,
                 Path propsPathOrNull) {
             this(packageRoot, launcherRows, liveOrNull, passwordOrBlank, kitHint, localAppData, appData, userHome,
-                    propsPathOrNull, false, null, null, null);
+                    propsPathOrNull, false, null, null, null, null);
+        }
+
+        /** Is the press for a Linux host ({@link #posixOrNull} set)? */
+        boolean posixHost() {
+            return posixOrNull != null;
+        }
+
+        /** These inputs with the Linux host's facts replaced (null = a Windows host). */
+        Inputs withPosixHost(PosixHost host) {
+            return new Inputs(packageRoot, launcherRows, liveOrNull, passwordOrBlank, kitHint, localAppData,
+                    appData, userHome, propsPathOrNull, adminArm, kitJarMd5OrNull, kitFingerprintOrNull, kitZipOrNull,
+                    host);
         }
 
         /** These inputs with {@code adminArm} replaced. */
         Inputs withAdminArm(boolean arm) {
             return new Inputs(packageRoot, launcherRows, liveOrNull, passwordOrBlank, kitHint, localAppData,
-                    appData, userHome, propsPathOrNull, arm, kitJarMd5OrNull, kitFingerprintOrNull, kitZipOrNull);
+                    appData, userHome, propsPathOrNull, arm, kitJarMd5OrNull, kitFingerprintOrNull, kitZipOrNull,
+                    posixOrNull);
         }
 
         /** These inputs with the package's three kit stamps replaced (any may be null;
          *  {@link ServerOpsCore#packageKitStamps}'s record in the same order). */
         Inputs withKitStamps(String jarMd5OrNull, String fingerprintOrNull, Path zipOrNull) {
             return new Inputs(packageRoot, launcherRows, liveOrNull, passwordOrBlank, kitHint, localAppData,
-                    appData, userHome, propsPathOrNull, adminArm, jarMd5OrNull, fingerprintOrNull, zipOrNull);
+                    appData, userHome, propsPathOrNull, adminArm, jarMd5OrNull, fingerprintOrNull, zipOrNull,
+                    posixOrNull);
         }
 
         /** These inputs with {@code launcherRows} replaced - the second pilot window is the same press over its own
@@ -389,7 +468,8 @@ final class OpsJoinSelf {
          * */
         Inputs withLauncherRows(Map<String, String> rows) {
             return new Inputs(packageRoot, rows, liveOrNull, passwordOrBlank, kitHint, localAppData, appData,
-                    userHome, propsPathOrNull, adminArm, kitJarMd5OrNull, kitFingerprintOrNull, kitZipOrNull);
+                    userHome, propsPathOrNull, adminArm, kitJarMd5OrNull, kitFingerprintOrNull, kitZipOrNull,
+                    posixOrNull);
         }
 
         /** Never the password (a shell logging its inputs must not leak it). */
@@ -397,6 +477,36 @@ final class OpsJoinSelf {
         public String toString() {
             return "OpsJoinSelf.Inputs[password=" + (passwordOrBlank == null || passwordOrBlank.isBlank()
                     ? "blank" : "set") + " adminArm=" + adminArm + "]";
+        }
+    }
+
+    /**
+     * A Linux host's facts for one press, from the shell: {@code HOME} / {@code XDG_DATA_HOME} /
+     * {@code XDG_RUNTIME_DIR} = the raw values of the SAME environment the press spawns with (the kit's folder
+     * ladder, {@link #dirs}); {@code hostDisplayKnown} = the console was started by the package's Linux start file,
+     * which hands over the host desktop's {@code DISPLAY} / {@code WAYLAND_DISPLAY} / {@code XAUTHORITY} as it was
+     * BEFORE the console's virtual display took its place ({@link #PROP_HOST_DISPLAY} and its two siblings; a value
+     * may be empty = unset there). WHY: the console runs on a virtual screen, so the child's inherited display would
+     * open the join window and the game where nobody can see them. Known = the child gets the captured values (an
+     * empty one removes its key); unknown (a console started by hand) = the parent env as it is. Thread: any.
+     *
+     */
+    record PosixHost(String homeOrNull, String xdgDataHomeOrNull, String xdgRuntimeDirOrNull,
+            boolean hostDisplayKnown, String hostDisplayOrNull, String hostWaylandOrNull,
+            String hostXauthorityOrNull) {
+
+        /** The kit's folder ladder over this host's env values. */
+        PosixKitDirs dirs() {
+            return new PosixKitDirs(homeOrNull, xdgDataHomeOrNull, xdgRuntimeDirOrNull);
+        }
+
+        /** Known, and neither an X display nor a Wayland display: no desktop to open a window on. */
+        boolean noDesktop() {
+            return hostDisplayKnown && blank(hostDisplayOrNull) && blank(hostWaylandOrNull);
+        }
+
+        private static boolean blank(String s) {
+            return s == null || s.isEmpty();
         }
     }
 
@@ -466,6 +576,20 @@ final class OpsJoinSelf {
          *  - never a file under the kit folder. */
         void writeAtomic(Path file, byte[] bytes) throws IOException;
 
+        /**
+         * {@link #writeAtomic(Path, byte[])} with {@code ownerOnly} = a Linux host's owner-only modes AT CREATION:
+         * each missing folder {@value #POSIX_DIR_PERMS}, the temp {@value #POSIX_FILE_PERMS} (the move keeps it);
+         * an existing folder keeps its mode. False = the plain form. The default REFUSES {@code ownerOnly}
+         * (fail-closed: a seam that cannot set the modes never writes the password file world-readable).
+         *
+         */
+        default void writeAtomic(Path file, byte[] bytes, boolean ownerOnly) throws IOException {
+            if (ownerOnly) {
+                throw new UnsupportedOperationException("writeAtomic ownerOnly");
+            }
+            writeAtomic(file, bytes);
+        }
+
         /** {@code dir} and every missing parent created ({@code Files.createDirectories}; an existing folder is
          *  fine). Reached by {@link #withClientDiag}'s spawn only - the join window's diag folders. */
         void createDirectories(Path dir) throws IOException;
@@ -487,6 +611,17 @@ final class OpsJoinSelf {
          *  starts no process); {@link Live} answers the real one. */
         default Spawned spawnWindow(List<String> argv, Path cwd, Map<String, String> env) throws IOException {
             return new Spawned(spawn(argv, cwd, env), null, null);
+        }
+
+        /** {@link #spawnWindow(List, Path, Map)} with stdout + stderr APPENDED to {@code outLogOrNull} (the Linux
+         *  press log, made by the caller first); null = discarded. The default refuses a log (a double that cannot
+         *  honour it). */
+        default Spawned spawnWindow(List<String> argv, Path cwd, Map<String, String> env, Path outLogOrNull)
+                throws IOException {
+            if (outLogOrNull != null) {
+                throw new UnsupportedOperationException("spawnWindow log");
+            }
+            return spawnWindow(argv, cwd, env);
         }
 
         Map<String, String> parentEnv();
@@ -545,10 +680,9 @@ final class OpsJoinSelf {
         }
 
         /**
-         * These seams with {@link #probe} replaced by {@code call} - the ONE shape both shells need:
-         * Swing pre-pulls the probe through its single-flight puller
-         * and hands the answer (or its refusal) in; the web console joins its shared flight; the rows fake it.
-         * Every other seam delegates to {@code this}. Thread: any.
+         * These seams with {@link #probe} replaced by {@code call}: the web console joins its shared probe flight
+         * through it; the rows fake it. Every other seam
+         * delegates to {@code this} (the Linux write and spawn forms too). Thread: any.
          */
         default Effects withProbe(ProbeCall call) {
             Effects base = this;
@@ -556,11 +690,13 @@ final class OpsJoinSelf {
                 @Override public boolean isRegularFile(Path file) { return base.isRegularFile(file); }
                 @Override public byte[] readBounded(Path file, int cap) throws IOException { return base.readBounded(file, cap); }
                 @Override public void writeAtomic(Path file, byte[] bytes) throws IOException { base.writeAtomic(file, bytes); }
+                @Override public void writeAtomic(Path file, byte[] bytes, boolean ownerOnly) throws IOException { base.writeAtomic(file, bytes, ownerOnly); }
                 @Override public void createDirectories(Path dir) throws IOException { base.createDirectories(dir); }
                 @Override public String pingBody(int port, String token) throws IOException { return base.pingBody(port, token); }
                 @Override public VpnLeaseProbe.Probe probe() throws IOException { return call.call(); }
                 @Override public int spawn(List<String> argv, Path cwd, Map<String, String> env) throws IOException { return base.spawn(argv, cwd, env); }
                 @Override public Spawned spawnWindow(List<String> argv, Path cwd, Map<String, String> env) throws IOException { return base.spawnWindow(argv, cwd, env); }
+                @Override public Spawned spawnWindow(List<String> argv, Path cwd, Map<String, String> env, Path log) throws IOException { return base.spawnWindow(argv, cwd, env, log); }
                 @Override public Map<String, String> parentEnv() { return base.parentEnv(); }
                 @Override public String systemRoot() { return base.systemRoot(); }
                 /** The kit refresh's seams, delegated (a missed one would run the throwing default in production).
@@ -593,6 +729,7 @@ final class OpsJoinSelf {
                 @Override public boolean isRegularFile(Path file) { return base.isRegularFile(file); }
                 @Override public byte[] readBounded(Path file, int cap) throws IOException { return base.readBounded(file, cap); }
                 @Override public void writeAtomic(Path file, byte[] bytes) throws IOException { base.writeAtomic(file, bytes); }
+                @Override public void writeAtomic(Path file, byte[] bytes, boolean ownerOnly) throws IOException { base.writeAtomic(file, bytes, ownerOnly); }
                 @Override public void createDirectories(Path dir) throws IOException { base.createDirectories(dir); }
                 @Override public String pingBody(int port, String token) throws IOException { return base.pingBody(port, token); }
                 @Override public VpnLeaseProbe.Probe probe() throws IOException { return base.probe(); }
@@ -601,6 +738,9 @@ final class OpsJoinSelf {
                 }
                 @Override public Spawned spawnWindow(List<String> argv, Path cwd, Map<String, String> env) throws IOException {
                     return base.spawnWindow(argv, cwd, clientDiagEnv(base, env, diagDirOrNull));
+                }
+                @Override public Spawned spawnWindow(List<String> argv, Path cwd, Map<String, String> env, Path log) throws IOException {
+                    return base.spawnWindow(argv, cwd, clientDiagEnv(base, env, diagDirOrNull), log);
                 }
                 @Override public Map<String, String> parentEnv() { return base.parentEnv(); }
                 @Override public String systemRoot() { return base.systemRoot(); }
@@ -650,15 +790,43 @@ final class OpsJoinSelf {
 
         @Override
         public void writeAtomic(Path file, byte[] bytes) throws IOException {
+            writeAtomic(file, bytes, false);
+        }
+
+        /** The one write body. {@code ownerOnly} (a Linux host only: {@code PosixFilePermissions} throws on a
+         *  file system without POSIX modes) = the missing folders made {@value #POSIX_DIR_PERMS} and the temp
+         *  created NEW {@value #POSIX_FILE_PERMS} (a leftover temp deleted first; {@code CREATE_NEW} never follows a
+         *  planted link), so the password row is never readable by another account, not even between the write and
+         *  the kit's own folder check. The rename keeps the temp's mode on the file.
+         * */
+        @Override
+        public void writeAtomic(Path file, byte[] bytes, boolean ownerOnly) throws IOException {
             Path parent = file.toAbsolutePath().getParent();
             if (parent != null) {
-                Files.createDirectories(parent);
+                if (ownerOnly) {
+                    Files.createDirectories(parent, PosixFilePermissions.asFileAttribute(
+                            PosixFilePermissions.fromString(POSIX_DIR_PERMS)));
+                } else {
+                    Files.createDirectories(parent);
+                }
             }
             Path tmp = file.resolveSibling(file.getFileName() + ".ops-tmp");
             try {
                 // The write sits INSIDE the catch's reach -
                 // a partial write used to leave the password-bearing temp behind.
-                Files.write(tmp, bytes);
+                if (ownerOnly) {
+                    Files.deleteIfExists(tmp);
+                    try (SeekableByteChannel ch = Files.newByteChannel(tmp,
+                            EnumSet.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
+                            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString(POSIX_FILE_PERMS)))) {
+                        ByteBuffer buf = ByteBuffer.wrap(bytes);
+                        while (buf.hasRemaining()) {
+                            ch.write(buf);
+                        }
+                    }
+                } else {
+                    Files.write(tmp, bytes);
+                }
                 try {
                     Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
                 } catch (AtomicMoveNotSupportedException notAtomic) {
@@ -711,12 +879,25 @@ final class OpsJoinSelf {
          *  (the outer {@code cmd /c start /wait} lives as long as its window). */
         @Override
         public Spawned spawnWindow(List<String> argv, Path cwd, Map<String, String> env) throws IOException {
+            return spawnWindow(argv, cwd, env, null);
+        }
+
+        /** The one start body: out + err to {@code outLogOrNull} (appended; the caller made it), else discarded.
+         * */
+        @Override
+        public Spawned spawnWindow(List<String> argv, Path cwd, Map<String, String> env, Path outLogOrNull)
+                throws IOException {
             ProcessBuilder pb = new ProcessBuilder(argv).directory(cwd.toFile());
             Map<String, String> childEnv = pb.environment();
             childEnv.clear();
             childEnv.putAll(env);
-            pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-            pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+            if (outLogOrNull != null) {
+                pb.redirectErrorStream(true);
+                pb.redirectOutput(ProcessBuilder.Redirect.appendTo(outLogOrNull.toFile()));
+            } else {
+                pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+                pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+            }
             Process p = pb.start();
             ProcessHandle handle = p.toHandle();
             Instant start = handle.info().startInstant().orElse(null);
@@ -828,7 +1009,10 @@ final class OpsJoinSelf {
      * {@link ServeLauncher#resolveRow} (relative = under {@code packageRoot}; unparsable = null) and
      * {@link ServeLauncher#resolveGame} (the folder or its {@code starsector-core} form must hold the core jar,
      * else null). The row may name the install OR its {@code starsector-core} folder; the install is returned
-     * either way. Thread: any.
+     * either way. The core-form arm (the parent returned) fires only when
+     * the folder holding the jar IS a {@code starsector-core} folder (case-blind, as Windows names it) - a Linux
+     * install keeps the jar at its own root, so a row naming it resolves to itself, never to its parent.
+     * Thread: any.
      */
     static Path installOrNull(Path packageRoot, Map<String, String> rows) {
         String row = rows == null ? null : rows.get(ServeLauncher.ROW_GAME_ROOT);
@@ -844,14 +1028,29 @@ final class OpsJoinSelf {
         if (core == null) {
             return null;
         }
-        return core.equals(path) ? path.getParent() : path;
+        Path coreName = core.getFileName();
+        boolean coreForm = core.equals(path) && coreName != null
+                && ServeLauncher.CORE_DIR.equalsIgnoreCase(coreName.toString());
+        return coreForm ? path.getParent() : path;
     }
 
     /** R1 for no install; R2 (naming the install and {@code kitHint}, each cut to {@link #TEXT_PATH_MAX}) when
      *  {@value #GAME_EXE} or the kit's {@value #KIT_BAT} is missing; else null. Thread: any. */
     static String installRefusalOrNull(Path installOrNull, Effects fx, String kitHint) {
+        return installRefusalOrNull(installOrNull, fx, kitHint, false);
+    }
+
+    /** {@link #installRefusalOrNull(Path, Effects, String)} for the host's platform: {@code posixHost} = the
+     *  Linux twins {@value #GAME_SH} + the kit's {@value #KIT_SH} as regular files, else {@link #R2P}.
+     * */
+    static String installRefusalOrNull(Path installOrNull, Effects fx, String kitHint, boolean posixHost) {
         if (installOrNull == null) {
             return R1;
+        }
+        if (posixHost) {
+            return fx.isRegularFile(installOrNull.resolve(GAME_SH)) && fx.isRegularFile(cwd(installOrNull)
+                    .resolve(KIT_SH)) ? null
+                    : String.format(Locale.ROOT, R2P, boundedText(installOrNull.toString()), boundedText(kitHint));
         }
         if (!fx.isRegularFile(installOrNull.resolve(GAME_EXE))
                 || !fx.isRegularFile(cwd(installOrNull).resolve(KIT_BAT))) {
@@ -1315,11 +1514,159 @@ final class OpsJoinSelf {
      * {@link #installRefusalOrNull} looks for {@value #KIT_BAT}.
      * built by a path JOIN of two names, never one {@code mods\CC_Client} string - a non-Windows {@code Path}
      * reads that as ONE file name, so a Linux build would refuse a good install (reasoned). The
-     * R2 / R6 / R7 sentences keep their Windows backslashes: they are shown only where the Windows-only kit can
-     * run (the Swing package hides the button off Windows, the web answers R9 first). Thread: any.
+     * R2 / R6 / R7 sentences keep their Windows backslashes and answer a Windows host only; a Linux host gets their
+     * {@code /} twins ({@link #R2P}, {@link #R6P}, {@link #R7P}), and any other host the web's R9 before any step.
+     * Thread: any.
      */
     static Path cwd(Path install) {
         return install.resolve("mods").resolve("CC_Client");
+    }
+
+    // ---- the Linux host's paths, spawn and env ----
+
+    /**
+     * The live join window's endpoint file for this press's host, or null (no live window can be found): a
+     * Windows host = {@link #endpointFile}; a Linux host = {@code <runtimeDir>/join/cc_join_endpoint-<tag>.data}
+     * ({@link PosixKitDirs#joinDirOrNull}) with the tag over the install's REAL path ({@link Effects#realPath}) -
+     * the kit's launcher names its folders through their links ({@code pwd -P}), so a linked Game folder row must
+     * hash the same text. An unresolvable real path = null + ONE row {@code cc-ops join endpoint=no_real_path}.
+     * Thread: any.
+     */
+    static Path endpointFileFor(Inputs in, Effects fx, Path install) {
+        if (!in.posixHost()) {
+            return endpointFile(in.localAppData(), install);
+        }
+        Path join = install == null ? null : in.posixOrNull().dirs().joinDirOrNull();
+        if (join == null) {
+            return null;
+        }
+        Path real;
+        try {
+            real = fx.realPath(install);
+        } catch (IOException | RuntimeException unresolved) {
+            System.out.println("cc-ops join endpoint=no_real_path (" + unresolved.getClass().getSimpleName() + ")");
+            return null;
+        }
+        return join.resolve(ENDPOINT_FILE_PREFIX + installTag(real) + ".data");
+    }
+
+    /** A Linux host's settings file {@code <dataDir>/join-settings.properties} (the client's
+     *  {@code JoinSettings.defaultPath} off Windows; no legacy file there), null = no usable HOME. Thread: any.
+     * */
+    static Path posixSettingsFileOrNull(PosixHost host) {
+        Path data = host.dirs().dataDirOrNull();
+        return data == null ? null : data.resolve(SETTINGS_FILE_NAME);
+    }
+
+    /** A Linux host's press log {@code <runtimeDir>/join/}{@value #PRESS_LOG_NAME}, null = no usable HOME.
+     * */
+    static Path pressLogOrNull(PosixHost host) {
+        Path join = host.dirs().joinDirOrNull();
+        return join == null ? null : join.resolve(PRESS_LOG_NAME);
+    }
+
+    /** A Linux host's FIXED argv: {@value #POSIX_SHELL} {@code ./}{@value #KIT_SH}, run in {@link #cwd} - no
+     *  host, port or password text on it (the window reads them from its settings file). Thread: any.
+     * */
+    static List<String> argvPosix() {
+        return List.of(POSIX_SHELL, "./" + KIT_SH);
+    }
+
+    /**
+     * A Linux host's child env: {@link #childEnv} (the {@code cc_*} strip, JAVA_TOOL_OPTIONS kept), then, when the
+     * console knows the host's desktop ({@link PosixHost#hostDisplayKnown}), {@code DISPLAY} /
+     * {@code WAYLAND_DISPLAY} / {@code XAUTHORITY} set to the captured values - an empty or absent one REMOVES its
+     * key, so the console's virtual display never reaches the window. Unknown = the parent's keys as they are.
+     * Thread: any.
+     */
+    static Map<String, String> posixChildEnv(Map<String, String> parent, PosixHost host) {
+        Map<String, String> env = childEnv(parent);
+        if (host != null && host.hostDisplayKnown()) {
+            putOrRemove(env, "DISPLAY", host.hostDisplayOrNull());
+            putOrRemove(env, "WAYLAND_DISPLAY", host.hostWaylandOrNull());
+            putOrRemove(env, "XAUTHORITY", host.hostXauthorityOrNull());
+        }
+        return env;
+    }
+
+    private static void putOrRemove(Map<String, String> env, String key, String valueOrNull) {
+        if (valueOrNull == null || valueOrNull.isEmpty()) {
+            env.remove(key);
+        } else {
+            env.put(key, valueOrNull);
+        }
+    }
+
+    /**
+     * The press log's LAST non-empty line for {@link #R7P}, as shown: every char outside printable ASCII
+     * {@code 0x20..0x7E} as {@code ?}, cut to {@value #PRESS_LOG_TAIL_MAX} chars ({@code ...} at the cut) - the
+     * kit's own fix line (its last stderr line before a quick exit) reaches the page, nothing else of the log does.
+     * No log, an unreadable one or one over {@value #PRESS_LOG_MAX_BYTES} B = {@code ""} (+ ONE row
+     * {@code cc-ops join press_log=unreadable} naming the class). Never printed to stdout. Thread: any.
+     *
+     */
+    static String pressLogTail(Effects fx, Path logOrNull) {
+        if (logOrNull == null) {
+            return "";
+        }
+        byte[] bytes;
+        try {
+            bytes = fx.readBounded(logOrNull, PRESS_LOG_MAX_BYTES);
+        } catch (IOException | RuntimeException unreadable) {
+            System.out.println("cc-ops join press_log=unreadable (" + unreadable.getClass().getSimpleName() + ")");
+            return "";
+        }
+        String[] lines = new String(bytes, StandardCharsets.UTF_8).split("\r\n|\r|\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].strip();
+            if (line.isEmpty()) {
+                continue;
+            }
+            StringBuilder sb = new StringBuilder();
+            for (int c = 0; c < line.length() && sb.length() < PRESS_LOG_TAIL_MAX; c++) {
+                char ch = line.charAt(c);
+                sb.append(ch >= 0x20 && ch < 0x7F ? ch : '?');
+            }
+            return line.length() > PRESS_LOG_TAIL_MAX ? sb.substring(0, PRESS_LOG_TAIL_MAX - 3) + "..." : sb.toString();
+        }
+        return "";
+    }
+
+    /**
+     * The web shell's REOPENED spawn (a join window is live on the server computer and its URL never crosses
+     * HTTP): the kit's launcher started WITHOUT the settings write, so its own single-instance law re-opens the
+     * live window's tab there. A Windows host = {@link #argv} / {@link #childEnv}, a start failure or a nonzero
+     * exit within the wait = {@link #R7}, else {@link #NOTE_REOPENED_WEB}. A Linux host = {@link #argvPosix} /
+     * {@link #posixChildEnv}, output discarded; only a start failure is {@link #R7P}: WHY its exit is not read -
+     * the launcher's second copy finds the live window, which brings its tab back and answers the copy's wait with
+     * a cancel, so that copy ends "Launch cancelled" with exit 1 by design (its {@code window_cancelled} path)
+     * while the live window stays up (the press found it by the endpoint ping). An install gone since the press =
+     * R1. Thread: any.
+     */
+    static Result reopenSpawn(Inputs in, Effects fx) {
+        Path install = installOrNull(in.packageRoot(), in.launcherRows());
+        if (install == null) {
+            return refused("r1", R1);
+        }
+        String shown = boundedText(install.toString());
+        boolean posix = in.posixHost();
+        int code;
+        try {
+            code = posix ? fx.spawn(argvPosix(), cwd(install), posixChildEnv(fx.parentEnv(), in.posixOrNull()))
+                    : fx.spawn(argv(fx.systemRoot()), cwd(install), childEnv(fx.parentEnv()));
+        } catch (IOException | RuntimeException startFailed) {
+            String why = startFailed.getClass().getSimpleName();
+            return refused("spawn_failed", posix ? String.format(Locale.ROOT, R7P, shown, why, "")
+                    : String.format(Locale.ROOT, R7, shown, why));
+        }
+        if (posix) {
+            System.out.println("cc-ops join reopen_exit=" + (code == STILL_RUNNING ? "running" : Integer.toString(code)));
+            return new Result(Outcome.REOPENED, NOTE_REOPENED_WEB_POSIX, null, "-");
+        }
+        if (code != 0 && code != STILL_RUNNING) {
+            return refused("spawn_nonzero", String.format(Locale.ROOT, R7, shown, Integer.toString(code)));
+        }
+        return new Result(Outcome.REOPENED, NOTE_REOPENED_WEB, null, "-");
     }
 
     /** The child env = {@code parent} minus every key starting {@link #CC_ENV_PREFIX} (ASCII case-blind);
@@ -1438,9 +1785,12 @@ final class OpsJoinSelf {
      *  writes a file under the kit folder. The seat-key arm
      *  ({@link #step6bArm}) sits between the settings write and the spawn: the {@code cid} row is on disk before the
      *  serve is told to elevate it, a failed write arms nothing, and the line reaches the serve's poll long before
-     *  the game boots. */
+     *  the game boots. The Linux host's own checks
+     *  ({@link #step1bPosixHost}) run right after the install, before the kit check can move a file: no usable HOME
+     *  or no desktop refuses with nothing written or started. */
     static final List<Step> STEPS = List.of(
             new Step("step1Install", OpsJoinSelf::step1Install),
+            new Step("step1bPosixHost", OpsJoinSelf::step1bPosixHost),
             new Step("step1cKitCurrent", OpsJoinSelf::step1cKitCurrent),
             new Step("step2LiveWindow", OpsJoinSelf::step2LiveWindow),
             new Step("step3LiveGate", OpsJoinSelf::step3LiveGate),
@@ -1659,8 +2009,38 @@ final class OpsJoinSelf {
     /** (1) The install: R1 / R2 = REFUSED; nothing read, written or started. */
     private static Result step1Install(Press p) {
         p.install = installOrNull(p.in.packageRoot(), p.in.launcherRows());
-        String refusal = installRefusalOrNull(p.install, p.fx, p.in.kitHint());
+        String refusal = installRefusalOrNull(p.install, p.fx, p.in.kitHint(), p.in.posixHost());
         return refusal == null ? null : refused(p.install == null ? "r1" : "r2", refusal);
+    }
+
+    /** (1b) A Linux host only (a Windows host passes): no usable HOME and no absolute {@code XDG_DATA_HOME} = R20
+     *  (the kit's settings have no folder); no desktop = R19 (the window would open nowhere): a known desktop with
+     *  neither display set, OR an unknown one (a console started by hand, no {@code cc.ops.host.display}) whose
+     *  own env - the keys the child inherits as they are ({@link #posixChildEnv}) - sets neither {@code DISPLAY}
+     *  nor {@code WAYLAND_DISPLAY} ({@link #noDesktopIn}). WHY the second clause: without it the kit's own "no
+     *  display" death lands after {@link #SPAWN_WAIT_MS} and the page said OPENED.
+     *  Nothing read, written or started. */
+    private static Result step1bPosixHost(Press p) {
+        if (!p.in.posixHost()) {
+            return null;
+        }
+        PosixHost host = p.in.posixOrNull();
+        if (posixSettingsFileOrNull(host) == null) {
+            return refused("r20", R20);
+        }
+        boolean bare = host.noDesktop() || (!host.hostDisplayKnown() && noDesktopIn(p.fx.parentEnv()));
+        return bare ? refused("r19", R19) : null;
+    }
+
+    /** Neither {@code DISPLAY} nor {@code WAYLAND_DISPLAY} is set non-empty in {@code env} (a null env = unknown =
+     *  not bare, the old behaviour). Thread: any. */
+    static boolean noDesktopIn(Map<String, String> env) {
+        if (env == null) {
+            return false;
+        }
+        String x = env.get("DISPLAY");
+        String w = env.get("WAYLAND_DISPLAY");
+        return (x == null || x.isEmpty()) && (w == null || w.isEmpty());
     }
 
     /**
@@ -1756,7 +2136,7 @@ final class OpsJoinSelf {
      * no path deletes a park.
      */
     private static KitCheck refreshOrRefuse(Press p, String kitStampOrNull, String yours) {
-        if (liveUrlOrNull(p.fx, endpointFile(p.in.localAppData(), p.install)) != null) {
+        if (liveUrlOrNull(p.fx, endpointFileFor(p.in, p.fx, p.install)) != null) {
             System.out.println("cc-ops join kit_refresh=refused:live_window");
             return new KitCheck(refused("kit_live_window", R13), null);
         }
@@ -2008,11 +2388,12 @@ final class OpsJoinSelf {
                 boundedText(cwd(p.install).getParent().toString()));
     }
 
-    /** (2) A live join window = REOPENED with the Swing note + its URL; NOTHING written, NOTHING spawned. The web
-     *  shell branches on REOPENED itself (its own note, a spawn WITHOUT a write - the bat's single-instance law
-     *  re-opens the tab on the server computer); that branch is the shell's, not the core's. */
+    /** (2) A live join window (the host's own endpoint file, {@link #endpointFileFor}) = REOPENED with
+     *  {@link #NOTE_REOPENED} + its URL; NOTHING written, NOTHING spawned. The web shell then answers with
+     *  {@link #reopenSpawn} (its own note, a spawn WITHOUT a write - the kit launcher's single-instance law re-opens
+     *  the tab on the server computer). */
     private static Result step2LiveWindow(Press p) {
-        String url = liveUrlOrNull(p.fx, endpointFile(p.in.localAppData(), p.install));
+        String url = liveUrlOrNull(p.fx, endpointFileFor(p.in, p.fx, p.install));
         return url == null ? null : new Result(Outcome.REOPENED, NOTE_REOPENED, url, "-");
     }
 
@@ -2077,17 +2458,25 @@ final class OpsJoinSelf {
     /** (6) The merge-write of the join settings; an unreadable / over-cap file or a failed write = R6 and NO
      *  spawn (an unreadable file stays untouched). The seat key ({@link #settleCid}) is settled over the same bytes
      *  and, when minted for the FILE (an un-armed first-of-two window), WRITTEN in the same merge;
-     * an ARMED window's key rides its env and is never written. */
+     * an ARMED window's key rides its env and is never written.
+     *  A Linux host writes {@link #posixSettingsFileOrNull} (no
+     *  legacy file there; none = R20) owner-only ({@link Effects#writeAtomic(Path, byte[], boolean)}) and refuses
+     *  with {@link #R6P}. */
     private static Result step6Write(Press p) {
         Path file;
         byte[] existing = null;
+        boolean posix = p.in.posixHost();
         try {
-            file = settingsForRun(p.fx, p.in.localAppData(), p.in.appData(), p.in.userHome());
+            file = posix ? posixSettingsFileOrNull(p.in.posixOrNull())
+                    : settingsForRun(p.fx, p.in.localAppData(), p.in.appData(), p.in.userHome());
+            if (file == null) {
+                return refused("r20", R20);
+            }
             if (p.fx.isRegularFile(file)) {
                 existing = p.fx.readBounded(file, SETTINGS_MAX_BYTES);
             }
         } catch (IOException | RuntimeException unreadable) {
-            return refused("r6_read", r6(p.install, unreadable));
+            return refused("r6_read", r6(p, unreadable));
         }
         byte[] merged = merge(existing, p.dialHost, p.dialPort, p.password);
         String cidRow = settleCid(p, existing, merged);
@@ -2095,10 +2484,14 @@ final class OpsJoinSelf {
             merged = merge(existing, p.dialHost, p.dialPort, p.password, p.cid);
         }
         try {
-            p.fx.writeAtomic(file, merged);
+            if (posix) {
+                p.fx.writeAtomic(file, merged, true);
+            } else {
+                p.fx.writeAtomic(file, merged);
+            }
         } catch (IOException | RuntimeException writeFailed) {
             p.cid = null;
-            return refused("r6_write", r6(p.install, writeFailed));
+            return refused("r6_write", r6(p, writeFailed));
         }
         if (p.cid != null) {
             System.out.println("cc-ops join cid=" + cidRow);
@@ -2205,11 +2598,21 @@ final class OpsJoinSelf {
      *  when set (the second window's, or an armed window's) - never inside {@value #CLIENT_JVM_FLAGS_KEY}.
      *  An OPENED window of a press that records ({@link Press#recordWindow}) rides
      *  {@link Result#windows} when the spawn kept its handle and start instant; without both it cannot be closed
-     *  safely later, so it is not recorded. */
+     *  safely later, so it is not recorded.
+     *
+     *  <p>A Linux host spawns {@link #argvPosix} with
+     *  {@link #posixChildEnv} (the host's desktop display), its out + err appended to the press log
+     *  ({@link #pressLogOrNull}, made EMPTY owner-only first - a failure there = ONE row
+     *  {@code cc-ops join press_log=failed} and the window still opens, output discarded); a start failure or a
+     *  nonzero exit within the wait = {@link #R7P}, the exit carrying {@link #pressLogTail}. */
     private static Result step7Spawn(Press p) {
         Spawned spawned;
+        boolean posix = p.in.posixHost();
+        Path logOrNull = posix ? pressLogOrNull(p.in.posixOrNull()) : null;
+        String shown = boundedText(p.install.toString());
         try {
-            Map<String, String> env = childEnv(p.fx.parentEnv());
+            Map<String, String> env = posix ? posixChildEnv(p.fx.parentEnv(), p.in.posixOrNull())
+                    : childEnv(p.fx.parentEnv());
             if (p.sidelogOrNull != null) {
                 env.put(WATCH_SIDELOG_KEY, p.sidelogOrNull.toString());
                 env.put(WATCH_SIDELOG_MAX_MIB_KEY, Integer.toString(p.sidelogMaxMib));
@@ -2217,22 +2620,40 @@ final class OpsJoinSelf {
             if (p.cidOverrideOrNull != null) {
                 env.put(PREDICT_CID_KEY, p.cidOverrideOrNull);
             }
-            spawned = p.fx.spawnWindow(argv(p.fx.systemRoot()), cwd(p.install), env);
+            if (logOrNull != null) {
+                try {
+                    p.fx.writeAtomic(logOrNull, new byte[0], true);
+                } catch (IOException | RuntimeException logFailed) {
+                    System.out.println("cc-ops join press_log=failed (" + logFailed.getClass().getSimpleName() + ")");
+                    logOrNull = null;
+                }
+            }
+            spawned = posix ? p.fx.spawnWindow(argvPosix(), cwd(p.install), env, logOrNull)
+                    : p.fx.spawnWindow(argv(p.fx.systemRoot()), cwd(p.install), env);
         } catch (IOException | RuntimeException startFailed) {
-            return refused("spawn_failed", String.format(Locale.ROOT, R7, boundedText(p.install.toString()),
-                    startFailed.getClass().getSimpleName()));
+            String why = startFailed.getClass().getSimpleName();
+            return refused("spawn_failed", posix ? String.format(Locale.ROOT, R7P, shown, why, "")
+                    : String.format(Locale.ROOT, R7, shown, why));
         }
         int code = spawned.code();
         if (code != 0 && code != STILL_RUNNING) {
-            return refused("spawn_nonzero", String.format(Locale.ROOT, R7, boundedText(p.install.toString()),
-                    Integer.toString(code)));
+            if (posix) {
+                String tail = pressLogTail(p.fx, logOrNull);
+                return refused("spawn_nonzero", String.format(Locale.ROOT, R7P, shown, Integer.toString(code),
+                        tail.isEmpty() ? "" : ": " + tail));
+            }
+            return refused("spawn_nonzero", String.format(Locale.ROOT, R7, shown, Integer.toString(code)));
         }
         List<JoinWindowSweep.Window> opened = !p.recordWindow || spawned.handleOrNull() == null
                 || spawned.startOrNull() == null ? List.of()
                 : List.of(new JoinWindowSweep.Window(JoinWindowSweep.live(spawned.handleOrNull()),
                         spawned.startOrNull(), cwd(p.install)));
-        return new Result(Outcome.OPENED, String.format(Locale.ROOT, p.armed ? NOTE_OPENED_ADMIN : NOTE_OPENED,
-                p.dialHost, p.dialPort), null, "-", opened);
+        String note = String.format(Locale.ROOT, p.armed ? NOTE_OPENED_ADMIN : NOTE_OPENED, p.dialHost, p.dialPort);
+        if (posix && logOrNull != null) {
+            // the Linux note names where the kit's words go after the wait (javadoc at NOTE_OPENED_POSIX_LOG)
+            note += String.format(Locale.ROOT, NOTE_OPENED_POSIX_LOG, boundedText(logOrNull.toString()));
+        }
+        return new Result(Outcome.OPENED, note, null, "-", opened);
     }
 
     // ---- helpers ----
@@ -2241,8 +2662,10 @@ final class OpsJoinSelf {
         return new Result(Outcome.REFUSED, text, null, token);
     }
 
-    private static String r6(Path install, Exception e) {
-        return String.format(Locale.ROOT, R6, boundedText(install.toString()), e.getClass().getSimpleName());
+    /** R6, or its Linux twin {@link #R6P} on a Linux host's press. */
+    private static String r6(Press p, Exception e) {
+        return String.format(Locale.ROOT, p.in.posixHost() ? R6P : R6, boundedText(p.install.toString()),
+                e.getClass().getSimpleName());
     }
 
     /** K3: {@code s} cut to {@link #TEXT_PATH_MAX} chars ({@code ...} at the cut); null = {@code ""}. */

@@ -2,13 +2,16 @@ package cc.starsector.client.join;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -510,11 +513,20 @@ final class JoinCore {
     /** Row (f) law 3: the plan file lands whole — written beside itself, then moved into place (also the
      *  {@code cc_variants/index.data} writer — any cross-process file the editor reads).
      *  A failed write or move deletes the {@code .tmp}
-     *  (best effort) and rethrows — a plan's {@code .tmp} holds the password and the cid. */
+     *  (best effort) and rethrows — a plan's {@code .tmp} holds the password and the cid.
+     *  The {@code .tmp} is created EXCLUSIVELY ({@code CREATE_NEW}) and owner-only
+     *  from creation (0600 where the filesystem has POSIX modes, {@link KitFileModes}); the move keeps that mode, so there
+     *  the plan never exists readable by another account. A leftover {@code .tmp} (a write killed between its write and its
+     *  move) is unlinked first — a planted link is removed, never followed — so it neither blocks this write nor feeds
+     *  it; a file re-planted between that unlink and the exclusive create refuses the write (fail closed). */
     static void writePlanAtomically(Path planFile, String content) throws IOException {
         Path tmp = planTmp(planFile);
         try {
-            Files.write(tmp, content.getBytes(StandardCharsets.US_ASCII));
+            Files.deleteIfExists(tmp);
+            try (OutputStream out = Channels.newOutputStream(
+                    KitFileModes.open(tmp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))) {
+                out.write(content.getBytes(StandardCharsets.US_ASCII));
+            }
             try {
                 Files.move(tmp, planFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             } catch (AtomicMoveNotSupportedException plain) {

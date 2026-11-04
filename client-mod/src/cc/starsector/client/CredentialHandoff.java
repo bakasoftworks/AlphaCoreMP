@@ -7,11 +7,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
  * The kit credential HANDOFF reader — the in-game half of the read-once file the kit's {@code join-cc.bat} writes per
- * launch pass: {@code %LOCALAPPDATA%\cc-starsector\handoff\<id>.txt}, at most three {@code k=v} rows
+ * launch pass: {@code %LOCALAPPDATA%\cc-starsector\handoff\<id>.txt} (off Windows the Linux launcher's
+ * {@code <runtime dir>/handoff/<id>.txt}, {@link #handoffFile}), at most three {@code k=v} rows
  * ({@code password}, {@code cid}, {@code token}). Only the 16-hex file id rides the JVM options
  * ({@code -Dcc.kit.handoff=<id>}), so no credential sits in {@code JAVA_TOOL_OPTIONS}, its {@code HKCU\Environment}
  * copy, or a crash file's property dump.
@@ -31,7 +33,8 @@ import java.util.regex.Pattern;
  * unknown key, a line without {@code '='} or a bad value refuses the WHOLE file.
  *
  * <p>Classloader B: the reader uses only {@code FileChannel}, {@code Path}, {@code Paths}, {@code StandardOpenOption},
- * {@code ByteBuffer}, {@code StandardCharsets}, {@code IOException} and {@code Pattern} — never {@code Files},
+ * {@code ByteBuffer}, {@code StandardCharsets}, {@code IOException}, {@code Pattern}, {@code Map} and the pure
+ * {@link KitUserDirs} ladder — never {@code Files},
  * {@code File} or any other B-denied {@code java.io.*} / {@code java.nio.file.File*} name (the set the probe
  * measured; a build gate checks it). The catch types are the allowlisted
  * {@code IOException} + {@code RuntimeException} only; a {@code NoSuchFileException} / {@code InvalidPathException} is
@@ -58,7 +61,8 @@ final class CredentialHandoff {
         OVERSIZE,
         /** The grammar refused the whole file; deleted. */
         REFUSED,
-        /** An {@code IOException} or {@code RuntimeException} (no file, no {@code LOCALAPPDATA}, a bad path). */
+        /** An {@code IOException} or {@code RuntimeException} (no file, no {@code LOCALAPPDATA} or off Windows no usable
+         *  {@code HOME}, a bad path). */
         FAILED
     }
 
@@ -100,7 +104,8 @@ final class CredentialHandoff {
     }
 
     /**
-     * The MEMO: the first call reads {@code cc.kit.handoff} + {@code LOCALAPPDATA} and consumes the file; every later
+     * The MEMO: the first call reads {@code cc.kit.handoff} + {@code LOCALAPPDATA} (off Windows the ladder's
+     * {@code XDG_RUNTIME_DIR} / {@code XDG_DATA_HOME} / {@code HOME}) and consumes the file; every later
      * call returns that same instance (a second read would only find the file already deleted).
      */
     static CredentialHandoff take() {
@@ -123,8 +128,9 @@ final class CredentialHandoff {
 
     /**
      * The read seam (package-private, never throws): {@code id} = the {@code cc.kit.handoff} value (null / blank =
-     * {@link Outcome#NO_ID}); {@code localAppData} = the directory root (null, blank or relative = FAILED — the reader
-     * never resolves the handoff against the game's working directory).
+     * {@link Outcome#NO_ID}); {@code localAppData} = the Windows directory root (null, blank or relative = FAILED — the
+     * reader never resolves the handoff against the game's working directory); off Windows the file sits in the kit's
+     * runtime dir instead and {@code localAppData} is unused ({@link #handoffFile}).
      */
     static CredentialHandoff readFor(String id, String localAppData) {
         if (id == null || id.isBlank()) {
@@ -134,13 +140,7 @@ final class CredentialHandoff {
             return blank(Outcome.BAD_ID, "");
         }
         try {
-            if (localAppData == null) {
-                throw new NullPointerException("LOCALAPPDATA unset"); // named, not left to Paths.get's JDK-varying null handling
-            }
-            Path path = Paths.get(localAppData, "cc-starsector", "handoff", id + ".txt");
-            if (!path.isAbsolute()) {
-                throw new IllegalArgumentException("LOCALAPPDATA is blank or not an absolute path");
-            }
+            Path path = handoffFile(id, localAppData, KitUserDirs.isWindows(), System.getenv());
             ByteBuffer buf = ByteBuffer.allocate(CAP_BYTES + 1);
             try (FileChannel ch = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE,
                     StandardOpenOption.DELETE_ON_CLOSE)) {
@@ -165,6 +165,33 @@ final class CredentialHandoff {
             String name = e.getClass().getSimpleName();
             return blank(Outcome.FAILED, name.isEmpty() ? e.getClass().getName() : name);
         }
+    }
+
+    /**
+     * Where the launcher wrote the handoff file (pure: no I/O; a throw here is {@link #readFor}'s FAILED path).
+     * Windows: {@code <localAppData>\cc-starsector\handoff\<id>.txt}, null / blank / relative refused (never the game's
+     * working directory) — {@code env} unused. Off Windows: {@code <runtime dir>/handoff/<id>.txt} from the kit's shared
+     * user-dir ladder ({@link KitUserDirs#runtimeDir}), the one text the Linux launcher mirrors when it writes the file
+     * (never a second resolver here); HOME unset or relative there yields no dir and takes the same FAILED path a missing
+     * {@code LOCALAPPDATA} takes — {@code localAppData} unused.
+     *
+     */
+    static Path handoffFile(String id, String localAppData, boolean windows, Map<String, String> env) {
+        if (!windows) {
+            Path dir = KitUserDirs.runtimeDir(env);
+            if (dir == null) {
+                throw new NullPointerException("HOME unset or not an absolute path"); // the same FAILED cause as Windows
+            }
+            return dir.resolve(KitUserDirs.HANDOFF_SUBDIR).resolve(id + ".txt");
+        }
+        if (localAppData == null) {
+            throw new NullPointerException("LOCALAPPDATA unset"); // named, not left to Paths.get's JDK-varying null handling
+        }
+        Path path = Paths.get(localAppData, "cc-starsector", "handoff", id + ".txt");
+        if (!path.isAbsolute()) {
+            throw new IllegalArgumentException("LOCALAPPDATA is blank or not an absolute path");
+        }
+        return path;
     }
 
     /** The INTERFACE grammar over the decoded bytes: any refusal blanks all three (whole-file refusal). */

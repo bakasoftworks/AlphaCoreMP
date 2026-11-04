@@ -624,7 +624,7 @@ final class EditorRoutes {
         InputStream in = null;
         if (devDir != null && !devDir.isEmpty()) {
             try {
-                in = new java.net.URL("file:/" + devDir.replace('\\', '/') + "/" + name).openStream();
+                in = new java.net.URL(EditorAssets.fileUrl(devDir.replace('\\', '/') + "/" + name)).openStream();
             } catch (IOException missing) {
                 in = null; // fall through to the packed asset
             }

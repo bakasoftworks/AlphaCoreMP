@@ -1143,6 +1143,8 @@ public final class ServerOpsCoreSelftest {
                     + " the repo root)");
         }
         modsKindMemoryRows(); // The kind-memory rows
+        // The Needs column's rows
+        modsNeedsRows();
 
         // wave-category row editor + LIVE verb minter (the wave-scale /
         // joiner-default idioms: default identity removes row + marker; the LIVE line keeps
@@ -3320,17 +3322,22 @@ public final class ServerOpsCoreSelftest {
     }
 
     /** {@code config-joinhere} - {@link ServerOpsCore#joinHere} is
-     * true for every Windows {@code os.name} and false for Linux, macOS, null and blank; {@code /api/config}
-     * serves it as a JSON boolean (no quotes) directly after {@code advertiseBind}, valued for THIS JVM's
-     * {@code os.name} (the page's show / hide of Join from this PC reads it). */
+     * true for every Windows {@code os.name} and, since the Linux host's own press,
+     * for Linux; false for macOS, null and blank; {@code /api/config} serves it as a JSON boolean (no quotes)
+     * directly after {@code advertiseBind}, valued for THIS JVM's {@code os.name} (the page's show / hide of
+     * Join from this PC reads it), and {@code watchHere} (the Windows-only debug WATCH gate) beside it. */
     static void configJoinHereRows(Path props) {
         check(joinHere("Windows 11") && joinHere("Windows Server 2022"),
                 "config-joinhere: a Windows os.name can join from this PC (flips if joinHere stops"
                         + " recognising Windows, e.g. an exact-name compare)");
-        check(!joinHere("Linux") && !joinHere("Mac OS X") && !joinHere(null) && !joinHere(""),
-                "config-joinhere: Linux / macOS / null / blank cannot (flips if joinHere answers true for a"
-                        + " non-Windows console, which would show a button whose kit cannot run)");
+        check(joinHere("Linux") && !joinHere("Mac OS X") && !joinHere(null) && !joinHere(""),
+                "config-joinhere: Linux can (the kit's join-cc.sh), macOS / null / blank cannot (flips if"
+                        + " joinHere drops Linux, or answers true for a console whose kit cannot run)");
         String json = configJson(props, 50.0);
+        String wantWatch = "\"watchHere\":" + ServerOpsCore.watchHere(System.getProperty("os.name")) + ",";
+        check(json.contains(wantWatch),
+                "config-joinhere: /api/config carries " + wantWatch + " (the page shows Launch debug WATCH by"
+                        + " it; flips if the member is dropped, quoted or valued for the wrong OS); got " + json);
         String want = "\"joinHere\":" + joinHere(System.getProperty("os.name")) + ",";
         int bind = json.indexOf("\"advertiseBind\":\"");
         int close = bind < 0 ? -1 : json.indexOf("\",", bind + "\"advertiseBind\":\"".length());
@@ -6208,6 +6215,127 @@ public final class ServerOpsCoreSelftest {
     /** An {@code op=use} form for {@link #modsKindMemoryRows}. */
     private static Map<String, List<String>> useForm(String id, String use) {
         return Map.of("op", List.of("use"), "id", List.of(id), "use", List.of(use));
+    }
+
+    //
+    /**
+     * Rows {@code mods-needs-*} - the Mods tab's Needs column over the real
+     * chain ({@code InstalledModScan.scanRoots} -> {@code OpsModsPanel.modRows} -> {@code declaredDeps} ->
+     * {@code dependsCell}) and the console's answer ({@code OpsConsole.modsJson}), on temp mod folders (ids
+     * {@code a_mod} / {@code b_lib} / ..., names {@code A} / {@code B} / ..., so a cell printing an id where a name
+     * belongs flips). WHY: the next start
+     * loads a library a required mod declares even when the host unticked it, and refuses over an optional mod
+     * caught in a dependency law; these rows pin the host's exact sentences.
+     */
+    private static void modsNeedsRows() throws IOException {
+        int before = failures;
+        Path base = Files.createTempDirectory("cc-mods-needs");
+        String on = OpsModsPanel.DEPENDS_ON;
+        String refuse = OpsModsPanel.DEPENDS_REFUSE;
+        String anyway = "ON ANYWAY: A needs it (it loads at the next start)";
+        // root 1: A declares B; F declares only cc_client (always on, never a row, never "not installed")
+        Path one = base.resolve("needs-1");
+        writePkgMod(one.resolve("A"), "{\"id\":\"a_mod\",\"name\":\"A\",\"dependencies\":[{\"id\":\"b_lib\"}]}");
+        writePkgMod(one.resolve("B"), "{\"id\":\"b_lib\",\"name\":\"B\"}");
+        writePkgMod(one.resolve("F"), "{\"id\":\"f_mod\",\"name\":\"F\",\"dependencies\":[{\"id\":\"cc_client\"}]}");
+        List<String> aReq = List.of(MODS_ENABLED_KEY + "=a_mod");
+        // (a) B unticked, A required: B loads anyway; A's cell names what it needs; F says nothing
+        OpsModsPanel.DependsCell bOff = needsCell(base, one, aReq, "b_lib");
+        OpsModsPanel.DependsCell aNeeds = needsCell(base, one, aReq, "a_mod");
+        OpsModsPanel.DependsCell fQuiet = needsCell(base, one, aReq, "f_mod");
+        check(needsIs(bOff, on, anyway + "; needed by A") && needsIs(aNeeds, "", "needs B"),
+                "mods-needs-on: an unticked B that required A declares reads flag on '" + anyway + "; needed by A' and"
+                        + " A reads 'needs B' (flips if the column hides that the next start loads B anyway, or prints"
+                        + " an id where the Mod cell's name belongs); got B " + needsGot(bOff) + " A " + needsGot(aNeeds));
+        check(needsIs(fQuiet, "", "") && needsIs(needsCell(base, one, List.of(), "b_lib"), "", "needed by A"),
+                "mods-needs-quiet: a mod declaring only cc_client has an empty cell, and B with no required consumer"
+                        + " reads only 'needed by A' (flips if cc_client is listed as a missing dependency, or a"
+                        + " library nobody required is said to load); got F " + needsGot(fQuiet) + " B "
+                        + needsGot(needsCell(base, one, List.of(), "b_lib")));
+        // (b) the same with B optional: the launch refuses an optional id a required mod pulls in
+        OpsModsPanel.DependsCell bOpt = needsCell(base, one, List.of(MODS_ENABLED_KEY + "=a_mod",
+                MODS_OPTIONAL_KEY + "=b_lib"), "b_lib");
+        check(needsIs(bOpt, refuse, "START REFUSES: A needs it required - set it to required or untick it; needed by A"),
+                "mods-needs-optional-pulled: an optional B that required A declares reads flag refuse 'START REFUSES:"
+                        + " A needs it required - ...' (flips if the page hides the launch's optional-and-required"
+                        + " refusal); got " + needsGot(bOpt));
+        // (c) A required declaring an id no searched folder holds
+        Path two = base.resolve("needs-2");
+        writePkgMod(two.resolve("A"), "{\"id\":\"a_mod\",\"name\":\"A\",\"dependencies\":[{\"id\":\"X\"}]}");
+        OpsModsPanel.DependsCell aMissing = needsCell(base, two, aReq, "a_mod");
+        check(needsIs(aMissing, refuse, "START REFUSES: needs X, which is not installed; needs X (not installed)"),
+                "mods-needs-missing: a required A declaring X that no folder holds reads flag refuse 'START REFUSES:"
+                        + " needs X, which is not installed; needs X (not installed)' (flips if a start the launch"
+                        + " refuses over a missing dependency looks fine on the page); got " + needsGot(aMissing));
+        // (d) transitive: A required -> B -> C, B and C unticked: both load anyway, both via A (the root)
+        Path three = base.resolve("needs-3");
+        writePkgMod(three.resolve("A"), "{\"id\":\"a_mod\",\"name\":\"A\",\"dependencies\":[{\"id\":\"b_lib\"}]}");
+        writePkgMod(three.resolve("B"), "{\"id\":\"b_lib\",\"name\":\"B\",\"dependencies\":[{\"id\":\"c_lib\"}]}");
+        writePkgMod(three.resolve("C"), "{\"id\":\"c_lib\",\"name\":\"C\"}");
+        OpsModsPanel.DependsCell cDeep = needsCell(base, three, aReq, "c_lib");
+        OpsModsPanel.DependsCell bMid = needsCell(base, three, aReq, "b_lib");
+        check(needsIs(cDeep, on, anyway + "; needed by B") && needsIs(bMid, on, anyway + "; needs C; needed by A"),
+                "mods-needs-transitive: A required -> B -> C with B and C unticked: C reads flag on '" + anyway
+                        + "; needed by B', B '" + anyway + "; needs C; needed by A' (flips if the pull-in stops at the"
+                        + " first level, unlike the launch's breadth-first walk); got C " + needsGot(cDeep) + " B "
+                        + needsGot(bMid));
+        // (e) an optional O declaring B, B unticked and pulled in by nothing: the launch refuses; B required is lawful
+        Path four = base.resolve("needs-4");
+        writePkgMod(four.resolve("O"), "{\"id\":\"o_mod\",\"name\":\"O\",\"dependencies\":[{\"id\":\"b_lib\"}]}");
+        writePkgMod(four.resolve("B"), "{\"id\":\"b_lib\",\"name\":\"B\"}");
+        List<String> oOpt = List.of(MODS_OPTIONAL_KEY + "=o_mod");
+        OpsModsPanel.DependsCell oRefused = needsCell(base, four, oOpt, "o_mod");
+        OpsModsPanel.DependsCell oLawful = needsCell(base, four, List.of(MODS_OPTIONAL_KEY + "=o_mod",
+                MODS_ENABLED_KEY + "=b_lib"), "o_mod");
+        check(needsIs(oRefused, refuse, "START REFUSES: needs B required - set B to required; needs B")
+                        && needsIs(oLawful, "", "needs B") && needsIs(needsCell(base, four, oOpt, "b_lib"), "", "needed by O"),
+                "mods-needs-optional-lib: an optional O declaring an unticked B reads flag refuse 'START REFUSES: needs"
+                        + " B required - set B to required; needs B', with B required 'needs B' only, and B 'needed by O'"
+                        + " (flips if the page hides the launch's optional-mod-libraries refusal, or keeps it after the"
+                        + " fix); got " + needsGot(oRefused) + " / " + needsGot(oLawful));
+        // (g) the console's answer carries both fields per row, between folder and settings
+        String rootTok = one.toAbsolutePath().normalize().toString().replace('\\', '/');
+        String json = OpsConsole.modsJson(base, List.of(InstalledModScan.MODS_ROOTS_KEY + "=" + rootTok,
+                MODS_ENABLED_KEY + "=a_mod"), false, base.resolve("luna-none"));
+        int rowsN = json.split("\"id\":\"", -1).length - 1;
+        check(rowsN == 3 && json.split("\"depends\":\"", -1).length - 1 == rowsN
+                        && json.split("\"dependsFlag\":\"", -1).length - 1 == rowsN
+                        && json.contains("\"depends\":\"" + anyway + "; needed by A\",\"dependsFlag\":\"on\",\"settings\":\"\"}")
+                        && json.contains("\"depends\":\"needs B\",\"dependsFlag\":\"\",\"settings\":\"\"}")
+                        && json.contains("\"depends\":\"\",\"dependsFlag\":\"\",\"settings\":\"\"}"),
+                "mods-needs-json: every Mods answer row carries \"depends\" + \"dependsFlag\" (the Needs cell) right"
+                        + " before \"settings\" (flips if the page loses the column's text or flag); got " + json);
+        if (failures == before) {
+            System.out.println("  PASS mods-needs-on mods-needs-quiet mods-needs-optional-pulled mods-needs-missing"
+                    + " mods-needs-transitive mods-needs-optional-lib mods-needs-json");
+        }
+    }
+
+    //
+    /** The Needs cell of row {@code id} over the mods under {@code root} with the props rows {@code props} (the
+     * console's chain: scan -> modRows -> declaredDeps -> dependsCell), null when the id is not listed. */
+    private static OpsModsPanel.DependsCell needsCell(Path base, Path root, List<String> props, String id) {
+        List<OpsModsPanel.ModRow> rows = OpsModsPanel.modRows(InstalledModScan.scanRoots(base,
+                List.of(root.toAbsolutePath().normalize().toString().replace('\\', '/'))), props);
+        Map<String, List<String>> deps = OpsModsPanel.declaredDeps(rows);
+        for (OpsModsPanel.ModRow r : rows) {
+            if (r.id().equals(id)) {
+                return OpsModsPanel.dependsCell(r, rows, deps);
+            }
+        }
+        return null;
+    }
+
+    //
+    /** Whether a Needs cell is exactly {@code flag} + {@code text}. */
+    private static boolean needsIs(OpsModsPanel.DependsCell cell, String flag, String text) {
+        return cell != null && flag.equals(cell.flag()) && text.equals(cell.text());
+    }
+
+    //
+    /** A Needs cell for a FAIL line: {@code [flag] 'text'}, or {@code null}. */
+    private static String needsGot(OpsModsPanel.DependsCell cell) {
+        return cell == null ? "null" : "[" + cell.flag() + "] '" + cell.text() + "'";
     }
 
     /** One row: a failure prints {@code FAIL <what>} and counts into {@link #failures}, then the chain goes on.

@@ -264,15 +264,15 @@ public final class KitPackRules {
     /**
      * The pack's token posture as the README's caller names it, chosen as the roll does: a
      * password-armed descriptor (its {@code .password} sibling exists) wins, else a redacted bake,
-     * else a kept-token bake; {@code CLASSIC} = no baked descriptor (only the rules twin reaches it).
-     * Every value composes the SAME README (one fetched-match text): the join window
-     * fetches the match from the server, so no posture changes what a player is told.
+     * else a kept-token bake. Every value composes the SAME README (one fetched-match text): the join window
+     * fetches the match from the server, so no posture changes what a player is told. No value names a kit
+     * without a baked descriptor: the packer always bakes one, so such a value could only be reached by a test.
+     * The no-descriptor value removed (unreachable from the packer).
      */
     public enum SessionBlock {
         PASSWORD_ARMED,
         REDACTED_NO_PASSWORD,
-        KEEP_TOKENS,
-        CLASSIC
+        KEEP_TOKENS
     }
 
     /**
@@ -286,6 +286,8 @@ public final class KitPackRules {
             "AlphaCoreMP is an unofficial fan-made mod, not affiliated with or endorsed by the developers of Starsector.");
     // The README text re-split from the vetted kit-final draft
     // re-cut to the vetted Markdown kit README text
+    // the Linux rows (the TL;DR line, the On Linux section, the Linux report and files)
+    // the Linux sound row, the compatibility-agent rows for both launchers
     /**
      * The README from its title through "## If something goes wrong" (the sound note sits there, so a kit with no
      * bundled runtime keeps it), cut verbatim from the vetted Markdown text (line 3 = {@link #DISCLAIMER}).
@@ -312,16 +314,18 @@ public final class KitPackRules {
             5. In the match: Enter opens chat, `/help` lists the keys, and with "Enable microphone" on you hold "B" to talk to everyone or "Space" to talk to players near you. F9 marks a bug in the logs. When the game closes, the black window offers R to rejoin.
             6. For a new kit: delete `mods\\CC_Client`, copy in the new one, run `join-cc.bat` again.
 
+            Linux: copy `CC_Client` into `mods/` in your Starsector folder (the one with `starsector.sh`), then run `bash mods/CC_Client/join-cc.sh` from that folder. The differences are under [On Linux](#on-linux).
+
             Problems or questions: open an issue at https://github.com/bakasoftworks/AlphaCoreMP/issues (say which version you run and, if applicable, attach your session report, see "The session report" below).
 
             ## Contents
 
-            - [What you need](#what-you-need), [Set up the kit (once)](#set-up-the-kit-once), [Join a match](#join-a-match), [Next time](#next-time), [In the match](#in-the-match), [After the game closes](#after-the-game-closes), [When the host changes the match](#when-the-host-changes-the-match), [Your own ship builds (optional)](#your-own-ship-builds-optional), [If something goes wrong](#if-something-goes-wrong)
-            - [This kit brings its own Java](#this-kit-brings-its-own-java), [Updating the kit](#updating-the-kit), [The session report](#the-session-report), [What the report carries](#what-the-report-carries), [What it changes on your PC](#what-it-changes-on-your-pc), [To remove the kit](#to-remove-the-kit), [About](#about)
+            - [What you need](#what-you-need), [Set up the kit (once)](#set-up-the-kit-once), [Join a match](#join-a-match), [Next time](#next-time), [On Linux](#on-linux), [In the match](#in-the-match), [After the game closes](#after-the-game-closes), [When the host changes the match](#when-the-host-changes-the-match), [Your own ship builds (optional)](#your-own-ship-builds-optional), [If something goes wrong](#if-something-goes-wrong)
+            - [This kit brings its own Java (Windows only)](#this-kit-brings-its-own-java-windows-only), [Updating the kit](#updating-the-kit), [The session report](#the-session-report), [What the report carries](#what-the-report-carries), [What it changes on your PC](#what-it-changes-on-your-pc), [To remove the kit](#to-remove-the-kit), [About](#about)
 
             ## What you need
 
-            Your own purchased Starsector 0.98a-RC8 (the host's version; this kit has no game) and the host's connect code (`address:port:password`). Its last part is the match password the host announces for everyone. That is all you need: the join window fetches the match from the server by itself.
+            Your own purchased Starsector 0.98a-RC8 (the host's version; this kit has no game) and the host's connect code (`address:port:password`). Its last part is the match password the host announces for everyone. That is all you need: the join window fetches the match from the server by itself. The kit works on Windows and Linux only (no Mac).
 
             ## Set up the kit (once)
 
@@ -350,13 +354,25 @@ public final class KitPackRules {
 
             Run `join-cc.bat`, click "Launch": entries are remembered (the password only for that address and port).
 
+            ## On Linux
+
+            The steps above work the same on Linux, with these differences. Notes about Windows itself (its warnings, Windows Firewall, the registry) do not apply.
+
+            - Set up: copy `CC_Client` into `mods/` in your Starsector folder (the one with `starsector.sh`).
+            - Join: open a terminal in that folder and run `bash mods/CC_Client/join-cc.sh` (a zip cannot mark it as a program, hence `bash`). It reads the game's Java settings from your own `starsector.sh`. Leave the terminal open while you play.
+            - Where this README says `join-cc.bat`, run that command instead. Where it says the black window, that is the terminal: when the game closes, the terminal offers R (rejoin) or Q (quit). Paths written with `\\` use `/`.
+            - The game runs on the Java in your Starsector folder (`jre_linux`); the kit's own Java is for Windows only.
+            - If it stops because `xrandr` is missing: the game needs it to open its window. Install your distribution's package (`x11-xserver-utils` on Debian and Ubuntu, `xorg-xrandr` on Arch, `xrandr` on Fedora), then run the command again.
+            - If it stops because a file in `jre_linux` is not executable, your Starsector was unpacked without its executable flags: run the `chmod +x` line it prints, from your Starsector folder, then run the command again.
+            - If the terminal's `Sound self-check: rc=` line shows a number other than 0, or the game runs without sound, the game's sound library is missing your system's ALSA and PulseAudio libraries. Install the three packages for your distribution, then run the command again. Ubuntu 24.04 or newer: `libasound2t64`, `libasound2-plugins` and `libpulse0`. Debian 12 and Ubuntu 22.04: `libasound2`, `libasound2-plugins` and `libpulse0`. Arch: `alsa-lib`, `alsa-plugins` and `libpulse`. Fedora: `alsa-lib`, `alsa-plugins` and `pulseaudio-libs`. Only the Ubuntu 24.04 set was tested; the others are those distributions' usual names for the same libraries.
+
             ## In the match
 
             - Enter opens chat and `/help` lists commands and keys. Your mic is used only with "Enable microphone" (join window) or "Mic" (`/settings`) ON. Hold "B" for global voice chat and "Space" for local (proximity) voice chat. Voice settings are under `/settings`.
             - Spotted a potential bug? Press F9: the logs mark the moment, your ship shows "BUG MARKED IN LOG #1" (then #2 ...), the server gets only the number and time. Send the host the report zip from your Desktop (marks are in its `cc-client.log`) and say what you saw.
             - Set your keys in Starsector's Controls before the match: a key rebound during a match counts on the server only from your next join. A ship control bound to a key combination (Ctrl, Alt or Shift plus a key) or to the mouse wheel works only on your screen. Keys you type with no text box open, or into a mod's typing box that pauses the game (Console Commands), reach the server as held ship keys.
             - Mods with LunaLib settings use the host's values during a match; yours come back after it.
-            - When `join-cc.bat` starts the kit's own Java and the host leaves it on, your game runs other pilots' ship mod scripts from their ship-control keys; the last row under [If something goes wrong](#if-something-goes-wrong) turns that off.
+            - When the kit's launcher starts the game with its compatibility agent (Windows: `join-cc.bat` on the kit's own Java; Linux: every start) and the host leaves it on, your game runs other pilots' ship mod scripts from their ship-control keys; the last row under [If something goes wrong](#if-something-goes-wrong) turns that off.
 
             ## After the game closes
 
@@ -381,11 +397,14 @@ public final class KitPackRules {
             - "Launch failed: Could not save the server's mod settings as luna-settings.txt": same cause and fix as match.txt above.
             - Tab gone or "join window not answering": run `join-cc.bat` again and use the tab it reopens; close the new black window ("Launch cancelled"), keep the first.
             - No page in the browser: a plain window opens after about 45 seconds.
-            - "Error in sound initialization" only via `join-cc.bat`: the kit checks and repairs the launch itself; the report zip carries the result - send it to the host.
-            - The game stops with an error naming a class of one of your mods (while loading or in a match), only via `join-cc.bat` on the kit's own Java: press Q in the black window, create an empty file named exactly `cc-compat-agent.pilot.off` (no `.txt` ending) in `mods\\CC_Client\\jars`, then run `join-cc.bat` again; your game then runs other pilots' ship mod scripts without their keys (a NOTE line says so). Tell the host which mod it was.""";
+            - "Error in sound initialization" only via `join-cc.bat` (Windows): the kit checks and repairs the launch itself; the report zip carries the result - send it to the host. On Linux see the sound row under [On Linux](#on-linux).
+            - The game stops with an error naming a class of one of your mods (while loading or in a match), only when the kit's launcher started the game with its compatibility agent (Windows: `join-cc.bat` on the kit's own Java; Linux: every start): press Q in the black window or the terminal, create an empty file named exactly `cc-compat-agent.pilot.off` (no `.txt` ending) in `mods\\CC_Client\\jars` (Linux: `mods/CC_Client/jars`), then run the launcher again; your game then runs other pilots' ship mod scripts without their keys (a NOTE line says so). Tell the host which mod it was.""";
 
-    /** The bundled-runtime section's heading (present only when the kit carries {@code jre-cc}). */
-    private static final String JRE_HEADING = "## This kit brings its own Java";
+    /**
+     * The bundled-runtime section's heading (present only when the kit carries {@code jre-cc}); marked Windows only
+     * because a Linux start runs the game on the install's own {@code jre_linux}.
+     */
+    private static final String JRE_HEADING = "## This kit brings its own Java (Windows only)";
 
     /** The bundled-runtime paragraph up to its version token (the backticks are Markdown code spans). */
     private static final String JRE_LINE_HEAD = "The kit's own Java runtime is `CC_Client\\jre-cc` (Eclipse Temurin ";
@@ -399,6 +418,7 @@ public final class KitPackRules {
             + " then be worse than on the kit's Java 25. If the game hangs while loading, rename `kit-jvm.args` (for example to `kit-jvm.args.off`)"
             + " and start again: the game then runs on the Java that ships with Starsector and voice chat uses its slower path. Tell the host it happened.";
 
+    // The Linux report row names what shows as ~ (the logs stay unchanged)
     /** "## Updating the kit" through "## About"; no trailing newline ({@link #readmeText} appends the ONE LF). */
     private static final String README_TAIL = """
             ## Updating the kit
@@ -407,7 +427,7 @@ public final class KitPackRules {
 
             ## The session report
 
-            `cc-debrief-<date>-<time>-<number>.zip`, saved to your Desktop when the game closes. Send it to the host if they ask; it is a plain zip - open and read it first. To skip it, untick "Save a session report zip on the Desktop" in the join window (then no `cc-client.log` is written).
+            `cc-debrief-<date>-<time>-<number>.zip`, saved to your Desktop when the game closes. Send it to the host if they ask; it is a plain zip - open and read it first. To skip it, untick "Save a session report zip on the Desktop" in the join window (then no `cc-client.log` is written). On Linux the report is a `.tar.gz` file instead, saved to your Desktop folder (your home folder if there is none).
 
             ## What the report carries
 
@@ -415,8 +435,9 @@ public final class KitPackRules {
             - A manifest: Windows and Java version, game folder, how the game was started, a ping to the host, and the name and location of each non-Microsoft program loaded into the game.
             - A sound-check log: whether a sound device was found (not its name), this PC's text encodings, the folders the check ran from (your profile folder as `%USERPROFILE%`).
             - Only if the sound check failed: your antivirus's name, whether Windows' loader and security policies are on or off, and COUNTS of security rules, exclusions and recent security events, never their contents.
+            - On Linux: the same two logs and mod list, `starsector.sh` in place of `vmparams`, the Java version, how the game was started, a ping to the host, and a sound check (the libraries the game's sound library finds, and your sound devices' names as `aplay -l` lists them). Your home folder shows as `~` in the manifest and the check rows; the two logs are copied unchanged.
 
-            No password and no other file of yours. Both logs are copied unchanged: `cc-client.log` names the server, the other pilots and when you played; a folder path in either can show your Windows user name.
+            No password and no other file of yours. Both logs are copied unchanged: `cc-client.log` names the server, the other pilots and when you played; a folder path in either can show your user name.
 
             ## What it changes on your PC
 
@@ -434,6 +455,14 @@ public final class KitPackRules {
             - `%USERPROFILE%\\`: `.cc-starsector-window-*.properties` (the game window's position when you play in a window; its name can show your pilot name).
             - Temp: `cc-sound-check-<number>.log`, the report's work folder (both deleted when the game closes). Desktop: the report zips.
 
+            ### Files it keeps on Linux
+
+            - `~/.local/share/cc-starsector/` (or `$XDG_DATA_HOME/cc-starsector/` when that is set): `join-settings.properties`, `cid-master` and `join-window.log`, as above.
+            - `$XDG_RUNTIME_DIR/cc-starsector/` (when that is not set: the folder above): the address file in `join/` and the short-lived launch files (two hold the password and player id).
+            - Only your account can open these two folders.
+            - `mods/CC_Client/join-cc.log`: the game's output while it runs.
+            - `mods/CC_Client` and `saves/common/` keep the same files as above; `cc-client.log` and the crash logs sit in your Starsector folder itself; the window position file is `~/.cc-starsector-window-*.properties`.
+
             ## To remove the kit
 
             Delete `mods\\CC_Client` and the files kept above.
@@ -450,7 +479,7 @@ public final class KitPackRules {
      * The kit {@code README.md}: Markdown, ASCII, LF only (no CR anywhere), ending in exactly ONE LF (the .md
      * convention; the repo's .gitattributes pins {@code *.md} LF, and the source export's {@code readme/kit-README.md}
      * copy must byte-equal this text). The kit-rules goldens pin the bytes ({@code variant} is checked, never read:
-     * every posture gets the same text). The JRE block ("## This kit brings its own Java" + its one-line paragraph)
+     * every posture gets the same text). The JRE block ({@code JRE_HEADING} + its one-line paragraph)
      * sits after "## If something goes wrong", before "## Updating the kit", with one blank line either side.
      * {@code jreVersionOrNull} = the bundled runtime's {@code implementorVersion=} value (its {@code Temurin-}
      * prefix dropped case-insensitively, as PowerShell's {@code -replace} does); null = no bundled runtime, no

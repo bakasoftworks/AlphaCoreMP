@@ -592,7 +592,7 @@ public final class KitPackerSelftest {
         // the match - and no README carries a retired paragraph that hands a player a match or a credential text.
         // re-keyed to the Markdown README (one line per paragraph, "## " headings)
         String fetched = "That is all you need: the join window fetches the match from the server by itself.";
-        String jreHeading = "\n## This kit brings its own Java\n\n";
+        String jreHeading = "\n## This kit brings its own Java (Windows only)\n\n";
         List<String> retired = List.of("this kit has no match password set up", "MATCH CREDENTIAL: it ships inside",
                 "the host sends you a short credential text", "the match credential ships inside it",
                 "If the host announces a new kit or");
@@ -631,7 +631,44 @@ public final class KitPackerSelftest {
         require(needAt > 0 && needAt < sessionAt && sessionAt < joinAt && joinAt < troubleAt && troubleAt < jreHeadAt
                 && jreHeadAt == jreAt && jreAt < updateAt, "the JRE section is absent, keeps its Temurin- prefix or is"
                 + " out of the README's order (## What you need, ## Join a match, ## If something goes wrong, ## This"
-                + " kit brings its own Java, ## Updating the kit) - flips if the README composer moves a block");
+                + " kit brings its own Java (Windows only), ## Updating the kit) - flips if the README composer moves a"
+                + " block");
+        // The Linux rows - a Linux player's one start line, its section, its files
+        String linuxStart = "\nLinux: copy `CC_Client` into `mods/` in your Starsector folder (the one with"
+                + " `starsector.sh`), then run `bash mods/CC_Client/join-cc.sh` from that folder.";
+        int tldrAt = jre.indexOf("\n## TL;DR\n\n");
+        int linuxLineAt = jre.indexOf(linuxStart);
+        int contentsAt = jre.indexOf("\n## Contents\n\n");
+        int linuxAt = jre.indexOf("\n## On Linux\n\n");
+        int inMatchAt = jre.indexOf("\n## In the match\n\n");
+        int filesAt = jre.indexOf("\n### Files it keeps\n\n");
+        int linuxFilesAt = jre.indexOf("\n### Files it keeps on Linux\n\n");
+        int removeAt = jre.indexOf("\n## To remove the kit\n\n");
+        require(tldrAt > 0 && tldrAt < linuxLineAt && linuxLineAt < contentsAt && joinAt < linuxAt
+                && linuxAt < inMatchAt && filesAt > 0 && filesAt < linuxFilesAt && linuxFilesAt < removeAt
+                && jre.contains("`xrandr`") && jre.contains("`chmod +x`") && jre.contains(".tar.gz"), "the README's Linux"
+                + " rows are absent or out of order (the TL;DR Linux line before ## Contents, ## On Linux between ## Join a"
+                + " match and ## In the match, ### Files it keeps on Linux before ## To remove the kit, the xrandr and"
+                + " chmod +x fix lines, the .tar.gz report) - flips if a Linux row is dropped or moved");
+        // every Contents / in-text link "(#anchor)" names a heading of the README with a bundled runtime (GitHub's
+        // anchor = the heading lower-cased, every char but a-z 0-9 space and '-' dropped, spaces to '-')
+        Set<String> anchors = new TreeSet<>();
+        for (String line : jre.split("\n")) {
+            if (line.startsWith("## ") || line.startsWith("### ")) {
+                anchors.add(line.substring(line.indexOf(' ') + 1).toLowerCase(Locale.ROOT)
+                        .replaceAll("[^a-z0-9 -]", "").replace(' ', '-'));
+            }
+        }
+        List<String> dangling = new ArrayList<>();
+        Matcher link = Pattern.compile("\\]\\(#([^)]*)\\)").matcher(jre);
+        while (link.find()) {
+            if (!anchors.contains(link.group(1))) {
+                dangling.add(link.group(1));
+            }
+        }
+        require(dangling.isEmpty() && anchors.contains("on-linux"), "the README links " + dangling + " that no"
+                + " heading answers - flips if a heading is renamed (the JRE heading's Windows-only mark) without its"
+                + " Contents link");
         require(Arrays.equals(KitPackRules.modInfoVersions(MOD_INFO), new String[] {MOD_VERSION, GAME_VERSION}),
                 "modInfoVersions misread the fixture mod_info.json");
         require("cc-joiner-kit-20261009-171500-match-b.zip".equals(KitPackRules.kitFileName(STAMP, "match-b"))

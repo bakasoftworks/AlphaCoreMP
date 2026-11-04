@@ -19,10 +19,14 @@ package cc.starsector.server.ops;
  * {@code #join-linux} line for {@code joinHere === false} (row {@code page-join}).
  * <p>Launch debug WATCH ({@code #btn-watch}) = {@code V.watch}, the
  * Start press through ONE route-and-button function shared with {@code V.start} ({@code /api/watch} vs
- * {@code /api/start}; the same gate, accept and clear steps), shown by {@code onConfig} for
- * {@code joinHere === true} like Join from this PC, and in the palette; {@code onStatus} notes the status key
- * {@code watchNote} once per new non-empty sentence (the last one noted is forgotten when the key reads empty or
- * a Start is accepted) (row {@code page-watch}).
+ * {@code /api/start}; the same gate, accept and clear steps), shown by {@code onConfig} and in the palette;
+ * {@code onStatus} notes the status key {@code watchNote} once per new non-empty sentence (the last one noted is
+ * forgotten when the key reads empty or a Start is accepted) (row {@code page-watch}).
+ * <p>{@code onConfig} shows {@code #btn-watch} for
+ * {@code watchHere === true}, apart from Join from this PC's {@code joinHere}: a Linux host joins from its own
+ * desktop but has no debug watch, so the two answers differ there; a config without the key keeps the button
+ * hidden (row {@code page-watch}). The repository console's observer-arm WATCH still shows whatever the host (row
+ * {@code page-watch-owner}).
  * <p>Keep for everyone ({@code #btn-keep-custom}) sends
  * {@code custom-keep} the Ban custom way ({@code V.customVerb}: the typed Custom id, else the pick; the
  * typed-id-first law lives in the server arm) under the same enable gate; Forget kept ({@code #btn-forget-custom},
@@ -794,11 +798,12 @@ final class OpsConsoleJsPlayers {
                   noteWatch(s);
                   applyBar();
                 },
-                // Join from this PC and Launch debug WATCH show on a Windows server only; elsewhere one line says why
+                // Join from this PC shows where the server computer can run the player kit, else one line says why;
+                // Launch debug WATCH shows only where the server says it runs (an absent answer keeps it hidden)
                 onConfig: (c) => {
                   if (c) {
                     CC.show(CC.el('btn-join'), c.joinHere === true);
-                    CC.show(CC.el('btn-watch'), c.joinHere === true);
+                    CC.show(CC.el('btn-watch'), c.watchHere === true);
                     CC.show(CC.el('join-linux'), c.joinHere === false);
                     // the repository console's join button opens the kit joiner window instead
                     if (c.packaged === false) {

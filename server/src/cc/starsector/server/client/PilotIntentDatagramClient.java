@@ -117,6 +117,17 @@ public final class PilotIntentDatagramClient {
     private static final int CHAT_FILE_MAX_LINES = 4;
     /** Bound on the goodbye CTRL flush + BYE-echo wait (the server's unarmed-flush mirror). */
     private static final long GOODBYE_BOUND_MILLIS = 5_000L;
+    /** The CTRL-flush bound once the SERVER said BYE
+     * first, counted from that BYE's arrival. Our echo is what ends the server's goodbye fan, and
+     * the fan services the session only until its own bound: the armed read deadline (10 s on the
+     * serve door) or its 5 s unarmed bound, counted from the fan's START, after which the serve
+     * closes the door. The fan sends its BYE once its own CTRL lane is flushed and resends it every
+     * 15 ms timer tick until the echo. The tightest fan bound a goodbye rig arms is 3 s, so the
+     * full {@link #GOODBYE_BOUND_MILLIS} could land the echo on a door that already left; half of
+     * 3 s leaves the other half for the server's own flush before its BYE plus the two one-way
+     * flights, and still spans several retransmit rounds of our flush (RTO floor 50 ms, initial
+     * 200 ms, doubling per expiry). */
+    private static final long PEER_BYE_FLUSH_BOUND_MILLIS = 1_500L;
     /** wire-contract note: minimum consecutive frames an UP edge bit must be held. */
     public static final int EDGE_BIT_MIN_HOLD_FRAMES = 5;
     private static final int RECEIVE_BUFFER_BYTES = 2_048;
@@ -187,6 +198,9 @@ public final class PilotIntentDatagramClient {
     private volatile IOException readerFailure;
     private volatile IOException sessionFailure;
     private volatile boolean peerSaidBye;
+    /** Arrival time of the peer's first BYE — written by the reader BEFORE it publishes
+     * {@link #peerSaidBye}; anchors {@link #PEER_BYE_FLUSH_BOUND_MILLIS}. */
+    private volatile long peerByeAtMillis;
     private volatile boolean byeSent;
     private volatile boolean byeAcked;
     private volatile boolean closed;
@@ -1184,7 +1198,7 @@ public final class PilotIntentDatagramClient {
         while (framesSent < options.maxFrames()) {
             checkTerminal();
             if (peerSaidBye) {
-                return; // server-initiated goodbye — the reader already echoed its BYE-ACK
+                return; // server-initiated goodbye — goodbye() echoes its BYE after our CTRL flush
             }
             if (options.stopFile() != null && nowMillis() >= nextStopPollMillis) {
                 nextStopPollMillis = nowMillis() + STOP_FILE_POLL_MILLIS;
@@ -1378,9 +1392,14 @@ public final class PilotIntentDatagramClient {
         framesSent++;
         lastAimDeg = aimDeg;
         // PDCL cadence is frames-SENT based (not the TCP client's frameSeq modulo — frameSeq
-        // repeats between server ticks here), so decl_sent == floor(frames_sent / declEvery) is a
-        // deterministic smoke assertion. clientTick echoes frameSeq for the freshness gate.
-        if (options.declEvery() > 0 && framesSent % options.declEvery() == 0) {
+        // repeats between server ticks here), so decl_sent == floor(frames_sent / declEvery) holds
+        // deterministically, less at most the one slot a server BYE cuts. clientTick echoes
+        // frameSeq for the freshness gate.
+        // No declaration once the peer said BYE. The
+        // server fans its goodbye after its serve loop, so nothing would consume one, and each
+        // would lengthen the flush the BYE echo waits on; this re-check closes the window the
+        // loop-top return leaves open inside one iteration.
+        if (options.declEvery() > 0 && framesSent % options.declEvery() == 0 && !peerSaidBye) {
             byte[] decl = FireDischargeDeclarationCodec.encodeFrame(FireDischargeDeclaration.of(
                     options.shipId(), declSeq++, frameSeq, aimDeg, 0f, 0f));
             ctrlSendBounded(decl, "fire-discharge declaration");
@@ -1412,19 +1431,29 @@ public final class PilotIntentDatagramClient {
         return false;
     }
 
-    /** Goodbye: bounded CTRL flush, then BYE resent by the timer until the peer's BYE echo.
-     * Returns clean = echo received (or the peer said goodbye first — already echoed by the reader).
-     * The flush runs on BOTH paths: a server-initiated BYE does not relieve our unacked CTRL
-     * (PDCL declarations) — TCP's kernel flushes the ordered stream before FIN; the datagram
-     * sibling must app-flush or in-flight-lost declarations die with the process. */
+    /** Goodbye: bounded CTRL flush, then either our BYE (resent by the timer until the peer's
+     * echo) or, when the SERVER said BYE first, the echo of its BYE. Returns clean = echo received,
+     * or the peer said goodbye first (echoed here). The flush runs on BOTH paths and the
+     * server-first echo is sent only after it, flushed or bound expired: a server-initiated BYE
+     * does not relieve our unacked CTRL (PDCL declarations), and our echo is what takes the
+     * server's session out of live, after which it acks every UP CTRL frame and discards it as
+     * stale (its stale-session meter), so an echo ahead of the flush lost exactly the declarations
+     * still in flight while our flush still completed. TCP's kernel flushes the ordered stream
+     * before FIN; the datagram sibling must app-flush. Bound = {@link #GOODBYE_BOUND_MILLIS} from
+     * entry, tightened to {@link #PEER_BYE_FLUSH_BOUND_MILLIS} from the server BYE's arrival (it
+     * may land mid-flush) so the echo reaches a door that still services the session.
+     * */
     private boolean goodbye() throws IOException {
         DatagramReliability rel = reliability;
         long deadline = nowMillis() + GOODBYE_BOUND_MILLIS;
-        while (rel != null && !rel.ctrlFlushed() && nowMillis() < deadline
+        while (rel != null && !rel.ctrlFlushed() && nowMillis() < goodbyeFlushDeadline(deadline)
                 && sessionFailure == null && readerFailure == null) {
             sleepQuietly(TIMER_GRANULARITY_MILLIS);
         }
         if (peerSaidBye) {
+            // handleBye left this echo to us unless our own BYE was already out (byeSent: it
+            // echoes at once then, and this branch is not reached).
+            sendEnvelopeOnly(DatagramFrameCodec.WireChannel.BYE); // our echo = the server's BYE-ACK
             return true;
         }
         byeSent = true;
@@ -1434,6 +1463,14 @@ public final class PilotIntentDatagramClient {
             sleepQuietly(TIMER_GRANULARITY_MILLIS); // the timer thread resends the BYE
         }
         return byeAcked || peerSaidBye;
+    }
+
+    /** The flush deadline {@link #goodbye()} polls: its own bound, tightened once the server's
+     * BYE has arrived. */
+    private long goodbyeFlushDeadline(long goodbyeDeadline) {
+        return peerSaidBye
+                ? Math.min(goodbyeDeadline, peerByeAtMillis + PEER_BYE_FLUSH_BOUND_MILLIS)
+                : goodbyeDeadline;
     }
 
     private synchronized String sentSha256() {
@@ -1531,13 +1568,24 @@ public final class PilotIntentDatagramClient {
      * valid inside the synchronous delivery callbacks (application gating). */
     private int readerRoundId;
 
+    /** A peer BYE either completes OUR goodbye (our BYE is out: this is its echo, or a crossed BYE
+     * that doubles as one) or is the server's own goodbye. A server-first BYE is only RECORDED
+     * here: our echo takes the server's session out of live, so {@link #goodbye()} sends it after
+     * our CTRL flush, never this reader ahead of declarations still in flight. With our BYE
+     * already out the flush has run, so the echo goes at once. Every interleaving with
+     * {@code goodbye()} puts at least one BYE of ours on the wire after the flush: it either sees
+     * {@code peerSaidBye} and echoes, or sends its own BYE, which the server takes as the echo.
+     * */
     private void handleBye() {
         if (byeSent && !byeAcked) {
             byeAcked = true; // BYE-ACK = BYE echo: the peer's BYE completes our goodbye
         }
         if (!peerSaidBye) {
+            peerByeAtMillis = nowMillis(); // before the volatile publish below
             peerSaidBye = true;
-            sendEnvelopeOnly(DatagramFrameCodec.WireChannel.BYE); // our echo = the peer's BYE-ACK
+            if (byeSent) {
+                sendEnvelopeOnly(DatagramFrameCodec.WireChannel.BYE); // our echo = the peer's BYE-ACK
+            }
         }
     }
 

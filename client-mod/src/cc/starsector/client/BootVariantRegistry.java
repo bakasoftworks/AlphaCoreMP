@@ -287,7 +287,8 @@ public final class BootVariantRegistry {
         }
         MethodHandle remover;
         try {
-            remover = MethodHandles.lookup().findStatic(B.class, "new",
+            remover = MethodHandles.lookup().findStatic(B.class,
+                    EngineNames.member("com.fs.starfarer.loading.B", "new", "(Ljava/lang/String;)V"),
                     MethodType.methodType(void.class, String.class));
         } catch (Throwable t) {
             PilotWatchLog.error(logTag + ": boot-variant registry — B.new(String) handle unavailable; "
@@ -423,7 +424,8 @@ public final class BootVariantRegistry {
                         + " tracked=" + BootVariantRegistry.folded.contains("cc_drill_wolf");
             }
             if ("stockguard".equals(op)) {
-                MethodHandle remover = MethodHandles.lookup().findStatic(B.class, "new",
+                MethodHandle remover = MethodHandles.lookup().findStatic(B.class,
+                        EngineNames.member("com.fs.starfarer.loading.B", "new", "(Ljava/lang/String;)V"),
                         MethodType.methodType(void.class, String.class));
                 remover.invoke("wolf_Assault");
                 return "wolf_Assault=" + isRegistered("wolf_Assault");

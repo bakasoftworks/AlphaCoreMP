@@ -170,6 +170,7 @@ public final class OpsConsolePageSelftest {
         row(fails, "page-second-folder", () -> secondFolder(html, js));
         row(fails, "page-setup-folds", () -> setupFolds(html));
         row(fails, "page-setup-fold-opens-on-refusal", () -> setupFoldOpensOnRefusal(js));
+        row(fails, "page-mods-kind-kept", () -> modsKindKept(js));
         return fails;
     }
 
@@ -946,6 +947,41 @@ public final class OpsConsolePageSelftest {
     }
 
     /**
+     * {@code page-mods-kind-kept} - the page half of the Mods-tab On box
+     * keeping a mod's optional kind. WHY: the serve remembers an unticked optional mod and rows it
+     * {@code "kind":"optional"} (pinned by the serve's own mods-kind rows), but the host sees that only if
+     * {@code modsRender} carries {@code kind} into each row, an OFF row's greyed select falls back on that kind, and
+     * a re-tick sends the select's value. Reverting the fallback to {@code used ? r.use : 'required'} turns every
+     * unticked optional mod required on re-tick or reload while every serve row stays green. Exact statement text
+     * in the whitespace-folded served script, each inside its own function. Mutation note: the script parts are
+     * compile-time constants, inlined into {@link OpsConsolePage} and this class, so a mutant of the script
+     * recompiles all three.
+     */
+    static String modsKindKept(String js) {
+        List<String> bad = new ArrayList<>();
+        String flat = js.replaceAll("\\s+", " ");
+        String row = between(flat, "const modsModRow = (body, r) => {", "const modsRender = (a) => {");
+        for (String[] pin : new String[][] {
+                {"const used = r.use === 'required' || r.use === 'optional';",
+                        "the On box stops reading both required and optional as on"},
+                {"on.checked = used;", "the On box stops showing the row's use"},
+                {"setupSetValue(sel, used ? r.use : (r.kind === 'optional' ? 'optional' : 'required'));",
+                        "an off row's select falls back to required whatever its kind (the revert to"
+                                + " used ? r.use : 'required'), so a re-tick or a reload turns an unticked optional mod required"},
+                {"sel.disabled = !used;", "an off row's kind box stops greying"},
+                {"send(on.checked ? sel.value : 'off', on);", "a re-tick sends anything but the select's kept kind"}}) {
+            if (!row.contains(pin[0])) {
+                bad.add("modsModRow lacks '" + clip(pin[0]) + "' (flips if " + pin[1] + ")");
+            }
+        }
+        if (!between(flat, "const modsRender = (a) => {", "const modsLoad = () => {").contains("kind: modsStr(r.kind),")) {
+            bad.add("modsRender does not carry the wire's kind into each row (flips if a reload drops kind, so every"
+                    + " off optional mod reloads required)");
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /**
      * {@code web-start-ok-clears-passwords} over the SERVED script.
      * The typed passwords clear on an ACCEPTED Start only: the setup part registers
      * {@code CC.startAccepted = setupClearPasswords}, the Start handler ({@link OpsConsoleJsPlayers}) calls it
@@ -1109,6 +1145,9 @@ public final class OpsConsolePageSelftest {
      * names the label beside its {@code tip-join} entry; the script shows the button only for
      * {@code joinHere === true} and the line only for {@code joinHere === false}, and the click posts
      * {@code /api/join}.
+     * {@code joinHere} no longer chooses {@code #btn-watch} (a Linux host
+     * joins but has no debug watch; {@code page-watch} pins the {@code watchHere} show), and the {@code tip-join}
+     * text names no operating system.
      */
     static String pageJoin(String html, String js) {
         List<String> bad = new ArrayList<>();
@@ -1139,6 +1178,16 @@ public final class OpsConsolePageSelftest {
                         + " or the line)");
             }
         }
+        if (js.contains("CC.show(CC.el('btn-watch'), c.joinHere")) {
+            bad.add("the script still shows btn-watch by joinHere (flips if Launch debug WATCH follows Join from this"
+                    + " PC again: a Linux host would show a WATCH its server refuses)");
+        }
+        int tipOpen = html.indexOf("<dd id=\"tip-join\">");
+        int tipEnd = tipOpen < 0 ? -1 : html.indexOf("</dd>", tipOpen);
+        if (tipEnd < 0 || html.substring(tipOpen, tipEnd).contains("Windows")) {
+            bad.add("the tip-join help entry is missing or names Windows (flips if the help says Join from this PC"
+                    + " is for one operating system again, while it runs on a Windows or a Linux host)");
+        }
         int click = js.indexOf("CC.el('btn-join').addEventListener('click'");
         int end = click < 0 ? -1 : js.indexOf("});", click);
         if (end < 0 || !js.substring(click, end).contains("CC.send('/api/join'")) {
@@ -1162,8 +1211,9 @@ public final class OpsConsolePageSelftest {
      * Swing twin id), {@code aria-describedby="tip-watch"}, {@code hidden} in the source and the label
      * {@code Launch debug WATCH}; its help entry {@code tip-watch} holds {@link #WATCH_TIP} (46 words) beside the
      * label; the script binds the click to {@code V.watch}, which (like {@code V.start}) presses through the one
-     * {@code startVia} with its own route + button, shows the button only for {@code joinHere === true}, gates it like
-     * Start, lists it in the palette and notes the status key {@code watchNote}.
+     * {@code startVia} with its own route + button, shows the button only for {@code watchHere === true} (the
+     * server's own answer, apart from Join from this PC's {@code joinHere}), gates it
+     * like Start, lists it in the palette and notes the status key {@code watchNote}.
      */
     static String pageWatch(String html, String js) {
         List<String> bad = new ArrayList<>();
@@ -1182,12 +1232,12 @@ public final class OpsConsolePageSelftest {
                     + " help row or its text drifts)");
         }
         for (String literal : List.of("CC.el('btn-watch').addEventListener('click', V.watch);",
-                "CC.show(CC.el('btn-watch'), c.joinHere === true);",
+                "CC.show(CC.el('btn-watch'), c.watchHere === true);",
                 "start: () => startVia('/api/start', 'btn-start'),",
                 "watch: () => startVia('/api/watch', 'btn-watch'),",
                 "['btn-watch', gate.start]", "['Launch debug WATCH', V.watch]", "noteWatch(s);")) {
             if (!js.contains(literal)) {
-                bad.add("script lacks '" + literal + "' (flips if the click, the joinHere show, the shared Start press,"
+                bad.add("script lacks '" + literal + "' (flips if the click, the watchHere show, the shared Start press,"
                         + " the Start gate, the palette verb or the watchNote poll drifts)");
             }
         }

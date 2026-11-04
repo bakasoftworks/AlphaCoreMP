@@ -1139,12 +1139,16 @@ final class PredictDialLane {
                 if (refusal != null) {
                     return matchFileRefusalRows(refusal); // the planner armed it: the endpoint was fine, the match was not
                 }
+                // The launcher is named for both kits (this row is reachable
+                // under the Linux one too); split so every row stays within BRIEFING_ROW_MAX_CHARS.
                 return ClientLaunchKnobs.predictEndpointKnobPresent()
                         ? briefingRows("AlphaCoreMP: no server endpoint at launch - LOCAL VANILLA",
                                 "(port file unreadable or port unset)",
-                                "Relaunch through the joiner kit (join-cc.bat)")
+                                "Relaunch with the kit's launcher:",
+                                KIT_LAUNCHER_ROW)
                         : briefingRows("AlphaCoreMP: not launched via the joiner kit - LOCAL only",
-                                "Use join-cc.bat to play online");
+                                "To play online, start with the kit's launcher:",
+                                KIT_LAUNCHER_ROW);
             }
             String where = predictDialHost + ":" + predictDialPort;
             PredictSession live = CcClientModPlugin.predictSession;
@@ -1230,6 +1234,9 @@ final class PredictDialLane {
     /** Leg 1b: the engine's Tactical Briefing widget is five SINGLE-LINE
      *  labels sized for vanilla's ≤ ~60-char rows — every row is clipped to that width. */
     private static final int BRIEFING_ROW_MAX_CHARS = 60;
+
+    /** The kit's launcher on each OS, one briefing row (48 chars). */
+    private static final String KIT_LAUNCHER_ROW = "join-cc.bat on Windows, bash join-cc.sh on Linux";
 
     /**
      * The give-up rows of BOTH briefing builders ({@link #claimAtPlayBriefingRows}, {@link #joinBriefingRows}) when

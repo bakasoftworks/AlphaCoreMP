@@ -166,13 +166,14 @@ final class EditorAssets {
 
     /**
      * A game data file by the B-legal {@code file:} URL lane: an API path that is already absolute
-     * (drive letter, the {@code getShipFilePath()} shape) is opened as-is; a data-relative one is
-     * tried under the core, this mod and the install root. Null when no base has it.
+     * (a drive letter or a leading {@code /}, the {@code getShipFilePath()} shape on Windows and Linux)
+     * is opened as-is; a data-relative one is tried under the core, this mod and the install root.
+     * Null when no base has it.
      */
     static byte[] readGameFile(String path, int cap) {
         String p = path.replace('\\', '/');
         String[] candidates;
-        if (p.length() > 2 && p.charAt(1) == ':') {
+        if (isAbsoluteGamePath(p)) {
             candidates = new String[] { p };
         } else {
             String root = System.getProperty("user.dir").replace('\\', '/');
@@ -180,7 +181,7 @@ final class EditorAssets {
         }
         for (String full : candidates) {
             try {
-                InputStream in = new URL("file:/" + full).openStream();
+                InputStream in = new URL(fileUrl(full)).openStream();
                 try {
                     return EditorTier.readAll(in, cap);
                 } finally {
@@ -193,5 +194,26 @@ final class EditorAssets {
             }
         }
         return null;
+    }
+
+    /**
+     * True for a slash-form path {@link #readGameFile} opens as-is: a drive letter ({@code C:/x}) or a
+     * leading {@code /} (a Linux absolute path, or a UNC share after the backslash fold).
+     *
+     */
+    static boolean isAbsoluteGamePath(String p) {
+        return p.startsWith("/") || (p.length() > 2 && p.charAt(1) == ':');
+    }
+
+    /**
+     * The {@code file:} URL text for a slash-form absolute path, with an EMPTY authority on every OS:
+     * {@code C:/x} = {@code file:///C:/x}, {@code /home/x} = {@code file:///home/x}, {@code //s/sh/x} =
+     * {@code file:////s/sh/x}. WHY: the older {@code "file:/" + path} form turned a Linux {@code /home/x} into
+     * {@code file://home/x}, whose first segment parses as a HOST, so no install file opened off Windows.
+     * Shared by every editor {@code file:} read so the form cannot drift between them.
+     *
+     */
+    static String fileUrl(String slashPath) {
+        return "file://" + (slashPath.startsWith("/") ? slashPath : "/" + slashPath);
     }
 }

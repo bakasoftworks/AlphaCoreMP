@@ -5,15 +5,26 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 
+import cc.starsector.client.KitUserDirs;
 import cc.starsector.client.editor.HttpExchange;
 
 /**
@@ -29,13 +40,15 @@ import cc.starsector.client.editor.HttpExchange;
  * <p>Differences from the editor host, all forced by the process it runs in (the window JVM the kit's
  * {@code join-cc.bat} starts BEFORE any game): the bind is SYNCHRONOUS ({@link #start} throws on a bind
  * failure so the caller can fall back to the Swing form); the endpoint
- * file ({@link #endpointFile}, under {@code %LOCALAPPDATA%}) = {@code port|token|nonce} is written with
- * {@code java.nio.file} (no {@code Global}) and deleted on {@link #close}; the token is 64 hex chars
- * (32 bytes) per process; the log sink is {@code System.err} (the window has no game sidelog).
+ * file ({@link #endpointFile}, the user's own profile dir) = {@code port|token|nonce} is written with
+ * {@code java.nio.file} (no {@code Global}) owner-only and deleted on {@link #close}; the token is 64 hex chars
+ * (32 bytes) per process; the log sink is the window log ({@code JoinBrowserUi.log}; the window has no game sidelog).
  *
  * <p>Security: loopback bind, random port, the token on
  * EVERY request as the first path segment, bounded requests ({@link HttpExchange}), no request-derived
  * path anywhere, the match password never in a URL, a log line never carrying player text or a secret.
+ * Off Windows the browser is never handed the tokened URL: it gets a one-time ticket ({@link #mintTicket},
+ * {@code /t/<ticket>}) whose first GET answers a 303 to the stored address.
  */
 public final class JoinHost {
     static final int MAX_IN_FLIGHT = 8;
@@ -44,26 +57,68 @@ public final class JoinHost {
     static final String ENDPOINT_FILE_PREFIX = "cc_join_endpoint-";
     /** Token width in hex chars (32 random bytes); {@link #parseEndpoint} gates on it. */
     static final int TOKEN_HEX_CHARS = 64;
+    /** A browser ticket's width in hex chars (8 random bytes). */
+    static final int TICKET_HEX_CHARS = 16;
+    /** A ticket redeems within this many ms of its mint, or never. */
+    static final long TICKET_TTL_MS = 30000;
+    /** Tickets remembered per host — spent and expired ones stay so a later use is caught; the oldest drops past it. */
+    static final int MAX_TICKETS = 16;
+    /** The ticket route's path prefix: {@code /t/<ticket>}, outside the token. */
+    static final String TICKET_PATH = "/t/";
 
     /** The route table the host hands every parsed request to (the editor's {@code EditorRoutes.handle} shape). */
     interface Router {
         void handle(HttpExchange req, OutputStream out, String token, int port) throws IOException;
+
+        /**
+         * The host's own call, the ticket desk riding along: a router with a ticket route overrides this; the
+         * default is the token + port form read at call time (a rotated token is live on the next request).
+         *
+         */
+        default void handle(HttpExchange req, OutputStream out, JoinHost host) throws IOException {
+            handle(req, out, host.token(), host.port());
+        }
+    }
+
+    /** One minted ticket: its 303 target, its mint time, and whether its one GET was spent. */
+    private static final class Ticket {
+        final String redirect;
+        final long mintedMs;
+        boolean spent;
+
+        Ticket(String redirect, long mintedMs) {
+            this.redirect = redirect;
+            this.mintedMs = mintedMs;
+        }
     }
 
     private final Router router;
     private final Path endpointFile;
     private final String nonce;
-    private final String token;
+    private final LongSupplier clockMs;
+    private final Consumer<String> log;
+    /** Guarded by {@code this}; insertion order = mint order (the oldest is the one evicted). */
+    private final Map<String, Ticket> tickets = new LinkedHashMap<>();
+    private final CountDownLatch closedLatch = new CountDownLatch(1);
     private final AtomicInteger inFlight = new AtomicInteger();
     private final AtomicInteger served = new AtomicInteger();
+    private volatile String token;
+    private volatile Runnable onStolen;
     private volatile ServerSocket server;
     private volatile int port;
     private volatile boolean closed;
 
     JoinHost(Router router, Path endpointFile, String nonce) {
+        this(router, endpointFile, nonce, () -> System.nanoTime() / 1000000L, JoinBrowserUi::log);
+    }
+
+    /** The injectable form (selftest): a monotonic ms clock for the ticket lifetime, and the log sink. */
+    JoinHost(Router router, Path endpointFile, String nonce, LongSupplier clockMs, Consumer<String> log) {
         this.router = router;
         this.endpointFile = endpointFile;
         this.nonce = nonce;
+        this.clockMs = clockMs;
+        this.log = log;
         this.token = mintToken();
     }
 
@@ -76,9 +131,26 @@ public final class JoinHost {
      * single-instance check — never a fallback into the install or {@code %TEMP%}. The editor's
      * {@code cc_editor_endpoint.data} stays in {@code saves/common} (its writer is in-game code). Script twins with the
      * same derivation live in the dev tooling.
+     * Off Windows: {@link #endpointFileOffWindows} (the kit's runtime dir; Windows keeps the expression above).
      */
     static Path endpointFile(Path modDir) {
+        if (!KitUserDirs.isWindows()) {
+            return endpointFileOffWindows(System.getenv(), JoinVoiceSettings.installRoot(modDir));
+        }
         return endpointFile(System.getenv("LOCALAPPDATA"), JoinVoiceSettings.installRoot(modDir));
+    }
+
+    /**
+     * Off Windows the file lives in the kit's RUNTIME dir
+     * ({@code <runtimeBase>/cc-starsector/join/cc_join_endpoint-<8 hex>.data}; {@link KitUserDirs#runtimeDir}: the
+     * session's {@code XDG_RUNTIME_DIR} when set and absolute, else the data dir under HOME) — the same per-install
+     * tag, owner-only modes at the write ({@link #start}). HOME unusable ⇒ null: no file, no single-instance check,
+     * never a fallback into the install or {@code /tmp}. Pure over the env map (selftested).
+     */
+    static Path endpointFileOffWindows(Map<String, String> env, Path installRoot) {
+        Path dir = KitUserDirs.runtimeDir(env);
+        return dir == null ? null : dir.resolve(KitUserDirs.JOIN_SUBDIR)
+                .resolve(ENDPOINT_FILE_PREFIX + installTag(installRoot) + ".data");
     }
 
     /** {@link #endpointFile(Path)}, pure over the env value (selftested). */
@@ -152,14 +224,13 @@ public final class JoinHost {
         ServerSocket s = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
         server = s;
         port = s.getLocalPort();
-        JoinBrowserUi.log("join-host: listening on " + s.getInetAddress().getHostAddress() + ":" + port
+        log.accept("join-host: listening on " + s.getInetAddress().getHostAddress() + ":" + port
                 + " (token " + token.length() + " hex chars, per-process)");
         // A null file (no LOCALAPPDATA) writes nothing - JoinBrowserUi.run logged
         // it; a failure logs the class only (the exception text names the profile path)
         if (endpointFile != null) {
             try {
-                Files.createDirectories(endpointFile.getParent());
-                Files.write(endpointFile, endpointFileText(port, token, nonce).getBytes(StandardCharsets.US_ASCII));
+                writeEndpointFile(endpointFile, endpointFileText(port, token, nonce));
             } catch (IOException | RuntimeException e) {
                 System.err.println("join-host: endpoint file write failed: " + e.getClass().getSimpleName());
             }
@@ -170,8 +241,120 @@ public final class JoinHost {
         return port;
     }
 
+    /**
+     * The endpoint text through the owner-only helper — 0700 dirs, a 0600 file
+     * (an existing file is set 0600 too), and a REWRITE ({@code CREATE|TRUNCATE_EXISTING|WRITE}, the
+     * {@code Files.write} options it replaces): a stale longer file from a dead window is cut to the new text, never
+     * refused. On Windows (no {@code posix} view) both helpers are the plain calls.
+     */
+    static void writeEndpointFile(Path file, String text) throws IOException {
+        KitFileModes.createDirs(file.getParent());
+        ByteBuffer bytes = ByteBuffer.wrap(text.getBytes(StandardCharsets.US_ASCII));
+        try (SeekableByteChannel ch = KitFileModes.open(file, StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+            while (bytes.hasRemaining()) {
+                ch.write(bytes);
+            }
+        }
+    }
+
+    /** The CURRENT token: a stolen ticket rotates it ({@link #redeem}), so every reader reads it at use. */
     String token() {
         return token;
+    }
+
+    /** Runs once after a stolen ticket closed this host (the browser session's Swing fallback); null = none. */
+    void onStolen(Runnable hook) {
+        this.onStolen = hook;
+    }
+
+    /**
+     * A one-time browser ticket for {@code redirectUrl} — 16 hex from
+     * {@link SecureRandom}, spent by its first GET ({@link #redeem}), dead {@value #TICKET_TTL_MS} ms after the mint.
+     * WHY: off Windows every opener ends in the browser's own command line, which any local account can read for
+     * the browser's whole life; the tokened page address must never ride it, so the opener gets
+     * {@link #ticketUrl} instead and the address travels in the 303's {@code Location}. The target must be a
+     * loopback http address with no control or space characters (it becomes a response header).
+     */
+    synchronized String mintTicket(String redirectUrl) {
+        if (!isLoopbackHttp(redirectUrl)) {
+            throw new IllegalArgumentException("a ticket redirects only to a loopback http address");
+        }
+        while (tickets.size() >= MAX_TICKETS) {
+            Iterator<String> oldest = tickets.keySet().iterator();
+            oldest.next();
+            oldest.remove();
+        }
+        String t = randomHex(TICKET_HEX_CHARS);
+        tickets.put(t, new Ticket(redirectUrl, clockMs.getAsLong()));
+        return t;
+    }
+
+    /** {@code http://127.0.0.1:<port>/t/<ticket>} — the only address an opener is handed off Windows. */
+    String ticketUrl(String ticket) {
+        return "http://127.0.0.1:" + port + TICKET_PATH + ticket;
+    }
+
+    /** True when {@code ticket} was minted here (live, spent or expired) and is still remembered. */
+    synchronized boolean knowsTicket(String ticket) {
+        return tickets.containsKey(ticket);
+    }
+
+    /**
+     * The ticket's redirect on its FIRST GET inside its lifetime, then never
+     * again. A remembered ticket used a second time, or after its lifetime, means another program read it: the
+     * token is rotated (any copy of the old page address is dead), this host closes, ONE log row lands and the
+     * {@link #onStolen} hook runs; null is returned. An unknown ticket returns null with no side effect — a blind
+     * request (a web page probing loopback ports) must not be able to close the window.
+     */
+    String redeem(String ticket) {
+        String why;
+        synchronized (this) {
+            Ticket t = tickets.get(ticket);
+            if (t == null || closed) {
+                return null;
+            }
+            long age = clockMs.getAsLong() - t.mintedMs;
+            if (!t.spent && age >= 0 && age <= TICKET_TTL_MS) {
+                t.spent = true;
+                return t.redirect;
+            }
+            why = t.spent ? "a second time" : "after it expired";
+            t.spent = true;
+            token = mintToken();
+            close();
+        }
+        log.accept("join-host: a browser ticket was used " + why + " - another program may have read it;"
+                + " the page address is replaced and this page is closed");
+        Runnable hook = onStolen;
+        if (hook != null) {
+            hook.run();
+        }
+        return null;
+    }
+
+    /** True for {@code http://127.0.0.1:<port>/...} made of printable, space-free ASCII only. */
+    static boolean isLoopbackHttp(String url) {
+        if (url == null || !url.startsWith("http://127.0.0.1:")) {
+            return false;
+        }
+        for (int i = 0; i < url.length(); i++) {
+            char c = url.charAt(i);
+            if (c <= 0x20 || c >= 0x7f) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Waits until this host closes or {@code ms} pass; true when it closed. */
+    boolean awaitClosed(long ms) {
+        try {
+            return closedLatch.await(ms, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return closed;
+        }
     }
 
     int port() {
@@ -193,6 +376,7 @@ public final class JoinHost {
             return;
         }
         closed = true;
+        closedLatch.countDown();
         ServerSocket s = server;
         if (s != null) {
             try {
@@ -259,7 +443,7 @@ public final class JoinHost {
                 HttpExchange.replyText(out, refused.status, refused.getMessage());
                 return;
             }
-            router.handle(req, out, token, port);
+            router.handle(req, out, this);
         } catch (IOException io) {
             // a closed or timed-out browser connection: nothing to answer
         } catch (Throwable fault) {
@@ -284,9 +468,14 @@ public final class JoinHost {
     }
 
     static String mintToken() {
-        byte[] b = new byte[TOKEN_HEX_CHARS / 2];
+        return randomHex(TOKEN_HEX_CHARS);
+    }
+
+    /** {@code chars} lower-case hex chars ({@code chars / 2} bytes) from a fresh {@link SecureRandom}. */
+    static String randomHex(int chars) {
+        byte[] b = new byte[chars / 2];
         new SecureRandom().nextBytes(b);
-        StringBuilder sb = new StringBuilder(TOKEN_HEX_CHARS);
+        StringBuilder sb = new StringBuilder(chars);
         for (byte x : b) {
             sb.append(Character.forDigit((x >> 4) & 0xF, 16)).append(Character.forDigit(x & 0xF, 16));
         }

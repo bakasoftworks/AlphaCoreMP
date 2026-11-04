@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
+import cc.starsector.client.KitUserDirs;
 import cc.starsector.client.net.DoorProbe;
 import cc.starsector.server.runtime.ModDataWalk;
 import cc.starsector.server.runtime.ModSet;
@@ -34,7 +35,8 @@ import cc.starsector.server.runtime.ModSet;
  * Starsector the normal way reads {@code ../mods} as always, so the player's own list and folders
  * are untouched BY CONSTRUCTION — no backup, no restore, nothing to heal after a crash. A junction
  * is a link: deleting one removes the link, never the mod (the kit only ever deletes junctions it
- * finds in its own root, one by one, never recursively).
+ * finds in its own root, one by one, never recursively). Off Windows each link is a symbolic link
+ * instead, under the same rules: {@link #link}, {@link #isKitLink}.
  *
  * <p>Version recipe = the engine's own ({@code ModManager.VersionInfo}):
  * a string {@code version} is taken verbatim; an object form renders {@code major.minor.patch} /
@@ -512,7 +514,7 @@ final class JoinModStage {
         Files.deleteIfExists(optionalFile);
         try (DirectoryStream<Path> ds = Files.newDirectoryStream(root)) {
             for (Path p : ds) {
-                if (isJunction(p)) {
+                if (isKitLink(p)) {
                     Files.delete(p); // the link only — never the mod behind it
                 } else {
                     throw new IOException("the kit's mods root holds a real item it did not create: "
@@ -524,7 +526,7 @@ final class JoinModStage {
         List<String> optionalStaged = new ArrayList<>();
         ids.add(ModSet.EXCLUDED_ID);
         Path kitDir = modDir.toAbsolutePath().normalize();
-        junction(root.resolve(kitDir.getFileName().toString()), kitDir);
+        link(root.resolve(kitDir.getFileName().toString()), kitDir);
         for (Row r : rows) {
             if (!STATUS_OK.equals(r.status) || r.dir == null) {
                 if (r.optional) {
@@ -538,7 +540,7 @@ final class JoinModStage {
                 throw new IOException("two mod folders share the name " + target.getFileName()
                         + " - rename one of them");
             }
-            junction(link, target);
+            link(link, target);
             ids.add(r.id);
             if (r.optional) {
                 optionalStaged.add(r.id);
@@ -561,8 +563,22 @@ final class JoinModStage {
         return root;
     }
 
-    /** True for a directory reparse point that is not a symlink (a junction), NOFOLLOW. */
-    static boolean isJunction(Path p) {
+    /**
+     * True for a link this stage owns (and so may delete) in the kit's mods root, NOFOLLOW: on Windows a
+     * directory junction (a reparse point that reads {@code isOther}; a Windows SYMLINK does not, so one a
+     * player placed there stays a refused real item, never a deleted one), elsewhere a symbolic link. WHY
+     * never {@code isOther} off Windows: there it also matches FIFOs and sockets.
+     *
+     */
+    static boolean isKitLink(Path p) {
+        return isKitLink(p, KitUserDirs.isWindows());
+    }
+
+    /** {@link #isKitLink(Path)} with the OS rule named, so the selftest pins BOTH rules on one host. */
+    static boolean isKitLink(Path p, boolean windows) {
+        if (!windows) {
+            return Files.isSymbolicLink(p);
+        }
         try {
             BasicFileAttributes a = Files.readAttributes(p, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
             return a.isOther();
@@ -583,6 +599,29 @@ final class JoinModStage {
             }
         }
         return null;
+    }
+
+    /**
+     * Link {@code link} to the folder {@code target}: on Windows a junction through {@link #junction} (unchanged);
+     * elsewhere a symbolic link to the ABSOLUTE target (no shell, so the cmd-argument law does not apply). NO copy
+     * fallback: a filesystem that refuses links fails the stage with its own reason (the launch is refused with it;
+     * the player's mods folder is never touched).
+     *
+     */
+    static void link(Path link, Path target) throws IOException {
+        if (KitUserDirs.isWindows()) {
+            junction(link, target);
+            return;
+        }
+        if (!Files.isDirectory(target)) {
+            throw new IOException("not a folder: " + target);
+        }
+        try {
+            Files.createSymbolicLink(link, target.toAbsolutePath());
+        } catch (IOException | UnsupportedOperationException e) {
+            throw new IOException("could not link " + link.getFileName() + " (" + e.getClass().getSimpleName() + "): "
+                    + e.getMessage(), e);
+        }
     }
 
     /** {@code mklink /J link target} through {@code cmd.exe} (no privilege needed for a junction;
@@ -611,7 +650,7 @@ final class JoinModStage {
             Thread.currentThread().interrupt();
             throw new IOException("interrupted while linking " + link);
         }
-        if (rc != 0 || !isJunction(link)) {
+        if (rc != 0 || !isKitLink(link)) {
             throw new IOException("could not link " + link.getFileName() + " (mklink exit " + rc + "): "
                     + new String(out, StandardCharsets.UTF_8).trim());
         }

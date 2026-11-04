@@ -565,7 +565,7 @@ public final class OpsConsole {
                 VpnLeaseProbe.Env.live(), OpsJoinSelf.LIVE, OwnerLaunch.LIVE, seed);
         System.out.println("cc-console listening port=" + boot.port());
         boolean keyMinted = keyBefore == null || !keyBefore.equals(boot.token());
-        printOwnerAddress(boot, parsed.open() || keyMinted, ServerOpsCore.joinHere(System.getProperty("os.name")),
+        printOwnerAddress(boot, parsed.open() || keyMinted, ServerOpsCore.windowsHost(System.getProperty("os.name")),
                 BrowserSpawn.LIVE);
     }
 
@@ -686,7 +686,7 @@ public final class OpsConsole {
             System.exit(2);
             return;
         }
-        boolean windows = System.getProperty("os.name", "").startsWith("Windows");
+        boolean windows = ServerOpsCore.windowsHost(System.getProperty("os.name", ""));
         String busy = takeConsoleLock(pkg.pkg(), windows);
         if (busy != null) {
             Running live = runningConsole(pkg.pkg());
@@ -709,7 +709,7 @@ public final class OpsConsole {
         if (packLine != null) {
             System.out.println(packLine);
         }
-        printAddress(boot, interactiveConsole(), ServerOpsCore.joinHere(System.getProperty("os.name")),
+        printAddress(boot, interactiveConsole(), ServerOpsCore.windowsHost(System.getProperty("os.name")),
                 BrowserSpawn.LIVE);
     }
 
@@ -1580,18 +1580,31 @@ public final class OpsConsole {
      *
      * <p>In owner mode the route is the Swing owner button instead -
      * {@link #pressOwnerWatch}, before the {@code joinHere} test; the package body is unchanged.
+     *
+     * <p>Join from this PC runs on a Linux host too, the WATCH does not
+     * ({@link ServerOpsCore#watchHere}: its window sweep, diagnostics and settings scrub are Windows paths) - so a
+     * host that cannot join at all gets R9, and a Linux host gets {@link #R9W}, both before any Start.
      */
     private void handleWatch(HttpExchange ex) throws IOException {
         if (roots.mode() == OpsRoots.Mode.OWNER) {
             pressOwnerWatch(ex);
             return;
         }
-        if (!ServerOpsCore.joinHere(System.getProperty("os.name"))) {
+        String os = System.getProperty("os.name");
+        if (!ServerOpsCore.joinHere(os)) {
             respond(ex, 200, JSON, joinRefused("r9", OpsJoinSelf.R9));
+            return;
+        }
+        if (!ServerOpsCore.watchHere(os)) {
+            respond(ex, 200, JSON, joinRefused("r9w", R9W));
             return;
         }
         startFlow(ex, true);
     }
+
+    /** Launch debug WATCH's refusal on a host that can join but not run the WATCH (a Linux host), titled as the
+     *  join refusals. */
+    static final String R9W = "Launch debug WATCH runs on a Windows host only; Join from this PC works here.";
 
     /** The Arm WATCH press's refusal title (owner mode). */
     static final String OWNER_WATCH_TITLE = "Arm WATCH refused";
@@ -3034,8 +3047,9 @@ public final class OpsConsole {
     }
 
     /**
-     * One press's outcome. Order: a non-Windows console =
-     * {@link OpsJoinSelf#R9}, as the player kit runs on Windows only; the live gate
+     * One press's outcome. Order: a console that is neither Windows
+     * nor Linux = {@link OpsJoinSelf#R9}, as the player kit runs on those two; Linux joined
+     * the pair with the host's own press; the live gate
      * ({@link #liveOrNull}); the launcher rows read once; the password = the SAVED sidecar read under
      * {@link #startLock} (the brick's {@code keep} path, never a form field); then
      * {@link OpsJoinSelf#press} OUTSIDE the start lock with the probe swapped for {@link #sharedProbe}
@@ -3075,8 +3089,14 @@ public final class OpsConsole {
      */
     private JoinPress joinAnswer(boolean watch, Path flightOrNull) {
         try {
-            if (!ServerOpsCore.joinHere(System.getProperty("os.name"))) {
+            // ONE os.name read per press - the gates and the inputs'
+            // platform agree; a WATCH press off Windows is refused here too (its route already refuses it).
+            String os = System.getProperty("os.name");
+            if (!ServerOpsCore.joinHere(os)) {
                 return new JoinPress(false, "r9", OpsJoinSelf.R9);
+            }
+            if (watch && !ServerOpsCore.watchHere(os)) {
+                return new JoinPress(false, "r9w", R9W);
             }
             OpsSnapshot live = liveOrNull();
             Map<String, String> rows = ServeLauncher.readLauncherRows(ServerOpsLaunch.launcherPropertiesFile(),
@@ -3095,7 +3115,7 @@ public final class OpsConsole {
             if (capFull) {
                 System.out.println("cc-console join admin_arm=withheld_cap");
             }
-            OpsJoinSelf.Inputs in = pressInputs(live, rows, kept, adminArm);
+            OpsJoinSelf.Inputs in = pressInputs(live, rows, kept, adminArm, os);
             lastPressInputs.set(in);
             OpsJoinSelf.Effects fx = joinFx.withProbe(this::sharedProbe);
             OpsJoinSelf.Result r = watch ? OpsJoinSelf.pressWatch(in, fx, flightOrNull) : OpsJoinSelf.press(in, fx);
@@ -3105,7 +3125,7 @@ public final class OpsConsole {
             return switch (r.outcome()) {
                 case OPENED -> new JoinPress(true, "opened", capFull ? r.text() + " " + NOTE_ARM_CAP : r.text(),
                         r.windows());
-                case REOPENED -> reopenOnServer(rows, joinFx.parentEnv());
+                case REOPENED -> reopenOnServer(in);
                 case REFUSED -> new JoinPress(false, r.reasonToken(), r.text());
             };
         } catch (IOException | RuntimeException fault) { // the fixed sentence naming the class, no message
@@ -3118,15 +3138,27 @@ public final class OpsConsole {
      * snapshot, the window's password, the kit hint, the settings-file locations from the SAME environment the
      * press spawns with ({@link OpsJoinSelf.Effects#parentEnv}), the admin-arm bit and the
      * package MANIFEST's kit stamps ({@link ServerOpsCore#packageKitStamps}).
+     *
+     * <p>{@code osName} = the caller's ONE read; a Linux host
+     * ({@link ServerOpsCore#posixHost}) adds {@link OpsJoinSelf.PosixHost}: HOME / XDG_DATA_HOME / XDG_RUNTIME_DIR
+     * from that same environment, and the host desktop's display as the package's Linux start file handed it over
+     * ({@link OpsJoinSelf#PROP_HOST_DISPLAY} and its siblings; known = the display property is set, even empty).
      */
-    private OpsJoinSelf.Inputs pressInputs(OpsSnapshot live, Map<String, String> rows, String kept, boolean adminArm)
-            throws IOException {
+    private OpsJoinSelf.Inputs pressInputs(OpsSnapshot live, Map<String, String> rows, String kept, boolean adminArm,
+            String osName) throws IOException {
         Map<String, String> env = joinFx.parentEnv();
         ServerOpsCore.KitStamps stamps = ServerOpsCore.packageKitStamps(roots.pkg());
-        return new OpsJoinSelf.Inputs(roots.pkg(), rows, live, kept, OpsJoinSelf.KIT_HINT,
+        OpsJoinSelf.Inputs in = new OpsJoinSelf.Inputs(roots.pkg(), rows, live, kept, OpsJoinSelf.KIT_HINT,
                 env.get("LOCALAPPDATA"), env.get("APPDATA"), env.get("USERPROFILE"), null)
                 .withAdminArm(adminArm)
                 .withKitStamps(stamps.jarMd5OrNull(), stamps.fingerprintOrNull(), stamps.zipOrNull());
+        if (!ServerOpsCore.posixHost(osName)) {
+            return in;
+        }
+        String display = System.getProperty(OpsJoinSelf.PROP_HOST_DISPLAY);
+        return in.withPosixHost(new OpsJoinSelf.PosixHost(env.get("HOME"), env.get("XDG_DATA_HOME"),
+                env.get("XDG_RUNTIME_DIR"), display != null, display,
+                System.getProperty(OpsJoinSelf.PROP_HOST_WAYLAND), System.getProperty(OpsJoinSelf.PROP_HOST_XAUTHORITY)));
     }
 
     /**
@@ -3142,7 +3174,8 @@ public final class OpsConsole {
      */
     private OpsJoinSelf.KitCheck watchKitCheckOrNull(Map<String, String> rows) throws IOException {
         OpsSnapshot live = liveOrNull();
-        return OpsJoinSelf.kitCheckOrNull(pressInputs(live, rows, "", false), joinFx.withProbe(this::sharedProbe));
+        return OpsJoinSelf.kitCheckOrNull(pressInputs(live, rows, "", false, System.getProperty("os.name")),
+                joinFx.withProbe(this::sharedProbe));
     }
 
     /**
@@ -3183,30 +3216,15 @@ public final class OpsConsole {
     /**
      * The web REOPENED branch. A join window
      * is already live on the server computer, and its URL must never cross HTTP (the page's viewer may
-     * sit on another computer), so the kit's bat is started WITHOUT the settings write: the bat's own
-     * single-instance law re-opens the live window's tab there. The spawn = the core's fixed argv / cwd
-     * / child env; a start failure or a nonzero exit within the wait = {@link OpsJoinSelf#R7}, worded
-     * exactly as the core's step 7 words it.
+     * sit on another computer), so the kit's launcher is started WITHOUT the settings write: its own
+     * single-instance law re-opens the live window's tab there. The spawn, its answers and the Linux host's
+     * exit tolerance live in the core ({@link OpsJoinSelf#reopenSpawn}, over the press's own inputs and this
+     * console's effects); this maps its {@code Result}.
      */
-    private JoinPress reopenOnServer(Map<String, String> rows, Map<String, String> env) {
-        Path install = OpsJoinSelf.installOrNull(roots.pkg(), rows);
-        if (install == null) { // the Game folder went away since the core's step 1
-            return new JoinPress(false, "r1", OpsJoinSelf.R1);
-        }
-        String shown = OpsJoinSelf.boundedText(install.toString());
-        int code;
-        try {
-            code = joinFx.spawn(OpsJoinSelf.argv(joinFx.systemRoot()), OpsJoinSelf.cwd(install),
-                    OpsJoinSelf.childEnv(env));
-        } catch (IOException | RuntimeException startFailed) { // answered as R7 naming its class
-            return new JoinPress(false, "spawn_failed", String.format(Locale.ROOT, OpsJoinSelf.R7, shown,
-                    startFailed.getClass().getSimpleName()));
-        }
-        if (code != 0 && code != OpsJoinSelf.STILL_RUNNING) {
-            return new JoinPress(false, "spawn_nonzero", String.format(Locale.ROOT, OpsJoinSelf.R7, shown,
-                    Integer.toString(code)));
-        }
-        return new JoinPress(true, "reopened", OpsJoinSelf.NOTE_REOPENED_WEB);
+    private JoinPress reopenOnServer(OpsJoinSelf.Inputs in) {
+        OpsJoinSelf.Result r = OpsJoinSelf.reopenSpawn(in, joinFx);
+        return r.outcome() == OpsJoinSelf.Outcome.REFUSED ? new JoinPress(false, r.reasonToken(), r.text())
+                : new JoinPress(true, "reopened", r.text());
     }
 
     /** The press's ONE stdout row (bounded tokens: never a path, host, port or secret) + {@code {ok, detail}}. */
@@ -4125,11 +4143,17 @@ public final class OpsConsole {
      * is in the {@link OpsMatchRows#MODS_OFF_OPTIONAL_KEY} memory row, else {@code required} (the kind-memory fix: the
      * page rebuilds every row from this answer, so an unticked optional mod must come back optional on a re-tick
      * and after a reload). Package-private (was private) for the ServerOpsCoreSelftest rows.
+     * Each row also carries {@code depends} + {@code dependsFlag} = the Needs
+     * cell ({@link OpsModsPanel#dependsCell} over {@link OpsModsPanel#declaredDeps}, read once per answer), placed
+     * right after {@code folder}, before {@code settings}: the web-mods-luna rows pin each row's JSON to END with its
+     * {@code settings} key.
      */
     static String modsJson(Path base, List<String> lines, boolean ok, Path lunaDir) {
         List<String> modRoots = consoleRoots(lines);
         List<OpsModsPanel.ModRow> rows = OpsModsPanel.modRows(InstalledModScan.scanRoots(base, modRoots), lines);
         List<String> offOptional = OpsModsPanel.splitIds(OpsMatchRows.modsOffOptionalFieldPrefill(lines));
+        // The Needs column's declared dependencies, one read per answer
+        Map<String, List<String>> deps = OpsModsPanel.declaredDeps(rows);
         StringBuilder sb = new StringBuilder(ok ? "{\"ok\":true,\"roots\":[" : "{\"roots\":[");
         for (int i = 0; i < modRoots.size(); i++) {
             sb.append(i == 0 ? "" : ",").append('"').append(OpsConsoleForms.jsonEscape(modRoots.get(i))).append('"');
@@ -4137,6 +4161,8 @@ public final class OpsConsole {
         sb.append("],\"rows\":[");
         for (int i = 0; i < rows.size(); i++) {
             OpsModsPanel.ModRow r = rows.get(i);
+            // The row's Needs cell (text + flag)
+            OpsModsPanel.DependsCell needs = OpsModsPanel.dependsCell(r, rows, deps);
             sb.append(i == 0 ? "" : ",")
                     .append("{\"mod\":\"").append(OpsConsoleForms.jsonEscape(r.installed()
                             ? OpsModsPanel.displayName(r) : r.id() + OpsModsPanel.NOT_INSTALLED_SUFFIX))
@@ -4145,6 +4171,8 @@ public final class OpsConsole {
                     .append("\",\"use\":\"").append(OpsConsoleForms.jsonEscape(r.choice()))
                     .append("\",\"kind\":\"").append(OpsConsoleForms.jsonEscape(modsKind(r, offOptional)))
                     .append("\",\"folder\":\"").append(OpsConsoleForms.jsonEscape(folderCell(r)))
+                    .append("\",\"depends\":\"").append(OpsConsoleForms.jsonEscape(needs.text()))
+                    .append("\",\"dependsFlag\":\"").append(OpsConsoleForms.jsonEscape(needs.flag()))
                     .append("\",\"settings\":\"").append(OpsConsoleForms.jsonEscape(settingsCell(r, lunaDir))).append("\"}");
         }
         sb.append("],\"lunaSyncExclude\":\"").append(OpsConsoleForms.jsonEscape(lunaSyncExcludeRow(lines)));

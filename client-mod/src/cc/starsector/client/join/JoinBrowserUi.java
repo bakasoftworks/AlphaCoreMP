@@ -1,25 +1,32 @@
 package cc.starsector.client.join;
 
 import java.awt.Desktop;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import javax.sound.sampled.Mixer;
 
+import cc.starsector.client.KitUserDirs;
 import cc.starsector.client.net.DoorProbe;
 import cc.starsector.client.voice.VoiceClientSettings;
 import cc.starsector.server.match.ContentFingerprints;
@@ -28,7 +35,8 @@ import cc.starsector.server.match.MatchDescriptor;
 /**
  * The join window's BROWSER mode (GUI v2: the "Fallback + switch" design,
  * with its own responder and form): the responder ({@link JoinHost} + {@link JoinRoutes}) is bound, the
- * endpoint file written, the browser opened on {@code http://127.0.0.1:<port>/<token>/}, and this JVM then lives
+ * endpoint file written, the browser opened on {@code http://127.0.0.1:<port>/<token>/} (off Windows through a
+ * one-time ticket, {@link #openTicketed}), and this JVM then lives
  * as the session the SPA talks to — exactly the process contract {@code join-cc.bat} already has with the Swing
  * window (plan file = Launch, {@code .cancel} = abandoned, the JVM stays as the launch face). Selected by
  * {@code -Dcc.join.ui=browser} ({@link #selected}); the bat forwards {@code CC_JOIN_UI}.
@@ -116,14 +124,27 @@ final class JoinBrowserUi implements JoinRoutes.Session {
     static void log(String line) {
         System.err.println(line);
         try {
-            Files.createDirectories(LOG_FILE.getParent());
-            if (Files.exists(LOG_FILE) && Files.size(LOG_FILE) > 256 * 1024) {
-                Files.delete(LOG_FILE);
-            }
-            Files.write(LOG_FILE, (java.time.LocalDateTime.now().withNano(0) + " " + line + System.lineSeparator())
-                    .getBytes(StandardCharsets.UTF_8), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            appendLog(LOG_FILE, java.time.LocalDateTime.now().withNano(0) + " " + line + System.lineSeparator());
         } catch (IOException | RuntimeException unwritable) {
             // stderr already carries the line
+        }
+    }
+
+    /**
+     * One append through the owner-only helper — 0700 dirs, a 0600 file (an
+     * existing one set 0600 too), and the SAME {@code CREATE|APPEND} options as before (never {@code CREATE_NEW}:
+     * that kept the log at one line). Past 256 KB the file restarts. Plain calls on Windows.
+     */
+    static void appendLog(Path file, String text) throws IOException {
+        KitFileModes.createDirs(file.getParent());
+        if (Files.exists(file) && Files.size(file) > 256 * 1024) {
+            Files.delete(file);
+        }
+        ByteBuffer bytes = ByteBuffer.wrap(text.getBytes(StandardCharsets.UTF_8));
+        try (SeekableByteChannel ch = KitFileModes.open(file, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
+            while (bytes.hasRemaining()) {
+                ch.write(bytes);
+            }
         }
     }
 
@@ -272,13 +293,20 @@ final class JoinBrowserUi implements JoinRoutes.Session {
     static Outcome run(Path modDir, Path planFile, String nonce) {
         Path endpointFile = JoinHost.endpointFile(modDir);
         if (endpointFile == null) {
-            log("join-browser: LOCALAPPDATA unset or not absolute - no endpoint file, single-instance check off");
+            log("join-browser: " + (KitUserDirs.isWindows() ? "LOCALAPPDATA" : "HOME")
+                    + " unset or not absolute - no endpoint file, single-instance check off");
         }
         String live = liveWindowUrl(endpointFile);
         if (live != null) {
             log("join-browser: another join window is live on this box; re-opening it");
-            openBrowser(live);
+            openBrowser(live, null);
             JoinCore.writeCancelMarker(planFile);
+            // off Windows the re-open rode a one-shot host's ticket: this JVM stays until that ticket is spent
+            // or dead, else the browser would find nothing behind the address it was handed
+            JoinHost oneShot = lastOneShot;
+            if (oneShot != null) {
+                oneShot.awaitClosed(JoinHost.TICKET_TTL_MS + ONE_SHOT_SLACK_MS);
+            }
             return Outcome.exit(2);
         }
         Path settingsPath = JoinSettings.pathForRun();
@@ -290,6 +318,13 @@ final class JoinBrowserUi implements JoinRoutes.Session {
 
     private Outcome serve(Path endpointFile) {
         JoinHost h = new JoinHost(new JoinRoutes(this), endpointFile, nonce);
+        // a stolen ticket closed the host: the form falls back to the Swing window; after Launch the companion
+        // law still ends this JVM (the host's log row is the trace)
+        h.onStolen(() -> {
+            if (STATE_FORM.equals(state.get())) {
+                finish(Outcome.fallback(NOTE_TICKET_STOLEN));
+            }
+        });
         try {
             h.start();
         } catch (IOException | RuntimeException bindFailed) {
@@ -299,7 +334,7 @@ final class JoinBrowserUi implements JoinRoutes.Session {
         }
         host = h;
         String url = h.baseUrl();
-        if (!openBrowser(url)) {
+        if (!openBrowser(url, h)) {
             h.close();
             return Outcome.fallback("browser unavailable - native window (could not open a browser)");
         }
@@ -322,9 +357,10 @@ final class JoinBrowserUi implements JoinRoutes.Session {
     /**
      * {@code -Dcc.join.browse=off} (the game-free smoke) prints the URL instead of opening a browser and counts as
      * opened; {@code =fail} (the smoke's forced fallback row) counts as a browse failure without touching a
-     * browser; otherwise {@code Desktop.browse} — false on any failure (headless JVM, no default browser, …).
+     * browser; otherwise {@link #browse} — false on any failure (headless JVM, no default browser, …).
+     * {@code via} = this window's own live host (its tickets carry the address off Windows); null = none here.
      */
-    private static boolean openBrowser(String url) {
+    private static boolean openBrowser(String url, JoinHost via) {
         String mode = System.getProperty("cc.join.browse", "on");
         if ("off".equalsIgnoreCase(mode)) {
             System.out.println("join-browser: " + url);
@@ -333,6 +369,18 @@ final class JoinBrowserUi implements JoinRoutes.Session {
         if ("fail".equalsIgnoreCase(mode)) {
             log("join-browser: -Dcc.join.browse=fail - could not open a browser (forced) - native window");
             return false;
+        }
+        return browse(url, via);
+    }
+
+    /**
+     * The OS opener (also the Swing form's Open editor). Windows: {@code Desktop.browse} on {@code url} itself,
+     * exactly as before — another non-admin account cannot read a foreign process's command line there. Elsewhere:
+     * {@link #openTicketed} — the opener is handed a one-time ticket address, never {@code url}.
+     */
+    static boolean browse(String url, JoinHost via) {
+        if (!KitUserDirs.isWindows()) {
+            return openTicketed(url, via, desktopBrowseSupported(), spawner);
         }
         try {
             if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
@@ -346,6 +394,152 @@ final class JoinBrowserUi implements JoinRoutes.Session {
                     + ") - native window");
             return false;
         }
+    }
+
+    // ------------------------------------------------------------ the opener off Windows
+
+    /** An opener command that exits non-zero within this ⇒ not opened; exit 0 or still running ⇒ opened. */
+    static final long OPENER_SETTLE_MS = 3000;
+    /** A one-shot host outlives its ticket's lifetime by this much (a redemption racing the deadline). */
+    static final long ONE_SHOT_SLACK_MS = 2000;
+    /** The Swing form's note when a stolen ticket closed the page. */
+    static final String NOTE_TICKET_STOLEN = "browser unavailable - native window (the page link was used twice;"
+            + " another program may have read it)";
+    /** The opener commands tried in order after {@code Desktop}; the address is appended as the last argument. */
+    static final String[][] OPENERS = { { "xdg-open" }, { "gio", "open" } };
+
+    /** Starts one opener command (the selftest swaps in fake processes). */
+    interface Spawner {
+        Process start(List<String> cmd) throws IOException;
+    }
+
+    /**
+     * No shell, stdin from {@code /dev/null}, stdout + stderr discarded (a foreground browser must never block on a
+     * full pipe), and none of the kit's {@code CC_*} variables: the child may BE the user's browser for hours, and
+     * the launcher's environment can carry a password or a seat key.
+     */
+    static volatile Spawner spawner = cmd -> {
+        ProcessBuilder pb = new ProcessBuilder(cmd)
+                .redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")))
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD);
+        pb.environment().keySet().removeIf(k -> k.startsWith("CC_"));
+        return pb.start();
+    };
+
+    /** The newest one-shot host this JVM started (the re-open path waits it out before exiting); null = none. */
+    static volatile JoinHost lastOneShot;
+
+    private static boolean desktopBrowseSupported() {
+        try {
+            return Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE);
+        } catch (Exception | Error probeFailed) {
+            log("join-browser: Desktop probe failed (" + probeFailed.getClass().getSimpleName() + ")");
+            return false;
+        }
+    }
+
+    /**
+     * Opens {@code target} off Windows without its token ever reaching an
+     * argv. The tickets come from {@code via} when it is live (its 303 serves the page or the editor address);
+     * else from a ONE-SHOT host started for this open ({@link JoinRoutes#TICKETS_ONLY}, no endpoint file) that
+     * closes itself once its ticket's lifetime ends. Every opener attempt gets a FRESH ticket, so a failed attempt
+     * that still reached a browser can never make the next one look like a second use.
+     */
+    static boolean openTicketed(String target, JoinHost via, boolean desktop, Spawner sp) {
+        boolean oneShot = via == null || via.isClosed();
+        JoinHost h = via;
+        if (oneShot) {
+            h = new JoinHost(JoinRoutes.TICKETS_ONLY, null, null);
+            try {
+                h.start();
+            } catch (IOException | RuntimeException bindFailed) {
+                log("join-browser: one-shot loopback bind failed (" + bindFailed.getClass().getSimpleName()
+                        + ") - not opened");
+                return false;
+            }
+        }
+        final JoinHost desk = h;
+        boolean opened;
+        try {
+            opened = openOffWindows(() -> desk.ticketUrl(desk.mintTicket(target)), desktop, sp);
+        } catch (IllegalArgumentException notLoopback) {
+            log("join-browser: refused to open an address that is not this box's loopback http");
+            opened = false;
+        }
+        if (oneShot) {
+            if (opened) {
+                lastOneShot = desk;
+                Thread closer = new Thread(() -> {
+                    desk.awaitClosed(JoinHost.TICKET_TTL_MS + ONE_SHOT_SLACK_MS);
+                    desk.close();
+                }, "cc-join-one-shot");
+                closer.setDaemon(true);
+                closer.start();
+            } else {
+                desk.close();
+            }
+        }
+        return opened;
+    }
+
+    /**
+     * The opener chain over token-free addresses ({@code nextUrl} mints one per attempt): {@code Desktop.browse}
+     * when supported, else (or when it throws) {@code xdg-open}, then {@code gio open}; false when none opened —
+     * the caller's Swing fallback.
+     */
+    static boolean openOffWindows(Supplier<String> nextUrl, boolean desktop, Spawner sp) {
+        if (desktop) {
+            String url = nextUrl.get();
+            try {
+                Desktop.getDesktop().browse(new URI(url));
+                return true;
+            } catch (Exception | Error browseFailed) {
+                log("join-browser: Desktop.browse failed (" + browseFailed.getClass().getSimpleName()
+                        + ") - trying the desktop opener commands");
+            }
+        }
+        for (String[] opener : OPENERS) {
+            List<String> cmd = new ArrayList<>();
+            Collections.addAll(cmd, opener);
+            cmd.add(nextUrl.get());
+            if (runOpener(cmd, sp)) {
+                return true;
+            }
+        }
+        log("join-browser: no browser opener answered (Desktop, xdg-open, gio) - native window");
+        return false;
+    }
+
+    /**
+     * One opener command under the settle rule — a non-zero exit within
+     * {@value #OPENER_SETTLE_MS} ms = not opened; exit 0, or STILL RUNNING at the deadline = opened. The child is
+     * never waited on past the deadline and never destroyed: a generic {@code xdg-open} with no desktop detected
+     * runs the browser itself in the foreground, so "still running" is the browser.
+     */
+    static boolean runOpener(List<String> cmd, Spawner sp) {
+        String name = cmd.get(0);
+        Process p;
+        try {
+            p = sp.start(cmd);
+        } catch (IOException | RuntimeException absent) {
+            log("join-browser: " + name + " unavailable (" + absent.getClass().getSimpleName() + ")");
+            return false;
+        }
+        try {
+            if (!p.waitFor(OPENER_SETTLE_MS, TimeUnit.MILLISECONDS)) {
+                return true;
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            log("join-browser: " + name + " wait interrupted - not opened");
+            return false;
+        }
+        int rc = p.exitValue();
+        if (rc != 0) {
+            log("join-browser: " + name + " exited " + rc + " - not opened");
+        }
+        return rc == 0;
     }
 
     /** The earlier window's base URL when its endpoint file's port answers {@code api/ping} with the file's token;
@@ -1051,11 +1245,12 @@ final class JoinBrowserUi implements JoinRoutes.Session {
                 companionSeenLive = true;
                 companionLuna = lunaSyncOf(ping.body);
                 // iteration 9 (c): the editor opens by itself on the FIRST live answer — once per launch, a
-                // Java Desktop.browse (never a page-side window.open outside a click); the page's Open editor
+                // Java-side open (openBrowser: off Windows a ticket of this host carries the editor address;
+                // never a page-side window.open outside a click); the page's Open editor
                 // button stays the fallback when the browse fails or the opt-out is set
                 if (!editorAutoOpened && JoinCore.autoEditorEnabled()) {
                     editorAutoOpened = true;
-                    if (openBrowser(ping.base)) {
+                    if (openBrowser(ping.base, host)) {
                         // The port only - the base URL carries the editor's token
                         System.out.println("editor auto-opened (port " + URI.create(ping.base).getPort() + ")");
                     } else {

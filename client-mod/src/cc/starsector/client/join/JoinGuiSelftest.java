@@ -24,6 +24,7 @@ import javax.swing.JOptionPane;
 import javax.swing.plaf.basic.BasicHTML;
 import javax.swing.text.JTextComponent;
 
+import cc.starsector.client.KitUserDirs;
 import cc.starsector.client.net.ClientListingReader;
 import cc.starsector.client.net.ClientVariantReceipt;
 import cc.starsector.client.net.ClientVariantReceiptReader;
@@ -451,6 +452,7 @@ final class JoinGuiSelftest {
         selftestShipChoiceHulls(tmp); //
         selftestModStageLazy(tmp);
         selftestModStageDigestOnce(tmp);
+        selftestModStageLinks(tmp);
         selftestVoiceCore();
         selftestLaunchGates(tmp);
         selftestLunaSidecar(tmp);
@@ -461,6 +463,7 @@ final class JoinGuiSelftest {
         selftestTeamPick(tmp);
         selftestTeamSides(tmp);
         JoinGuiProbeSelftest.run();
+        JoinUserDirsSelftest.run(tmp);
     }
 
     /**
@@ -1180,16 +1183,25 @@ final class JoinGuiSelftest {
                 && JoinHost.parseEndpoint("x|" + tok) == null, "join endpoint parse: refusals");
         // The endpoint file lives under LOCALAPPDATA, tagged per install; the
         // golden tag in cc_join_endpoint-ecf39d82.data is the scripts' own formula over "c:\games\starsector" (SHA-256, first 4 bytes)
-        Path game = Paths.get("C:\\Games\\Starsector");
-        check(Paths.get("D:\\Lad\\cc-starsector\\join\\cc_join_endpoint-ecf39d82.data")
-                        .equals(JoinHost.endpointFile("D:\\Lad", game))
-                        && JoinHost.installTag(Paths.get("c:\\GAMES\\Starsector\\mods\\..")).equals("ecf39d82"),
-                "join endpoint file: LOCALAPPDATA\\cc-starsector\\join, the per-install tag over the lower-cased"
-                        + " normalized root (flips if the folder, the hash, the case fold or normalize changes)");
-        check(JoinHost.endpointFile(null, game) == null && JoinHost.endpointFile("  ", game) == null
-                        && JoinHost.endpointFile("Lad", game) == null && JoinHost.endpointFile("\\Lad", game) == null,
-                "join endpoint file: no LOCALAPPDATA, a blank, relative or drive-relative one = NO file (flips on a"
-                        + " fallback into the install, %TEMP% or the start folder)");
+        if (KitUserDirs.isWindows()) {
+            Path game = Paths.get("C:\\Games\\Starsector");
+            check(Paths.get("D:\\Lad\\cc-starsector\\join\\cc_join_endpoint-ecf39d82.data")
+                            .equals(JoinHost.endpointFile("D:\\Lad", game))
+                            && JoinHost.installTag(Paths.get("c:\\GAMES\\Starsector\\mods\\..")).equals("ecf39d82"),
+                    "join endpoint file: LOCALAPPDATA\\cc-starsector\\join, the per-install tag over the lower-cased"
+                            + " normalized root (flips if the folder, the hash, the case fold or normalize changes)");
+            check(JoinHost.endpointFile(null, game) == null && JoinHost.endpointFile("  ", game) == null
+                            && JoinHost.endpointFile("Lad", game) == null && JoinHost.endpointFile("\\Lad", game) == null,
+                    "join endpoint file: no LOCALAPPDATA, a blank, relative or drive-relative one = NO file (flips on a"
+                            + " fallback into the install, %TEMP% or the start folder)");
+        } else {
+            // The two rows above are the WINDOWS law - drive-letter paths a POSIX Paths.get keeps as
+            // one backslashed segment, and a LOCALAPPDATA base the off-Windows branch never reads - so on Linux the whole
+            // battery died here before any POSIX row ran (the kit's Linux selftest leg, lane H). The off-Windows file
+            // (the kit's runtime dir, HOME unusable = null) has its own rows in JoinTicketSelftest, run on both.
+            System.out.println("join-gui selftest SKIP join-endpoint-win (the LOCALAPPDATA endpoint-file law is Windows-only;"
+                    + " the off-Windows twin = JoinTicketSelftest's endpointFileOffWindows rows)");
+        }
         check(JoinRoutes.isOurHost("127.0.0.1:40001", 40001) && JoinRoutes.isOurHost("LOCALHOST:40001", 40001)
                 && JoinRoutes.isOurHost("[::1]:40001", 40001) && !JoinRoutes.isOurHost("127.0.0.1:40002", 40001)
                 && !JoinRoutes.isOurHost("127.0.0.1", 40001) && !JoinRoutes.isOurHost("evil.example:40001", 40001),

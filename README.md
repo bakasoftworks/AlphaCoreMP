@@ -2,7 +2,7 @@
 
 AlphaCoreMP is an unofficial fan-made mod, not affiliated with the developers of Starsector. You need your own purchased copy of Starsector 0.98a-RC8 - nothing here includes the game.
 
-Each player flies their own ship in one shared battle against waves of AI ships, or in two teams against each other, on a dedicated server that another player (the host) runs. Players need Windows (for now.) The server runs on Windows or Linux and supports up to 255 players per server, although exact playercount feasibility will depend on the host's CPU and how complex a battle is. It is likely that the average player's framerate will choke long before the server's simulation does.
+Each player flies their own ship in one shared battle against waves of AI ships, or in two teams against each other, on a dedicated server that another player (the host) runs. Players join from Windows or Linux. The server runs on Windows or Linux and supports up to 255 players per server, although exact playercount feasibility will depend on the host's CPU and how complex a battle is. It is likely that the average player's framerate will choke long before the server's simulation does.
 
 Three READMEs cover the three ways in. The short version of each is below, and the full ones are linked.
 

@@ -1,0 +1,49 @@
+# cc-engine-map v1
+# id=linux-0.98a-RC8
+# game=0.98a-RC8
+# source=5dd222b9e266d2ac2d63b3dad4983eb05caaf5a247d7dfb82aaeba47ea774cc8
+# target=3d41d31d4840158491426f0570f42d71c176d9bc9cc84605a284e4c76c8b91b0
+# columns: class<TAB>win-internal<TAB>linux-internal | <kind><TAB>win-owner<TAB>name<TAB>win-desc<TAB>linux-name | touched<TAB>mod-class-internal
+# kind = static-method | method | static-field | field (the static bit decides the probe's lookup: findStatic / findVirtual / findStaticGetter / findGetter)
+# A Linux descriptor = the Windows descriptor mapped through the class rows. Keys are exact, case-sensitive internal names.
+class	com/fs/starfarer/D/M	com/fs/starfarer/O0OO/OO0O
+class	com/fs/starfarer/class/new/return	com/fs/starfarer/E/OoOO/F
+class	com/fs/starfarer/combat/E/F	com/fs/starfarer/combat/o0OO/F
+class	com/fs/starfarer/combat/entities/ship/A/C	com/fs/starfarer/combat/entities/ship/A/OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
+class	com/fs/starfarer/combat/entities/ship/A/class	com/fs/starfarer/combat/entities/ship/A/E
+class	com/fs/starfarer/combat/entities/ship/o0OO	com/fs/starfarer/combat/entities/ship/E
+class	com/fs/starfarer/combat/new/OoOO	com/fs/starfarer/combat/B/ooOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
+class	com/fs/starfarer/combat/new/b	com/fs/starfarer/combat/B/b
+class	com/fs/starfarer/combat/oOOO	com/fs/starfarer/combat/A
+class	com/fs/starfarer/combat/systems/o00O	com/fs/starfarer/combat/systems/Q
+class	com/fs/starfarer/combat/tasks/Object	com/fs/starfarer/combat/tasks/C
+class	com/fs/starfarer/loading/B	com/fs/starfarer/loading/new
+class	com/fs/starfarer/loading/Q	com/fs/starfarer/loading/o00O
+class	com/fs/starfarer/loading/specs/OoOO	com/fs/starfarer/loading/specs/OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
+class	com/fs/starfarer/loading/specs/oO0o	com/fs/starfarer/loading/specs/d
+class	com/fs/starfarer/ui/c	com/fs/starfarer/ui/OO0o
+class	com/fs/starfarer/ui/interfacenew	com/fs/starfarer/ui/z
+class	sound/C	sound/Object
+static-field	com/fs/starfarer/D/M	Ô00000	I	String
+static-field	com/fs/starfarer/combat/B$o	String	Lcom/fs/starfarer/combat/B$o;	Ô00000
+static-field	com/fs/starfarer/combat/B$o	Ó00000	Lcom/fs/starfarer/combat/B$o;	Object
+field	com/fs/starfarer/util/Tesselator$oo	String	Ljava/util/List;	Ô00000
+field	com/fs/starfarer/util/Tesselator$oo	void	Ljava/util/List;	Ø00000
+field	com/fs/starfarer/util/Tesselator$oo	Ó00000	Ljava/util/List;	Object
+static-method	com/fs/starfarer/combat/entities/ship/A/I	o00000	(Lcom/fs/starfarer/loading/specs/OoOO;Lcom/fs/starfarer/api/combat/ShipAPI$HullSize;Lorg/lwjgl/util/vector/Vector2f;Lorg/lwjgl/util/vector/Vector2f;FF)V	super
+static-method	com/fs/starfarer/loading/B	new	(Ljava/lang/String;)V	Ò00000
+static-method	com/fs/starfarer/loading/specs/a	super	(Lcom/fs/starfarer/combat/entities/Ship;Lcom/fs/starfarer/combat/systems/o00O;Ljava/lang/Object;Lorg/lwjgl/util/vector/Vector2f;FLorg/lwjgl/util/vector/Vector2f;)Ljava/lang/Object;	o00000
+static-method	com/fs/starfarer/settings/StarfarerSettings	ö00000	(Ljava/lang/String;)F	if
+method	com/fs/starfarer/combat/tasks/Object	Ø00000	()Z	void
+touched	cc/starsector/client/BootVariantRegistry
+touched	cc/starsector/client/CarrierBornFighterFx$EngineReach
+touched	cc/starsector/client/FighterWingHudLane$EngineReach
+touched	cc/starsector/client/HulkBreakSfxAdapter
+touched	cc/starsector/client/MatchOverLane
+touched	cc/starsector/client/MissileSplitLane
+touched	cc/starsector/client/PredictReconcileCombatPlugin
+touched	cc/starsector/client/ReplicaOrderSweep
+touched	cc/starsector/client/SoundReinitAdapter
+touched	cc/starsector/client/TeleportCursorLane
+touched	cc/starsector/client/TransferManagerAdapter
+touched	cc/starsector/client/VariantDefinitionLane

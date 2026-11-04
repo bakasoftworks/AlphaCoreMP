@@ -1,7 +1,8 @@
 #Requires -Version 7
 # build.ps1 - builds this source tree, on Windows or on Linux (PowerShell 7 on either): the headless server's classes
-# and agent jars, then the client mod jar. No tests, no checks, nothing is installed or copied into the game: every
-# output lands inside this tree (but the server folder -ServerFolder names and the kit zip -KitZip names).
+# and agent jars, then the client mod jar. No tests, and one check only (the built mod jar's start-up self-check
+# against the game's jars, step 10); nothing is installed or copied into the game: every output lands inside this tree
+# (but the server folder -ServerFolder names and the kit zip -KitZip names).
 #
 # OUTPUTS (the same relative paths the maintainer's internal build writes, so the two can be compared file by file):
 #   server/classes                          the server, the vendored Concentus audio codec, the game-API probe classes
@@ -9,6 +10,7 @@
 #   server/premain/classes + cc-premain.jar the class-transform agent, with the ASM library and the compat classes in it
 #   server/premain/cc-rngpin-holder.jar     the random-pin holder classes, packed a second time on their own (the
 #                                           agent adds this jar to the boot class path when the pin is armed)
+#   client-mod/gen                          the engine-name table generated from client-mod/engine-map (compiled into the jar)
 #   client-mod/build/classes                the client mod's classes plus the server classes it shares
 #   client-mod/build/stub-classes           the MagicLib compile-only stubs (on the client compile class path, never jarred)
 #   client-mod/mod/jars/cc-client-mod.jar   the client mod jar
@@ -181,6 +183,15 @@ if (-not (Test-Path -LiteralPath $asmPin -PathType Leaf)) { throw "ASM sha256 fi
 $asmWant = ((Get-Content -LiteralPath $asmPin -Raw) -split '\s+')[0].Trim().ToLowerInvariant()
 $asmHave = (Get-FileHash -LiteralPath $asmJar -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($asmHave -ne $asmWant) { throw "ASM jar sha256 mismatch: file $asmHave, expected $asmWant ($asmJar)" }
+# ASM commons, the same version and the same check: its class remapper renames the client mod's references to the
+# engine's internal classes when the game runs on a separate build of the engine (the kit agent only).
+$asmCommonsJar = Join-Path $root 'third-party/asm/asm-commons-9.10.1.jar'
+$asmCommonsPin = "$asmCommonsJar.sha256"
+if (-not (Test-Path -LiteralPath $asmCommonsJar -PathType Leaf)) { throw "ASM commons jar missing: $asmCommonsJar" }
+if (-not (Test-Path -LiteralPath $asmCommonsPin -PathType Leaf)) { throw "ASM commons sha256 file missing: $asmCommonsPin" }
+$asmCommonsWant = ((Get-Content -LiteralPath $asmCommonsPin -Raw) -split '\s+')[0].Trim().ToLowerInvariant()
+$asmCommonsHave = (Get-FileHash -LiteralPath $asmCommonsJar -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($asmCommonsHave -ne $asmCommonsWant) { throw "ASM commons jar sha256 mismatch: file $asmCommonsHave, expected $asmCommonsWant ($asmCommonsJar)" }
 
 function Reset-Dir([string] $Path) {
     $full = [IO.Path]::GetFullPath($Path)
@@ -225,7 +236,7 @@ if ($probeSources.Count -gt 0) {
 $compatClasses = Join-Path $server 'compat/classes'
 Reset-Dir $compatClasses
 $compatSources = @(Get-ChildItem -LiteralPath (Join-Path $server 'compat/src') -Recurse -Filter '*.java')
-Invoke-Javac 'server compat' $javac @('--release', '17', '-cp', $asmJar, '-d', $compatClasses) @($compatSources.FullName)
+Invoke-Javac 'server compat' $javac @('--release', '17', '-cp', "$asmJar$cpSep$asmCommonsJar", '-d', $compatClasses) @($compatSources.FullName)
 Write-Host "server compat: $($compatSources.Count) sources -> server/compat/classes"
 
 # 3b. premain: the transform agent, compiled against ASM, then every org/objectweb/asm class copied in (the jar's
@@ -262,19 +273,25 @@ $compatAgentSources = @(Get-ChildItem -LiteralPath (Join-Path $compatAgent 'src'
 Invoke-Javac 'server compat-agent' $javac @('--release', '17', '-cp', $compatAgentClasses, '-d', $compatAgentClasses) @($compatAgentSources.FullName)
 $compatAgentPrivate = Join-Path $compatAgentClasses 'META-INF/cc-compat/classes'
 New-Item -ItemType Directory -Force -Path $compatAgentPrivate | Out-Null
-$zip = [IO.Compression.ZipFile]::OpenRead($asmJar)
 $agentShaded = 0
-try {
-    foreach ($entry in $zip.Entries) {
-        if ($entry.FullName.EndsWith('/')) { continue }
-        if ($entry.FullName -notlike 'org/objectweb/asm/*.class') { continue }
-        $dest = Join-Path $compatAgentPrivate ($entry.FullName.Replace('/', $dirSep))
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
-        [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
-        $agentShaded++
-    }
-} finally { $zip.Dispose() }
-if ($agentShaded -lt 30) { throw "server compat-agent: only $agentShaded ASM class(es) in $asmJar (a different jar layout?)" }
+# the core jar (at least 30 classes) and the commons jar (at least 20; its classes that need ASM's tree package ride
+# along but are never loaded: the remap links the class remapper alone)
+foreach ($shade in @(@{ Jar = $asmJar; Floor = 30 }, @{ Jar = $asmCommonsJar; Floor = 20 })) {
+    $zip = [IO.Compression.ZipFile]::OpenRead($shade.Jar)
+    $count = 0
+    try {
+        foreach ($entry in $zip.Entries) {
+            if ($entry.FullName.EndsWith('/')) { continue }
+            if ($entry.FullName -notlike 'org/objectweb/asm/*.class') { continue }
+            $dest = Join-Path $compatAgentPrivate ($entry.FullName.Replace('/', $dirSep))
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+            $count++
+        }
+    } finally { $zip.Dispose() }
+    if ($count -lt $shade.Floor) { throw "server compat-agent: only $count ASM class(es) in $($shade.Jar) (a different jar layout?)" }
+    $agentShaded += $count
+}
 $compatMagic = Join-Path $compatClasses 'cc/starsector/compat/magic'
 if (-not (Test-Path -LiteralPath (Join-Path $compatMagic 'MagicSeamAgentTransformer.class'))) { throw "server compat-agent: the compat unit did not emit cc/starsector/compat/magic/MagicSeamAgentTransformer.class under $compatClasses" }
 $privateCompat = Join-Path $compatAgentPrivate 'cc/starsector/compat'
@@ -285,7 +302,18 @@ Copy-Item -LiteralPath $compatMagic -Destination $privateCompat -Recurse -Force
 $compatPilot = Join-Path $compatClasses 'cc/starsector/compat/pilotship'
 if (-not (Test-Path -LiteralPath (Join-Path $compatPilot 'ReplicaPilotAgentTransformer.class'))) { throw "server compat-agent: the compat unit did not emit cc/starsector/compat/pilotship/ReplicaPilotAgentTransformer.class under $compatClasses" }
 Copy-Item -LiteralPath $compatPilot -Destination $privateCompat -Recurse -Force
-Write-Host "server compat-agent: $($compatAgentSources.Count) sources + $agentShaded ASM classes + the compat magic + pilotship packages -> server/compat-agent/classes"
+# the engine-name remap (the agent arms it first): the compat unit's enginemap package + every engine map under
+# META-INF/cc-compat/engine-map/ (the agent lists that folder of its own jar; no map = a kit that can never arm on the
+# Linux build of the game, so it fails here)
+$compatEngineMap = Join-Path $compatClasses 'cc/starsector/compat/enginemap'
+if (-not (Test-Path -LiteralPath (Join-Path $compatEngineMap 'EngineMapAgentTransformer.class'))) { throw "server compat-agent: the compat unit did not emit cc/starsector/compat/enginemap/EngineMapAgentTransformer.class under $compatClasses" }
+Copy-Item -LiteralPath $compatEngineMap -Destination $privateCompat -Recurse -Force
+$engineMaps = @(Get-ChildItem -LiteralPath (Join-Path $root 'client-mod/engine-map') -Filter '*.tsv' -File -ErrorAction SilentlyContinue)
+if ($engineMaps.Count -eq 0) { throw "server compat-agent: no engine map (*.tsv) under $(Join-Path $root 'client-mod/engine-map')" }
+$agentEngineMaps = Join-Path $compatAgentClasses 'META-INF/cc-compat/engine-map'
+New-Item -ItemType Directory -Force -Path $agentEngineMaps | Out-Null
+foreach ($m in $engineMaps) { Copy-Item -LiteralPath $m.FullName -Destination (Join-Path $agentEngineMaps $m.Name) -Force }
+Write-Host "server compat-agent: $($compatAgentSources.Count) sources + $agentShaded ASM classes + the compat magic + pilotship + enginemap packages + $($engineMaps.Count) engine map(s) -> server/compat-agent/classes"
 
 # 4. the two agent-side jars. cc-premain.jar = the agent + ASM + the product unit's transform package (the registry
 # classes the agent reads) + the compat unit; cc-rngpin-holder.jar = the product unit's rngpin package alone.
@@ -327,10 +355,22 @@ $out = Join-Path $client 'build/classes'
 Reset-Dir $out
 $clientSrc = Join-Path $client 'src'
 
+# 5b. the engine-name table. The Linux download of the game is a separate build of the engine: some of the engine's
+# internal class and member names the mod reaches by reflection are spelled differently there, and
+# client-mod/engine-map lists them. client-mod/engine-map-codegen.ps1 (the same script the maintainer's own client build
+# calls, so the two builds generate the same file from one map) writes the class EngineNameTable under client-mod/gen,
+# constants only, which compiles with the sources below; a bad map row stops the build, naming its line. gen/ is an
+# output: every build rewrites it.
+$genDir = Join-Path $client 'gen'
+Reset-Dir $genDir
+$engineTable = & (Join-Path $client 'engine-map-codegen.ps1') -Out $genDir
+Write-Host "client: engine map $($engineTable.MapId) -> client-mod/gen ($($engineTable.Classes) class / $($engineTable.Members) member / $($engineTable.Touched) rewritten-class rows)"
+
 # 6. three javac passes. A (JDK 25, --release 22): the voice/ffm package; -sourcepath + -implicit:none read the types
 # it names for their signatures without emitting them. B (JDK 25, --release 17): the three factories that name it.
-# Main (JDK 17): everything else, with A and B's classes on the class path.
-$allSrcFiles = @(Get-ChildItem -LiteralPath $clientSrc -Recurse -Filter '*.java' | ForEach-Object { $_.FullName })
+# Main (JDK 17): everything else (the generated engine-name table too), with A and B's classes on the class path.
+$clientSourcePath = "$clientSrc$cpSep$genDir"
+$allSrcFiles = @(Get-ChildItem -LiteralPath $clientSrc -Recurse -Filter '*.java' | ForEach-Object { $_.FullName }) + @($engineTable.Path)
 $ffmSrcFiles = @($allSrcFiles | Where-Object { $_.Replace('\', '/') -like '*/voice/ffm/*' })
 $voiceDir = Join-Path $clientSrc 'cc/starsector/client/voice'
 $bridgeSrcFiles = @('VoiceSinkFactory.java', 'VoiceSourceFactory.java', 'VoiceProbeEarFactory.java' | ForEach-Object { Join-Path $voiceDir $_ })
@@ -338,9 +378,9 @@ $srcFiles = @($allSrcFiles | Where-Object { $_.Replace('\', '/') -notlike '*/voi
 if ($ffmSrcFiles.Count -eq 0 -or @($bridgeSrcFiles | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0) { throw 'client: the voice/ffm sources or one of the three voice factory sources are missing' }
 # -XDstringConcat=inline: string concatenation compiles to plain StringBuilder chains, not invokedynamic call sites
 # whose first run spins method handles (a measured first-frame stall in game).
-& $javac25 -encoding UTF-8 --release 22 -XDstringConcat=inline -Xlint:all,-restricted -sourcepath $clientSrc -implicit:none -d $out $ffmSrcFiles
+& $javac25 -encoding UTF-8 --release 22 -XDstringConcat=inline -Xlint:all,-restricted -sourcepath $clientSourcePath -implicit:none -d $out $ffmSrcFiles
 Assert-Exit 'client pass A (voice/ffm, JDK 25)'
-& $javac25 -encoding UTF-8 --release 17 -XDstringConcat=inline -Xlint:all -sourcepath $clientSrc -implicit:none -cp $out -d $out $bridgeSrcFiles
+& $javac25 -encoding UTF-8 --release 17 -XDstringConcat=inline -Xlint:all -sourcepath $clientSourcePath -implicit:none -cp $out -d $out $bridgeSrcFiles
 Assert-Exit 'client pass B (voice factories, JDK 25)'
 # The MagicLib compile-only stubs (client-mod/stubs: the exact descriptors of the members the client's magic package
 # names, from the MagicLib build it was written against) compile into their own tree, which rides the main pass's class
@@ -470,6 +510,22 @@ if (Test-Path -LiteralPath $modJar) { Remove-Item -LiteralPath $modJar -Force }
 & $jar --create --date 2026-01-01T00:00:00Z --file $modJar -C $out .
 Assert-Exit 'cc-client-mod.jar'
 Write-Host 'client jar: client-mod/mod/jars/cc-client-mod.jar'
+# The jar's start-up self-check. When the game loads the mod, EngineLinkProbe's first act is to look up every row of
+# the engine-name table, and any miss stops the game with a Fatal dialog (a half-linked multiplayer client would desync),
+# so a probe or map error would refuse EVERY start on a healthy install. This runs the same pass from the built jar
+# alone + the game's own jars (no agent: the Windows spelling): every class row loads, every member row resolves by its
+# kind, every rewritten class defines, and its control pass, in the other spelling, must miss. The JVM runs with class
+# verification off, as the game does (the install's vmparams turn it off): the engine's internal classes carry member
+# names the default class-format check rejects, so a verifying JVM would grade a healthy install as broken.
+$probeCp = @($modJar) + @(Get-ChildItem -LiteralPath $core -Filter '*.jar' -File | Where-Object { $_.Name -notlike '*-sources.jar' } | Sort-Object Name | ForEach-Object { $_.FullName })
+$probeOut = @(& $java -XX:+UnlockDiagnosticVMOptions -XX:-BytecodeVerificationRemote -cp ($probeCp -join $cpSep) cc.starsector.client.EngineLinkProbe --selftest)
+$probeExit = $LASTEXITCODE
+$probeOut | ForEach-Object { Write-Host "  $_" }
+if ($probeExit -ne 0) { throw "client: EngineLinkProbe --selftest exited $probeExit (the mod would refuse to start on this game)" }
+$probeWant = "engine-map: unset probe=ok rows=$($engineTable.Classes + $engineTable.Members) defined=$($engineTable.Touched)"
+if (-not ($probeOut | Where-Object { $_ -ceq $probeWant })) { throw "client: EngineLinkProbe --selftest printed no '$probeWant' line" }
+if (-not ($probeOut | Where-Object { $_ -clike 'control: *' })) { throw 'client: EngineLinkProbe --selftest printed no control line' }
+Write-Host "client: start-up self-check ok ($probeWant; the other spelling misses)"
 # 10a. the kit's compat agent jar (3c.) beside the mod jar: join-cc.bat's bundled start passes it as -javaagent, and the
 # kit packer reads it from here.
 Copy-Item -LiteralPath $compatAgentJar -Destination (Join-Path $jarsDir 'cc-compat-agent.jar') -Force

@@ -3,6 +3,7 @@ package cc.starsector.client.join;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
@@ -12,14 +13,17 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.security.SecureRandom;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.Properties;
 
+import cc.starsector.client.KitUserDirs;
 import cc.starsector.server.runtime.HandshakeCrypto;
 
 /**
  * Joiner-GUI field persistence: last-used server address / port / pilot name, so the
  * friend types them once. Lives OUTSIDE the mod folder — %LOCALAPPDATA%\cc-starsector\
- * ({@link #defaultPath}; %APPDATA% before, moved once by {@link #migrateLegacy}) — because (a) the
+ * ({@link #defaultPath}; %APPDATA% before, moved once by {@link #migrateLegacy}; off Windows the kit's persistent
+ * user dir, {@link #settingsDirOffWindows}) — because (a) the
  * kit packager's Gate 1 asserts deployed==repo byte-identity with only kit-manifest.txt/match.txt
  * exempt, and (b) deploy.ps1 wipes the deployed folder and kit updates re-extract it; the profile
  * survives both, so a kit update keeps the friend's saved entries.
@@ -180,14 +184,19 @@ final class JoinSettings {
         return key;
     }
 
-    /** {@code CREATE_NEW}: two windows minting at once both keep the FIRST file (the loser re-reads it). */
-    private static byte[] mintMaster(Path master) throws IOException {
+    /** {@code CREATE_NEW}: two windows minting at once both keep the FIRST file (the loser re-reads it). The file is
+     *  owner-only from creation (0600 in a 0700 folder where the filesystem has POSIX modes; {@link KitFileModes}).
+     *  Package-private so the selftest drives a second mint over the first.
+     * */
+    static byte[] mintMaster(Path master) throws IOException {
         byte[] key = new byte[16];
         new SecureRandom().nextBytes(key);
-        Files.createDirectories(master.getParent());
+        KitFileModes.createDirs(master.getParent());
         try {
-            Files.write(master, hex(key).getBytes(StandardCharsets.US_ASCII),
-                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+            try (OutputStream out = Channels.newOutputStream(
+                    KitFileModes.open(master, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))) {
+                out.write(hex(key).getBytes(StandardCharsets.US_ASCII));
+            }
             System.err.println("join-settings: cid-master minted");
             return key;
         } catch (FileAlreadyExistsException raced) {
@@ -212,15 +221,38 @@ final class JoinSettings {
      * {@code %LOCALAPPDATA%\cc-starsector\join-settings.properties} — the
      * LOCAL (non-roaming) profile: the file holds the remembered match password and its pair (an older one also a
      * retired cid row), and a roaming profile copies it off the box. {@code LOCALAPPDATA} unset, blank or not absolute
-     * ⇒ {@code %APPDATA%}, else {@code user.home} (the old order). A run reads it through {@link #pathForRun}.
+     * ⇒ {@code %APPDATA%}, else {@code user.home} (the old order). Off Windows the folder is
+     * {@link #settingsDirOffWindows} instead. A run reads it through {@link #pathForRun}.
      */
     static Path defaultPath() {
+        if (!KitUserDirs.isWindows()) {
+            return settingsDirOffWindows(System.getenv()).resolve(FILE_NAME);
+        }
         return settingsBase(System.getenv("LOCALAPPDATA"), System.getenv("APPDATA"), System.getProperty("user.home"))
                 .resolve(DIR_NAME).resolve(FILE_NAME);
     }
 
-    /** {@link #defaultPath}'s base folder, pure (selftested): an absolute {@code localAppData}, else a non-blank
-     *  {@code appData}, else {@code userHome}. */
+    /**
+     * The settings folder OFF Windows, pure (selftested with an injected environment): the kit's persistent user dir
+     * from the shared ladder ({@link KitUserDirs#dataDir}: {@code $XDG_DATA_HOME/cc-starsector} when that is absolute,
+     * else {@code cc-starsector} under {@code $HOME/.local/share}) — the folder the Linux launcher prepares, so the
+     * window and the launcher read ONE settings file and ONE {@code cid-master}. HOME unset or relative (and no absolute
+     * {@code XDG_DATA_HOME}) ⇒ {@link IllegalStateException}, deliberately with NO fallback to {@code user.home} or the
+     * working directory: the file holds the remembered password, and a guess elsewhere would fork it from the launcher,
+     * which refuses to start on the same condition. Never reached on Windows ({@link #defaultPath}).
+     *
+     */
+    static Path settingsDirOffWindows(Map<String, String> env) {
+        Path dir = KitUserDirs.dataDir(env);
+        if (dir == null) {
+            throw new IllegalStateException("HOME is unset or not an absolute path - the join window keeps its settings"
+                    + " under $XDG_DATA_HOME or $HOME/.local/share; set HOME and run again");
+        }
+        return dir;
+    }
+
+    /** {@link #defaultPath}'s base folder on Windows, pure (selftested): an absolute {@code localAppData}, else a
+     *  non-blank {@code appData}, else {@code userHome}. */
     static Path settingsBase(String localAppData, String appData, String userHome) {
         Path local = absoluteEnvDir(localAppData);
         if (local != null) {
@@ -339,9 +371,14 @@ final class JoinSettings {
                 props.getProperty("passwordFor", password.isEmpty() ? "" : host.trim() + ":" + port.trim()));
     }
 
+    /** A REWRITE every time ({@code CREATE|TRUNCATE_EXISTING|WRITE}, the options {@code Files.newOutputStream} used):
+     *  the second save must replace the first, never refuse it or keep its longer tail. Owner-only from creation, and
+     *  an older file is narrowed to 0600 on its next save, where the filesystem has POSIX modes ({@link KitFileModes}).
+     * */
     void save(Path path) throws IOException {
-        Files.createDirectories(path.getParent());
-        try (OutputStream out = Files.newOutputStream(path)) {
+        KitFileModes.createDirs(path.getParent());
+        try (OutputStream out = Channels.newOutputStream(KitFileModes.open(path, StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
             store(out);
         }
     }

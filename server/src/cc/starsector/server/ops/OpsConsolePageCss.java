@@ -53,6 +53,10 @@ package cc.starsector.server.ops;
  * squeeze the seat cards out again, while the 128 px floor keeps the collapsed dock unscrolled on a shorter phone. The
  * narrow dock stacks top-down with the load ordered first (the same picture as the wide {@code column-reverse}), so an
  * opened More grows downward and keeps its own toggle in view.
+ *
+ * <p>{@code .note-dep-on} = the Mods table's Needs cell on an unticked mod a
+ * required one pulls in (it loads anyway): bold in the text colour, beside {@code .note-err} (a refused start), so the
+ * cell reads emphasised without a new colour. The marker rides this javadoc, never the stylesheet.
  */
 final class OpsConsolePageCss {
 
@@ -148,6 +152,7 @@ input:disabled, select:disabled { opacity: .55; }
 .dim { opacity: .6; }
 .hint { margin: 0; color: var(--muted); font-size: 12px; }
 .note-err { margin: 2px 0; color: var(--err); }
+.note-dep-on { font-weight: 600; }
 .voice-note { margin: 2px 0; }
 .empty { margin: 4px 0; color: var(--muted); text-align: center; }
 output.last-sent { color: var(--muted); font-size: 12px; white-space: nowrap; }

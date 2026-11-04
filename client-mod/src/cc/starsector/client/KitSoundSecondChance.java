@@ -10,6 +10,7 @@ package cc.starsector.client;
  * lwjgl64.dll — loaded by absolute path — is fine). join-cc.bat now sets the property on every
  * launch (Fix A); this class is the in-process backstop for a kit started some other way, and the
  * ONE sidelog row that says which state the game's sound was in (the debrief zip ships it).
+ * Off Windows the same retry points at {@code native/linux}, the folder the game's own Linux start script names.
  * No {@code java.io.File} here — B-denied; the separator rides the system property.
  */
 final class KitSoundSecondChance {
@@ -33,8 +34,10 @@ final class KitSoundSecondChance {
             }
             String set = "";
             if (lp == null || lp.isEmpty()) {
+                // The game's own native folder for THIS OS - native/windows
+                // beside the Windows core, native/linux in the Linux install root (the working directory either way).
                 String sep = System.getProperty("file.separator");
-                lp = System.getProperty("user.dir") + sep + "native" + sep + "windows";
+                lp = System.getProperty("user.dir") + sep + "native" + sep + (KitUserDirs.isWindows() ? "windows" : "linux");
                 try {
                     System.setProperty("org.lwjgl.librarypath", lp);
                     set = " (set here)";

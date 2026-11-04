@@ -42,6 +42,14 @@ final class HulkCutGeometryAdapter {
     /** The exact-ring field name, U+00D3 escaped (never raw in source). */
     private static final String EXACT_RING_FIELD = "\u00D3" + "00000";
 
+    /**
+     * The three list fields below are found by NAME, which the compat
+     * agent's class-load rename cannot reach, so each name goes through {@link EngineNames#member}, keyed by
+     * the owner and descriptor as the Windows build spells them (the identity there).
+     */
+    private static final String RING_OWNER = "com.fs.starfarer.util.Tesselator$oo";
+    private static final String RING_DESC = "Ljava/util/List;";
+
     static {
         java.lang.invoke.VarHandle exactRing = null;
         java.lang.invoke.VarHandle visualRing = null;
@@ -52,12 +60,12 @@ final class HulkCutGeometryAdapter {
                     java.lang.invoke.MethodHandles.privateLookupIn(
                             com.fs.starfarer.util.Tesselator.oo.class,
                             java.lang.invoke.MethodHandles.lookup());
-            exactRing = lookup.findVarHandle(
-                    com.fs.starfarer.util.Tesselator.oo.class, EXACT_RING_FIELD, List.class);
-            visualRing = lookup.findVarHandle(
-                    com.fs.starfarer.util.Tesselator.oo.class, "void", List.class);
-            cutPoints = lookup.findVarHandle(
-                    com.fs.starfarer.util.Tesselator.oo.class, "String", List.class);
+            exactRing = lookup.findVarHandle(com.fs.starfarer.util.Tesselator.oo.class,
+                    EngineNames.member(RING_OWNER, EXACT_RING_FIELD, RING_DESC), List.class);
+            visualRing = lookup.findVarHandle(com.fs.starfarer.util.Tesselator.oo.class,
+                    EngineNames.member(RING_OWNER, "void", RING_DESC), List.class);
+            cutPoints = lookup.findVarHandle(com.fs.starfarer.util.Tesselator.oo.class,
+                    EngineNames.member(RING_OWNER, "String", RING_DESC), List.class);
         } catch (Throwable t) {
             failure = t;
             exactRing = null;

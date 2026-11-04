@@ -333,10 +333,18 @@ final class JoinGuiSelftestFs {
         check(oldFile.equals(fallback) && "Old Pilot".equals(JoinSettings.load(fallback).name),
                 "settings M3: a failed move reads the old file in place (flips if a failure starts from an empty file -"
                         + " the seat-key cid would be lost)");
-        check(Paths.get("D:\\Lad").equals(JoinSettings.settingsBase("D:\\Lad", "D:\\Roam", "D:\\Home"))
-                && Paths.get("D:\\Roam").equals(JoinSettings.settingsBase("Lad", "D:\\Roam", "D:\\Home"))
-                && Paths.get("D:\\Roam").equals(JoinSettings.settingsBase(" ", "D:\\Roam", "D:\\Home"))
-                && Paths.get("D:\\Home").equals(JoinSettings.settingsBase(null, "", "D:\\Home")),
+        // M4's inputs take THIS OS's absolute shape: Paths.get("D:\\Lad").isAbsolute() is
+        // false on Linux, where the kit's Linux selftest leg died at this row. The LAW is OS-neutral - an absolute
+        // first value wins, a relative or blank one falls to the second, a blank second to the third - so it is
+        // asserted on every OS instead of gated (the ladder itself runs on Windows only: JoinSettings.defaultPath).
+        boolean m4Win = cc.starsector.client.KitUserDirs.isWindows();
+        String m4Lad = m4Win ? "D:\\Lad" : "/lad";
+        String m4Roam = m4Win ? "D:\\Roam" : "/roam";
+        String m4Home = m4Win ? "D:\\Home" : "/home/pilot";
+        check(Paths.get(m4Lad).equals(JoinSettings.settingsBase(m4Lad, m4Roam, m4Home))
+                && Paths.get(m4Roam).equals(JoinSettings.settingsBase("Lad", m4Roam, m4Home))
+                && Paths.get(m4Roam).equals(JoinSettings.settingsBase(" ", m4Roam, m4Home))
+                && Paths.get(m4Home).equals(JoinSettings.settingsBase(null, "", m4Home)),
                 "settings M4: an absolute LOCALAPPDATA wins, else APPDATA, else user.home (flips if the roaming"
                         + " profile is read first or a relative LOCALAPPDATA is trusted)");
         // M5: two windows on one first run both pass migrateLegacy's
@@ -510,6 +518,112 @@ final class JoinGuiSelftestFs {
                 List.of(new DoorProbe.ModRow("readable_mod", label, prefix)), 1, true, JoinModStage.scan(install));
         check(edited.rows.size() == 1 && JoinModStage.STATUS_DATA.equals(edited.rows.get(0).status),
                 "M-digest: an edited a.csv diffs STATUS_DATA");
+    }
+
+    /**
+     * Rows {@code kit-link-*}: the mods ladder's link rule driven through the REAL {@link JoinModStage#stage} on this
+     * host's own link type (a junction on Windows, a symbolic link elsewhere): two launches in a row restage cleanly
+     * (the stage recognises and removes only its own links, the mod behind each survives), a real folder in the root
+     * refuses the stage untouched, and each OS's {@code isKitLink} rule is pinned on a real link: a junction on
+     * Windows (plus a Windows symlink when this account may create one, else SKIP), a symlink where the filesystem has
+     * a posix view (else SKIP-posix).
+     *
+     */
+    static void selftestModStageLinks(Path tmp) throws Exception {
+        boolean windows = cc.starsector.client.KitUserDirs.isWindows();
+        Path install = tmp.resolve("modlink-install");
+        if (windows && JoinModStage.stageableName(install.toString()) != null) {
+            // a temp path the cmd-argument law refuses (a % or & in the account name) cannot host a junction
+            System.out.println("join-gui selftest SKIP kit-link-* (the temp path holds a character mklink cannot take)");
+            return;
+        }
+        Path kitDir = install.resolve("mods").resolve("CC_Client");
+        Path modDir = install.resolve("mods").resolve("Link Mod");
+        Files.createDirectories(kitDir);
+        Files.createDirectories(modDir.resolve("data"));
+        Files.createDirectories(modDir.resolve("jars"));
+        Files.writeString(modDir.resolve("mod_info.json"),
+                "{\"id\":\"link_mod\",\"version\":\"1.0\",\"jars\":[\"jars/a.jar\"]}", StandardCharsets.UTF_8);
+        Files.write(modDir.resolve("jars").resolve("a.jar"), new byte[] {0x50, 0x4b, 0x05, 0x06, 4, 5, 6});
+        Files.writeString(modDir.resolve("data").resolve("a.csv"), "a,b\n", StandardCharsets.UTF_8);
+        JoinModStage.LocalMod clean = JoinModStage.digest(JoinModStage.scan(install).byId.get("link_mod"));
+        JoinModStage.Diff ok = JoinModStage.diff(List.of(new DoorProbe.ModRow("link_mod",
+                cc.starsector.server.runtime.ModSet.versionLabel(clean.version),
+                cc.starsector.server.runtime.ModSet.filesPrefix(clean.jarsMd5, clean.dataMd5))), 1, true,
+                JoinModStage.scan(install));
+        check(ok.ok && ok.rows.size() == 1 && JoinModStage.STATUS_OK.equals(ok.rows.get(0).status),
+                "kit-link: SETUP the published row did not diff OK (the link rows below never ran)");
+
+        Path root = JoinModStage.stage(install, kitDir, ok.rows);
+        Path kitLink = root.resolve("CC_Client");
+        Path modLink = root.resolve("Link Mod");
+        String json = new String(Files.readAllBytes(root.resolve("enabled_mods.json")), StandardCharsets.UTF_8);
+        check(JoinModStage.isKitLink(kitLink) && JoinModStage.isKitLink(modLink)
+                        && Files.isRegularFile(modLink.resolve("mod_info.json"))
+                        && json.equals("{\"enabledMods\": [\"cc_client\", \"link_mod\"]}\n"),
+                "kit-link-stage: the first stage did not leave two kit links that resolve to the mods plus the json"
+                        + " (flips if link() stops making this OS's link type or isKitLink stops reading it)");
+        Path again = JoinModStage.stage(install, kitDir, ok.rows);
+        check(again.equals(root) && JoinModStage.isKitLink(modLink) && Files.isRegularFile(modDir.resolve("mod_info.json"))
+                        && Files.isRegularFile(modDir.resolve("jars").resolve("a.jar")),
+                "kit-link-stage: a second launch did not restage over the first one's links with the mod intact (flips"
+                        + " if isKitLink misses this OS's own link - the stage then refuses its own root - or a delete"
+                        + " follows the link into the mod)");
+
+        Path planted = root.resolve("Planted");
+        Files.createDirectory(planted);
+        String refused = null;
+        try {
+            JoinModStage.stage(install, kitDir, ok.rows);
+        } catch (IOException e) {
+            refused = e.getMessage();
+        }
+        check(refused != null && refused.contains("real item") && Files.isDirectory(planted)
+                        && !JoinModStage.isKitLink(planted, true) && !JoinModStage.isKitLink(planted, false),
+                "kit-link-real-item: a plain folder in the kit's root was not refused untouched (flips if isKitLink"
+                        + " reads a real folder as a link - the stage would delete it)");
+        Files.delete(planted);
+        Path file = modDir.resolve("mod_info.json");
+        check(Files.isRegularFile(file) && !JoinModStage.isKitLink(file, true) && !JoinModStage.isKitLink(file, false),
+                "kit-link-real-item: a regular file reads as a kit link (flips if either OS rule loses its type test)");
+        // the refused stage may have removed some links before it met the folder: restage for the OS-rule rows
+        JoinModStage.stage(install, kitDir, ok.rows);
+
+        if (windows) {
+            check(JoinModStage.isKitLink(modLink, true) && !Files.isSymbolicLink(modLink),
+                    "kit-link-junction: the Windows stage link is not a junction read by the Windows rule (flips if"
+                            + " the Windows rule becomes isSymbolicLink - a junction is not one - or mklink stops making it)");
+            Path sym = root.resolve("PlayerSymlink");
+            boolean made;
+            try {
+                Files.createSymbolicLink(sym, modDir.toAbsolutePath());
+                made = true;
+            } catch (IOException | UnsupportedOperationException e) {
+                made = false;
+                System.out.println("join-gui selftest SKIP kit-link-win-symlink (this account may not create a symlink: "
+                        + e.getClass().getSimpleName() + ")");
+            }
+            if (made) {
+                boolean kit = JoinModStage.isKitLink(sym, true);
+                Files.delete(sym);
+                check(!kit, "kit-link-win-symlink: a Windows symlink reads as a kit link (flips if the Windows rule"
+                        + " goes OS-neutral, isOther || isSymbolicLink - a refused symlink becomes a deleted one)");
+            }
+        } else if (KitFileModes.posix()) {
+            check(Files.isSymbolicLink(modLink) && Files.readSymbolicLink(modLink).equals(modDir.toAbsolutePath().normalize())
+                            && JoinModStage.isKitLink(modLink, false) && !JoinModStage.isKitLink(modLink, true),
+                    "kit-link-symlink: the stage link is not an absolute symlink read by the posix rule (flips if link()"
+                            + " stops making a symlink or the posix rule reverts to isOther, which a symlink never reads)");
+            // the Linux kit check requires this line: a deleted or renamed row reads as missing, never as a quiet pass
+            System.out.println("ROW-PASS kit-link-symlink");
+        } else {
+            System.out.println("join-gui selftest SKIP-posix kit-link-symlink (no posix view on this filesystem)");
+        }
+        for (Path p : List.of(kitLink, modLink)) {
+            if (JoinModStage.isKitLink(p)) {
+                Files.delete(p); // the link only: the temp tree keeps no reparse point behind
+            }
+        }
     }
 
     /** The current-build file law — parse (first line, id-law gated), write (temp+rename,

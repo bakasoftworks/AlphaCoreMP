@@ -3,8 +3,11 @@ package cc.starsector.server.ops;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
@@ -29,6 +32,12 @@ import cc.starsector.server.runtime.ModSet;
  * <p>WHY statics only: the web console is the one operator shell; the class keeps its name so the
  * row model's callers stay put.
  *
+ *
+ * <p>The Needs column, which makes it obvious when one mod is needed for
+ * another. {@link #declaredDeps} reads each row's declared dependencies once (the launch's own
+ * reader); {@link #dependsCell} composes the row's cell from them, pure: what it needs, what needs it, and the
+ * consequence at the next start (an unticked mod a required one needs loads anyway; an optional mod caught in a
+ * dependency law refuses the start). Presentation only: the launch rules stay in {@link PackageModSync}.
  */
 public final class OpsModsPanel {
 
@@ -132,6 +141,189 @@ public final class OpsModsPanel {
             }
         }
         return String.join(",", out);
+    }
+
+    // ---- the Needs column: declared dependencies and what the next start does with them ----
+
+    //
+    /** The Needs cell's flag on an unticked row the next start loads anyway (a required mod needs it). */
+    static final String DEPENDS_ON = "on";
+    //
+    /** The Needs cell's flag on a row the next start refuses over (one of the launch's dependency laws). */
+    static final String DEPENDS_REFUSE = "refuse";
+
+    //
+    /**
+     * One row's Needs cell: {@code text} = the host's sentence ({@code ""} = nothing to say), {@code flag} =
+     * {@code ""}, {@link #DEPENDS_ON} or {@link #DEPENDS_REFUSE} (the page's emphasis class on the cell). WHY two
+     * fields: the page shows the text and styles the cell from the flag, never by parsing the text.
+     */
+    record DependsCell(String text, String flag) {
+    }
+
+    //
+    /**
+     * Each row's DECLARED dependencies, keyed by id in row order. An installed row's = the {@code dependencies[].id}
+     * of its FIRST folder's {@code mod_info.json} (the folder the Folder cell shows), read by the launch's own reader
+     * {@link PackageModSync#declaredDependencies} (lawful-checked ids, its read cap, its lenient regex), minus
+     * {@link ModSet#EXCLUDED_ID} (always enabled, never a row); a not-installed row maps to an empty list. WHY the
+     * launch's reader: the Needs column ({@link #dependsCell}) must say what the next start will do, and the start
+     * pulls dependencies in with exactly this read. The column's one file read;
+     * everything downstream is pure over this map.
+     */
+    static Map<String, List<String>> declaredDeps(List<ModRow> rows) {
+        Map<String, List<String>> out = new LinkedHashMap<>();
+        for (ModRow r : rows) {
+            List<String> deps = new ArrayList<>();
+            if (r.installed()) {
+                for (String dep : PackageModSync.declaredDependencies(
+                        r.folders().get(0).folder().resolve(InstalledModScan.MOD_INFO))) {
+                    if (!ModSet.EXCLUDED_ID.equals(dep)) {
+                        deps.add(dep);
+                    }
+                }
+            }
+            out.put(r.id(), List.copyOf(deps));
+        }
+        return out;
+    }
+
+    //
+    /**
+     * The Needs cell of row {@code r} (pure over {@code rows} and their {@link #declaredDeps}). Lines, joined with
+     * {@code "; "}: (a) the consequence at the next start, when any - a row a required mod pulls in ({@link #pulledVia})
+     * that is unticked loads anyway ({@link #DEPENDS_ON}); one that is optional refuses the start (the launch's
+     * "optional and also required" law); a required row with a direct dependency no searched folder holds refuses
+     * the start (missing mod); an optional row with a direct dependency the start neither requires nor pulls in
+     * refuses the start (an optional mod's libraries must be required) - the launch's laws;
+     *(b) {@code needs <names>} when the row declares any dependency;
+     * (c) {@code needed by <names>}: every listed row that DIRECTLY declares this id, in row order. Names are the
+     * Mod cell's own: an installed row's display name, else {@code <id> (not installed)}. WHY: a host who unticks
+     * a library a required mod needs would otherwise see it loaded at the next start with no word on the page.
+     */
+    static DependsCell dependsCell(ModRow r, List<ModRow> rows, Map<String, List<String>> deps) {
+        Map<String, String> pulled = pulledVia(rows, deps);
+        Set<String> required = new HashSet<>();
+        for (ModRow x : rows) {
+            if (MOD_REQUIRED.equals(x.choice())) {
+                required.add(x.id());
+            }
+        }
+        List<String> mine = directDeps(r.id(), deps);
+        List<String> lines = new ArrayList<>();
+        String flag = "";
+        String via = pulled.get(r.id());
+        if (via != null && MOD_OFF.equals(r.choice())) {
+            flag = DEPENDS_ON;
+            lines.add("ON ANYWAY: " + via + " needs it (it loads at the next start)");
+        } else if (via != null && MOD_OPTIONAL.equals(r.choice())) {
+            flag = DEPENDS_REFUSE;
+            lines.add("START REFUSES: " + via + " needs it required - set it to required or untick it");
+        } else if (MOD_REQUIRED.equals(r.choice())) {
+            for (String dep : mine) {
+                if (!installedRow(dep, rows)) {
+                    flag = DEPENDS_REFUSE;
+                    lines.add("START REFUSES: needs " + dep + ", which is not installed");
+                    break;
+                }
+            }
+        } else if (MOD_OPTIONAL.equals(r.choice())) {
+            for (String dep : mine) {
+                if (!required.contains(dep) && !pulled.containsKey(dep)) {
+                    String name = depName(dep, rows);
+                    flag = DEPENDS_REFUSE;
+                    lines.add("START REFUSES: needs " + name + " required - set " + name + " to required");
+                    break;
+                }
+            }
+        }
+        if (!mine.isEmpty()) {
+            List<String> names = new ArrayList<>();
+            for (String dep : mine) {
+                names.add(depName(dep, rows));
+            }
+            lines.add("needs " + String.join(", ", names));
+        }
+        List<String> consumers = new ArrayList<>();
+        for (ModRow x : rows) {
+            if (directDeps(x.id(), deps).contains(r.id())) {
+                consumers.add(depName(x.id(), rows));
+            }
+        }
+        if (!consumers.isEmpty()) {
+            lines.add("needed by " + String.join(", ", consumers));
+        }
+        return new DependsCell(String.join("; ", lines), flag);
+    }
+
+    //
+    /**
+     * The ids the next start loads only because a REQUIRED row needs them, each mapped to the display name of the
+     * required row that first reached it: breadth-first from every required id in row order through {@code deps},
+     * transitively - the launch's own pull-in, whose queue starts with the enabled
+     * ids, so a required id is never "pulled". An id {@code deps} does not key (an unlisted one) reaches nothing
+     * further; {@link ModSet#EXCLUDED_ID} is skipped (always enabled). WHY the ROOT's name where the launch records
+     * the direct consumer: the host's lever is the required mod they ticked.
+     */
+    static Map<String, String> pulledVia(List<ModRow> rows, Map<String, List<String>> deps) {
+        List<String[]> queue = new ArrayList<>();
+        for (ModRow x : rows) {
+            if (MOD_REQUIRED.equals(x.choice())) {
+                queue.add(new String[] {x.id(), depName(x.id(), rows)});
+            }
+        }
+        int roots = queue.size();
+        Set<String> seen = new HashSet<>();
+        Map<String, String> pulled = new LinkedHashMap<>();
+        for (int i = 0; i < queue.size(); i++) {
+            String id = queue.get(i)[0];
+            String via = queue.get(i)[1];
+            if (ModSet.EXCLUDED_ID.equals(id) || !seen.add(id)) {
+                continue;
+            }
+            if (i >= roots) {
+                pulled.put(id, via);
+            }
+            for (String dep : directDeps(id, deps)) {
+                queue.add(new String[] {dep, via});
+            }
+        }
+        return pulled;
+    }
+
+    //
+    /** {@code id}'s declared dependencies from {@code deps} ({@code []} when unkeyed), minus {@link ModSet#EXCLUDED_ID}. */
+    private static List<String> directDeps(String id, Map<String, List<String>> deps) {
+        List<String> out = new ArrayList<>();
+        for (String dep : deps.getOrDefault(id, List.of())) {
+            if (!ModSet.EXCLUDED_ID.equals(dep)) {
+                out.add(dep);
+            }
+        }
+        return out;
+    }
+
+    //
+    /** Whether {@code id} is a listed row that a searched folder holds. */
+    private static boolean installedRow(String id, List<ModRow> rows) {
+        for (ModRow x : rows) {
+            if (x.id().equals(id) && x.installed()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    //
+    /** An id as the Needs cell prints it = its Mod cell: a listed installed row's {@link #displayName}, else
+     * {@code <id>} + {@link #NOT_INSTALLED_SUFFIX} (listed or not, the Mod cell's own not-installed text). */
+    private static String depName(String id, List<ModRow> rows) {
+        for (ModRow x : rows) {
+            if (x.id().equals(id) && x.installed()) {
+                return displayName(x);
+            }
+        }
+        return id + NOT_INSTALLED_SUFFIX;
     }
 
     /** What a picked folder is: {@code "mod"} (holds {@code mod_info.json}), {@code "folder"}

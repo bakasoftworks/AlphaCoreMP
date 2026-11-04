@@ -243,7 +243,7 @@ final class EditorCatalog {
         InputStream in = null;
         try {
             // the webdir idiom (EditorRoutes.asset): the `file:` lane, the name never request-derived
-            in = new java.net.URL("file:/" + dir.trim().replace('\\', '/') + "/" + INDEX_FILE).openStream();
+            in = new java.net.URL(EditorAssets.fileUrl(dir.trim().replace('\\', '/') + "/" + INDEX_FILE)).openStream();
             String text = new String(EditorTier.readAll(in, INDEX_MAX_BYTES), StandardCharsets.UTF_8);
             for (String raw : text.split("\n")) {
                 String line = raw.trim();

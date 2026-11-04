@@ -65,8 +65,13 @@ public class CcClientModPlugin extends BaseModPlugin {
 
     @Override
     public void onApplicationLoad() {
+        // The engine link probe runs BEFORE anything touches the engine's
+        // internal classes — every engine name the mod links against must resolve on this engine build, or the
+        // start is refused with the game's own Fatal dialog (its IllegalStateException escapes on purpose: a
+        // half-linked client would desync, never degrade). On a healthy install it logs one row and returns.
+        EngineLinkProbe.verifyAtApplicationLoad();
         // Law A: the engine's variant registry is complete HERE (SpecStore load precedes
-        // the plugin loop) and no VDEF has folded yet — snapshot the boot keyset FIRST, once.
+        // the plugin loop) and no VDEF has folded yet — snapshot the boot keyset first after the probe, once.
         BootVariantRegistry.snapshotAtApplicationLoad();
         // The boot ID TABLE — the dictionary every VSUB/VDEF body is
         // indexed against and the vtab the HELLO fingerprint folds; minted here, once, with every

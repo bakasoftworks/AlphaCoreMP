@@ -4,6 +4,8 @@
 // +stderr as the sound-check log the debrief zip ships to the host. NOT part of the mod jar: a loose
 // default-package .class in mods\CC_Client (no classloader-B deny scope, plain java.io is fine here).
 // Compiled --release 8 (client-mod/build.ps1) so it runs on the install's Zulu 17 and the kit's Temurin 25.
+// Off Windows the same steps run from the Linux install root with native/linux + libopenal64.so (the WINDOWS
+// constant picks the names); the dll names below are the Windows spellings.
 //
 // Steps, each only if the previous FAILED — the first success names the fix:
 //   1 game shape      AL.create() exactly as sound init does (relative candidates first)
@@ -28,9 +30,18 @@ import org.lwjgl.openal.ALCdevice;
 
 public class SoundProbe extends PrintStream {
     private static final int OK_GAME = 0, OK_ABS = 10, OK_JAVALOAD = 15, ALL_FAIL = 20, NON_LOADER = 25, LWJGL_FAIL = 30;
+    /**
+     * The OS picks the game's own native names: Windows = {@code native\windows} + {@code OpenAL64.dll}
+     * beside the core, unchanged; elsewhere = {@code native/linux} + {@code libopenal64.so} in the install root (the
+     * Linux download's flat layout, the folder its own start script passes as {@code java.library.path}).
+     *
+     */
+    private static final boolean WINDOWS = System.getProperty("os.name", "").startsWith("Windows");
+    private static final String NATIVE_DIR = WINDOWS ? "windows" : "linux";
+    private static final String OPENAL_LIB = WINDOWS ? "OpenAL64.dll" : "libopenal64.so";
 
     public static void main(String[] a) {
-        String absDir = a.length > 0 ? a[0] : new File("native" + File.separator + "windows").getAbsolutePath();
+        String absDir = a.length > 0 ? a[0] : new File("native" + File.separator + NATIVE_DIR).getAbsolutePath();
         String tmpCopy = a.length > 1 ? a[1] : null;
         // LWJGLUtil.DEBUG is latched at class init: set it BEFORE the first LWJGL touch so every
         // candidate path + its GetLastError text ("Could not load OpenAL library (126)") lands in the log.
@@ -42,8 +53,11 @@ public class SoundProbe extends PrintStream {
                 + " cwd=" + p("user.dir") + " jlp=" + p("java.library.path") + " lwjglpath=" + p("org.lwjgl.librarypath")
                 + " charset=" + Charset.defaultCharset().name() + " file.encoding=" + p("file.encoding")
                 + " sun.jnu.encoding=" + p("sun.jnu.encoding") + " absdir=" + absDir + " tempcopy=" + tmpCopy);
-        String[] files = {"native\\windows\\OpenAL64.dll", "native\\windows\\OpenAL32.dll", "native\\windows\\lwjgl64.dll",
-                "OpenAL64.dll", "lwjgl.jar", absDir + File.separator + "OpenAL64.dll"};
+        String[] files = WINDOWS
+                ? new String[] {"native\\windows\\OpenAL64.dll", "native\\windows\\OpenAL32.dll", "native\\windows\\lwjgl64.dll",
+                        "OpenAL64.dll", "lwjgl.jar", absDir + File.separator + OPENAL_LIB}
+                : new String[] {"native/linux/libopenal64.so", "native/linux/libopenal.so", "native/linux/liblwjgl64.so",
+                        "libopenal64.so", "lwjgl.jar", absDir + File.separator + OPENAL_LIB};
         for (String n : files) {
             File f = new File(n);
             row("probe file " + n + " exists=" + f.exists() + " bytes=" + f.length() + " canRead=" + f.canRead()
@@ -68,7 +82,7 @@ public class SoundProbe extends PrintStream {
         System.setProperty("org.lwjgl.librarypath", absDir);
         String s2 = tryCreate("absolute");
         if (s2.startsWith("OK")) { result("game-shape=FAIL absolute=OK", OK_ABS); return; }
-        String dll = absDir + File.separator + "OpenAL64.dll";
+        String dll = absDir + File.separator + OPENAL_LIB;
         String s3 = tryLoad("javaload", dll);
         String s3b = tryCreate("after-javaload");
         String s4 = (tmpCopy != null && new File(tmpCopy).isFile()) ? tryLoad("tempcopy", tmpCopy) : "SKIPPED (no temp copy)";

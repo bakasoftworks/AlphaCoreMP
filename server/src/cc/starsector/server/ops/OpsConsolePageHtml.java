@@ -51,18 +51,23 @@ import java.util.List;
  * the Swing tip's text with the page's field names) - served by {@code POST /api/lease} (row {@code page-lease}).
  *
  * <p>Join from this PC in the SERVER cluster right after Start
- * ({@code #btn-join} {@code verb.joinerGui}, the Swing package button's twin; served by {@code POST /api/join})
+ * ({@code #btn-join} {@code verb.joinerGui}; served by {@code POST /api/join})
  * and the {@code #join-linux} line beside it - both {@code hidden} until the first {@code /api/config} answer's
  * {@code joinHere} shows one of them. The label and the line are {@link OpsJoinSelf#LABEL} /
  * {@link OpsJoinSelf#R9} concatenated into {@link #HTML} at class init through {@link #esc} (each text keeps
  * ONE home, the core's); the button's ONE description is its help entry {@code tip-join} through
  * {@code aria-describedby} (the {@code btn-brick} / {@code btn-lease} idiom).
+ * The button is the page's own control - the package's Swing window,
+ * whose button the {@code verb.joinerGui} id once mirrored, is deleted - and the
+ * {@code #join-linux} id names the line, not the host: the server computer may be Windows or Linux, so the line
+ * shows only where {@code joinHere} is false (a host the player kit does not run on), and the help entry
+ * {@code tip-join} names no operating system. Launch debug WATCH follows {@code watchHere} instead (below).
  * The button no longer carries
  * {@link OpsJoinSelf#TIP} as a {@code title} - that Swing sentence says "on this computer", while the page may
  * sit on another one, and {@code tip-join} says "on the server computer" (row {@code page-join} pins the description and the absent {@code title}).
- * Launch debug WATCH right after Start ({@code #btn-watch} {@code verb.watch},
- * the Swing button's twin and its label; served by {@code POST /api/watch}), {@code hidden} until the config's
- * {@code joinHere} shows it beside Join from this PC (the {@code #join-linux} line already says why elsewhere); its
+ * Launch debug WATCH right after Start ({@code #btn-watch} {@code verb.watch}
+ * and its label; served by {@code POST /api/watch}), {@code hidden} until the config's {@code watchHere} shows it
+ * (the server's own answer, apart from {@code joinHere}: a Linux host may show Join from this PC without it); its
  * ONE description is the help entry {@code tip-watch} through {@code aria-describedby} (row {@code page-watch}).
  * The Export custom help entry is {@link ServerOpsCore#customExportTipWeb()} through {@link #esc}.
  *
@@ -183,6 +188,11 @@ import java.util.List;
  * {@code #mods-luna-exclude} ({@code mods.lunaExclude}, at most 1024 characters, described by
  * {@code #hint-mods-luna-exclude} + its help row). Both ids are page controls beside the parity list (not in
  * {@link OpsParity#PACKAGE_IDS}).
+ *
+ * <p>The Mods table's Needs column ({@code mods.col.needs}, in
+ * {@link OpsParity#PACKAGE_IDS}; header right after Use, the row template's {@code data-col="Needs"} cell right after
+ * the Use cell) and one explainer sentence (a mod a required mod needs loads with it, ticked or not). WHY: the host
+ * sees at a glance which mod another one needs. The provenance marker rides this javadoc, never the page.
  */
 final class OpsConsolePageHtml {
 
@@ -691,7 +701,7 @@ final class OpsConsolePageHtml {
 
 <section id="sec-mods" hidden aria-labelledby="mods-title">
 <h2 id="mods-title">Mods for the next start</h2>
-<p id="mods-explainer" data-cc="mods.explainer">On = the next start uses it: required = the serve loads it and every joiner must run it; optional = joiners may run it (presentation only; the serve never loads it).  Unticked = installed, not used - tick it again any time.  Remove stops searching a mod you added from another folder (nothing on disk is deleted); a mod in serve-mods is unticked, forgets optional and stays listed.  cc_client is always on and never listed.</p>
+<p id="mods-explainer" data-cc="mods.explainer">On = the next start uses it: required = the serve loads it and every joiner must run it; optional = joiners may run it (presentation only; the serve never loads it).  Unticked = installed, not used - tick it again any time.  A mod that a required mod needs loads with it, ticked or not; the Needs column says which.  Remove stops searching a mod you added from another folder (nothing on disk is deleted); a mod in serve-mods is unticked, forgets optional and stays listed.  cc_client is always on and never listed.</p>
 <h3 id="mods-roots-title">Folders searched</h3>
 <ul id="mods-roots" data-cc="mods.roots.list" aria-labelledby="mods-roots-title" aria-describedby="hint-mods-roots"></ul>
 <p class="hint" id="hint-mods-roots">the folders searched for mods (the mods.roots row); none named = the serve-mods folder of this package: extract a mod there, set it to required, press Start</p>
@@ -711,6 +721,7 @@ final class OpsConsolePageHtml {
 <th scope="col" data-cc="mods.col.id">Id</th>
 <th scope="col" data-cc="mods.col.version">Version</th>
 <th scope="col" data-cc="mods.col.use">Use</th>
+<th scope="col" data-cc="mods.col.needs">Needs</th>
 <th scope="col" data-cc="mods.col.folder">Folder</th>
 <th scope="col" data-cc="mods.col.settings">Settings file</th>
 <th scope="col"><span class="vh">Remove</span></th>
@@ -719,7 +730,7 @@ final class OpsConsolePageHtml {
 <tbody id="mods-body"></tbody>
 </table>
 </div>
-<template id="tpl-mod-row"><tr><td data-col="Mod"></td><td data-col="Id"></td><td data-col="Version"></td><td data-col="Use"><label class="check"><input type="checkbox" class="on" data-cc="mods.on" aria-label="On"> on</label><select class="use" aria-label="Use"><option>required</option><option>optional</option></select></td><td data-col="Folder"></td><td data-col="Settings"></td><td><button type="button" class="remove" data-cc="mods.remove">Remove</button></td></tr></template>
+<template id="tpl-mod-row"><tr><td data-col="Mod"></td><td data-col="Id"></td><td data-col="Version"></td><td data-col="Use"><label class="check"><input type="checkbox" class="on" data-cc="mods.on" aria-label="On"> on</label><select class="use" aria-label="Use"><option>required</option><option>optional</option></select></td><td data-col="Needs"></td><td data-col="Folder"></td><td data-col="Settings"></td><td><button type="button" class="remove" data-cc="mods.remove">Remove</button></td></tr></template>
 <div class="ctl">
 <label for="mods-luna-exclude">Settings kept out of the sync (modId:fieldId, comma-separated)</label>
 <input id="mods-luna-exclude" data-cc="mods.lunaExclude" type="text" size="48" maxlength="1024" autocomplete="off" spellcheck="false" aria-describedby="hint-mods-luna-exclude">
@@ -821,7 +832,7 @@ final class OpsConsolePageHtml {
             + "</dd>\n"
             + "<dt>" + esc(OpsJoinSelf.LABEL) + "</dt>"
             + """
-<dd id="tip-join">opens the player join window on the server computer (Windows only), filled in with the running server's address, port and saved match password - press Launch in it; needs the player kit (CC_Client) in the Game folder's mods folder. On another computer, join with the code from Copy join brick</dd>
+<dd id="tip-join">opens the player join window on the server computer, filled in with the running server's address, port and saved match password - press Launch in it; needs the player kit (CC_Client) in the Game folder's mods folder. On another computer, join with the code from Copy join brick</dd>
 <dt>Launch debug WATCH</dt><dd id="tip-watch">Starts a test match and opens your own join window (two when a Second game folder is set). Every player gets hull bars and the debug keys. Admin commands need the admin password; your windows sign in as admin without it. For normal play, use Start.</dd>
 <dt>Tick rate (Hz)</dt><dd data-hint="hint-tick"></dd>
 <dt>Seats per address</dt><dd data-hint="hint-seats-per-source"></dd>

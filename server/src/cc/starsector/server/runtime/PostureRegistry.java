@@ -453,9 +453,13 @@ public final class PostureRegistry {
     // cc.pilot.ship: the premain's player-ship RECEIPT (off | armed | applied:<k> | refused:<reason> |
     // latched:leak), set on EVERY postured boot too (the row defaults OFF, so the receipt reads "off") — the same S1a hazard
     // caught at the pre-mint read, before the fleet merged (the knob is cc.pilotship.enabled above).
+    // cc.engine.map + cc.engine.map.errors: the kit agent's engine-name remap RECEIPTS (identity |
+    // <map id> | unknown:<16 hex> | disarmed:<reason>; the errors row = <class>:<Kind>,...), set by the client's own
+    // -javaagent at the game's start and read by the client mod's link probe — receipts, never knobs: nothing reads them
+    // as operator input, and a host JVM that ever carries them is never refused for it.
     private static final java.util.Set<String> EXEMPT_SYSPROPS =
             java.util.Set.of("cc.premain.jar", "cc.debug.serverHullBar", "cc.transform.armed", "cc.transform.rngpin",
-                    "cc.magic.seam", "cc.pilot.ship");
+                    "cc.magic.seam", "cc.pilot.ship", "cc.engine.map", "cc.engine.map.errors");
     // CC_CLIENT_ (widening an earlier single-name exemption): the arm's CLIENT-ONLY ferries
     // (CC_CLIENT_JVM_FLAGS, CC_CLIENT_JRE_CC) — window launchers read them, the serve never
     // does, yet the detached armer's env reaches this JVM too. The first -ClientJfr arm AND

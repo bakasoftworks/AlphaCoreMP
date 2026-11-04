@@ -2783,7 +2783,7 @@ final class OpsConsoleSelftest {
      * while the answer, the stdout rows and the spawn env never carry it (nor the stdout / env the dial);
      * (6) a live join window (endpoint file + ping) = the web REOPENED note, ONE spawn, the settings file
      * byte-unchanged (a sentinel planted first, so any write shows); (7) a press held in its spawn + a
-     * second POST = R8, then the first answers ok; (8) {@code os.name=Linux} = R9, no spawn; (9) exactly
+     * second POST = R8, then the first answers ok; (8) {@code os.name=Mac OS X} = R9, no spawn; (9) exactly
      * one {@code cc-console join} row per press, each with {@code outcome=} and no {@code <p>}. The status
      * file, the launcher file and the sidecar are restored in {@code finally}.
      * <p>(7) also drives
@@ -2908,7 +2908,7 @@ final class OpsConsoleSelftest {
             spawned[5] = fx.spawns.size() - base;
             recorded = opened7.size();
             opened7.sweepOnce();
-            System.setProperty("os.name", "Linux");
+            System.setProperty("os.name", "Mac OS X"); // neither Windows nor Linux: no player kit runs here
             linux = post(rig, "/api/join", "");
             spawned[6] = fx.spawns.size() - base;
         } finally {
@@ -3005,8 +3005,8 @@ final class OpsConsoleSelftest {
                     + " start instant moved)");
         }
         if (!OpsConsoleForms.errorJson(OpsJoinSelf.TITLE, OpsJoinSelf.R9).equals(linux.body()) || spawned[6] != spawned[5]) {
-            bad.add("(8) Linux -> " + PeerText.bound(linux.body(), 160) + " spawns +" + (spawned[6] - spawned[5])
-                    + " (flips if a non-Windows console stops refusing R9 before any step)");
+            bad.add("(8) Mac OS X -> " + PeerText.bound(linux.body(), 160) + " spawns +" + (spawned[6] - spawned[5])
+                    + " (flips if a console the kit cannot run on stops refusing R9 before any step)");
         }
         List<String> rows = new ArrayList<>();
         for (String line : out.split("\r?\n")) {
@@ -3641,9 +3641,10 @@ final class OpsConsoleSelftest {
 
     /**
      * {@code web-watch-linux} - the same {@code POST /api/watch} with
-     * {@code os.name=Linux} (the join rows' pin) answers {@link OpsJoinSelf#R9} in the join POST's shape BEFORE any
-     * Start: no spawn and the props bytes unchanged (so no posture row). Flips if a non-Windows watch starts a plain
-     * match or writes the row. {@code os.name} is restored in {@code finally}.
+     * {@code os.name=Linux} answers {@link OpsConsole#R9W} (a Linux host joins from this PC, the WATCH stays
+     * Windows-only) in the join POST's shape BEFORE any Start: no spawn and the props bytes
+     * unchanged (so no posture row). Flips if a non-Windows watch starts a plain match or writes the row, or if the
+     * Linux gate answers anything but R9W. {@code os.name} is restored in {@code finally}.
      */
     private static String watchLinuxRow(Rig rig) throws Exception {
         String r = "web-watch-linux";
@@ -3669,11 +3670,11 @@ final class OpsConsoleSelftest {
             System.setProperty("os.name", priorOs);
             setup(r, () -> Files.write(props, prior.get()));
         }
-        boolean r9 = OpsConsoleForms.errorJson(OpsJoinSelf.TITLE, OpsJoinSelf.R9).equals(linux.body());
+        boolean r9 = OpsConsoleForms.errorJson(OpsJoinSelf.TITLE, OpsConsole.R9W).equals(linux.body());
         boolean same = Arrays.equals(prior.get(), after);
         return r9 && spawns1 == spawns0 && same ? null
                 : "Linux watch -> " + PeerText.bound(linux.body(), 120) + " spawns " + spawns0 + "/" + spawns1
-                        + " props unchanged=" + same + " (flips if a non-Windows watch stops refusing R9 before the"
+                        + " props unchanged=" + same + " (flips if a Linux watch stops refusing R9W before the"
                         + " Start, spawns or writes the posture row)";
     }
 

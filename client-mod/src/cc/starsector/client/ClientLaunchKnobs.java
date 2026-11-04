@@ -73,6 +73,7 @@ final class ClientLaunchKnobs {
      * Temurin 25, the install jre = Zulu 17). {@code jre-cc} = the bundled runtime's NORMAL start:
      * join-cc.bat marks it too, because the kit's compat agent premain
      * ({@code jars\cc-compat-agent.jar}) gates on the marker's presence and would stay inert without it;
+     * {@code linux-sh} = join-cc.sh's start on the Linux game's own {@code jre_linux} (the same agent gate);
      * {@code rig} = the dev rig's direct javaw line. Unset = a no-bundle kit, a kit missing kit-jvm.args, or an
      * older kit's bundled start.
      */
@@ -92,6 +93,7 @@ final class ClientLaunchKnobs {
         // jar-content gate bans it from the mod jar).
         return (v == null ? "unset (a no-bundle kit, a kit missing kit-jvm.args, or an older kit's bundled start - see home)"
                 : "jre-cc".equals(v) ? "BUNDLED jre-cc (join-cc.bat's normal start; the marker the compat agent's gate reads)"
+                : "linux-sh".equals(v) ? "LINUX-SH jre_linux (join-cc.sh's start on the game's own Linux runtime; the same agent marker)"
                 : "rig".equals(v) ? "RIG (the dev rig's direct javaw line)"
                 : "explorer".equals(v) ? "EXPLORER-PARENT (join-cc.bat chose the Explorer launch shape)"
                 : "explorer-fallback".equals(v) ? "EXPLORER-FALLBACK (the Explorer launch brought no Java up; join-cc.bat started starsector.exe directly)"

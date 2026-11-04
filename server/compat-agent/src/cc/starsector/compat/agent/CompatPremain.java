@@ -2,6 +2,8 @@ package cc.starsector.compat.agent;
 
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 /**
  * The kit's own {@code -javaagent} (cc-compat-agent.jar): on the game's start it registers the MagicLib seam
@@ -20,8 +22,9 @@ import java.lang.instrument.Instrumentation;
  * {@value #RECEIPT_ARMED} before the transformer is registered, so before any define. A setup failure after the gate
  * = {@code disarmed:error:<SimpleName>} + ONE stdout row, and the game starts unpatched.
  *
- * <p>Reads nothing beyond those two sysprops, its own agent argument and its own jar's entries (no file, socket, env
- * or player text); every row is a bounded token. Every path sits in {@code catch (Throwable)}: an exception escaping
+ * <p>Reads nothing beyond those two sysprops, its own agent argument, its own jar's entries and (the engine-name
+ * remap's arming, off the Windows build only) the bytes of the game's engine jar to hash them (no other file, no
+ * socket, env or player text); every row is a bounded token. Every path sits in {@code catch (Throwable)}: an exception escaping
  * a premain aborts the JVM, and this agent only ever buys presentation, never a start.
  *
  * <p>The second transformer (the replica pilot pass, {@value #PILOT_TRANSFORMER}): registered behind the SAME private
@@ -31,7 +34,17 @@ import java.lang.instrument.Instrumentation;
  * stdout row when its setup fails. Each transformer arms or fails on its own: a failure of the second never disarms
  * the first. A load-time VerifyError in a rewritten class cannot be caught here; the switch is its recovery.
  *
- * <p>The second transformer:
+ * <p>The engine-name remap ({@value #ENGINE_MAP_TRANSFORMER}) is armed FIRST, before the other two, so neither the
+ * pilot switch's early return nor a failure of either can skip it: on a separate build of the engine (the Linux
+ * download) the client mod links only through it. Its own receipt {@value #ENGINE_MAP_RECEIPT_SYSPROP} = what the
+ * transformer's arming decided ({@value #ENGINE_MAP_IDENTITY} on the Windows build: nothing registered, no row; a map
+ * id: registered + ONE stdout row {@code enginemap armed map=<id>}; anything else: not registered + ONE stdout row
+ * {@code enginemap unarmed state=<receipt>}), or {@code disarmed:error:<SimpleName>} + ONE stdout row when its setup
+ * fails (the loader's failure included). The receipt is set BEFORE the transformer is registered, so before any
+ * define, and the transformer itself never writes it.
+ *
+ * <p>The second transformer: the engine-name
+ * remap:
  */
 public final class CompatPremain {
 
@@ -53,6 +66,12 @@ public final class CompatPremain {
     static final String PILOT_OFF_ARG = "pilot=off";
     /** The second transformer's binary name, resolved through the same private loader only. */
     static final String PILOT_TRANSFORMER = "cc.starsector.compat.pilotship.ReplicaPilotAgentTransformer";
+    /** The engine-name remap's receipt (the client mod's link probe latches it); spelled here, never linked. */
+    static final String ENGINE_MAP_RECEIPT_SYSPROP = "cc.engine.map";
+    /** The engine-name remap's receipt on the Windows build (no transformer, no row). */
+    static final String ENGINE_MAP_IDENTITY = "identity";
+    /** The engine-name remap's binary name, resolved through the same private loader only. */
+    static final String ENGINE_MAP_TRANSFORMER = "cc.starsector.compat.enginemap.EngineMapAgentTransformer";
     private static final String ROW = "[cc-compat-agent] ";
 
     private CompatPremain() {
@@ -105,15 +124,16 @@ public final class CompatPremain {
     }
 
     /**
-     * ONE private loader, then each transformer armed on its own: the MagicLib one first (as before), then the
-     * replica pilot pass unless switched off. A loader failure disarms both receipts; a transformer's own failure
-     * disarms only its receipt.
+     * ONE private loader, then each transformer armed on its own: the engine-name remap first, then the MagicLib one,
+     * then the replica pilot pass unless switched off. A loader failure disarms every receipt; a transformer's own
+     * failure disarms only its receipt.
      */
     private static void arm(Instrumentation inst, boolean pilotOff) {
         CompatAgentLoader loader;
         try {
             loader = CompatAgentLoader.overOwnJar(CompatPremain.class);
         } catch (Throwable t) {
+            disarm(ENGINE_MAP_RECEIPT_SYSPROP, "enginemap", t);
             disarm(RECEIPT_SYSPROP, "magicseam", t);
             if (pilotOff) {
                 offPilot();
@@ -122,6 +142,7 @@ public final class CompatPremain {
             }
             return;
         }
+        armEngineMap(inst, loader);
         try {
             ClassFileTransformer t = newTransformer(loader, TRANSFORMER);
             System.setProperty(RECEIPT_SYSPROP, RECEIPT_ARMED);
@@ -139,6 +160,27 @@ public final class CompatPremain {
             inst.addTransformer(t, false);
         } catch (Throwable t) {
             disarm(PILOT_RECEIPT_SYSPROP, "pilotreplica", t);
+        }
+    }
+
+    /**
+     * The engine-name remap behind {@code loader}: its constructor takes the arming decision; the receipt it answers
+     * (a JDK {@link Supplier}) is published first, then it is registered only when it says so (a JDK
+     * {@link BooleanSupplier}) - this unit links no class of the remap's package. Never throws.
+     */
+    static void armEngineMap(Instrumentation inst, CompatAgentLoader loader) {
+        try {
+            ClassFileTransformer t = newTransformer(loader, ENGINE_MAP_TRANSFORMER);
+            String receipt = String.valueOf(((Supplier<?>) t).get());
+            System.setProperty(ENGINE_MAP_RECEIPT_SYSPROP, receipt);
+            if (((BooleanSupplier) t).getAsBoolean()) {
+                inst.addTransformer(t, false);
+                System.out.println(ROW + "enginemap armed map=" + receipt);
+            } else if (!ENGINE_MAP_IDENTITY.equals(receipt)) {
+                System.out.println(ROW + "enginemap unarmed state=" + receipt);
+            }
+        } catch (Throwable t) {
+            disarm(ENGINE_MAP_RECEIPT_SYSPROP, "enginemap", t);
         }
     }
 

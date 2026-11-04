@@ -152,6 +152,12 @@ package cc.starsector.server.ops;
  * {@code op=exclude} + {@code lunaSyncExclude} through {@code modsOp}, the section's one write (busy while in flight,
  * a refusal on the write-fail note, the section re-read after); only an accepted save clears {@code data-dirty}, so a
  * refused list stays in the field beside the refusal that names its bad item.
+ *
+ * <p>The Mods rows carry {@code depends} + {@code dependsFlag} (the serve's
+ * {@code OpsModsPanel.dependsCell}) into the row template's {@code data-col="Needs"} cell, textContent like every cell;
+ * the flag picks the cell's class ({@code refuse} = {@code note-err}, {@code on} = {@code note-dep-on}). WHY: the
+ * host sees at a glance which mod another one needs. The provenance marker rides this javadoc, never the script
+ * (the served script's text law refuses it).
  */
 final class OpsConsoleJsSetup {
 
@@ -1060,6 +1066,12 @@ final class OpsConsoleJsSetup {
               CC.text(CC.q('[data-col="Version"]', frag), r.version);
               CC.text(CC.q('[data-col="Folder"]', frag), r.folder);
               CC.text(CC.q('[data-col="Settings"]', frag), r.settings);
+              // The Needs cell (text only): what the mod needs, what needs it, and what the next start does
+              // about it - a refusal reads as an error, an unticked mod a required one pulls in reads emphasised.
+              const needs = CC.q('[data-col="Needs"]', frag);
+              CC.text(needs, r.depends);
+              needs.classList.toggle('note-err', r.dependsFlag === 'refuse');
+              needs.classList.toggle('note-dep-on', r.dependsFlag === 'on');
               // The game launcher's own shape: an On box per mod + the kind of use while on (a host
               // disables a mod for a while without removing it). Unticked = off; the row stays, the kind box
               // greys and shows the serve's kind for it: the serve remembers an off mod's optional kind in
@@ -1106,7 +1118,8 @@ final class OpsConsoleJsSetup {
               }
               modsRows = (Array.isArray(a.rows) ? a.rows : []).map((r) => ({
                 mod: modsStr(r.mod), id: modsStr(r.id), version: modsStr(r.version), use: modsStr(r.use),
-                kind: modsStr(r.kind), folder: modsStr(r.folder), settings: modsStr(r.settings)}));
+                kind: modsStr(r.kind), folder: modsStr(r.folder), settings: modsStr(r.settings),
+                depends: modsStr(r.depends), dependsFlag: modsStr(r.dependsFlag)}));
               const body = CC.el('mods-body');
               body.replaceChildren();
               for (const r of modsRows) {

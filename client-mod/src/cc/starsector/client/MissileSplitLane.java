@@ -154,7 +154,14 @@ final class MissileSplitLane {
             // Vanilla's OWN dispatcher, the exact descriptor MirvAI.checkSplit calls —
             // NOT the F/BALLISTIC-only overload, which cannot return null and so
             // cannot have been the source of skip_nochild. See the field doc.
-            factory = lookup.findStatic(com.fs.starfarer.loading.specs.a.class, "super",
+            // The method NAME is a string the compat agent's class-load
+            // rename cannot reach, so it goes through EngineNames keyed by the Windows-build owner + descriptor;
+            // the MethodType below stays compiled class literals, which the agent does rename.
+            factory = lookup.findStatic(com.fs.starfarer.loading.specs.a.class,
+                    EngineNames.member("com.fs.starfarer.loading.specs.a", "super",
+                            "(Lcom/fs/starfarer/combat/entities/Ship;Lcom/fs/starfarer/combat/systems/o00O;"
+                                    + "Ljava/lang/Object;Lorg/lwjgl/util/vector/Vector2f;F"
+                                    + "Lorg/lwjgl/util/vector/Vector2f;)Ljava/lang/Object;"),
                     java.lang.invoke.MethodType.methodType(Object.class,
                             Ship.class, o00O.class, Object.class,
                             Vector2f.class, float.class, Vector2f.class));
@@ -167,7 +174,7 @@ final class MissileSplitLane {
             // not cosmetics. Placed AFTER the factory try: the ordering law above still holds
             // (the pixel-minting piece resolves FIRST and ALONE). The type is reachable only by
             // string — `com.fs.starfarer.combat.E` is a class AND a package.
-            Class<?> dmg = Class.forName("com.fs.starfarer.combat.E.F");
+            Class<?> dmg = Class.forName(EngineNames.cls("com.fs.starfarer.combat.E.F"));
             dmgCtor = lookup.findConstructor(dmg, java.lang.invoke.MethodType.methodType(
                     void.class, float.class, boolean.class, DamageType.class));
             setDamage = lookup.findVirtual(F.class, "setDamage",
@@ -185,7 +192,8 @@ final class MissileSplitLane {
             failures.append("[SPEC_STORE] ").append(t).append(' ');
         }
         try {
-            Class<?> fxHolder = Class.forName("com.fs.starfarer.combat.entities.ship.A.class");
+            Class<?> fxHolder = Class.forName(
+                    EngineNames.cls("com.fs.starfarer.combat.entities.ship.A.class"));
             smoke = lookup.findStatic(fxHolder, "o00000", java.lang.invoke.MethodType.methodType(
                     void.class, oO0o.class, Vector2f.class, float.class, Vector2f.class));
         } catch (Throwable t) {

@@ -2492,12 +2492,32 @@ public final class ServerOpsCore {
     }
 
     /**
-     * Can Join from this PC run on this computer? True only for an
-     * {@code os.name} starting {@code Windows} (the
-     * player kit runs on Windows only); null / blank / any other OS = false. Pure; thread: any.
+     * Can Join from this PC run on this computer? True for a Windows or a
+     * Linux {@code os.name} ({@link #windowsHost} / {@link #posixHost}: the player kit runs on those two);
+     * null / blank / any other OS = false. Pure; thread: any.
      */
     static boolean joinHere(String osName) {
+        return windowsHost(osName) || posixHost(osName);
+    }
+
+    /**
+     * The host-platform predicates, each pure over an {@code os.name} (null / blank = false), read by the console
+     * once per use - never inside the join core, which takes the answer as an input. {@code windowsHost} = starts
+     * {@code Windows}: the boot's browser spawn and the console lock's Windows form; {@code posixHost} = starts
+     * {@code Linux}: the join press's Linux branch; {@code watchHere} = Launch debug WATCH can run here - Windows
+     * only (its window sweep, client diagnostics and settings scrub are Windows paths). Thread: any.
+     *
+     */
+    static boolean windowsHost(String osName) {
         return osName != null && osName.startsWith("Windows");
+    }
+
+    static boolean posixHost(String osName) {
+        return osName != null && osName.startsWith("Linux");
+    }
+
+    static boolean watchHere(String osName) {
+        return windowsHost(osName);
     }
 
     /**
@@ -2722,6 +2742,9 @@ public final class ServerOpsCore {
                 .append(",\"gameRootSecond\":\"").append(jsonEscape(gameRootSecond))
                 .append("\",\"uplinkDefault\":")
                 .append(jsonNumber(uplinkDefault))
+                // Launch debug WATCH's own gate (Windows only), apart
+                // from joinHere; after uplinkDefault so the joinHere / gameRootSecond neighbours stay as pinned.
+                .append(",\"watchHere\":").append(watchHere(System.getProperty("os.name")))
                 .append(",\"pvp\":\"").append(pvp)
                 .append("\",\"seatsPerSource\":\"").append(jsonEscape(OpsMatchRows.seatsPerSourceFieldPrefill(propsLines)))
                 .append("\",\"allSkills\":\"").append(jsonEscape(OpsMatchRows.allSkillsFieldPrefill(propsLines)))

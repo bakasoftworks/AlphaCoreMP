@@ -2,6 +2,15 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.5.0 - 2026-11-04
+
+- The kit runs on Linux: copy `CC_Client` into `mods/` of a Linux Starsector 0.98a-RC8 and run `bash mods/CC_Client/join-cc.sh` from that folder. The game runs on its own Java (`jre_linux`); the kit's bundled Java stays Windows-only. The kit README's "On Linux" section lists the differences and the sound and `xrandr` packages a distribution may lack.
+- The Linux game is a different build of the same version, so the kit's compatibility agent translates the mod's engine references as the game loads. No game file is copied or changed.
+- A Linux host's ops GUI has "Join from this PC" too: start `ops-web.sh` from a terminal inside your desktop session. "Launch debug WATCH" stays Windows-only.
+- Voice chat on Linux uses Java's own sound line: it works where ALSA routes to PipeWire or PulseAudio (the usual desktop), with about 74 ms more delay to the speaker than on Windows.
+- A player's game that closes while the server is still talking to it now finishes its last messages before it says goodbye.
+- The ops GUI's Mods tab has a "Needs" column: which mods a mod needs, which mods need it, and when an unticked mod loads anyway because a required mod needs it (or an optional one would refuse the start).
+
 ## 0.4.0 - 2026-11-03
 
 - The 0.4.0 kit is required. A 0.3.0 or older kit is told at the door that it is outdated.
