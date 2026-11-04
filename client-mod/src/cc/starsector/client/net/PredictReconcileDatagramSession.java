@@ -176,6 +176,17 @@ public final class PredictReconcileDatagramSession implements PredictSession {
     private static final long TIMER_GRANULARITY_MILLIS = 15L;
     /** Bound on the goodbye CTRL flush + BYE-echo wait (the endpoint's unarmed-flush mirror). */
     private static final long GOODBYE_BOUND_MILLIS = 5_000L;
+    /** The CTRL-flush bound once the SERVER said BYE
+     * first, counted from that BYE's arrival. Our echo is what ends the server's goodbye fan, and
+     * the fan services this session only until its own bound, counted from the fan's START: the
+     * armed read deadline (10 s on the serve) or 5 s unarmed, after which the door closes. The fan
+     * sends its BYE once its own CTRL lane is flushed and resends it every timer tick until the
+     * echo. The tightest fan bound a goodbye rig arms is 3 s, so the full
+     * {@link #GOODBYE_BOUND_MILLIS} could land the echo on a door that already left; half of 3 s
+     * leaves the other half for the server's own flush before its BYE plus the two one-way
+     * flights, and still spans several retransmit rounds of our flush (the core's RTO floor 50 ms,
+     * initial 200 ms, doubling per expiry). The client-first goodbye keeps the full bound. */
+    private static final long PEER_BYE_FLUSH_BOUND_MILLIS = 1_500L;
     static final int RECEIVE_BUFFER_BYTES = 2_048;
 
     private final long shipId;
@@ -287,6 +298,15 @@ public final class PredictReconcileDatagramSession implements PredictSession {
     private volatile IOException readerFailure;
     volatile IOException sessionFailure;
     private volatile boolean peerSaidBye;
+    /** Arrival time of the server's first BYE, written
+     * by the reader BEFORE it publishes {@link #peerSaidBye}; anchors
+     * {@link #PEER_BYE_FLUSH_BOUND_MILLIS}. */
+    private volatile long peerByeAtMillis;
+    /** The one-shot claim on the echo of the server's BYE ({@link #echoPeerByeOnce}): the reader
+     * (our BYE already out), the timer (flush done or bound expired) or {@link #goodbye()} sends
+     * it, whichever claims it first. Never reset: the BYE latch is terminal. */
+    private final java.util.concurrent.atomic.AtomicBoolean peerByeEcho =
+            new java.util.concurrent.atomic.AtomicBoolean();
     private volatile boolean byeSent;
     private volatile boolean byeAcked;
     volatile boolean closed;
@@ -389,6 +409,8 @@ public final class PredictReconcileDatagramSession implements PredictSession {
      * (the v6 decoder rejects 0). */
     volatile long serverLife;
     private volatile long reconnectInboundDropped;
+    /** UP sends dropped, never sent: mid-reconnect, kicked, the re-admit intent hold, a CTRL stall
+     * that armed the re-HELLO, or a CTRL frame past the server's BYE (nothing consumes it there). */
     private volatile long sendsDroppedReconnecting;
     private volatile long reconnectByeEchoesSwallowed; // W5-D5: own-echo BYEs mid-reconnect
 
@@ -2006,7 +2028,7 @@ public final class PredictReconcileDatagramSession implements PredictSession {
         byte[] vsub = lastVariantSubmitFrame;
         int sent = 0;
         try {
-            // ctrlSendBounded DROPS silently on the reconnecting / RTO-exhausted paths (it counts
+            // ctrlSendBounded DROPS silently on the reconnecting / RTO-exhausted / post-BYE paths (it counts
             // sendsDroppedReconnecting instead of throwing) — count only frames that really left.
             if (snam != null) {
                 long drops = sendsDroppedReconnecting;
@@ -2219,6 +2241,12 @@ public final class PredictReconcileDatagramSession implements PredictSession {
      * (exactly-once was a per-session promise; the frame dies with the dead session). */
     private void ctrlSendBounded(byte[] frame, String what) throws IOException {
         throwIfDeadOrClosed();
+        // The server says BYE only after its match loop
+        // and discards UP CTRL once our echo lands, so a frame past its BYE only delays that echo.
+        if (peerSaidBye) {
+            sendsDroppedReconnecting++; // the existing drop meter: the replay's sent count reads it
+            return;
+        }
         if (reconnecting || kickedTerminal) {
             sendsDroppedReconnecting++; // B4/D4b kicked: no server-side session to deliver to
             return;
@@ -2416,7 +2444,7 @@ public final class PredictReconcileDatagramSession implements PredictSession {
         return reconnectInboundDropped;
     }
 
-    /** B4: intent/CTRL sends dropped while reconnecting (incl. the arming CTRL stall). */
+    /** B4: the {@link #sendsDroppedReconnecting} count (its causes are on the field). */
     public long sendsDroppedReconnecting() {
         return sendsDroppedReconnecting;
     }
@@ -2679,7 +2707,15 @@ public final class PredictReconcileDatagramSession implements PredictSession {
         }
     }
 
-    /** BYE-ACK = BYE echo: the peer's BYE completes our goodbye; our echo is theirs. */
+    /** BYE-ACK = BYE echo: with our BYE out, the peer's BYE completes our goodbye
+     * (the echo of ours, or a crossed BYE that doubles as one); otherwise it is the server's own
+     * goodbye, and our echo is theirs. A server-first BYE is only RECORDED here (arrival time,
+     * then the latch): our echo takes the server's session out of live, after which it acks every
+     * UP CTRL frame and discards it, so the echo waits for our CTRL flush and goes from the timer
+     * or {@link #goodbye()}, never from this reader ahead of frames still in flight. This method
+     * never blocks: the reader must stay free to take the acks that flush needs. With our BYE
+     * already out the flush has run, so the echo goes at once.
+     * */
     private void handleBye() {
         if (byeSent && !byeAcked) {
             byeAcked = true;
@@ -2695,11 +2731,23 @@ public final class PredictReconcileDatagramSession implements PredictSession {
             return;
         }
         if (!peerSaidBye) {
+            peerByeAtMillis = nowMillis(); // before the volatile publish below
             peerSaidBye = true;
-            sendEnvelopeOnly(DatagramFrameCodec.WireChannel.BYE);
+            if (byeSent) {
+                echoPeerByeOnce(); // our flush already ran: a crossed BYE, or the echo of ours
+            }
         }
         synchronized (lock) {
             lock.notifyAll(); // wake a blocked take to return its clean-EOF null
+        }
+    }
+
+    /** Sends the echo of the server's BYE at most once, whichever of the reader, the timer and
+     * {@link #goodbye()} claims it first; a no-op before the BYE latch. The same envelope-only
+     * BYE as every other goodbye send. */
+    private void echoPeerByeOnce() {
+        if (peerSaidBye && peerByeEcho.compareAndSet(false, true)) {
+            sendEnvelopeOnly(DatagramFrameCodec.WireChannel.BYE);
         }
     }
 
@@ -3292,6 +3340,15 @@ public final class PredictReconcileDatagramSession implements PredictSession {
             } catch (InterruptedException interrupted) {
                 return; // close() interrupts — session lifetime over
             }
+            // The deferred echo of a server-first BYE
+            // rides this thread, never close(): the plugin closes at mission end, which can outrun
+            // the server's fan bound. It runs ahead of the reconnecting branch because a re-arm
+            // that raced the BYE latch must not park it (no ack lands mid-reconnect: at worst the
+            // bound fires).
+            if (peerSaidBye && !peerByeEcho.get() && (reliability.ctrlFlushed()
+                    || nowMillis() >= peerByeAtMillis + PEER_BYE_FLUSH_BOUND_MILLIS)) {
+                echoPeerByeOnce();
+            }
             if (reconnecting) {
                 pumpReHello(); // B4: the timer paces the standing re-HELLO; the dead session's
                                // core has nothing worth retransmitting (it died server-side)
@@ -3407,9 +3464,12 @@ public final class PredictReconcileDatagramSession implements PredictSession {
         ownAuthorityHeld = false;
     }
 
-    /** Goodbye then teardown (s16 law): bounded CTRL flush on BOTH paths — even when the SERVER
-     * said BYE first — then BYE resent until the peer's echo, then socket close. Idempotent,
-     * never throws (the TCP session's close contract; teardown must not fail teardown). */
+    /** Goodbye then teardown, under the goodbye law: the bounded CTRL flush of
+     * {@link #goodbye()} on BOTH paths, then the BYE exchange. Client-first: our BYE, resent by the
+     * timer until the peer's echo. Server-first: the echo of its BYE, sent after our flush by the
+     * timer or {@code goodbye()}, whichever claims it first (the timer may already have sent it
+     * long before this runs). Then socket close. Idempotent, never throws (the TCP session's close
+     * contract; teardown must not fail teardown). */
     @Override
     public void close() {
         synchronized (closeLock) {
@@ -3434,20 +3494,33 @@ public final class PredictReconcileDatagramSession implements PredictSession {
         }
     }
 
+    /** The goodbye law: every UP CTRL frame sent before the goodbye is delivered while the
+     * server's session is still live, so the bounded CTRL flush runs on BOTH paths (TCP's kernel
+     * flushes the ordered stream before FIN; a datagram session must app-flush). Client-first:
+     * after the flush our BYE goes out and the timer resends it until the peer's echo. Server-first:
+     * the flush bound tightens to {@link #PEER_BYE_FLUSH_BOUND_MILLIS} from that BYE's arrival
+     * (re-read each pass: the BYE may land mid-flush), then the echo of its BYE goes out unless the
+     * timer already sent it; an echo ahead of the flush would lose exactly the frames still in
+     * flight. Runs on the closing thread, never longer than {@link #GOODBYE_BOUND_MILLIS} from
+     * entry, and never skips that echo once the BYE latched (mid-reconnect or interrupted too).
+     * */
     private void goodbye() {
         if (reconnecting) {
+            echoPeerByeOnce(); // a BYE that latched as a re-arm raced it: no flush can land now
             return; // B4: no live server-side session to flush to or bid goodbye — the seat
                     // vacated at the death that armed the loop; teardown goes straight to close
         }
         long deadline = nowMillis() + GOODBYE_BOUND_MILLIS;
-        while (!reliability.ctrlFlushed() && nowMillis() < deadline
+        while (!reliability.ctrlFlushed() && nowMillis() < goodbyeFlushDeadline(deadline)
                 && sessionFailure == null && readerFailure == null) {
             if (!sleepBestEffort(TIMER_GRANULARITY_MILLIS)) {
+                echoPeerByeOnce(); // teardown wins the flush, never the server's echo
                 return;
             }
         }
         if (peerSaidBye) {
-            return; // the reader already echoed our BYE-ACK
+            echoPeerByeOnce(); // unless the timer already sent it
+            return;
         }
         byeSent = true;
         sendEnvelopeOnly(DatagramFrameCodec.WireChannel.BYE);
@@ -3457,6 +3530,15 @@ public final class PredictReconcileDatagramSession implements PredictSession {
                 return; // the timer thread resends the BYE while we wait
             }
         }
+    }
+
+    /** The flush deadline {@link #goodbye()} polls: its own bound, tightened once the server's
+     * BYE has arrived (never later than the bound it is given).
+     * */
+    private long goodbyeFlushDeadline(long goodbyeDeadline) {
+        return peerSaidBye
+                ? Math.min(goodbyeDeadline, peerByeAtMillis + PEER_BYE_FLUSH_BOUND_MILLIS)
+                : goodbyeDeadline;
     }
 
     // ------------------------------------------------------------------ small helpers

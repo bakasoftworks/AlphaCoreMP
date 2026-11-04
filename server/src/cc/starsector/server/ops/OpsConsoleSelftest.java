@@ -156,6 +156,10 @@ final class OpsConsoleSelftest {
             e.put("LOCALAPPDATA", root.resolve("lad").toString());
             e.put("APPDATA", root.resolve("ad").toString());
             e.put("USERPROFILE", root.resolve("up").toString());
+            // A Linux-shaped HOME (the kit's dir ladder wants a leading '/'), so the
+            // Linux WATCH rows pass the route's pre-Start R20 and reach R19 / the Start; no file is ever made there
+            // (the rig's door never opens, so no press writes). The Windows rows read USERPROFILE only.
+            e.put("HOME", "/home/cc-rig");
             e.put("SystemRoot", "C:\\Windows");
             e.put("PATH", "x");
             e.put("CC_JOIN_DRYRUN", "1");
@@ -1130,12 +1134,13 @@ final class OpsConsoleSelftest {
         long pkg = OpsSetupDraft.DRAFT_IDS.stream().filter(OpsParity.PACKAGE_IDS::contains).count();
         List<String> pageOnly = OpsSetupDraft.DRAFT_IDS.stream().filter(OpsParity.PAGE_ONLY_IDS::contains)
                 .sorted().toList();
-        if (OpsSetupDraft.DRAFT_IDS.size() != 25 || pkg != 23
-                || !pageOnly.equals(List.of("setup.gameRootSecond", "setup.match.pvp"))) {
+        if (OpsSetupDraft.DRAFT_IDS.size() != 26 || pkg != 23
+                || !pageOnly.equals(List.of("setup.gameRootPlayer", "setup.gameRootSecond", "setup.match.pvp"))) {
             bad.add("draft ids " + OpsSetupDraft.DRAFT_IDS.size() + " = package " + pkg + " + page-only " + pageOnly
-                    + " (flips if a draft id drifts from the page's parity ids, or the PvP select stops being drafted)");
+                    + " (flips if a draft id drifts from the page's parity ids, or the PvP select or a game folder"
+                    + " row stops being drafted)");
         }
-        if (OpsParity.PAGE_ONLY_IDS.size() != 4) {
+        if (OpsParity.PAGE_ONLY_IDS.size() != 5) {
             bad.add("page-only ids " + OpsParity.PAGE_ONLY_IDS + " (flips if one is dropped or a package id joins)");
         }
         for (String id : OpsSetupDraft.DRAFT_IDS) {
@@ -1359,6 +1364,7 @@ final class OpsConsoleSelftest {
             row(fails, "web-start-gameroot", () -> startGameRootRow(rig));
             row(fails, "web-draft-clear", () -> draftClearRow(rig));
             row(fails, "web-start-second-folder", () -> startSecondFolderRow(rig));
+            row(fails, "web-start-player-folder", () -> startPlayerFolderRow(rig));
             row(fails, "web-brick", () -> brickRow(rig));
             row(fails, "web-lease", () -> leaseRow(rig));
             row(fails, "web-start-lease", () -> startLeaseRow(rig));
@@ -1371,6 +1377,7 @@ final class OpsConsoleSelftest {
             row(fails, "web-join-kit-stamps", () -> joinKitStampsRow(rig));
             row(fails, "web-watch-route", () -> watchRouteRow(rig));
             row(fails, "web-watch-linux", () -> watchLinuxRow(rig));
+            row(fails, "web-watch-linux-nodisplay", () -> watchLinuxNoDisplayRow(rig));
             row(fails, "web-watch-kit-check", () -> watchKitCheckRow(rig));
             row(fails, "web-watch-second-check", () -> watchSecondCheckRow(rig));
             row(fails, "web-watch-note", () -> watchNoteRow(rig));
@@ -2283,6 +2290,104 @@ final class OpsConsoleSelftest {
             bad.add("blank field " + PeerText.bound(blank.body(), 100) + " spawns " + spawns[2] + "/" + spawns[3]
                     + " file '" + crlfShown(afterBlank) + "' (flips if the wrap uses the blank-skips writer - the row"
                     + " could never be cleared - or the clear touches another byte)");
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /**
+     * {@code web-start-player-folder} - the Player game folder (the install
+     * Join from this PC and the debug WATCH's first window start the game from; the serve keeps {@code game.root})
+     * rides {@code POST /api/start} as the form field {@code gameRootPlayer}, saved or CLEARED in
+     * {@code launcher.properties} right before the spawn - the {@code web-start-second-folder} model, same rig and
+     * restore. A CRLF launcher file {@code game.root=C:\old} + {@code keep.me=1}: a Start with
+     * {@code gameRootPlayer=D:\player} appends exactly that row (both old rows byte-kept, {@code game.root} NOT
+     * rewritten); a Start WITHOUT the field leaves the bytes untouched; {@code /api/config} serves the row as
+     * {@code gameRootPlayer}; a Start with the field BLANK removes the row (the file back to its first bytes); a
+     * Start typing both folders onto the first bytes appends {@code game.root.second} THEN {@code game.root.player}
+     * (the player wrap innermost). Flips if the wrapper is dropped, saves under the wrong row, uses the blank-skips
+     * writer (the host could never return to Game folder), reads an absent field as blank, rewrites more than its
+     * row, or the player wrap moves outside the second folder's.
+     */
+    private static String startPlayerFolderRow(Rig rig) throws Exception {
+        String r = "web-start-player-folder";
+        Path launcher = rig.pkg.resolve(ServeLauncher.DEFAULT_LAUNCHER_PROPERTIES);
+        Path props = rig.roots.config();
+        Path ops = rig.roots.opsFile();
+        String fields = startFields("match-web-pkg.txt");
+        byte[] first = "game.root=C:\\old\r\nkeep.me=1\r\n".getBytes(StandardCharsets.UTF_8);
+        byte[] want = "game.root=C:\\old\r\nkeep.me=1\r\ngame.root.player=D:\\player\r\n".getBytes(StandardCharsets.UTF_8);
+        byte[] wantBoth = ("game.root=C:\\old\r\nkeep.me=1\r\ngame.root.second=D:\\second\r\n"
+                + "game.root.player=D:\\player\r\n").getBytes(StandardCharsets.UTF_8);
+        byte[][] prior = new byte[3][];
+        setup(r, () -> {
+            awaitStaging();
+            prior[0] = takeFile(launcher);
+            prior[1] = Files.readAllBytes(props);
+            prior[2] = takeFile(ops); // a live status file would refuse the Start
+            Files.write(launcher, first);
+        });
+        Resp typed;
+        Resp absent;
+        Resp config;
+        Resp blank;
+        Resp both;
+        byte[] afterTyped;
+        byte[] afterAbsent;
+        byte[] afterBlank;
+        byte[] afterBoth;
+        int[] spawns = new int[5];
+        try {
+            spawns[0] = rig.spawned.size();
+            typed = post(rig, "/api/start", fields + "&gameRootPlayer=" + enc("D:\\player"));
+            awaitStaging();
+            spawns[1] = rig.spawned.size();
+            afterTyped = Files.readAllBytes(launcher);
+            absent = post(rig, "/api/start", fields);
+            awaitStaging();
+            spawns[2] = rig.spawned.size();
+            afterAbsent = Files.readAllBytes(launcher);
+            config = call(rig, "GET", "/api/config", rig.boot.token(), null);
+            blank = post(rig, "/api/start", fields + "&gameRootPlayer=");
+            awaitStaging();
+            spawns[3] = rig.spawned.size();
+            afterBlank = Files.readAllBytes(launcher);
+            both = post(rig, "/api/start", fields + "&gameRootSecond=" + enc("D:\\second")
+                    + "&gameRootPlayer=" + enc("D:\\player"));
+            awaitStaging();
+            spawns[4] = rig.spawned.size();
+            afterBoth = Files.readAllBytes(launcher);
+        } finally {
+            setup(r, () -> {
+                restoreFile(launcher, prior[0]);
+                Files.write(props, prior[1]);
+                restoreFile(ops, prior[2]);
+            });
+        }
+        List<String> bad = new ArrayList<>();
+        if (!typed.body().startsWith("{\"ok\":true") || spawns[1] <= spawns[0] || !Arrays.equals(want, afterTyped)) {
+            bad.add("typed player folder " + PeerText.bound(typed.body(), 100) + " spawns " + spawns[0] + "/"
+                    + spawns[1] + " file '" + crlfShown(afterTyped) + "' (flips if the player-folder wrap is dropped,"
+                    + " saves under another row or rewrites more than its row)");
+        }
+        if (!absent.body().startsWith("{\"ok\":true") || spawns[2] <= spawns[1] || !Arrays.equals(want, afterAbsent)) {
+            bad.add("absent field " + PeerText.bound(absent.body(), 100) + " spawns " + spawns[1] + "/" + spawns[2]
+                    + " file '" + crlfShown(afterAbsent) + "' (flips if an absent field is read as blank - an older"
+                    + " page would drop the saved Player game folder)");
+        }
+        if (!config.body().contains("\"gameRootPlayer\":\"D:\\\\player\"")
+                || !config.body().contains("\"gameRoot\":\"C:\\\\old\"")) {
+            bad.add("config " + PeerText.bound(config.body(), 80) + " (flips if /api/config stops serving the player"
+                    + " folder row, or the Game folder prefill reads it)");
+        }
+        if (!blank.body().startsWith("{\"ok\":true") || spawns[3] <= spawns[2] || !Arrays.equals(first, afterBlank)) {
+            bad.add("blank field " + PeerText.bound(blank.body(), 100) + " spawns " + spawns[2] + "/" + spawns[3]
+                    + " file '" + crlfShown(afterBlank) + "' (flips if the wrap uses the blank-skips writer - the row"
+                    + " could never be cleared - or the clear touches another byte)");
+        }
+        if (!both.body().startsWith("{\"ok\":true") || spawns[4] <= spawns[3] || !Arrays.equals(wantBoth, afterBoth)) {
+            bad.add("both folders " + PeerText.bound(both.body(), 100) + " spawns " + spawns[3] + "/" + spawns[4]
+                    + " file '" + crlfShown(afterBoth) + "' (flips if the player wrap is no longer the innermost -"
+                    + " the disk order game.root.second then game.root.player breaks)");
         }
         return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
     }
@@ -3640,42 +3745,156 @@ final class OpsConsoleSelftest {
     }
 
     /**
-     * {@code web-watch-linux} - the same {@code POST /api/watch} with
-     * {@code os.name=Linux} answers {@link OpsConsole#R9W} (a Linux host joins from this PC, the WATCH stays
-     * Windows-only) in the join POST's shape BEFORE any Start: no spawn and the props bytes
-     * unchanged (so no posture row). Flips if a non-Windows watch starts a plain match or writes the row, or if the
-     * Linux gate answers anything but R9W. {@code os.name} is restored in {@code finally}.
+     * {@code web-watch-linux} - the same
+     * {@code POST /api/watch} with {@code os.name=Linux} is NOT refused (neither {@link OpsConsole#R9W} nor R9): it
+     * enters the Start flow exactly as {@code web-watch-route}'s Windows watch does - the STARTED answer, a spawn,
+     * the props holding {@code server.clientDebug=true} exactly once. What differs from that row: {@code os.name}
+     * is {@code Linux}; the staged game is the Linux layout (the engine jar at its own root, {@code starsector.sh},
+     * the kit's {@code join-cc.sh}), since the watch's kit check runs the Linux install law; no plain
+     * {@code /api/start} leg (the route row owns the plain-Start-writes-false law); and the END leg is observed:
+     * once the launcher exits, the lease daemon writes the row {@code false} (its END leg ran), and a password file
+     * planted where the WINDOWS scrub would look (the console effects' LOCALAPPDATA) is byte-unchanged - the END
+     * scrub took the Linux facts the WATCH arm captured. Flips if a Linux watch is refused, stops writing the posture
+     * row, arms no lease daemon, or its END scrub takes the Windows ladder. {@code os.name}, the props, the status
+     * file, the launcher row and the planted file are restored in {@code finally}.
+     *
+     * <p> The host desktop is KNOWN and set ({@link OpsJoinSelf#PROP_HOST_DISPLAY}
+     * {@code :0}, the package's Linux start file's hand-over) and the effects' HOME is a Linux path, so the route's
+     * new pre-Start host check passes; its refusal twin = {@code web-watch-linux-nodisplay}. Flips too if that check
+     * refuses a host that has a desktop.
      */
     private static String watchLinuxRow(Rig rig) throws Exception {
         String r = "web-watch-linux";
         Path props = rig.pkg.resolve(ServeLauncher.DEFAULT_CONFIG);
-        AtomicReference<byte[]> prior = new AtomicReference<>();
+        Path ops = rig.roots.opsFile();
+        Path launcher = rig.pkg.resolve(ServeLauncher.DEFAULT_LAUNCHER_PROPERTIES);
+        Path install = rig.root.resolve("watch-linux-game");
+        Path decoy = Path.of(rig.joinFx.env.get("LOCALAPPDATA")).resolve("cc-starsector")
+                .resolve("join-settings.properties");
+        byte[] plant = "host=w\r\nport=1\r\npassword=decoy-secret\r\n".getBytes(StandardCharsets.ISO_8859_1);
+        String fields = startFields("match-web-pkg.txt");
+        byte[][] prior = new byte[4][];
         setup(r, () -> {
             awaitStaging();
-            prior.set(Files.readAllBytes(props));
+            prior[0] = Files.readAllBytes(props);
+            prior[1] = takeFile(ops); // a live status file would refuse the Start
+            prior[2] = Files.isRegularFile(launcher) ? Files.readAllBytes(launcher) : null;
+            Files.createDirectories(install.resolve("mods").resolve("CC_Client"));
+            Files.write(install.resolve("starfarer_obf.jar"), new byte[] {1});
+            Files.write(install.resolve("starsector.sh"), new byte[] {1});
+            Files.write(install.resolve("mods").resolve("CC_Client").resolve("join-cc.sh"), new byte[] {1});
+            ServerOpsLaunch.writeLauncherRow(launcher, ServeLauncher.ROW_GAME_ROOT, install.toString());
+            prior[3] = Files.isRegularFile(decoy) ? Files.readAllBytes(decoy) : null;
+            Files.createDirectories(decoy.getParent());
+            Files.write(decoy, plant);
         });
         String priorOs = System.getProperty("os.name");
-        Resp linux;
+        String priorDisplay = System.getProperty(OpsJoinSelf.PROP_HOST_DISPLAY);
+        Resp watch;
         int spawns0;
         int spawns1;
+        List<String> afterWatch;
+        List<String> afterEnd;
+        byte[] decoyAfter;
+        try {
+            System.setProperty("os.name", "Linux");
+            System.setProperty(OpsJoinSelf.PROP_HOST_DISPLAY, ":0");
+            spawns0 = rig.spawned.size();
+            rig.spawnExit.set(null); // the launcher LIVES until the posture row is read (web-watch-route's hold)
+            watch = post(rig, "/api/watch", fields);
+            afterWatch = Files.readAllLines(props, StandardCharsets.UTF_8);
+            spawns1 = rig.spawned.size();
+            rig.spawnExit.set(1);
+            OpsPressSelftest.FakeProcess live = rig.lastSpawn.get();
+            if (live != null) {
+                live.exit = 1; // the launcher "dies": the lease daemon's END leg runs, then the daemon ends
+            }
+            awaitStaging();
+            afterEnd = Files.readAllLines(props, StandardCharsets.UTF_8);
+            decoyAfter = Files.isRegularFile(decoy) ? Files.readAllBytes(decoy) : null;
+        } finally {
+            System.setProperty("os.name", priorOs);
+            restoreProperty(OpsJoinSelf.PROP_HOST_DISPLAY, priorDisplay);
+            rig.spawnExit.set(1);
+            setup(r, () -> {
+                awaitStaging();
+                Files.write(props, prior[0]);
+                restoreFile(ops, prior[1]);
+                restoreFile(launcher, prior[2]);
+                restoreFile(decoy, prior[3]);
+                deleteTree(install);
+            });
+        }
+        String key = OpsMatchRows.CLIENT_DEBUG_KEY + "=";
+        long rowsWatch = afterWatch.stream().filter(l -> l.startsWith(key)).count();
+        long rowsEnd = afterEnd.stream().filter(l -> l.startsWith(key)).count();
+        List<String> bad = new ArrayList<>();
+        if (!watch.body().startsWith("{\"ok\":true") || spawns1 <= spawns0 || rowsWatch != 1
+                || !afterWatch.contains(key + "true")) {
+            bad.add("Linux watch " + PeerText.bound(watch.body(), 120) + " spawns " + spawns0 + "/" + spawns1
+                    + " rows=" + rowsWatch + " true=" + afterWatch.contains(key + "true") + " (flips if a Linux"
+                    + " watch is refused - R9W or R9 - or its Start stops writing the debug posture row true)");
+        }
+        if (rowsEnd != 1 || !afterEnd.contains(key + "false")) {
+            bad.add("END rows=" + rowsEnd + " false=" + afterEnd.contains(key + "false") + " (flips if the Linux"
+                    + " watch arms no lease daemon, or its END leg stops clearing the debug posture row)");
+        }
+        if (!Arrays.equals(plant, decoyAfter)) {
+            bad.add("the Windows-ladder settings file was " + (decoyAfter == null ? "removed" : "rewritten")
+                    + " (flips if the END scrub on a Linux host takes the Windows ladder instead of the Linux facts"
+                    + " the WATCH arm captured)");
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /** A system property back to {@code prior}: cleared when it was unset. */
+    private static void restoreProperty(String key, String prior) {
+        if (prior == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, prior);
+        }
+    }
+
+    /**
+     * {@code web-watch-linux-nodisplay}: the same Linux {@code POST /api/watch} on a host with no desktop - the
+     * display unknown to the console (no {@link OpsJoinSelf#PROP_HOST_DISPLAY}: a console started by hand) and the
+     * effects' env setting neither {@code DISPLAY} nor {@code WAYLAND_DISPLAY} - is refused {@link OpsJoinSelf#R19}
+     * in the join refusal's shape BEFORE the Start: nothing spawned, the props bytes unchanged (no debug posture
+     * row). Flips if the Start runs first (a spawn, the row {@code true}) or the route stops refusing R19.
+     * {@code os.name}, the property and the props are restored in {@code finally}.
+     *
+     */
+    private static String watchLinuxNoDisplayRow(Rig rig) throws Exception {
+        Path props = rig.pkg.resolve(ServeLauncher.DEFAULT_CONFIG);
+        byte[] prior = Files.readAllBytes(props);
+        String priorOs = System.getProperty("os.name");
+        String priorDisplay = System.getProperty(OpsJoinSelf.PROP_HOST_DISPLAY);
+        int spawns0 = rig.spawned.size();
+        Resp watch;
         byte[] after;
         try {
             System.setProperty("os.name", "Linux");
-            spawns0 = rig.spawned.size();
-            linux = post(rig, "/api/watch", startFields("match-web-pkg.txt"));
-            awaitStaging();
-            spawns1 = rig.spawned.size();
+            System.clearProperty(OpsJoinSelf.PROP_HOST_DISPLAY);
+            watch = post(rig, "/api/watch", startFields("match-web-pkg.txt"));
             after = Files.readAllBytes(props);
         } finally {
             System.setProperty("os.name", priorOs);
-            setup(r, () -> Files.write(props, prior.get()));
+            restoreProperty(OpsJoinSelf.PROP_HOST_DISPLAY, priorDisplay);
+            rig.spawnExit.set(1);
+            awaitStaging();
+            Files.write(props, prior);
         }
-        boolean r9 = OpsConsoleForms.errorJson(OpsJoinSelf.TITLE, OpsConsole.R9W).equals(linux.body());
-        boolean same = Arrays.equals(prior.get(), after);
-        return r9 && spawns1 == spawns0 && same ? null
-                : "Linux watch -> " + PeerText.bound(linux.body(), 120) + " spawns " + spawns0 + "/" + spawns1
-                        + " props unchanged=" + same + " (flips if a Linux watch stops refusing R9W before the"
-                        + " Start, spawns or writes the posture row)";
+        int spawns1 = rig.spawned.size();
+        boolean same = Arrays.equals(prior, after);
+        if (!OpsConsoleForms.errorJson(OpsJoinSelf.TITLE, OpsJoinSelf.R19).equals(watch.body()) || spawns1 != spawns0
+                || !same) {
+            return "a Linux host with no desktop is refused R19 before the Start (flips if the Start runs first - a"
+                    + " spawn, the debug posture row written - or the route stops refusing): "
+                    + PeerText.bound(watch.body(), 160) + " spawns " + spawns0 + "/" + spawns1 + " props="
+                    + (same ? "same" : "changed");
+        }
+        return null;
     }
 
     /**

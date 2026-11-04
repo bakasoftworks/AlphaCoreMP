@@ -62,9 +62,12 @@ final class OpsSetupDraft {
      * config row Start writes, drafted like its MagicLib neighbour.
      * + {@code setup.mods.pilotReplicas}, the replicas select - a boot-time
      * config row Start writes, drafted like its player-ship neighbour.
+     * + {@code setup.gameRootPlayer}, the Player game folder - a launcher row Start saves or clears, drafted like
+     * its second-folder neighbour.
      */
     static final Set<String> DRAFT_IDS = Set.of("setup.bindHost", "setup.bindPort", "setup.advertise",
-            "setup.gameRoot", "setup.gameRootSecond", "setup.tickRate", "setup.record", "setup.net.seatsPerSource",
+            "setup.gameRoot", "setup.gameRootSecond", "setup.gameRootPlayer", "setup.tickRate", "setup.record",
+            "setup.net.seatsPerSource",
             "setup.officer.allSkills", "setup.replay.rngPins", "setup.mods.magicSeam", "setup.mods.pilotShip",
             "setup.mods.pilotReplicas", "setup.shape", "setup.fortress.dp",
             "setup.fortress.terrain", "setup.fortress.terrainLevel", "setup.fortress.asteroids", "setup.wave.scale",

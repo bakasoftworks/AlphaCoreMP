@@ -123,6 +123,10 @@ final class OpsConsoleOwnerSelftest {
         row(fails, "sweep-backstop-path-and-time", OpsConsoleOwnerSelftest::sweepBackstopRow);
         row(fails, "sweep-skips-foreign-subtree", OpsConsoleOwnerSelftest::sweepSkipsForeignRow);
         row(fails, "sweep-skips-unknown-command", OpsConsoleOwnerSelftest::sweepSkipsUnknownRow);
+        row(fails, "sweep-posix-kit-tree", OpsConsoleOwnerSelftest::sweepPosixKitTreeRow);
+        row(fails, "sweep-posix-foreign-skipped", OpsConsoleOwnerSelftest::sweepPosixForeignRow);
+        row(fails, "sweep-posix-term-then-kill", OpsConsoleOwnerSelftest::sweepPosixTermThenKillRow);
+        row(fails, "sweep-posix-no-system32", OpsConsoleOwnerSelftest::sweepPosixNoSystem32Row);
         OpsRoots before = OpsRoots.ROOTS.get();
         packageBlock(fails);
         // NO row checked the ROOTS restores: a leaked swap would point
@@ -183,12 +187,19 @@ final class OpsConsoleOwnerSelftest {
     }
 
     /** The fake box: its process list, every kill in order as {@code <pid>:gentle|force} (a forcible kill, or a
-     *  gentle one while {@code jvmHonours}, marks the process dead), {@code awaitExit} = "is it dead now". */
+     *  gentle one while {@code jvmHonours} to a pid not in {@code deaf}, marks the process dead), {@code awaitExit} =
+     *  "is it dead now". The Linux rows' extras: {@code posix} = the host flag; {@code calls} = the kills AND the
+     *  waits in one order (a wait as {@code <pid>:wait<boundMs>}); {@code deaf} = pids a gentle request never ends (a
+     *  hung JVM); {@code rootReads} counts {@code systemRoot} reads. */
     private static final class FakeOs implements JoinWindowSweep.Os {
         final List<JoinWindowSweep.Proc> all = new ArrayList<>();
         final List<String> kills = Collections.synchronizedList(new ArrayList<>());
+        final List<String> calls = Collections.synchronizedList(new ArrayList<>());
+        final Set<Long> deaf = new TreeSet<>();
         final AtomicInteger allReads = new AtomicInteger();
+        final AtomicInteger rootReads = new AtomicInteger();
         boolean jvmHonours;
+        boolean posix;
 
         @Override
         public List<JoinWindowSweep.Proc> all() {
@@ -198,20 +209,29 @@ final class OpsConsoleOwnerSelftest {
 
         @Override
         public void kill(JoinWindowSweep.Proc p, boolean force) {
-            kills.add(p.pid() + (force ? ":force" : ":gentle"));
-            if (force || jvmHonours) {
+            String call = p.pid() + (force ? ":force" : ":gentle");
+            kills.add(call);
+            calls.add(call);
+            if (force || (jvmHonours && !deaf.contains(p.pid()))) {
                 ((FakeProc) p).alive = false;
             }
         }
 
         @Override
         public boolean awaitExit(JoinWindowSweep.Proc p, long boundMs) {
+            calls.add(p.pid() + ":wait" + boundMs);
             return !p.isAlive();
         }
 
         @Override
         public String systemRoot() {
+            rootReads.incrementAndGet();
             return "C:\\Windows";
+        }
+
+        @Override
+        public boolean posix() {
+            return posix;
         }
     }
 
@@ -511,6 +531,169 @@ final class OpsConsoleOwnerSelftest {
             return "an undescribed descendant is skipped whole and counted (flips if a null, empty or unparsable"
                     + " executable is taken as the window's own - ended, or walked into so its console-shaped child"
                     + " dies - or the skipped count misses one): kills=" + os.kills + " rows=" + rows;
+        }
+        return null;
+    }
+
+    // ---- the same sweep on a Linux host (the fake's posix flag).
+
+    /** A Linux install as the kernel names its files: the game folder, its kit and the game's own java. */
+    private static final String PGAME = "/opt/cc/game/starsector";
+    private static final Path PKIT = Paths.get(PGAME, "mods", "CC_Client");
+    private static final String PJAVA = PGAME + "/jre_linux/bin/java";
+    /** A wait as the fake records it, at the sweep's own bound. */
+    private static final String WAIT = ":wait" + JoinWindowSweep.JVM_EXIT_BOUND_MS;
+
+    /**
+     * {@code sweep-posix-kit-tree}: a Linux window's tree - the kit's {@code /bin/bash} handle, the window-up loop's
+     * {@code sleep}, the join window's UI and the game (both the game's own {@code jre_linux} java), the sound probe's
+     * {@code timeout} with its JVM below it, the debrief's {@code bash} subshell with its {@code ping} below it - ends
+     * whole, deepest first, the handle last, every normal request (SIGTERM) before any wait and the forcible kill
+     * only for the one JVM that ignored it. A game JVM that outlived its bash (reparented, so only in the process
+     * list) is left alone: the backstop never ends by install path alone.
+     *
+     * <p> The subshell is the one child the allow-list's {@code bash}
+     * entry carries: the handle ends by the handle path, never the list, so without it the row could not flip on
+     * {@code bash} leaving {@link JoinWindowSweep#POSIX_TOOLS} (proven once by that mutation).
+     */
+    private static String sweepPosixKitTreeRow() {
+        FakeProc ping = new FakeProc(1107, SWEEP_T0.plusSeconds(41), "/usr/bin/ping");
+        FakeProc subshell = new FakeProc(1106, SWEEP_T0.plusSeconds(41), "/usr/bin/bash", ping);
+        FakeProc probe = new FakeProc(1105, SWEEP_T0.plusSeconds(4), PJAVA);
+        FakeProc timeout = new FakeProc(1104, SWEEP_T0.plusSeconds(4), "/usr/bin/timeout", probe);
+        FakeProc game = new FakeProc(1103, SWEEP_T0.plusSeconds(40), PJAVA);
+        FakeProc ui = new FakeProc(1102, SWEEP_T0.plusSeconds(2), PJAVA);
+        FakeProc sleep = new FakeProc(1101, SWEEP_T0.plusSeconds(39), "/usr/bin/sleep");
+        FakeProc handle = new FakeProc(1100, SWEEP_T0, "/bin/bash", sleep, ui, game, timeout, subshell);
+        FakeProc orphan = new FakeProc(1199, SWEEP_T0.plusSeconds(60), PJAVA);
+        FakeOs os = new FakeOs();
+        os.posix = true;
+        os.jvmHonours = true;
+        os.deaf.add(game.pid);
+        os.all.addAll(List.of(handle, sleep, ui, game, timeout, probe, subshell, ping, orphan));
+        List<String> rows = new ArrayList<>();
+        JoinWindowSweep.sweep(List.of(new JoinWindowSweep.Window(handle, SWEEP_T0, PKIT)), os, rows::add);
+        // the walk is level order reversed: the two grandchildren (ping, probe) first, then the handle's children
+        // last-to-first, the handle itself last; the waits follow the same order, the one SIGKILL right after the
+        // deaf game's wait
+        List<String> want = List.of("1107:gentle", "1105:gentle", "1106:gentle", "1104:gentle", "1103:gentle",
+                "1102:gentle", "1101:gentle", "1100:gentle", "1107" + WAIT, "1105" + WAIT, "1106" + WAIT,
+                "1104" + WAIT, "1103" + WAIT, "1103:force", "1102" + WAIT, "1101" + WAIT, "1100" + WAIT);
+        boolean allEnded = Stream.of(handle, sleep, ui, game, timeout, probe, subshell, ping)
+                .noneMatch(p -> p.alive);
+        if (!want.equals(os.calls) || !allEnded || !orphan.alive
+                || !List.of("cc-console watch sweep closed=1 gone=0 detached=0").equals(rows)) {
+            return "a Linux window's own tree ends whole, deepest first, every SIGTERM before any wait, SIGKILL only"
+                    + " for the survivor (flips if bash, sleep, timeout or the game's jre_linux java drops off the"
+                    + " allow-list - it outlives the watch - if the Windows order returns - a non-JVM's first signal"
+                    + " is the forcible one, or a wait or kill lands between the requests - or if the backstop ends a"
+                    + " JVM by install path alone - the orphan dies): calls=" + os.calls + " rows=" + rows;
+        }
+        return null;
+    }
+
+    /**
+     * {@code sweep-posix-foreign-skipped}: on a Linux host the host's browser that the join window's UI started (with
+     * a console-shaped child), an xdg-open whose interpreter is off the list, an unlisted {@code /usr/bin} command, a
+     * listed name outside {@code /bin} and {@code /usr/bin}, a browser under {@code /opt}, a sibling
+     * {@code jre_linux_old}, a path climbing out of {@code jre_linux} by {@code ..}, the Windows-named {@code jre}
+     * and a listed name in another case are each left alone with their whole subtree, counted once each, while the
+     * window's own UI, its {@code sleep} and the handle still end.
+     */
+    private static String sweepPosixForeignRow() {
+        Instant t = SWEEP_T0.plusSeconds(50);
+        FakeProc tabSleep = new FakeProc(1303, SWEEP_T0.plusSeconds(31), "/usr/bin/sleep");
+        FakeProc firefox = new FakeProc(1302, SWEEP_T0.plusSeconds(30), "/usr/lib/firefox/firefox", tabSleep);
+        FakeProc snap = new FakeProc(1305, SWEEP_T0.plusSeconds(30), "/snap/firefox/current/usr/lib/firefox/firefox");
+        FakeProc dash = new FakeProc(1304, SWEEP_T0.plusSeconds(30), "/usr/bin/dash", snap);
+        FakeProc ui = new FakeProc(1301, SWEEP_T0.plusSeconds(2), PJAVA, firefox, dash);
+        FakeProc nano = new FakeProc(1306, t, "/usr/bin/nano");
+        FakeProc localSleep = new FakeProc(1307, t, "/usr/sbin/sleep");
+        FakeProc chrome = new FakeProc(1308, t, "/opt/google/chrome/chrome");
+        FakeProc sibling = new FakeProc(1309, t, PGAME + "/jre_linux_old/bin/java");
+        FakeProc climb = new FakeProc(1310, t, PGAME + "/jre_linux/../../../../usr/lib/firefox/firefox");
+        FakeProc winJre = new FakeProc(1311, t, PGAME + "/jre/bin/java");
+        FakeProc upper = new FakeProc(1312, t, "/bin/Sleep");
+        FakeProc sleep = new FakeProc(1314, t, "/usr/bin/sleep");
+        FakeProc handle = new FakeProc(1300, SWEEP_T0, "/bin/bash", ui, nano, localSleep, chrome, sibling, climb,
+                winJre, upper, sleep);
+        List<FakeProc> left = List.of(firefox, tabSleep, dash, snap, nano, localSleep, chrome, sibling, climb, winJre,
+                upper);
+        FakeOs os = new FakeOs();
+        os.posix = true;
+        os.jvmHonours = true;
+        os.all.add(handle);
+        os.all.addAll(left);
+        os.all.addAll(List.of(ui, sleep));
+        List<String> rows = new ArrayList<>();
+        JoinWindowSweep.sweep(List.of(new JoinWindowSweep.Window(handle, SWEEP_T0, PKIT)), os, rows::add);
+        if (!List.of("1314:gentle", "1301:gentle", "1300:gentle").equals(os.kills)
+                || left.stream().anyMatch(p -> !p.alive)
+                || !List.of("cc-console watch sweep closed=1 gone=0 detached=0 skipped=9").equals(rows)) {
+            return "a Linux sweep ends only the window's own processes and leaves each foreign subtree whole, counted"
+                    + " once (flips if the allow-list widens - a browser under /usr/lib, /snap or /opt, an unlisted"
+                    + " or misplaced command, a sibling or climbed-out jre_linux, the Windows jre or a case-blind name"
+                    + " would be ended, or the walk enters a foreign subtree - or the skipped count goes per process"
+                    + " or silent): kills=" + os.kills + " rows=" + rows;
+        }
+        return null;
+    }
+
+    /**
+     * {@code sweep-posix-term-then-kill}: on a Linux host a JVM still alive past
+     * {@link JoinWindowSweep#JVM_EXIT_BOUND_MS} after its normal request gets the forcible kill; one that exited
+     * inside the wait gets no second signal; a child already gone at the sweep gets none at all; every wait is the
+     * sweep's bound and comes after every request.
+     *
+     */
+    private static String sweepPosixTermThenKillRow() {
+        FakeProc gone = new FakeProc(1203, SWEEP_T0.plusSeconds(39), "/usr/bin/sleep");
+        gone.alive = false;
+        FakeProc game = new FakeProc(1201, SWEEP_T0.plusSeconds(40), PJAVA);
+        FakeProc ui = new FakeProc(1202, SWEEP_T0.plusSeconds(2), PJAVA);
+        FakeProc handle = new FakeProc(1200, SWEEP_T0, "/bin/bash", game, ui, gone);
+        FakeOs os = new FakeOs();
+        os.posix = true;
+        os.jvmHonours = true;
+        os.deaf.add(game.pid);
+        List<String> rows = new ArrayList<>();
+        JoinWindowSweep.sweep(List.of(new JoinWindowSweep.Window(handle, SWEEP_T0, PKIT)), os, rows::add);
+        List<String> want = List.of("1202:gentle", "1201:gentle", "1200:gentle", "1202" + WAIT, "1201" + WAIT,
+                "1201:force", "1200" + WAIT);
+        if (!want.equals(os.calls) || game.alive
+                || !List.of("cc-console watch sweep closed=1 gone=0 detached=0").equals(rows)) {
+            return "a Linux survivor of the bounded wait gets SIGKILL, nothing else does (flips if the forcible kill"
+                    + " is dropped - the hung JVM outlives the watch - if a process that exited or was already gone"
+                    + " gets a signal, or if the wait is skipped, re-bounded or moved before a request): calls="
+                    + os.calls + " rows=" + rows;
+        }
+        return null;
+    }
+
+    /**
+     * {@code sweep-posix-no-system32}: on a Linux host a Windows console tool's path ({@code cmd.exe},
+     * {@code conhost.exe}, the debrief's Windows PowerShell under {@code System32}) is not ours and the box's
+     * {@code %SystemRoot%} is never read, while the window's {@code /bin/sleep} still ends.
+     *
+     */
+    private static String sweepPosixNoSystem32Row() {
+        FakeProc cmd = new FakeProc(1401, SWEEP_T0.plusSeconds(1), CMD);
+        FakeProc conhost = new FakeProc(1402, SWEEP_T0.plusSeconds(1), "C:\\Windows\\System32\\conhost.exe");
+        FakeProc debrief = new FakeProc(1403, SWEEP_T0.plusSeconds(95), DEBRIEF);
+        FakeProc sleep = new FakeProc(1404, SWEEP_T0.plusSeconds(39), "/bin/sleep");
+        FakeProc handle = new FakeProc(1400, SWEEP_T0, "/bin/bash", cmd, conhost, debrief, sleep);
+        FakeOs os = new FakeOs();
+        os.posix = true;
+        os.jvmHonours = true;
+        List<String> rows = new ArrayList<>();
+        JoinWindowSweep.sweep(List.of(new JoinWindowSweep.Window(handle, SWEEP_T0, PKIT)), os, rows::add);
+        if (!List.of("1404:gentle", "1400:gentle").equals(os.kills) || os.rootReads.get() != 0
+                || !cmd.alive || !conhost.alive || !debrief.alive
+                || !List.of("cc-console watch sweep closed=1 gone=0 detached=0 skipped=3").equals(rows)) {
+            return "a Linux sweep never takes the Windows allow-list (flips if the posix walk consults System32 - a"
+                    + " cmd, conhost or PowerShell path is ended, or %SystemRoot% is read - or /bin drops from the"
+                    + " shell tools' folders): kills=" + os.kills + " rootReads=" + os.rootReads.get() + " rows="
+                    + rows;
         }
         return null;
     }

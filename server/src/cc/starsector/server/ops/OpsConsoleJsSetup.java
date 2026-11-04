@@ -124,6 +124,8 @@ package cc.starsector.server.ops;
  * {@code setupMapBind} with op {@code players}. The second game folder rides {@code SETUP_PREFILL} as
  * {@code gameRootSecond} and {@code CC.startForm} sends it under that name. Players connect to now carries the
  * typed flag too, so the overlay never writes over an address being typed.
+ * the Player game folder rides {@code SETUP_PREFILL} as {@code gameRootPlayer} right after the Game folder's pair,
+ * and {@code CC.startForm} sends it under that name after {@code gameRoot} (blank = the row cleared at Start).
  *
  * <p>The four Setup folds ({@code SETUP_FOLDS}: {@code #setup-debug},
  * {@code #setup-advanced}, {@code #setup-live}, {@code #setup-voice-knobs}). {@code setupFoldsRestore} opens a fold
@@ -182,6 +184,7 @@ final class OpsConsoleJsSetup {
               ['f-joiner-default', 'joinerDefault'], ['f-endless', 'endless'],
               ['f-terrain', 'terrain'], ['f-terrain-level', 'terrainLevel'],
               ['f-asteroids', 'asteroids'], ['f-game-root', 'gameRoot'],
+              ['f-game-root-player', 'gameRootPlayer'],
               ['f-game-root-second', 'gameRootSecond'], ['f-record', 'record'],
               ['f-seats-per-source', 'seatsPerSource'], ['f-all-skills', 'allSkills'],
               ['f-rng-pins', 'rngPins'], ['f-magic-seam', 'magicSeam'], ['f-pilot-ship', 'pilotShip'],
@@ -1225,6 +1228,7 @@ final class OpsConsoleJsSetup {
                 pvp: CC.el('f-pvp').value,
                 pvpStation: CC.el('f-map-station').value,
                 gameRoot: CC.el('f-game-root').value,
+                gameRootPlayer: CC.el('f-game-root-player').value,
                 gameRootSecond: CC.el('f-game-root-second').value,
                 record: CC.el('f-record').value,
                 passwordAction: pw !== '' ? 'replace' : 'keep',

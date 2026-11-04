@@ -67,7 +67,8 @@ import java.util.List;
  * sit on another one, and {@code tip-join} says "on the server computer" (row {@code page-join} pins the description and the absent {@code title}).
  * Launch debug WATCH right after Start ({@code #btn-watch} {@code verb.watch}
  * and its label; served by {@code POST /api/watch}), {@code hidden} until the config's {@code watchHere} shows it
- * (the server's own answer, apart from {@code joinHere}: a Linux host may show Join from this PC without it); its
+ * (the server's own answer, kept apart from {@code joinHere}: equal on a Windows or Linux host,
+ * a future host may differ); its
  * ONE description is the help entry {@code tip-watch} through {@code aria-describedby} (row {@code page-watch}).
  * The Export custom help entry is {@link ServerOpsCore#customExportTipWeb()} through {@link #esc}.
  *
@@ -156,6 +157,11 @@ import java.util.List;
  * {@code #pre-start}, so the pre-start lock covers it. The Second game folder ({@code #f-game-root-second},
  * {@code setup.gameRootSecond}, hint {@code #hint-game-root-second} + its help row) follows the Game folder in
  * {@code #bind}, before Recording: the folder a debug watch opens a second player window from.
+ * The Player game folder ({@code #f-game-root-player},
+ * {@code setup.gameRootPlayer}, hint {@code #hint-game-root-player} + its help row after the Game folder's) sits
+ * right after the Game folder in {@code #bind}, in view before the Debug fold: the install Join from this PC and
+ * the debug watch's first window start the game from (a Linux host's Linux download), the serve keeping the Game
+ * folder.
  *
  * <p>Four Setup groups fold under one {@code <details class="fold">} each,
  * closed at load: {@code #setup-debug} (Second game folder, Recording) after the Game folder in {@code #bind};
@@ -440,6 +446,11 @@ final class OpsConsolePageHtml {
 <label for="f-game-root">Game folder</label>
 <div class="ctl"><input id="f-game-root" data-cc="setup.gameRoot" type="text" size="40" autocomplete="off" spellcheck="false" aria-describedby="hint-game-root"></div>
 <p class="hint" id="hint-game-root" data-cc="setup.gameRoot.hint">your Starsector install folder - saved at Start</p>
+</div>
+<div class="frow">
+<label for="f-game-root-player">Player game folder</label>
+<div class="ctl"><input id="f-game-root-player" data-cc="setup.gameRootPlayer" type="text" size="40" autocomplete="off" spellcheck="false" aria-describedby="hint-game-root-player"></div>
+<p class="hint" id="hint-game-root-player">Linux hosts: the Linux Starsector install your own join window and the debug WATCH start the game from (the server keeps running from Game folder). Blank = Game folder - saved at Start</p>
 </div>
 <details id="setup-debug" class="fold">
 <summary data-cc="setup.fold.debug">Debug &#9662;</summary>
@@ -823,6 +834,7 @@ final class OpsConsolePageHtml {
 <dt>Players connect to</dt><dd data-hint="hint-advertise"></dd>
 <dt>Fill from ProtonVPN</dt><dd id="tip-lease">Asks ProtonVPN for your public address and, on Windows, the port it forwards; fills Listen on host, port and Players connect to. Needs ProtonVPN connected with port forwarding on. While the addresses stay as filled, Start and Copy join brick ask again.</dd>
 <dt>Game folder</dt><dd data-hint="hint-game-root"></dd>
+<dt>Player game folder</dt><dd data-hint="hint-game-root-player"></dd>
 <dt>Second game folder</dt><dd data-hint="hint-game-root-second"></dd>
 <dt>Recording</dt><dd data-hint="hint-record"></dd>
 <dt>Copy join brick</dt><dd id="tip-brick">builds the one-line join code from Players connect to and the match password against the running server, copies it, and saves that address for the next window; joiners paste it into the join window; the code shows here for 45 s</dd>

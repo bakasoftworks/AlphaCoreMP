@@ -168,6 +168,7 @@ public final class OpsConsolePageSelftest {
         row(fails, "page-draft-post", () -> draftPost(js));
         row(fails, "page-players-field", () -> playersField(html, js));
         row(fails, "page-second-folder", () -> secondFolder(html, js));
+        row(fails, "page-player-folder", () -> playerFolder(html, js));
         row(fails, "page-setup-folds", () -> setupFolds(html));
         row(fails, "page-setup-fold-opens-on-refusal", () -> setupFoldOpensOnRefusal(js));
         row(fails, "page-mods-kind-kept", () -> modsKindKept(js));
@@ -762,6 +763,53 @@ public final class OpsConsolePageSelftest {
     }
 
     /**
+     * {@code page-player-folder} - the Player game folder input
+     * ({@code setup.gameRootPlayer}) once, in {@code #bind} after the Game folder and before the Debug fold (in view:
+     * a Linux host needs it for Join from this PC, never only for a debug run), with its label, its hint (no
+     * {@code data-cc}, like the second folder's) and the hint's help row once each, the help row after the Game
+     * folder's; the script prefills it from {@code gameRootPlayer} and {@code CC.startForm} sends it under that name.
+     */
+    static String playerFolder(String html, String js) {
+        List<String> bad = new ArrayList<>();
+        String input = "<input id=\"f-game-root-player\" data-cc=\"setup.gameRootPlayer\" type=\"text\" size=\"40\""
+                + " autocomplete=\"off\" spellcheck=\"false\" aria-describedby=\"hint-game-root-player\">";
+        int bind = html.indexOf("<fieldset id=\"bind\">");
+        int bindEnd = bind < 0 ? -1 : html.indexOf("</fieldset>", bind);
+        int first = html.indexOf("data-cc=\"setup.gameRoot\"");
+        int at = html.indexOf(input);
+        int debug = html.indexOf("<details id=\"setup-debug\"");
+        if (count(html, input) != 1 || count(html, "data-cc=\"setup.gameRootPlayer\"") != 1 || bind < 0
+                || first < bind || at < first || debug < at || debug > bindEnd) {
+            bad.add("no single Player game folder input in #bind between the Game folder and the Debug fold (flips if"
+                    + " the field loses its parity id, is doubled, folds away under Debug or leaves the Network group)");
+        }
+        String hint = "<p class=\"hint\" id=\"hint-game-root-player\">Linux hosts: the Linux Starsector install your own"
+                + " join window and the debug WATCH start the game from (the server keeps running from Game folder)."
+                + " Blank = Game folder - saved at Start</p>";
+        String gameHelp = "<dt>Game folder</dt><dd data-hint=\"hint-game-root\"></dd>\n";
+        String help = "<dt>Player game folder</dt><dd data-hint=\"hint-game-root-player\"></dd>";
+        for (String want : List.of("<label for=\"f-game-root-player\">Player game folder</label>", hint, help)) {
+            if (count(html, want) != 1) {
+                bad.add("page lacks one " + clip(want) + " (flips if the field's label, hint text or help row is"
+                        + " dropped, doubled or reworded)");
+            }
+        }
+        if (count(html, gameHelp + help) != 1) {
+            bad.add("the Player game folder help row does not follow the Game folder's (flips if it moves away from"
+                    + " its field's neighbour in the help list)");
+        }
+        String flat = js.replaceAll("\\s+", " ");
+        String prefill = between(flat, "const SETUP_PREFILL = [", "];");
+        String start = between(flat, "CC.startForm = () => {", "return f;");
+        if (!prefill.contains("['f-game-root-player', 'gameRootPlayer']")
+                || !start.contains("gameRootPlayer: CC.el('f-game-root-player').value,")) {
+            bad.add("the Player game folder is not prefilled from gameRootPlayer and sent by CC.startForm (flips if it"
+                    + " loses its prefill key or its Start send - a reload then blanks it, or Start never saves it)");
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /**
      * {@code page-setup-folds} - the Setup page's four folds. WHY: what a host
      * needs to start a match and hand players their credential stays in view, and every other Setup row sits in
      * exactly one {@code <details class="fold">}, closed at load. The row pins each fold's open tag + summary once (no
@@ -801,7 +849,7 @@ public final class OpsConsolePageSelftest {
                 "voice.jitterMinFrames", "voice.jitterMaxMs", "voice.jitterShrinkMs"));
         want.put("in view #bind", List.of("setup.bindHost", "setup.bindPort", "setup.lease", "setup.bind.hint",
                 "setup.advertise", "setup.reach", "setup.advertise.hint", "setup.gameRoot", "setup.gameRoot.hint",
-                "setup.brick.text", "setup.brick"));
+                "setup.gameRootPlayer", "setup.brick.text", "setup.brick"));
         want.put("in view #pre-start", List.of("shell.enable.preStart", "setup.form.title", "setup.shape",
                 "setup.shape.players", "setup.shape.playersApply", "setup.shape.hint", "setup.match.pvp", "setup.password",
                 "setup.adminPassword", "setup.password.reveal", "setup.admission.hint"));
@@ -1145,8 +1193,9 @@ public final class OpsConsolePageSelftest {
      * names the label beside its {@code tip-join} entry; the script shows the button only for
      * {@code joinHere === true} and the line only for {@code joinHere === false}, and the click posts
      * {@code /api/join}.
-     * {@code joinHere} no longer chooses {@code #btn-watch} (a Linux host
-     * joins but has no debug watch; {@code page-watch} pins the {@code watchHere} show), and the {@code tip-join}
+     * {@code joinHere} no longer chooses {@code #btn-watch} (the server's
+     * own {@code watchHere} answer, equal to {@code joinHere} on Windows and Linux;
+     * {@code page-watch} pins the {@code watchHere} show), and the {@code tip-join}
      * text names no operating system.
      */
     static String pageJoin(String html, String js) {

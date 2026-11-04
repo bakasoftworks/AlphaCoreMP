@@ -128,7 +128,8 @@ final class OpsJoinSelf {
      * kit" there; the spawn runs the kit's launcher through {@value #POSIX_SHELL} by its absolute path (never a PATH
      * lookup: the console's PATH is the operator's) as {@code ./}{@value #KIT_SH} in the kit folder - the launcher
      * finds its own folder from its argument, and the zip marks no file executable, hence the shell. Its stdout and
-     * stderr go to the per-press log {@value #PRESS_LOG_NAME} beside the endpoint file (truncated per press, read
+     * stderr go to the per-press log {@value #PRESS_LOG_NAME} beside the endpoint file (a debug watch's second
+     * window: {@value #PRESS_LOG_NAME_SECOND}, {@link Press#pressLogName}; truncated per press, read
      * only on a quick failure, at most {@value #PRESS_LOG_MAX_BYTES} B, its last non-empty line cut to
      * {@value #PRESS_LOG_TAIL_MAX} chars) - the operator text the Windows console window would show. The settings
      * write's folders and files are made owner-only at creation ({@value #POSIX_DIR_PERMS} /
@@ -140,6 +141,7 @@ final class OpsJoinSelf {
     static final String KIT_SH = "join-cc.sh";
     static final String POSIX_SHELL = "/bin/bash";
     static final String PRESS_LOG_NAME = "join-press.log";
+    static final String PRESS_LOG_NAME_SECOND = "join-press-2.log";
     static final int PRESS_LOG_MAX_BYTES = 64 * 1024;
     static final int PRESS_LOG_TAIL_MAX = 160;
     static final String POSIX_DIR_PERMS = "rwx------";
@@ -189,11 +191,16 @@ final class OpsJoinSelf {
      *  puts it AFTER the {@value #CC_ENV_PREFIX} strip, so a debug-watch press's own join window writes the client
      *  GC log + the F9 mark-frame ring under its flight folder; a plain press adds nothing. */
     static final String CLIENT_JVM_FLAGS_KEY = "CC_CLIENT_JVM_FLAGS";
-    /** The folder characters the double-quoted flag can carry through the bat's {@code set} and HotSpot's
-     *  JAVA_TOOL_OPTIONS parser: letters, digits, {@code . _ : \ -} and the SPACE (measured); a path with a
-     *  quote, a cmd metacharacter ({@code ( ) & ^ ! %}) or a non-ASCII letter skips both diagnostics (one stdout
-     *  token, never the path) - unmeasured on the kit's cmd line, so refused rather than guessed. */
-    static final Pattern DIAG_DIR_CHARS = Pattern.compile("[A-Za-z0-9._: \\\\-]+");
+    /** The folder characters the double-quoted flag can carry through the kit launcher (the Windows bat's
+     *  {@code set}; the Linux script appends the value as-is) and HotSpot's JAVA_TOOL_OPTIONS parser: letters,
+     *  digits, {@code . _ \ / -} and the SPACE - the {@code \} for a Windows folder, the {@code /} for a Linux
+     *  flight folder; the spaced Windows form was measured on a host - plus a {@code :} ONLY as a drive
+     *  letter's ({@code C:\...}): {@code -Xlog} splits its fields at a colon and its parser skips a drive letter's
+     *  only, so a colon anywhere else would cut the GC log's file name. A path with a quote, a shell or cmd
+     *  metacharacter ({@code ( ) & ^ ! % ; $}) or a non-ASCII letter skips both diagnostics (one stdout token,
+     *  never the path) - unmeasured on the kit's command lines, so refused rather than guessed.
+     * */
+    static final Pattern DIAG_DIR_CHARS = Pattern.compile("(?:[A-Za-z]:)?[A-Za-z0-9._ \\\\/-]+");
     /** The F9 ring's sub-folder under the diag folder ({@code cc.markframes.dir}); the GC log sits beside it. */
     static final String DIAG_FRAMES_DIR = "frames";
     /**
@@ -282,6 +289,12 @@ final class OpsJoinSelf {
             + " or close the join window and press Join from this PC again.";
     static final String R1 = "Game folder is not set - type your Starsector folder into Game folder (Setup tab),"
             + " press Start, then Join from this PC.";
+    /** R1's twin for a SET Player game folder row that holds no game: {@code %s} = the row, trimmed and cut to
+     *  {@link #TEXT_PATH_MAX}. WHY its own text: the host typed that row on purpose, so the press names it and never
+     *  falls back to Game folder ({@link #noInstallRefusal}). The jar is named by {@link ServeLauncher#CORE_JAR}, the
+     *  very file {@link ServeLauncher#resolveGame} looks for. */
+    static final String R1_PLAYER = "Player game folder (Setup tab) does not hold the game: %s has no "
+            + ServeLauncher.CORE_JAR + " - set it to your Linux Starsector folder, or clear it to use Game folder.";
     /** {@code %1$s} = the install, {@code %2$s} = the kit hint. */
     static final String R2 = "No player kit in this game: %1$s\\mods\\CC_Client\\join-cc.bat or"
             + " %1$s\\starsector.exe is missing. Extract CC_Client from %2$s into %1$s\\mods\\, then press Join"
@@ -1005,18 +1018,24 @@ final class OpsJoinSelf {
     // ---- pure functions (thread: any) ----
 
     /**
-     * The game install the SAVED {@code game.root} row names: the row (trimmed; blank / absent = null) through
-     * {@link ServeLauncher#resolveRow} (relative = under {@code packageRoot}; unparsable = null) and
-     * {@link ServeLauncher#resolveGame} (the folder or its {@code starsector-core} form must hold the core jar,
-     * else null). The row may name the install OR its {@code starsector-core} folder; the install is returned
-     * either way. The core-form arm (the parent returned) fires only when
-     * the folder holding the jar IS a {@code starsector-core} folder (case-blind, as Windows names it) - a Linux
-     * install keeps the jar at its own root, so a row naming it resolves to itself, never to its parent.
-     * Thread: any.
+     * The game install the presses start the game from: the SAVED {@code game.root.player} row
+     * ({@link ServeLauncher#ROW_GAME_ROOT_PLAYER}, trimmed) when non-blank, else the trimmed {@code game.root} row
+     * (blank / absent both = null), through {@link ServeLauncher#resolveRow} (relative = under {@code packageRoot};
+     * unparsable = null) and {@link ServeLauncher#resolveGame} (the folder or its {@code starsector-core} form must
+     * hold the core jar, else null). The row may name the install OR its {@code starsector-core} folder; the install
+     * is returned either way. The core-form arm (the parent returned) fires
+     * only when the folder holding the jar IS a {@code starsector-core} folder (case-blind, as Windows names it) - a
+     * Linux install keeps the jar at its own root, so a row naming it resolves to itself, never to its parent.
+     * WHY the player row first - a Linux host's serve runs the Windows game
+     * files from {@code game.root} while its own join window needs the Linux download; a SET player row that
+     * resolves to no install returns null and NEVER consults {@code game.root} (the host typed it on purpose; the
+     * callers refuse with {@link #noInstallRefusal}). The serve's Start reads only {@code game.root}. Thread: any.
      */
     static Path installOrNull(Path packageRoot, Map<String, String> rows) {
-        String row = rows == null ? null : rows.get(ServeLauncher.ROW_GAME_ROOT);
-        row = row == null ? "" : row.trim();
+        String row = playerRow(rows);
+        if (row.isEmpty()) {
+            row = trimmed(rows == null ? null : rows.get(ServeLauncher.ROW_GAME_ROOT));
+        }
         if (row.isEmpty() || packageRoot == null) {
             return null;
         }
@@ -1032,6 +1051,30 @@ final class OpsJoinSelf {
         boolean coreForm = core.equals(path) && coreName != null
                 && ServeLauncher.CORE_DIR.equalsIgnoreCase(coreName.toString());
         return coreForm ? path.getParent() : path;
+    }
+
+    /** The {@code game.root.player} row trimmed; null rows / an absent or blank row = {@code ""}. Thread: any.
+     * */
+    private static String playerRow(Map<String, String> rows) {
+        return trimmed(rows == null ? null : rows.get(ServeLauncher.ROW_GAME_ROOT_PLAYER));
+    }
+
+    /** True when the {@code game.root.player} row is non-blank after a trim - {@link #installOrNull} then reads
+     *  that row alone. Thread: any. */
+    static boolean playerRowSet(Map<String, String> rows) {
+        return !playerRow(rows).isEmpty();
+    }
+
+    /** The refusal for a press whose {@link #installOrNull} is null: {@link #R1_PLAYER} naming the bounded player
+     *  row when {@link #playerRowSet}, else {@link #R1}. Thread: any. */
+    static String noInstallRefusal(Map<String, String> rows) {
+        return playerRowSet(rows) ? String.format(Locale.ROOT, R1_PLAYER, boundedText(playerRow(rows))) : R1;
+    }
+
+    /** {@link #noInstallRefusal} as a REFUSED result: token {@code r1_player} when {@link #playerRowSet}, else
+     *  {@code r1}. Thread: any. */
+    private static Result refusedNoInstall(Map<String, String> rows) {
+        return refused(playerRowSet(rows) ? "r1_player" : "r1", noInstallRefusal(rows));
     }
 
     /** R1 for no install; R2 (naming the install and {@code kitHint}, each cut to {@link #TEXT_PATH_MAX}) when
@@ -1335,7 +1378,9 @@ final class OpsJoinSelf {
      * {@code scrubbed} (a row dropped), {@code clean} (a file, no secret row), {@code absent} (no file) or
      * {@code failed (<SimpleName>)} (the first failure; that file untouched, the other file still scrubbed). A
      * scrub while a window is mid-launch could overwrite that window's own save (both sides write temp + move),
-     * hence the flight's end only. Thread: any.
+     * hence the flight's end only. This is the Windows host's form (the plain write); a Linux host's is
+     * {@link #scrubSettingsSecret(Effects, PosixHost)}, both over {@link #scrubFiles}. Thread: any.
+     *
      */
     static String scrubSettingsSecret(Effects fx, String localAppData, String appData, String userHome) {
         List<Path> files = new ArrayList<>();
@@ -1349,6 +1394,43 @@ final class OpsJoinSelf {
         if (legacy != null && !files.contains(legacy)) {
             files.add(legacy);
         }
+        return scrubFiles(fx, files, failed, false);
+    }
+
+    /**
+     * The secret scrub on a Linux host, for the same END of a debug flight: the ONE settings file the press wrote
+     * there ({@link #posixSettingsFileOrNull}; no legacy file; no usable HOME / {@code XDG_DATA_HOME} =
+     * {@code absent}), the same rows dropped and the same ONE answer row as the Windows form, rewritten through the
+     * OWNER-ONLY write ({@link Effects#writeAtomic(Path, byte[], boolean)}): the temp is born owner-only and the
+     * move keeps that mode, where the plain form would leave the umask's wider mode on a file that held the
+     * password. CRLF out, the bytes the press's own Linux write produces. WHY {@code posix} is handed in: the END
+     * leg runs on a daemon thread, and the host's platform and folders are the ones the WATCH route read when it
+     * armed - this class makes no platform read of its own. The Windows folder resolvers are never consulted.
+     * Thread: any.
+     */
+    static String scrubSettingsSecret(Effects fx, PosixHost posix) {
+        List<Path> files = new ArrayList<>();
+        String failed = null;
+        try {
+            Path file = posixSettingsFileOrNull(posix);
+            if (file != null) {
+                files.add(file);
+            }
+        } catch (RuntimeException unresolved) {
+            failed = unresolved.getClass().getSimpleName();
+        }
+        return scrubFiles(fx, files, failed, true);
+    }
+
+    /**
+     * The scrub's shared body over the resolved {@code files} (each one that exists: the secret rows dropped as
+     * {@link #scrubSettingsSecret(Effects, String, String, String)} says, the file rewritten only when a row went)
+     * and the ONE answer row. {@code failedOrNull} = a resolver's failure, which wins the answer while the other
+     * files are still scrubbed; {@code ownerOnly} = the Linux owner-only write, else the plain one.
+     *
+     */
+    private static String scrubFiles(Effects fx, List<Path> files, String failedOrNull, boolean ownerOnly) {
+        String failed = failedOrNull;
         boolean present = false;
         boolean dropped = false;
         for (Path file : files) {
@@ -1369,7 +1451,11 @@ final class OpsJoinSelf {
                     }
                 }
                 if (secret) {
-                    fx.writeAtomic(file, crlfBytes(kept));
+                    if (ownerOnly) {
+                        fx.writeAtomic(file, crlfBytes(kept), true);
+                    } else {
+                        fx.writeAtomic(file, crlfBytes(kept));
+                    }
                     dropped = true;
                 }
             } catch (IOException | RuntimeException scrubFailed) {
@@ -1558,11 +1644,13 @@ final class OpsJoinSelf {
         return data == null ? null : data.resolve(SETTINGS_FILE_NAME);
     }
 
-    /** A Linux host's press log {@code <runtimeDir>/join/}{@value #PRESS_LOG_NAME}, null = no usable HOME.
-     * */
-    static Path pressLogOrNull(PosixHost host) {
+    /** A Linux host's press log {@code <runtimeDir>/join/<logName>}, null = no usable HOME.
+     *  {@code logName} = the press's own {@link Press#pressLogName}:
+     *  {@value #PRESS_LOG_NAME}, or {@value #PRESS_LOG_NAME_SECOND} for a debug watch's second window, so two live
+     *  windows never write one file. */
+    static Path pressLogOrNull(PosixHost host, String logName) {
         Path join = host.dirs().joinDirOrNull();
-        return join == null ? null : join.resolve(PRESS_LOG_NAME);
+        return join == null ? null : join.resolve(logName);
     }
 
     /** A Linux host's FIXED argv: {@value #POSIX_SHELL} {@code ./}{@value #KIT_SH}, run in {@link #cwd} - no
@@ -1641,12 +1729,13 @@ final class OpsJoinSelf {
      * the launcher's second copy finds the live window, which brings its tab back and answers the copy's wait with
      * a cancel, so that copy ends "Launch cancelled" with exit 1 by design (its {@code window_cancelled} path)
      * while the live window stays up (the press found it by the endpoint ping). An install gone since the press =
-     * R1. Thread: any.
+     * R1, or {@link #R1_PLAYER} (token {@code r1_player}) when the player row is set. Thread: any.
+     *
      */
     static Result reopenSpawn(Inputs in, Effects fx) {
         Path install = installOrNull(in.packageRoot(), in.launcherRows());
         if (install == null) {
-            return refused("r1", R1);
+            return refusedNoInstall(in.launcherRows());
         }
         String shown = boundedText(install.toString());
         boolean posix = in.posixHost();
@@ -1692,9 +1781,11 @@ final class OpsJoinSelf {
 
     /**
      * {@code env} (already {@link #childEnv}-stripped) plus {@value #CLIENT_JVM_FLAGS_KEY} for {@code diagDir}:
-     * {@code "-Xlog:gc*,safepoint:file=<dir>\gclog-%p-%t.log:time,uptime" "-Dcc.markframes.dir=<dir>\frames"}
-     * ({@code %p} / {@code %t} = the JVM's own pid / start stamp). Each flag is double-quoted so a folder with a
-     * SPACE (a host's profile folder named with one) stays ONE token: the bat's {@code set} keeps the quotes and
+     * {@code "-Xlog:gc*,safepoint:file=<dir>/gclog-%p-%t.log:time,uptime" "-Dcc.markframes.dir=<dir>/frames"}
+     * ({@code %p} / {@code %t} = the JVM's own pid / start stamp; each name joined by {@link Path#resolve}, so the
+     * separator is the host's own - the folder is this server's path and the game runs on this host). Each flag is
+     * double-quoted so a folder with a SPACE (a host's profile folder named with one) stays ONE token: the bat's
+     * {@code set} keeps the quotes (the Linux script appends the value as-is) and
      * HotSpot's JAVA_TOOL_OPTIONS parser strips them (measured on Temurin 17: the GC log landed inside a
      * spaced folder). The SAME {@code env} comes back - nothing added,
      * no folder made - when the path is relative (it would bind every JVM started from that window's user env to
@@ -1715,8 +1806,8 @@ final class OpsJoinSelf {
             return env;
         }
         Map<String, String> out = new LinkedHashMap<>(env);
-        out.put(CLIENT_JVM_FLAGS_KEY, "\"-Xlog:gc*,safepoint:file=" + dir + "\\gclog-%p-%t.log:time,uptime\""
-                + " \"-Dcc.markframes.dir=" + dir + "\\" + DIAG_FRAMES_DIR + "\"");
+        out.put(CLIENT_JVM_FLAGS_KEY, "\"-Xlog:gc*,safepoint:file=" + diagDir.resolve("gclog-%p-%t.log")
+                + ":time,uptime\" \"-Dcc.markframes.dir=" + diagDir.resolve(DIAG_FRAMES_DIR) + "\"");
         return out;
     }
 
@@ -1762,6 +1853,12 @@ final class OpsJoinSelf {
          *  bind's own endpoint), never the VPN hairpin and never the probe. A lone window keeps {@link #dial}.
          * */
         boolean localDial;
+        /** This window's press-log file name in the runtime join folder (a Linux host only, {@link #pressLogOrNull}):
+         *  {@value #PRESS_LOG_NAME} for a hand press and a debug watch's first window, {@value #PRESS_LOG_NAME_SECOND}
+         *  for its second ({@link #pressWatch}). The spawn empties its log by an atomic replace, so one shared name
+         *  would leave window 1's still-running launcher appending to an unlinked file, its later words lost.
+         * */
+        String pressLogName = PRESS_LOG_NAME;
 
         Press(Inputs in, Effects fx) {
             this.in = in;
@@ -1870,8 +1967,7 @@ final class OpsJoinSelf {
             System.out.println("cc-ops join second=none");
             return only;
         }
-        Map<String, String> rows2 = new HashMap<>(rows);
-        rows2.put(ServeLauncher.ROW_GAME_ROOT, row2);
+        Map<String, String> rows2 = secondWindowRows(rows, row2);
         String refusal = secondInstallRefusalOrNull(in.packageRoot(), rows, rows2, row2, fx);
         if (refusal != null) {
             Result refusedSecond = refused("r1_second", refusal);
@@ -1891,6 +1987,7 @@ final class OpsJoinSelf {
         second.sidelogMaxMib = capMib;
         second.recordWindow = true;
         second.publicDial = true;
+        second.pressLogName = PRESS_LOG_NAME_SECOND;
         String cid2 = mintCid();
         while (cid2.equals(first.cid)) {
             cid2 = mintCid();
@@ -1912,7 +2009,8 @@ final class OpsJoinSelf {
 
     /** {@link #pressWatch}'s row-2 check: null = a second game distinct from the first, else {@link #R16} /
      *  {@link #R17} filled with the bounded row. A {@code toRealPath} failure = {@link #R16} (fail-closed).
-     * */
+     *  The first game = {@link #installOrNull} over {@code rows}, so a
+     *  set player row is what window 2 must differ from; {@code rows2} = {@link #secondWindowRows}. */
     private static String secondInstallRefusalOrNull(Path packageRoot, Map<String, String> rows,
             Map<String, String> rows2, String row2, Effects fx) {
         String r16 = String.format(Locale.ROOT, R16, boundedText(row2));
@@ -1950,13 +2048,25 @@ final class OpsJoinSelf {
         if (row2.isEmpty()) {
             return null;
         }
-        Map<String, String> rows2 = new HashMap<>(rows);
-        rows2.put(ServeLauncher.ROW_GAME_ROOT, row2);
-        return secondInstallRefusalOrNull(packageRoot, rows, rows2, row2, fx);
+        return secondInstallRefusalOrNull(packageRoot, rows, secondWindowRows(rows, row2), row2, fx);
     }
 
-    /** {@code <diagDir>\}{@value #SIDELOG_FILE}, or null when there is no diag folder or it fails the diag
-     *  decorator's own law (absolute, {@link #DIAG_DIR_CHARS}) - the sidelog never names a folder
+    /**
+     * Window 2's launcher rows: {@code rows} with {@code game.root} = {@code row2} and the {@code game.root.player}
+     * row REMOVED. WHY the removal: {@link #installOrNull} reads a set player row first, so a copy that kept it
+     * would resolve window 2 to window 1's own game and {@link #R17} would refuse every two-window press on a host
+     * that sets the row. Window 1 keeps {@code rows} as they are (its install = the player row when set).
+     * {@code rows} non-null (a blank row 2 returns before this). Thread: any.
+     */
+    private static Map<String, String> secondWindowRows(Map<String, String> rows, String row2) {
+        Map<String, String> rows2 = new HashMap<>(rows);
+        rows2.remove(ServeLauncher.ROW_GAME_ROOT_PLAYER);
+        rows2.put(ServeLauncher.ROW_GAME_ROOT, row2);
+        return rows2;
+    }
+
+    /** {@code <diagDir>/}{@value #SIDELOG_FILE} (the host's own separator), or null when there is no diag folder or
+     *  it fails the diag decorator's own law (absolute, {@link #DIAG_DIR_CHARS}) - the sidelog never names a folder
      *  {@link #clientDiagEnv} refuses to make. */
     static Path sidelogOrNull(Path diagDirOrNull) {
         if (diagDirOrNull == null || !diagDirOrNull.isAbsolute()
@@ -2006,11 +2116,16 @@ final class OpsJoinSelf {
         return result;
     }
 
-    /** (1) The install: R1 / R2 = REFUSED; nothing read, written or started. */
+    /** (1) The install: R1 / {@link #R1_PLAYER} (token {@code r1_player}, a set player row that holds no game) /
+     *  R2 / R2P = REFUSED; nothing read, written or started. A set player row's install is the one the platform's
+     *  kit law judges. The no-install arm. */
     private static Result step1Install(Press p) {
         p.install = installOrNull(p.in.packageRoot(), p.in.launcherRows());
+        if (p.install == null) {
+            return refusedNoInstall(p.in.launcherRows());
+        }
         String refusal = installRefusalOrNull(p.install, p.fx, p.in.kitHint(), p.in.posixHost());
-        return refusal == null ? null : refused(p.install == null ? "r1" : "r2", refusal);
+        return refusal == null ? null : refused("r2", refusal);
     }
 
     /** (1b) A Linux host only (a Windows host passes): no usable HOME and no absolute {@code XDG_DATA_HOME} = R20
@@ -2021,14 +2136,18 @@ final class OpsJoinSelf {
      *  display" death lands after {@link #SPAWN_WAIT_MS} and the page said OPENED.
      *  Nothing read, written or started. */
     private static Result step1bPosixHost(Press p) {
-        if (!p.in.posixHost()) {
-            return null;
-        }
-        PosixHost host = p.in.posixOrNull();
+        return p.in.posixHost() ? posixHostRefusalOrNull(p.in.posixOrNull(), p.fx.parentEnv()) : null;
+    }
+
+    /** The (1b) predicate itself over a Linux host's facts and the console's own env: R20, else R19, else null.
+     *  Shared with the WATCH route's pre-Start check ({@code OpsConsole.handleWatch}), so a headless host is refused
+     *  BEFORE its serve boots - the law (a refusal the press can predict refuses the Start, never a
+     *  running serve with no window). Thread: any. */
+    static Result posixHostRefusalOrNull(PosixHost host, Map<String, String> parentEnv) {
         if (posixSettingsFileOrNull(host) == null) {
             return refused("r20", R20);
         }
-        boolean bare = host.noDesktop() || (!host.hostDisplayKnown() && noDesktopIn(p.fx.parentEnv()));
+        boolean bare = host.noDesktop() || (!host.hostDisplayKnown() && noDesktopIn(parentEnv));
         return bare ? refused("r19", R19) : null;
     }
 
@@ -2055,7 +2174,8 @@ final class OpsJoinSelf {
 
     /**
      * The kit check alone, before a Start: step (1)'s install law first (an unset or bad Game folder = its R1 / R2
-     * here, nothing read past it), then {@link #kitCheckOf}. Null = the kit is current or the check is skipped
+     * here, a set Player game folder that holds no game = {@link #R1_PLAYER}; nothing read past it), then
+     * {@link #kitCheckOf}. Null = the kit is current or the check is skipped
      * (proceed, nothing to say). Thread: any, as {@link #press}.
      */
     static KitCheck kitCheckOrNull(Inputs in, Effects fx) {
@@ -2608,7 +2728,7 @@ final class OpsJoinSelf {
     private static Result step7Spawn(Press p) {
         Spawned spawned;
         boolean posix = p.in.posixHost();
-        Path logOrNull = posix ? pressLogOrNull(p.in.posixOrNull()) : null;
+        Path logOrNull = posix ? pressLogOrNull(p.in.posixOrNull(), p.pressLogName) : null;
         String shown = boundedText(p.install.toString());
         try {
             Map<String, String> env = posix ? posixChildEnv(p.fx.parentEnv(), p.in.posixOrNull())

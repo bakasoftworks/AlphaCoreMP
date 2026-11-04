@@ -300,7 +300,9 @@ public final class PackageModSync {
     }
 
     /** The {@code dependencies[].id} values of a {@code mod_info.json} by the library's regex (the
-     * engine's own parser is lenient, so no strict JSON); unreadable / over cap / none = empty. */
+     * engine's own parser is lenient, so no strict JSON) over the text the engine parses: its {@code #}
+     * comments stripped first by the engine's rule ({@link InstalledModScan#stripComments}), so a
+     * commented-out dependency is none; unreadable / over cap / none = empty. */
     static List<String> declaredDependencies(Path info) {
         List<String> out = new ArrayList<>();
         String raw;
@@ -308,7 +310,7 @@ public final class PackageModSync {
             if (!Files.isRegularFile(info) || Files.size(info) > MOD_INFO_READ_CAP) {
                 return out;
             }
-            raw = Files.readString(info, StandardCharsets.UTF_8);
+            raw = InstalledModScan.stripComments(Files.readString(info, StandardCharsets.UTF_8));
         } catch (IOException | RuntimeException unreadable) {
             return out;
         }

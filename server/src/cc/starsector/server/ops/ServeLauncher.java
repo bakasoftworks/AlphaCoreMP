@@ -157,6 +157,16 @@ public final class ServeLauncher {
     /** The SECOND install the debug WATCH opens a second pilot window from (blank / absent =
      *  one window); a box row like {@link #ROW_GAME_ROOT}, validated by the press that uses it, never by the serve. */
     static final String ROW_GAME_ROOT_SECOND = "game.root.second";
+    /**
+     * The install the two presses - Join from this PC and the debug WATCH's first window - start the game from when
+     * non-blank; blank / absent = {@link #ROW_GAME_ROOT}. WHY a second row: a Linux host's serve runs the WINDOWS game
+     * files (the Linux download is a different build of the game, refused at the serve's start), while the player kit on
+     * that host wants the Linux download's {@code starsector.sh} + {@code jre_linux} - one folder cannot hold both, so
+     * the serve keeps {@link #ROW_GAME_ROOT} and the presses read this row first. A box row like its siblings: validated
+     * by the press that uses it (a non-blank row that is no install REFUSES naming the row, never falls back), never
+     * read by the serve. Honoured on every platform; documented as the Linux host's row.
+     */
+    static final String ROW_GAME_ROOT_PLAYER = "game.root.player";
     static final String ROW_HEAP_MIN = "heap.min";
     static final String ROW_HEAP_MAX = "heap.max";
     static final String ROW_CI_COUNT = "jit.compilerCount";

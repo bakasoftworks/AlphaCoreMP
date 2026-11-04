@@ -36,8 +36,9 @@ import cc.starsector.server.runtime.ModSet;
  * <p>The Needs column, which makes it obvious when one mod is needed for
  * another. {@link #declaredDeps} reads each row's declared dependencies once (the launch's own
  * reader); {@link #dependsCell} composes the row's cell from them, pure: what it needs, what needs it, and the
- * consequence at the next start (an unticked mod a required one needs loads anyway; an optional mod caught in a
- * dependency law refuses the start). Presentation only: the launch rules stay in {@link PackageModSync}.
+ * consequence at the next start (an unticked mod a required one needs loads anyway; a missing dependency, of a
+ * required mod or of a library one pulls in, or an optional mod caught in a dependency law refuses the start).
+ * Presentation only: the launch rules stay in {@link PackageModSync}.
  */
 public final class OpsModsPanel {
 
@@ -165,7 +166,8 @@ public final class OpsModsPanel {
     /**
      * Each row's DECLARED dependencies, keyed by id in row order. An installed row's = the {@code dependencies[].id}
      * of its FIRST folder's {@code mod_info.json} (the folder the Folder cell shows), read by the launch's own reader
-     * {@link PackageModSync#declaredDependencies} (lawful-checked ids, its read cap, its lenient regex), minus
+     * {@link PackageModSync#declaredDependencies} (the engine's {@code #} comment strip, lawful-checked ids, its read
+     * cap, its lenient regex), minus
      * {@link ModSet#EXCLUDED_ID} (always enabled, never a row); a not-installed row maps to an empty list. WHY the
      * launch's reader: the Needs column ({@link #dependsCell}) must say what the next start will do, and the start
      * pulls dependencies in with exactly this read. The column's one file read;
@@ -192,6 +194,8 @@ public final class OpsModsPanel {
     /**
      * The Needs cell of row {@code r} (pure over {@code rows} and their {@link #declaredDeps}). Lines, joined with
      * {@code "; "}: (a) the consequence at the next start, when any - a row a required mod pulls in ({@link #pulledVia})
+     * with a direct dependency no searched folder holds refuses the start, that dependency's id named on THIS row
+     * (checked first: the launch pulls the library in, then cannot find what it needs); else such a row
      * that is unticked loads anyway ({@link #DEPENDS_ON}); one that is optional refuses the start (the launch's
      * "optional and also required" law); a required row with a direct dependency no searched folder holds refuses
      * the start (missing mod); an optional row with a direct dependency the start neither requires nor pulls in
@@ -213,7 +217,19 @@ public final class OpsModsPanel {
         List<String> lines = new ArrayList<>();
         String flag = "";
         String via = pulled.get(r.id());
-        if (via != null && MOD_OFF.equals(r.choice())) {
+        // A library the start pulls in is resolved and its own
+        // dependencies pulled in after it, so one of them no searched folder holds refuses the start; checked
+        // first, the launch reaches that refusal before its optional-mod laws, and an on-anyway line would lie
+        String missing = null;
+        for (int i = 0; via != null && missing == null && i < mine.size(); i++) {
+            if (!installedRow(mine.get(i), rows)) {
+                missing = mine.get(i);
+            }
+        }
+        if (missing != null) {
+            flag = DEPENDS_REFUSE;
+            lines.add("START REFUSES: " + via + " needs it, and it needs " + missing + ", which is not installed");
+        } else if (via != null && MOD_OFF.equals(r.choice())) {
             flag = DEPENDS_ON;
             lines.add("ON ANYWAY: " + via + " needs it (it loads at the next start)");
         } else if (via != null && MOD_OPTIONAL.equals(r.choice())) {

@@ -1145,6 +1145,7 @@ public final class ServerOpsCoreSelftest {
         modsKindMemoryRows(); // The kind-memory rows
         // The Needs column's rows
         modsNeedsRows();
+        modsDependsRows();
 
         // wave-category row editor + LIVE verb minter (the wave-scale /
         // joiner-default idioms: default identity removes row + marker; the LIVE line keeps
@@ -3325,7 +3326,8 @@ public final class ServerOpsCoreSelftest {
      * true for every Windows {@code os.name} and, since the Linux host's own press,
      * for Linux; false for macOS, null and blank; {@code /api/config} serves it as a JSON boolean (no quotes)
      * directly after {@code advertiseBind}, valued for THIS JVM's {@code os.name} (the page's show / hide of
-     * Join from this PC reads it), and {@code watchHere} (the Windows-only debug WATCH gate) beside it. */
+     * Join from this PC reads it), and {@code watchHere} (the debug WATCH gate: a Windows or Linux host, its own
+     * predicate) beside it. */
     static void configJoinHereRows(Path props) {
         check(joinHere("Windows 11") && joinHere("Windows Server 2022"),
                 "config-joinhere: a Windows os.name can join from this PC (flips if joinHere stops"
@@ -3368,6 +3370,11 @@ public final class ServerOpsCoreSelftest {
         // Field: the second game folder row, served right after joinHere
         Files.writeString(launcher, "game.root.second = D:/second-game \n", StandardCharsets.UTF_8);
         String second = configJson(props, 50.0);
+        // config-gameroot-player - the Player game folder row beside a
+        // Game folder row, so a crossed read (the player row served as gameRoot, or gameRoot as the player) shows
+        Files.writeString(launcher, "game.root = D:/host-game\ngame.root.player = D:/player-game \n",
+                StandardCharsets.UTF_8);
+        String player = configJson(props, 50.0);
         Files.delete(launcher);
         String joinHereMember = "\"joinHere\":" + joinHere(System.getProperty("os.name"));
         check(second.contains(joinHereMember + ",\"gameRootSecond\":\"D:/second-game\",\"uplinkDefault\":")
@@ -3375,6 +3382,17 @@ public final class ServerOpsCoreSelftest {
                 "config-gameroot-second: /api/config serves the game.root.second row trimmed as gameRootSecond"
                         + " right after joinHere, \"\" without the row (flips if the member is dropped, moved or"
                         + " untrimmed); got " + second);
+        String watchHereMember = "\"watchHere\":" + ServerOpsCore.watchHere(System.getProperty("os.name"));
+        check(player.contains(watchHereMember + ",\"gameRootPlayer\":\"D:/player-game\",\"pvp\":")
+                        && saved.contains(watchHereMember + ",\"gameRootPlayer\":\"\",\"pvp\":")
+                        && second.contains(watchHereMember + ",\"gameRootPlayer\":\"\",\"pvp\":"),
+                "config-gameroot-player: /api/config serves the game.root.player row trimmed as gameRootPlayer"
+                        + " right after watchHere, \"\" without the row or beside only a second folder (flips if the"
+                        + " member is dropped, moved, untrimmed or read from game.root.second); got " + player);
+        check(player.contains("\"gameRoot\":\"D:/host-game\",") && player.contains("\"gameRootSecond\":\"\","),
+                "config-gameroot-player: the player row leaves gameRoot = the game.root row and gameRootSecond"
+                        + " \"\" (flips if the Game folder prefill reads the player row, or the two folder rows"
+                        + " cross); got " + player);
         String configHost = OpsSetupPrefill.packageBindPrefill(Files.readAllLines(props, StandardCharsets.UTF_8))[0];
         check(proton.contains("\"bindHost\":\"10.2.0.9\"")
                         && proton.contains("\"gameRoot\":\"\",\"advertiseFrom\":\"protonvpn\",\"advertiseBind\":\"10.2.0.9\""),
@@ -6308,6 +6326,100 @@ public final class ServerOpsCoreSelftest {
         if (failures == before) {
             System.out.println("  PASS mods-needs-on mods-needs-quiet mods-needs-optional-pulled mods-needs-missing"
                     + " mods-needs-transitive mods-needs-optional-lib mods-needs-json");
+        }
+    }
+
+    /**
+     * Rows {@code mods-depends-*} - the Needs column against what the
+     * engine and the launch really do, over the {@link #modsNeedsRows} chain on temp mod folders (neutral ids
+     * {@code libA} / {@code libB} / {@code libC}, names {@code Lib A} / ...). WHY: the engine strips {@code #}
+     * comments outside quotes before it parses a {@code mod_info.json} ({@code InstalledModScan.stripComments}), so
+     * a commented-out dependency is none - a reader that kept it listed a phantom dependency and the start refused
+     * over it; and a library a required mod pulls in is resolved with its own dependencies, so one of those that no
+     * folder holds refuses the start - a page that said "loads at the next start" there was wrong.
+     */
+    private static void modsDependsRows() throws IOException {
+        int before = failures;
+        Path base = Files.createTempDirectory("cc-mods-depends");
+        String refuse = OpsModsPanel.DEPENDS_REFUSE;
+        List<String> aReq = List.of(MODS_ENABLED_KEY + "=libA");
+        // (a) a commented-out dependency on its own line + a live one, a trailing comment, a '#' inside a quoted name
+        Path one = base.resolve("depends-1");
+        String oneTok = one.toAbsolutePath().normalize().toString().replace('\\', '/');
+        writePkgMod(one.resolve("A"), "{\n  \"id\":\"libA\",\n  \"name\":\"Lib #3\", # a trailing comment\n"
+                + "  \"dependencies\":[\n    # {\"id\":\"libX\"},\n    {\"id\":\"libB\"}\n  ]\n}\n");
+        writePkgMod(one.resolve("B"), "{\"id\":\"libB\",\"name\":\"Lib B\"}");
+        List<String> declared = PackageModSync.declaredDependencies(one.resolve("A").resolve(InstalledModScan.MOD_INFO));
+        String scannedName = null;
+        for (InstalledModScan.InstalledMod m : InstalledModScan.scanRoots(base, List.of(oneTok))) {
+            if (m.id().equals("libA")) {
+                scannedName = m.name();
+            }
+        }
+        OpsModsPanel.DependsCell aStrip = needsCell(base, one, aReq, "libA");
+        check(declared.equals(List.of("libB")) && "Lib #3".equals(scannedName) && needsIs(aStrip, "", "needs Lib B"),
+                "mods-depends-comment-strip: a mod_info.json whose dependencies hold a '#'-commented libX line and a"
+                        + " live libB declares only [libB], scans the name 'Lib #3', and its required row reads 'needs"
+                        + " Lib B' with no flag (flips if the engine's comment strip is dropped - a phantom libX refusal"
+                        + " - or over-strips a '#' inside quotes or past the line end); got declared " + declared
+                        + " name '" + scannedName + "' cell " + needsGot(aStrip));
+        // (b) required A -> B -> C, B off or optional, C in no folder: B's row refuses and names C; A says what it needs
+        Path two = base.resolve("depends-2");
+        String twoTok = two.toAbsolutePath().normalize().toString().replace('\\', '/');
+        writePkgMod(two.resolve("A"), "{\"id\":\"libA\",\"name\":\"Lib A\",\"dependencies\":[{\"id\":\"libB\"}]}");
+        writePkgMod(two.resolve("B"), "{\"id\":\"libB\",\"name\":\"Lib B\",\"dependencies\":[{\"id\":\"libC\"}]}");
+        String bWant = "START REFUSES: Lib A needs it, and it needs libC, which is not installed; needs libC"
+                + OpsModsPanel.NOT_INSTALLED_SUFFIX + "; needed by Lib A";
+        OpsModsPanel.DependsCell bOff = needsCell(base, two, aReq, "libB");
+        OpsModsPanel.DependsCell bOpt = needsCell(base, two, List.of(MODS_ENABLED_KEY + "=libA",
+                MODS_OPTIONAL_KEY + "=libB"), "libB");
+        OpsModsPanel.DependsCell aTop = needsCell(base, two, aReq, "libA");
+        check(needsIs(bOff, refuse, bWant) && needsIs(bOpt, refuse, bWant) && needsIs(aTop, "", "needs Lib B"),
+                "mods-depends-transitive: required A -> B -> C with C in no folder: B (off, and optional) reads flag"
+                        + " refuse '" + bWant + "' and A 'needs Lib B' (flips if a pulled-in library stops checking its"
+                        + " own dependencies - the page says it loads while the start refuses - or the refusing id is"
+                        + " not named on B's row); got B off " + needsGot(bOff) + " B optional " + needsGot(bOpt)
+                        + " A " + needsGot(aTop));
+        // (c) over these fixtures (every host-named mod installed), a cell flags refuse exactly when the launch's plan
+        // throws; a host-named mod no folder holds is the Mod cell's own not-installed text, outside this pairing
+        Path pkg = base.resolve("pkg");
+        String[][] cases = {
+            {oneTok, "libA", ""}, {oneTok, "libB", ""}, {oneTok, "libA", "libB"},
+            {twoTok, "libA", ""}, {twoTok, "libA", "libB"}, {twoTok, "libB", ""}};
+        StringBuilder disagree = new StringBuilder();
+        int refused = 0;
+        for (String[] c : cases) {
+            List<String> props = new ArrayList<>(List.of(MODS_ENABLED_KEY + "=" + c[1]));
+            if (!c[2].isEmpty()) {
+                props.add(MODS_OPTIONAL_KEY + "=" + c[2]);
+            }
+            Path root = Paths.get(c[0]);
+            boolean cellRefuses = false;
+            List<OpsModsPanel.ModRow> rows = OpsModsPanel.modRows(InstalledModScan.scanRoots(base, List.of(c[0])), props);
+            Map<String, List<String>> deps = OpsModsPanel.declaredDeps(rows);
+            for (OpsModsPanel.ModRow r : rows) {
+                cellRefuses |= refuse.equals(OpsModsPanel.dependsCell(r, rows, deps).flag());
+            }
+            String thrown = null;
+            try {
+                PackageModSync.plan(pkg, c[1], c[2], c[0]);
+            } catch (IllegalArgumentException expected) {
+                thrown = String.valueOf(expected.getMessage());
+            }
+            refused += cellRefuses ? 1 : 0;
+            if (cellRefuses != (thrown != null)) {
+                disagree.append(" [").append(root.getFileName()).append(" required=").append(c[1]).append(" optional=")
+                        .append(c[2]).append(": cell refuse=").append(cellRefuses).append(" plan threw=").append(thrown)
+                        .append(']');
+            }
+        }
+        check(disagree.length() == 0 && refused == 4,
+                "mods-depends-plan-agrees: over 6 required/optional picks of the two fixtures a Needs cell flags refuse"
+                        + " exactly when PackageModSync.plan throws (4 refuse, 2 lawful) (flips if the page and the launch"
+                        + " disagree on a dependency law - a start that refuses looks fine, or a fine one looks refused);"
+                        + " refused " + refused + ", disagreements:" + disagree);
+        if (failures == before) {
+            System.out.println("  PASS mods-depends-comment-strip mods-depends-transitive mods-depends-plan-agrees");
         }
     }
 

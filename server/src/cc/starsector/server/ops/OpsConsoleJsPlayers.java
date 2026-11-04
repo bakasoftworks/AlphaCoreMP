@@ -23,8 +23,8 @@ package cc.starsector.server.ops;
  * {@code onStatus} notes the status key {@code watchNote} once per new non-empty sentence (the last one noted is
  * forgotten when the key reads empty or a Start is accepted) (row {@code page-watch}).
  * <p>{@code onConfig} shows {@code #btn-watch} for
- * {@code watchHere === true}, apart from Join from this PC's {@code joinHere}: a Linux host joins from its own
- * desktop but has no debug watch, so the two answers differ there; a config without the key keeps the button
+ * {@code watchHere === true}, apart from Join from this PC's {@code joinHere}: the server answers each on its own
+ * (equal on a Windows or Linux host; a future host may differ); a config without the key keeps the button
  * hidden (row {@code page-watch}). The repository console's observer-arm WATCH still shows whatever the host (row
  * {@code page-watch-owner}).
  * <p>Keep for everyone ({@code #btn-keep-custom}) sends

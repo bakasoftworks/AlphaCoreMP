@@ -30,8 +30,9 @@ import cc.starsector.server.runtime.ModSet;
  *     default — this constant mirrors it and {@code ServerOpsCoreSelftest} pins the pair);</li>
  * <li>a row is read the lib's {@code Get-CcConfigModsRow} way (trimmed line, {@code #}/{@code !}
  *     comments skipped, key trimmed, LAST row wins) — NOT the shells' line-start-exact grammar;</li>
- * <li>the id / name / version come out of the raw JSON by regex (first match), never a strict
- *     JSON parse: the engine's own parser is lenient (comments, trailing commas), so a strict
+ * <li>the id / name / version come out of the JSON by regex (first match) AFTER the engine's own
+ *     {@code #} comment strip ({@link #stripComments}: a commented-out line is no part of the mod),
+ *     never a strict JSON parse: the engine's own parser is lenient (comments, trailing commas), so a strict
  *     parse would refuse real mods ({@code Get-CcModInfoField}). The id regex is the lib's
  *     {@code "id"\s*:\s*"([^"]+)"} verbatim — the scan lists what the LAUNCHER would resolve —
  *     but the captured id must pass the ModSet id law ({@code ModSet.lawfulId}, ≤ {@code
@@ -253,7 +254,8 @@ public final class InstalledModScan {
     }
 
     /** One folder's record, or null (unreadable / over the read cap / no id / an unlawful id —
-     * one {@code System.err} line each). */
+     * one {@code System.err} line each). Every field regex
+     * runs over the {@link #stripComments} text, the text the engine itself parses. */
     static InstalledMod readModInfo(Path folder, Path info, Path root) {
         String raw;
         try {
@@ -263,7 +265,7 @@ public final class InstalledModScan {
                         + MOD_INFO_READ_CAP + "), skipped");
                 return null;
             }
-            raw = Files.readString(info, StandardCharsets.UTF_8);
+            raw = stripComments(Files.readString(info, StandardCharsets.UTF_8));
         } catch (IOException | RuntimeException bad) {
             System.err.println("[mods-scan] " + info + " unreadable, skipped: " + bad);
             return null;
@@ -284,6 +286,43 @@ public final class InstalledModScan {
         Matcher name = NAME.matcher(raw);
         return new InstalledMod(declared, name.find() ? name.group(1).trim() : "",
                 version(raw), folder, root);
+    }
+
+    /**
+     * {@code raw} with its {@code #} comments removed by the engine's own rule, reproduced exactly: walk the
+     * chars; a double quote TOGGLES the in-quote state (no escape is honored, as in the engine); a newline or a
+     * carriage return ENDS a comment and RESETS the in-quote state (the newline is kept, the carriage return
+     * dropped); a {@code #} outside quotes starts a comment that drops every char to the line end, so a {@code #}
+     * inside a quoted name survives. WHY: the engine strips a {@code mod_info.json} this way BEFORE it parses it,
+     * so a commented-out dependency (or id, name, version) is no part of the mod; a regex over the raw text would
+     * list a dependency the engine never sees, and the launch would refuse a start over a mod nobody needs. The
+     * one home of the rule for every {@code mod_info.json} reader ({@link #readModInfo},
+     * {@link PackageModSync#declaredDependencies}).
+     *
+     *
+     */
+    static String stripComments(String raw) {
+        StringBuilder out = new StringBuilder(raw.length());
+        boolean comment = false;
+        boolean quoted = false;
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (c == '"') {
+                quoted = !quoted;
+            }
+            if (c == '\n' || c == '\r') {
+                comment = false;
+                quoted = false;
+                if (c == '\n') {
+                    out.append('\n');
+                }
+            } else if (c == '#' && !quoted) {
+                comment = true;
+            } else if (!comment) {
+                out.append(c);
+            }
+        }
+        return out.toString();
     }
 
     /** The declared version: the string form, else {@code major.minor.patch} of the object form

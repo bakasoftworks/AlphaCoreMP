@@ -1567,23 +1567,30 @@ public final class OpsConsole {
      * the answer is composed; the answer never waits on it (row {@code web-start-arms-reach}).
      */
     private void handleStart(HttpExchange ex) throws IOException {
-        startFlow(ex, false);
+        startFlow(ex, false, null);
     }
 
     /**
      * Launch debug WATCH ({@code POST /api/watch}): a Start whose fields carry {@code debugWatch} (the flow writes
      * the debug posture row {@code true}; a plain Start writes it {@code false}), then the daemon that presses Join
-     * from this PC once the door opens. Shown on the page only where Join from this PC is ({@code joinHere}): on a
-     * non-Windows console a hand-made POST gets {@link OpsJoinSelf#R9} in the join POST's shape BEFORE any Start
-     * runs - a watch without a join window would be a plain Start (rows {@code web-watch-route},
-     * {@code web-watch-linux}).
+     * from this PC once the door opens. Shown on the page only where the WATCH runs ({@code watchHere}): on a console
+     * that cannot join (neither Windows nor Linux) a hand-made POST gets {@link OpsJoinSelf#R9} in the join POST's
+     * shape BEFORE any Start runs - a watch without a join window would be a plain Start (rows
+     * {@code web-watch-route}, {@code web-watch-linux}).
      *
      * <p>In owner mode the route is the Swing owner button instead -
      * {@link #pressOwnerWatch}, before the {@code joinHere} test; the package body is unchanged.
      *
-     * <p>Join from this PC runs on a Linux host too, the WATCH does not
-     * ({@link ServerOpsCore#watchHere}: its window sweep, diagnostics and settings scrub are Windows paths) - so a
-     * host that cannot join at all gets R9, and a Linux host gets {@link #R9W}, both before any Start.
+     * <p>The WATCH runs on a Windows or a Linux host
+     * ({@link ServerOpsCore#watchHere}) - a host that cannot join at all gets R9 before any Start; {@link #R9W}
+     * answers a host that joins but cannot watch (none today: the two predicates agree, kept apart so a future host
+     * may differ). The ONE {@code os.name} read here is handed to {@link #startFlow}, so the END leg's settings
+     * scrub takes the platform this gate saw.
+     *
+     * <p> A Linux host's no-HOME / no-desktop refusal (R20 / R19) runs HERE, before
+     * the Start - the press's own (1b) predicate ({@link OpsJoinSelf#posixHostRefusalOrNull}) over the same facts
+     * the press would read: a headless host (ops-web.sh over SSH) used to boot a full debug serve and only the
+     * daemon's press refused, leaving a running serve with no window (row {@code web-watch-linux-nodisplay}).
      */
     private void handleWatch(HttpExchange ex) throws IOException {
         if (roots.mode() == OpsRoots.Mode.OWNER) {
@@ -1599,12 +1606,20 @@ public final class OpsConsole {
             respond(ex, 200, JSON, joinRefused("r9w", R9W));
             return;
         }
-        startFlow(ex, true);
+        OpsJoinSelf.PosixHost posix = posixHostOrNull(os);
+        OpsJoinSelf.Result bare = posix == null ? null
+                : OpsJoinSelf.posixHostRefusalOrNull(posix, joinFx.parentEnv());
+        if (bare != null) {
+            respond(ex, 200, JSON, joinRefused(bare.reasonToken(), bare.text()));
+            return;
+        }
+        startFlow(ex, true, os);
     }
 
-    /** Launch debug WATCH's refusal on a host that can join but not run the WATCH (a Linux host), titled as the
-     *  join refusals. */
-    static final String R9W = "Launch debug WATCH runs on a Windows host only; Join from this PC works here.";
+    /** Launch debug WATCH's refusal on a host that can join but not run the WATCH, titled as the join refusals -
+     *  unreachable while {@link ServerOpsCore#watchHere} equals {@link ServerOpsCore#joinHere} (row
+     *  {@code posix-texts} pins the text). */
+    static final String R9W = "Launch debug WATCH runs on a Windows or Linux host only; Join from this PC works here.";
 
     /** The Arm WATCH press's refusal title (owner mode). */
     static final String OWNER_WATCH_TITLE = "Arm WATCH refused";
@@ -1682,8 +1697,13 @@ public final class OpsConsole {
      * the join settings' password rows ({@link #scrubJoinSettings}) and then closes the join windows this launch's
      * press opened ({@link JoinWindowSweep#endLeg}). The arms' booleans are not an answer: the Start
      * already started.
+     *
+     * <p>{@code watchOsOrNull} = the WATCH route's ONE {@code os.name}
+     * read (null for a plain Start). The WATCH arm turns it into the Linux host's facts ({@link #posixHostOrNull},
+     * null on Windows) and hands THOSE to the END leg's scrub: that leg runs on the lease daemon, long after this
+     * request, and never reads the platform itself.
      */
-    private void startFlow(HttpExchange ex, boolean debugWatch) throws IOException {
+    private void startFlow(HttpExchange ex, boolean debugWatch, String watchOsOrNull) throws IOException {
         Map<String, List<String>> form = readForm(ex, "Start refused");
         if (form == null) {
             return;
@@ -1748,6 +1768,7 @@ public final class OpsConsole {
         }
         String gameRoot = OpsConsoleForms.first(form, "gameRoot"); // control chars refused by startFields
         String gameRootSecond = OpsConsoleForms.first(form, "gameRootSecond"); // null = the row untouched
+        String gameRootPlayer = OpsConsoleForms.first(form, "gameRootPlayer"); // null = the row untouched
         CollectingUi ui = new CollectingUi(form.getOrDefault("confirmed", List.of()));
         AtomicReference<Process> spawned = new AtomicReference<>();
         long pressedAtMs = System.currentTimeMillis();
@@ -1776,7 +1797,7 @@ public final class OpsConsole {
             String second;
             boolean capRefused = false;
             try {
-                Map<String, String> watchRows = watchRows(gameRoot, gameRootSecond);
+                Map<String, String> watchRows = watchRows(gameRoot, gameRootSecond, gameRootPlayer);
                 String capRow = watchRows.get(OpsJoinSelf.ROW_WATCH_CLIENT_LOG_MAX_MIB);
                 capRefused = OpsJoinSelf.watchClientLogMaxMib(capRow) < 0;
                 second = capRefused
@@ -1828,14 +1849,18 @@ public final class OpsConsole {
             // failed" ui.fail answers it the way a spawn failure is answered (row web-start-gameroot).
             // The Recording pick rides the same wrap, saved
             // as the record row right before the Game folder (null = the row untouched; row web-start-record)
-            // the second game folder wraps the INNERMOST spawn, so the disk
-            // order is record, game.root, game.root.second, spawn - and a refused Start writes none of them
+            // the second game folder wraps the spawn, after the Game folder
+            // the Player game folder (the install the two presses start
+            // the game from; the serve keeps game.root) is the INNERMOST wrap, with the second folder's
+            // save-or-clear law, so the disk order is record, game.root, game.root.second, game.root.player, spawn
+            // - and a refused Start writes none of them (row web-start-player-folder)
             started = ServerOpsLaunch.runStartFlow(ui, ServerOpsLaunch.savingLauncherRow(
-                    ServerOpsLaunch.savingLauncherRow(savingOrClearingLauncherRow(cmd -> {
+                    ServerOpsLaunch.savingLauncherRow(savingOrClearingLauncherRow(savingOrClearingLauncherRow(cmd -> {
                         Process p = spawn.spawn(cmd);
                         spawned.set(p);
                         return p;
-                    }, ServerOpsLaunch.launcherPropertiesFile(), ServeLauncher.ROW_GAME_ROOT_SECOND, gameRootSecond),
+                    }, ServerOpsLaunch.launcherPropertiesFile(), ServeLauncher.ROW_GAME_ROOT_PLAYER, gameRootPlayer),
+                    ServerOpsLaunch.launcherPropertiesFile(), ServeLauncher.ROW_GAME_ROOT_SECOND, gameRootSecond),
                     ServerOpsLaunch.launcherPropertiesFile(), ServeLauncher.ROW_GAME_ROOT, gameRoot),
                     ServerOpsLaunch.launcherPropertiesFile(), ServeLauncher.ROW_RECORD, recordRow),
                     propsFile, fields);
@@ -1884,8 +1909,11 @@ public final class OpsConsole {
                 // scrubs the join settings' password rows (the window saved the match password there; the daemon's
                 // javadoc says why only at the end), then closes the join windows this launch opened. Nothing is
                 // armed when the flow wrote no lease or the launch has no process handle (a recording spawn).
+                // The scrub's platform is captured HERE, from the route's
+                // read - the END leg's daemon never reads os.name (a later flip must not change which file it scrubs).
+                OpsJoinSelf.PosixHost scrubPosix = posixHostOrNull(watchOsOrNull);
                 ServerOpsCore.armWatchLease(armed, startLaunch::get, propsFile,
-                        JoinWindowSweep.endLeg(this::scrubJoinSettings, windows));
+                        JoinWindowSweep.endLeg(() -> scrubJoinSettings(scrubPosix), windows));
             }
         }
         String json;
@@ -3090,7 +3118,8 @@ public final class OpsConsole {
     private JoinPress joinAnswer(boolean watch, Path flightOrNull) {
         try {
             // ONE os.name read per press - the gates and the inputs'
-            // platform agree; a WATCH press off Windows is refused here too (its route already refuses it).
+            // platform agree; a WATCH press where watchHere is false is refused here too (its route already
+            // refuses it).
             String os = System.getProperty("os.name");
             if (!ServerOpsCore.joinHere(os)) {
                 return new JoinPress(false, "r9", OpsJoinSelf.R9);
@@ -3139,10 +3168,8 @@ public final class OpsConsole {
      * press spawns with ({@link OpsJoinSelf.Effects#parentEnv}), the admin-arm bit and the
      * package MANIFEST's kit stamps ({@link ServerOpsCore#packageKitStamps}).
      *
-     * <p>{@code osName} = the caller's ONE read; a Linux host
-     * ({@link ServerOpsCore#posixHost}) adds {@link OpsJoinSelf.PosixHost}: HOME / XDG_DATA_HOME / XDG_RUNTIME_DIR
-     * from that same environment, and the host desktop's display as the package's Linux start file handed it over
-     * ({@link OpsJoinSelf#PROP_HOST_DISPLAY} and its siblings; known = the display property is set, even empty).
+     * <p>{@code osName} = the caller's ONE read; a Linux host adds the
+     * {@link OpsJoinSelf.PosixHost} {@link #posixHostOrNull} builds from it.
      */
     private OpsJoinSelf.Inputs pressInputs(OpsSnapshot live, Map<String, String> rows, String kept, boolean adminArm,
             String osName) throws IOException {
@@ -3152,13 +3179,28 @@ public final class OpsConsole {
                 env.get("LOCALAPPDATA"), env.get("APPDATA"), env.get("USERPROFILE"), null)
                 .withAdminArm(adminArm)
                 .withKitStamps(stamps.jarMd5OrNull(), stamps.fingerprintOrNull(), stamps.zipOrNull());
+        OpsJoinSelf.PosixHost posix = posixHostOrNull(osName);
+        return posix == null ? in : in.withPosixHost(posix);
+    }
+
+    /**
+     * The Linux host's facts for {@code osName} (the caller's ONE {@code os.name} read), or null when it is not a
+     * Linux host ({@link ServerOpsCore#posixHost}): HOME / XDG_DATA_HOME / XDG_RUNTIME_DIR from the SAME environment
+     * the press spawns with ({@link OpsJoinSelf.Effects#parentEnv}), and the host desktop's display as the package's
+     * Linux start file handed it over ({@link OpsJoinSelf#PROP_HOST_DISPLAY} and its siblings; known = the display
+     * property is set, even empty). The ONE builder for the press inputs ({@link #pressInputs}) and the WATCH's END
+     * scrub ({@link #startFlow}), so both locate the same settings file. Thread: any.
+     *
+     */
+    private OpsJoinSelf.PosixHost posixHostOrNull(String osName) {
         if (!ServerOpsCore.posixHost(osName)) {
-            return in;
+            return null;
         }
+        Map<String, String> env = joinFx.parentEnv();
         String display = System.getProperty(OpsJoinSelf.PROP_HOST_DISPLAY);
-        return in.withPosixHost(new OpsJoinSelf.PosixHost(env.get("HOME"), env.get("XDG_DATA_HOME"),
-                env.get("XDG_RUNTIME_DIR"), display != null, display,
-                System.getProperty(OpsJoinSelf.PROP_HOST_WAYLAND), System.getProperty(OpsJoinSelf.PROP_HOST_XAUTHORITY)));
+        return new OpsJoinSelf.PosixHost(env.get("HOME"), env.get("XDG_DATA_HOME"), env.get("XDG_RUNTIME_DIR"),
+                display != null, display, System.getProperty(OpsJoinSelf.PROP_HOST_WAYLAND),
+                System.getProperty(OpsJoinSelf.PROP_HOST_XAUTHORITY));
     }
 
     /**
@@ -3167,7 +3209,7 @@ public final class OpsConsole {
      * are the hand press's with NO secrets (password blank, no arm: the check reads neither) over {@code rows} = the
      * launcher rows as the Start is about to save them ({@link #watchRows}: the Start saves the form's Game folder,
      * so the check must read it); {@link #lastPressInputs} is untouched (no press). Null = current or skipped.
-     * The route's Windows gate ({@link #handleWatch}) already answered a non-Windows host. Thread: the HTTP handler;
+     * The route's gates ({@link #handleWatch}) already answered a host where the WATCH cannot run. Thread: the HTTP handler;
      * no lock held (the serving-descriptor read that once sat here fed the Press field; the join window fetches the
      * match over the wire, so the read died with the field at the fold).
      *
@@ -3184,31 +3226,56 @@ public final class OpsConsole {
      * blank = the saved row stands, the Start's own blank-is-no-write wrap) and second folder ({@code typedSecond}:
      * null = the row untouched, blank = CLEARED = one window, else the typed folder - the law of
      * {@link #savingOrClearingLauncherRow}) overlaid.
+     *
+     * <p>The Player game folder ({@code typedPlayer}, the install the
+     * presses start the game from) is overlaid by the second folder's law too - null = untouched, blank = the row
+     * removed (the presses fall back to Game folder), else the typed folder - so the kit check reads the install
+     * the Start is about to save.
      */
-    private static Map<String, String> watchRows(String typedGameRoot, String typedSecond) throws IOException {
+    private static Map<String, String> watchRows(String typedGameRoot, String typedSecond, String typedPlayer)
+            throws IOException {
         Map<String, String> rows = new java.util.HashMap<>(ServeLauncher.readLauncherRows(
                 ServerOpsLaunch.launcherPropertiesFile(), System.out));
         if (typedGameRoot != null && !typedGameRoot.isBlank()) {
             rows.put(ServeLauncher.ROW_GAME_ROOT, typedGameRoot);
         }
-        if (typedSecond != null) {
-            if (typedSecond.isBlank()) {
-                rows.remove(ServeLauncher.ROW_GAME_ROOT_SECOND);
-            } else {
-                rows.put(ServeLauncher.ROW_GAME_ROOT_SECOND, typedSecond);
-            }
-        }
+        overlayTyped(rows, ServeLauncher.ROW_GAME_ROOT_SECOND, typedSecond);
+        overlayTyped(rows, ServeLauncher.ROW_GAME_ROOT_PLAYER, typedPlayer);
         return rows;
     }
 
     /**
-     * The join settings' secret scrub at a debug watch's END ({@link OpsJoinSelf#scrubSettingsSecret}; the lease
-     * daemon's {@code atEnd}). The files are located from the SAME environment the press located them with
-     * ({@link OpsJoinSelf.Effects#parentEnv}) and touched through the same effects - so a console whose effects are
-     * not the live ones (a selftest's) scrubs nothing of the real user's. Prints its own ONE row, never a value.
-     * Thread: the lease daemon.
+     * The save-or-clear law over one overlaid row: null = untouched, blank = removed, else put.
+     *
      */
-    private void scrubJoinSettings() {
+    private static void overlayTyped(Map<String, String> rows, String row, String typed) {
+        if (typed != null) {
+            if (typed.isBlank()) {
+                rows.remove(row);
+            } else {
+                rows.put(row, typed);
+            }
+        }
+    }
+
+    /**
+     * The join settings' secret scrub at a debug watch's END (the lease daemon's {@code atEnd}). The files are
+     * located from the SAME environment the press located them with ({@link OpsJoinSelf.Effects#parentEnv}) and
+     * touched through the same effects - so a console whose effects are not the live ones (a selftest's) scrubs
+     * nothing of the real user's. Prints its own ONE row, never a value. Thread: the lease daemon.
+     *
+     *
+     * <p>{@code posixOrNull} = the Linux host's facts the WATCH arm
+     * captured ({@link #posixHostOrNull} over the route's read): set = the Linux form
+     * ({@link OpsJoinSelf#scrubSettingsSecret(OpsJoinSelf.Effects, OpsJoinSelf.PosixHost)}: the ONE file the press
+     * wrote there, rewritten owner-only); null = the Windows form over LOCALAPPDATA / APPDATA / USERPROFILE,
+     * unchanged. This method never reads {@code os.name}.
+     */
+    private void scrubJoinSettings(OpsJoinSelf.PosixHost posixOrNull) {
+        if (posixOrNull != null) {
+            OpsJoinSelf.scrubSettingsSecret(joinFx, posixOrNull);
+            return;
+        }
         Map<String, String> env = joinFx.parentEnv();
         OpsJoinSelf.scrubSettingsSecret(joinFx, env.get("LOCALAPPDATA"), env.get("APPDATA"), env.get("USERPROFILE"));
     }
@@ -3492,7 +3559,8 @@ public final class OpsConsole {
     /**
      * {@code spawn} with a launcher row saved or CLEARED right before it,
      * through {@link ServerOpsLaunch#writeOrClearLauncherRow} - a BLANK field removes every {@code key=} row
-     * (the debug WATCH's second game folder is optional: a host who cleared the field gets back to one window),
+     * (the debug WATCH's second game folder is optional: a host who cleared the field gets back to one window;
+     * so is the Player game folder: cleared, the presses start the game from Game folder again),
      * a typed one is written verbatim. A {@code null} field (a page or a hand-made request that sends none)
      * returns {@code spawn} itself, the row untouched. The value is not checked here: the press validates it as
      * an install. A refused write throws out of the spawn naming the key, the file NAME and the exception class

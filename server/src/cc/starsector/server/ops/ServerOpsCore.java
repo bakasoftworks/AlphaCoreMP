@@ -2504,8 +2504,12 @@ public final class ServerOpsCore {
      * The host-platform predicates, each pure over an {@code os.name} (null / blank = false), read by the console
      * once per use - never inside the join core, which takes the answer as an input. {@code windowsHost} = starts
      * {@code Windows}: the boot's browser spawn and the console lock's Windows form; {@code posixHost} = starts
-     * {@code Linux}: the join press's Linux branch; {@code watchHere} = Launch debug WATCH can run here - Windows
-     * only (its window sweep, client diagnostics and settings scrub are Windows paths). Thread: any.
+     * {@code Linux}: the join press's Linux branch; {@code watchHere} = Launch debug WATCH can run here - a Windows
+     * or a Linux host, the same answer as {@link #joinHere} today, kept its own predicate so a future host may join
+     * without the WATCH. Its three Linux twins: the END leg's window sweep allow-list ({@link JoinWindowSweep}) and
+     * settings scrub ({@link OpsJoinSelf#scrubSettingsSecret(OpsJoinSelf.Effects, OpsJoinSelf.PosixHost)}, the
+     * owner-only rewrite), and the WATCH press's client diagnostics folder charset (a {@code /} flight folder).
+     * Thread: any.
      *
      */
     static boolean windowsHost(String osName) {
@@ -2517,7 +2521,7 @@ public final class ServerOpsCore {
     }
 
     static boolean watchHere(String osName) {
-        return windowsHost(osName);
+        return windowsHost(osName) || posixHost(osName);
     }
 
     /**
@@ -2674,6 +2678,10 @@ public final class ServerOpsCore {
         // Field: the debug WATCH's second game folder, served right after joinHere
         // (W2 reads it by name as the folder-2 prefill; W1 saves it through writeOrClearLauncherRow)
         String gameRootSecond = launcherRows.getOrDefault(ServeLauncher.ROW_GAME_ROOT_SECOND, "").trim();
+        // The Player game folder (the install Join from this PC and the
+        // WATCH's first window start the game from; the serve keeps game.root), "" without the row - the
+        // f-game-root-player prefill, saved back by the Start's save-or-clear wrap
+        String gameRootPlayer = launcherRows.getOrDefault(ServeLauncher.ROW_GAME_ROOT_PLAYER, "").trim();
         // the package Advertise rule (OpsSetupPrefill): the saved row, else the <public IP> placeholder
         String savedAdvertise = launcherRows.getOrDefault(ServerOpsLaunch.LAUNCHER_ROW_ADVERTISE, "").trim();
         String advertise = !packaged ? ""
@@ -2742,9 +2750,13 @@ public final class ServerOpsCore {
                 .append(",\"gameRootSecond\":\"").append(jsonEscape(gameRootSecond))
                 .append("\",\"uplinkDefault\":")
                 .append(jsonNumber(uplinkDefault))
-                // Launch debug WATCH's own gate (Windows only), apart
-                // from joinHere; after uplinkDefault so the joinHere / gameRootSecond neighbours stay as pinned.
+                // Launch debug WATCH's own gate (a Windows or
+                // Linux host), apart from joinHere; after uplinkDefault so the joinHere / gameRootSecond neighbours
+                // stay as pinned.
                 .append(",\"watchHere\":").append(watchHere(System.getProperty("os.name")))
+                // After watchHere, so the pinned gameRootSecond /
+                // uplinkDefault adjacency stays whole
+                .append(",\"gameRootPlayer\":\"").append(jsonEscape(gameRootPlayer)).append('"')
                 .append(",\"pvp\":\"").append(pvp)
                 .append("\",\"seatsPerSource\":\"").append(jsonEscape(OpsMatchRows.seatsPerSourceFieldPrefill(propsLines)))
                 .append("\",\"allSkills\":\"").append(jsonEscape(OpsMatchRows.allSkillsFieldPrefill(propsLines)))

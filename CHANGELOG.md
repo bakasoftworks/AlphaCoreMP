@@ -2,6 +2,14 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.6.0 - 2026-11-04
+
+- New "Player game folder" (Setup tab, beside "Game folder"): on a Linux host, the Linux install of the game that "Join from this PC" and "Launch debug WATCH" start your own windows from, while the server keeps running the Windows game files in "Game folder". Blank means "Game folder". A folder set there that holds no game refuses the press and names the row. Without it, those two buttons could not work on a Linux host, though 0.5.0 said "Join from this PC" did.
+- "Launch debug WATCH" works on a Linux host too, with a "Player game folder" set (proven in WSL only; the second window joins on this computer there, since the VPN route is Windows only).
+- The ops GUI's Mods tab "Needs" column reads a mod's `mod_info.json` the way the game does, so a `#` comment no longer hides a dependency, and it names a pulled-in library whose own requirement is missing.
+- A player's game that closes while the server is still talking to it now finishes its last messages before it says goodbye. 0.5.0 said this of a player's game; it was true of the test client only. The player's game does it since 0.6.0.
+- Voice chat on Linux uses Java's own sound line, where ALSA routes to PipeWire or PulseAudio. The 0.5.0 note's "about 74 ms more delay" was not measured on Linux; the delay to the speaker there is unmeasured.
+
 ## 0.5.0 - 2026-11-04
 
 - The kit runs on Linux: copy `CC_Client` into `mods/` of a Linux Starsector 0.98a-RC8 and run `bash mods/CC_Client/join-cc.sh` from that folder. The game runs on its own Java (`jre_linux`); the kit's bundled Java stays Windows-only. The kit README's "On Linux" section lists the differences and the sound and `xrandr` packages a distribution may lack.

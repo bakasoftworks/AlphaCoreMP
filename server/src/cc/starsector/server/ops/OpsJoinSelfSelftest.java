@@ -117,9 +117,10 @@ final class OpsJoinSelfSelftest {
      * verb and the dev-tooling words a stranger's console never shows.
      */
     private static final Pattern TEXT_FIELD =
-            Pattern.compile("LABEL|TIP|TITLE|KIT_HINT|SECOND_PREFIX|NOTE_\\w*|R\\d+(_SHAPE|P)?|L\\d+");
+            Pattern.compile("LABEL|TIP|TITLE|KIT_HINT|SECOND_PREFIX|NOTE_\\w*|R\\d+(_SHAPE|_PLAYER|P)?|L\\d+");
     private static final Set<String> KNOWN_TEXTS = Set.of("TITLE", "LABEL", "TIP", "KIT_HINT", "NOTE_OPENED",
-            "NOTE_REOPENED", "NOTE_REOPENED_WEB", "R1", "R2", "R4", "R5", "R5_SHAPE", "R6", "R7", "R8", "R9", "R10",
+            "NOTE_REOPENED", "NOTE_REOPENED_WEB", "R1", "R1_PLAYER", "R2", "R4", "R5", "R5_SHAPE", "R6", "R7", "R8",
+            "R9", "R10",
             "R12", "R13", "R14", "R15", "NOTE_KIT_REFRESHED", "NOTE_OPENED_ADMIN", "R16", "R17", "R18",
             "SECOND_PREFIX", "NOTE_SECOND_LIVE", "R2P", "R6P", "R7P", "R19", "R20", "NOTE_REOPENED_WEB_POSIX",
             "NOTE_OPENED_POSIX_LOG");
@@ -193,11 +194,17 @@ final class OpsJoinSelfSelftest {
         List<AssertionError> failed = new ArrayList<>();
         try {
             row(failed, "join-install", r -> joinInstall(r, dir.resolve("install")));
+            row(failed, "join-install-player", r -> joinInstallPlayer(r, dir.resolve("installplayer")));
+            row(failed, "join-player-posix", r -> joinPlayerPosix(r, dir.resolve("pxplayer")));
+            row(failed, "join-player-refusal", r -> joinPlayerRefusal(r, dir.resolve("playerbad")));
+            row(failed, "join-player-second-window", r -> joinPlayerSecondWindow(r, dir.resolve("playersecond")));
             row(failed, "join-dial", OpsJoinSelfSelftest::joinDial);
             row(failed, "join-watch-dial", r -> joinWatchDial(r, dir.resolve("watchdial")));
             row(failed, "join-merge", OpsJoinSelfSelftest::joinMerge);
             row(failed, "join-spawn-shape", r -> joinSpawnShape(r, dir.resolve("spawn")));
             row(failed, "join-client-diag", r -> joinClientDiag(r, dir.resolve("diag")));
+            row(failed, "diag-charset-posix", OpsJoinSelfSelftest::diagCharsetPosix);
+            row(failed, "join-second-window-log", r -> joinSecondWindowLog(r, dir.resolve("pxsecondlog")));
             row(failed, "join-order", r -> joinOrder(r, dir.resolve("order")));
             row(failed, "join-settings-home", r -> joinSettingsHome(r, dir.resolve("home")));
             row(failed, "join-endpoint", r -> joinEndpoint(r, dir.resolve("endpoint")));
@@ -232,6 +239,7 @@ final class OpsJoinSelfSelftest {
             row(failed, "join-predicates", OpsJoinSelfSelftest::joinPredicates);
             row(failed, "posix-reopen", r -> posixReopen(r, dir.resolve("pxreopen")));
             row(failed, "posix-texts", OpsJoinSelfSelftest::posixTexts);
+            row(failed, "join-settings-scrub-posix", OpsJoinSelfSelftest::joinSettingsScrubPosix);
         } finally {
             deleteTree(dir);
         }
@@ -678,6 +686,65 @@ final class OpsJoinSelfSelftest {
                         && !fxNull.spawns.get(0).env.containsKey(key),
                 "a null folder leaves the child env equal to an undecorated press's, the inherited key dropped by"
                         + " both (flips if null decorates or the strip is lost)");
+    }
+
+    /** {@code diag-charset-posix}: the diag folder law carries a Linux flight folder and still refuses what the
+     *  flags cannot carry. This Windows JVM calls a {@code /} folder relative, so the row pins the character law
+     *  alone; the flags a Linux game receives are measured on a Linux host.
+     * */
+    private static void diagCharsetPosix(String r) {
+        String flight = "/opt/cc/srv/run/flight-20261104-120000/client";
+        check(r, OpsJoinSelf.DIAG_DIR_CHARS.matcher(flight).matches()
+                        && OpsJoinSelf.DIAG_DIR_CHARS.matcher(flight + "2").matches(),
+                "a Linux flight folder and its second window's are carried (flips if '/' leaves the set: every Linux"
+                        + " debug watch window would lose its GC log, frame ring and sidelog): " + flight);
+        check(r, OpsJoinSelf.DIAG_DIR_CHARS.matcher("C:\\Users\\host\\run\\flight-20261104-120000\\client").matches(),
+                "a Windows drive-letter folder is still carried (flips if the colon rule loses the drive letter)");
+        List<String> carried = new ArrayList<>();
+        for (String bad : List.of("/opt/cc/srv/run/fl\"ight/client", "/opt/cc/srv/run/fl;ight/client",
+                "/opt/cc/a:b/client", "C:\\Users\\a:b\\client")) {
+            if (OpsJoinSelf.DIAG_DIR_CHARS.matcher(bad).matches()) {
+                carried.add(bad);
+            }
+        }
+        check(r, carried.isEmpty(),
+                "a folder holding a double quote, a semicolon or a colon past the drive letter is refused (flips if the"
+                        + " set widens: the quote would end the flag, the semicolon is a shell separator, a mid-path"
+                        + " colon would cut the GC log's name inside -Xlog): " + carried);
+    }
+
+    /** {@code join-second-window-log}: a Linux debug watch's two windows each get their OWN press log - the spawn
+     *  empties its log by an atomic replace, so a shared one would leave window 1's launcher appending to an
+     *  unlinked file. */
+    private static void joinSecondWindowLog(String r, Path base) throws Exception {
+        Path install1 = stagePosixInstall(base.resolve("game1"));
+        Path install2 = stagePosixInstall(base.resolve("game2"));
+        FakeEffects fx = posixKit(install1);
+        fx.files.put(install2.resolve("starsector.sh"), new byte[] {1});
+        fx.files.put(install2.resolve("mods").resolve("CC_Client").resolve("join-cc.sh"), new byte[] {1});
+        OpsJoinSelf.Inputs in = inputs(base, install1, live("0.0.0.0", 46337), PW,
+                Map.of(ServeLauncher.ROW_GAME_ROOT_SECOND, install2.toString())).withPosixHost(POSIX_HOST);
+        Pressed two = pressWatch(in, fx, base.resolve("flight"));
+        Path log2 = POSIX_LOG.resolveSibling("join-press-2.log");
+        check(r, two.result.outcome() == Outcome.OPENED && fx.spawns.size() == 2
+                        && install2.resolve("mods").resolve("CC_Client").equals(fx.spawns.get(1).cwd)
+                        && two.stdout.contains("cc-ops join second=opened"),
+                "a Linux watch with a second Game folder opens both windows, the second game's kit last (flips if a"
+                        + " Linux step refuses window 2): " + two.result + " spawns=" + fx.spawns.size());
+        check(r, fx.spawnLogs.equals(Arrays.asList(POSIX_LOG, log2)),
+                "window 1's output goes to join-press.log, window 2's to join-press-2.log (flips if they share one"
+                        + " file - window 2's emptying would cut window 1's later words off - or the names swap): "
+                        + fx.spawnLogs);
+        check(r, fx.writes.stream().filter(POSIX_LOG::equals).count() == 1
+                        && fx.writes.indexOf(log2) > fx.writes.indexOf(POSIX_LOG)
+                        && "dir=0700 file=0600".equals(fx.modes.get(log2)),
+                "each log is emptied once, window 1's first, window 2's owner-only (flips if window 2's press"
+                        + " re-empties window 1's log or takes the plain write): " + fx.writes + " " + fx.modes);
+        String text = two.result.text();
+        check(r, text.contains(" If no window appears, the kit's own words are in " + POSIX_LOG + ".")
+                        && text.endsWith(" If no window appears, the kit's own words are in " + log2 + "."),
+                "the answer names each window's own log, window 2's last (flips if a note names the other window's"
+                        + " file): " + text);
     }
 
     // ---- join-order ----
@@ -1251,6 +1318,199 @@ final class OpsJoinSelfSelftest {
         }
     }
 
+    // ---- the Player game folder row ----
+
+    /** An empty real folder at {@code at} (no engine jar = no install). */
+    private static Path emptyFolder(Path at) throws SetupFailure {
+        try {
+            return Files.createDirectories(at);
+        } catch (IOException e) {
+            throw new SetupFailure("empty folder at " + at, e);
+        }
+    }
+
+    /**
+     * {@code join-install-player}: {@link OpsJoinSelf#installOrNull} reads a set {@code game.root.player} row first -
+     * (a) a padded flat Linux install over a good Game folder, (b) the core-form arm over the player row, (c) blank /
+     * absent = Game folder, (d) set and no game = null and {@link OpsJoinSelf#R1_PLAYER} naming the bounded row while
+     * the unset path stays R1, (e) set over a blank Game folder.
+     */
+    private static void joinInstallPlayer(String r, Path base) throws Exception {
+        String player = ServeLauncher.ROW_GAME_ROOT_PLAYER;
+        String root = ServeLauncher.ROW_GAME_ROOT;
+        Path p = stagePosixInstall(base.resolve("player"));
+        Path g = stageInstall(base.resolve("game"), true, true);
+        check(r, p.equals(OpsJoinSelf.installOrNull(base, Map.of(player, "  " + p + "  ", root, g.toString()))),
+                "(a) a set, padded player row naming a flat Linux install resolves to it over a good Game folder"
+                        + " (flips if installOrNull reads game.root first, ignores the player row or skips its trim)");
+        Path w = stageInstall(base.resolve("win"), true, true);
+        check(r, w.equals(OpsJoinSelf.installOrNull(base,
+                        Map.of(player, w.resolve("starsector-core").toString(), root, g.toString()))),
+                "(b) a player row naming <install>/starsector-core resolves to that install (flips if the player row"
+                        + " skips the core-form -> getParent arm)");
+        check(r, g.equals(OpsJoinSelf.installOrNull(base, Map.of(player, "   ", root, g.toString())))
+                        && g.equals(OpsJoinSelf.installOrNull(base, Map.of(root, g.toString())))
+                        && !OpsJoinSelf.playerRowSet(Map.of(player, "   ")) && !OpsJoinSelf.playerRowSet(null),
+                "(c) a blank / absent player row = the Game folder row's install (flips if a blank player row counts"
+                        + " as set - resolving to the package root or to no install)");
+        Path notGame = emptyFolder(base.resolve("not-a-game"));
+        if (notGame.toString().length() > OpsJoinSelf.TEXT_PATH_MAX) {
+            throw new SetupFailure("temp path over " + OpsJoinSelf.TEXT_PATH_MAX + " chars: " + notGame, null);
+        }
+        Map<String, String> bad = Map.of(player, " " + notGame + " ", root, g.toString());
+        check(r, OpsJoinSelf.installOrNull(base, bad) == null,
+                "(d) a set player row naming a folder without the engine jar = no install even with a good Game folder"
+                        + " (flips if a bad player row silently falls back to game.root)");
+        String want = String.format(Locale.ROOT, OpsJoinSelf.R1_PLAYER, notGame);
+        check(r, OpsJoinSelf.playerRowSet(bad) && want.equals(OpsJoinSelf.noInstallRefusal(bad))
+                        && want.contains(notGame + " has no starfarer_obf.jar"),
+                "(d) its refusal = R1_PLAYER naming the trimmed player row (flips if it is R1, names game.root or keeps"
+                        + " the padding): " + OpsJoinSelf.noInstallRefusal(bad));
+        String cut = OpsJoinSelf.noInstallRefusal(Map.of(player, "k".repeat(200)));
+        check(r, cut.contains("k".repeat(OpsJoinSelf.TEXT_PATH_MAX - 3) + "... has no")
+                        && !cut.contains("k".repeat(OpsJoinSelf.TEXT_PATH_MAX - 2)),
+                "(d) a 200-char player row is cut to 120 chars with '...' in R1_PLAYER (flips if the row rides"
+                        + " unbounded into the dialog)");
+        check(r, OpsJoinSelf.R1.equals(OpsJoinSelf.installRefusalOrNull(null, OpsJoinSelf.LIVE, "kit"))
+                        && OpsJoinSelf.R1.equals(OpsJoinSelf.noInstallRefusal(Map.of(player, " ", root, " ")))
+                        && OpsJoinSelf.R1.equals(OpsJoinSelf.noInstallRefusal(null)),
+                "(d) installRefusalOrNull(null) stays R1 and an unset player row's no-install refusal = R1 (flips if"
+                        + " R1_PLAYER leaks into the plain unset path)");
+        check(r, p.equals(OpsJoinSelf.installOrNull(base, Map.of(player, p.toString(), root, "  ")))
+                        && p.equals(OpsJoinSelf.installOrNull(base, Map.of(player, p.toString()))),
+                "(e) a set player row over a blank / absent Game folder resolves to the player install (flips if a"
+                        + " blank game.root ends the read before the player row)");
+    }
+
+    /**
+     * {@code join-player-posix}: the Linux kit law judges the PLAYER install - null with {@code starsector.sh} + the
+     * kit's {@code join-cc.sh} under it, R2P naming it when they sit only under Game folder; a Linux press with the
+     * row set opens from the player install's kit folder.
+     */
+    private static void joinPlayerPosix(String r, Path base) throws Exception {
+        Path p = stagePosixInstall(base.resolve("player"));
+        Path g = stagePosixInstall(base.resolve("game"));
+        check(r, OpsJoinSelf.installRefusalOrNull(p, posixKit(p), "CC_Client-kit.zip", true) == null,
+                "the Linux law passes a player install holding starsector.sh + mods/CC_Client/join-cc.sh (flips if"
+                        + " the posix branch looks anywhere but the install it is handed)");
+        String r2p = OpsJoinSelf.installRefusalOrNull(p, posixKit(g), "CC_Client-kit.zip", true);
+        check(r, r2p != null && r2p.contains(p + "/starsector.sh") && r2p.contains(p + "/mods/CC_Client/join-cc.sh")
+                        && !r2p.contains(g.toString()),
+                "the Linux launchers only under Game folder = R2P naming the PLAYER install (flips if the check reads"
+                        + " game.root's folder): " + r2p);
+        Map<String, String> extra = Map.of(ServeLauncher.ROW_GAME_ROOT_PLAYER, p.toString());
+        FakeEffects fx = posixKit(p);
+        Pressed opened = press(inputs(base, g, live("0.0.0.0", 46337), PW, extra).withPosixHost(POSIX_HOST), fx);
+        check(r, opened.result.outcome() == Outcome.OPENED && fx.spawns.size() == 1
+                        && p.resolve("mods").resolve("CC_Client").equals(fx.spawns.get(0).cwd)
+                        && opened.stdout.contains("cc-ops join outcome=opened"),
+                "a Linux press with the player row set opens ONE window from the player install's kit folder and says"
+                        + " outcome=opened (flips if the press starts the game from game.root or refuses a good player"
+                        + " install): " + opened.result + " spawns=" + fx.spawns);
+        FakeEffects onlyG = posixKit(g);
+        Pressed refused = press(inputs(base, g, live("0.0.0.0", 46337), PW, extra).withPosixHost(POSIX_HOST), onlyG);
+        check(r, refused.result.outcome() == Outcome.REFUSED && "r2".equals(refused.result.reasonToken())
+                        && refused.result.text().contains(p + "/starsector.sh") && onlyG.spawns.isEmpty()
+                        && onlyG.writes.isEmpty(),
+                "a Linux press whose launchers sit only under Game folder refuses r2 naming the player install, nothing"
+                        + " written or started (flips if the press's kit law judges game.root's install): "
+                        + refused.result);
+    }
+
+    /**
+     * {@code join-player-refusal}: a set player row that holds no game refuses {@code r1_player} with
+     * {@link OpsJoinSelf#R1_PLAYER} although Game folder is good - through the press, the WATCH's pre-Start
+     * {@link OpsJoinSelf#kitCheckOrNull} and the web shell's {@link OpsJoinSelf#reopenSpawn} - with nothing read,
+     * written, armed or started.
+     */
+    private static void joinPlayerRefusal(String r, Path base) throws Exception {
+        Path g = stageInstall(base.resolve("game"), true, true);
+        Path notGame = emptyFolder(base.resolve("notgame"));
+        if (notGame.toString().length() > OpsJoinSelf.TEXT_PATH_MAX) {
+            throw new SetupFailure("temp path over " + OpsJoinSelf.TEXT_PATH_MAX + " chars: " + notGame, null);
+        }
+        String want = String.format(Locale.ROOT, OpsJoinSelf.R1_PLAYER, notGame);
+        OpsJoinSelf.Inputs in = inputs(base, g, liveWith("0.0.0.0", 46337, base.resolve("cmd.txt").toString()), PW,
+                Map.of(ServeLauncher.ROW_GAME_ROOT_PLAYER, notGame.toString())).withAdminArm(true);
+        FakeEffects fx = FakeEffects.withKit(g);
+        Pressed p = press(in, fx);
+        check(r, p.result.outcome() == Outcome.REFUSED && "r1_player".equals(p.result.reasonToken())
+                        && want.equals(p.result.text())
+                        && p.stdout.contains("cc-ops join outcome=refused reason=r1_player"),
+                "a bad player row over a good Game folder = REFUSED r1_player with R1_PLAYER (flips if the press falls"
+                        + " back to game.root, or refuses with R1 / r1): " + p.result);
+        check(r, fx.spawns.isEmpty() && fx.writes.isEmpty() && fx.appends.isEmpty() && fx.reads.isEmpty()
+                        && fx.dirsMade.isEmpty(),
+                "the refused press read, wrote, armed and started nothing (flips if the refusal lands after any step"
+                        + " past the install): spawns=" + fx.spawns.size() + " writes=" + fx.writes.size()
+                        + " appends=" + fx.appends.size() + " reads=" + fx.reads.size());
+        FakeEffects fxK = FakeEffects.withKit(g);
+        OpsJoinSelf.KitCheck c = OpsJoinSelf.kitCheckOrNull(in, fxK);
+        OpsJoinSelf.Result kr = c == null ? null : c.refusedOrNull();
+        check(r, kr != null && "r1_player".equals(kr.reasonToken()) && want.equals(kr.text()) && c.noteOrNull() == null
+                        && fxK.reads.isEmpty() && fxK.writes.isEmpty() && fxK.spawns.isEmpty(),
+                "the WATCH's pre-Start kit check refuses r1_player with R1_PLAYER before any kit read (flips if the"
+                        + " check judges game.root's kit instead): " + kr);
+        FakeEffects fxR = FakeEffects.withKit(g);
+        OpsJoinSelf.Result reopened = OpsJoinSelf.reopenSpawn(in, fxR);
+        check(r, reopened.outcome() == Outcome.REFUSED && "r1_player".equals(reopened.reasonToken())
+                        && want.equals(reopened.text()) && fxR.spawns.isEmpty(),
+                "the web shell's reopen over a bad player row refuses r1_player, nothing started (flips if reopenSpawn"
+                        + " keeps the plain R1 or starts game.root's kit): " + reopened);
+    }
+
+    /**
+     * {@code join-player-second-window}: the debug WATCH with a player row, Game folder and a second folder opens
+     * window 1 from the player install and window 2 from the second folder (never either other); a second folder
+     * equal to the player install = R17 (press and pre-Start check), one equal to Game folder opens both.
+     *
+     */
+    private static void joinPlayerSecondWindow(String r, Path base) throws Exception {
+        Path p = stageInstall(base.resolve("player"), true, true);
+        Path g = stageInstall(base.resolve("game"), true, true);
+        Path s = stageInstall(base.resolve("second"), true, true);
+        Path flight = base.resolve("flight");
+        OpsSnapshot wild = live("0.0.0.0", 46337);
+        String player = ServeLauncher.ROW_GAME_ROOT_PLAYER;
+        String second = ServeLauncher.ROW_GAME_ROOT_SECOND;
+        Path kitP = p.resolve("mods").resolve("CC_Client");
+        FakeEffects fx = twoKits(p, s);
+        Pressed two = pressWatch(inputs(base, g, wild, PW, Map.of(player, p.toString(), second, s.toString())), fx,
+                flight);
+        check(r, two.result.outcome() == Outcome.OPENED && fx.spawns.size() == 2 && kitP.equals(fx.spawns.get(0).cwd)
+                        && s.resolve("mods").resolve("CC_Client").equals(fx.spawns.get(1).cwd)
+                        && two.stdout.contains("cc-ops join second=opened"),
+                "window 1 opens from the player install, window 2 from the second folder (flips if window 2 keeps the"
+                        + " player row - R17 against window 1's own game - or window 1 uses game.root): " + two.result
+                        + " spawns=" + fx.spawns);
+        String r17 = String.format(Locale.ROOT, OpsJoinSelf.R17, OpsJoinSelf.boundedText(p.toString()));
+        Map<String, String> sameAsPlayer = Map.of(player, p.toString(), second, p.toString());
+        FakeEffects fxSame = twoKits(p, g);
+        Pressed same = pressWatch(inputs(base, g, wild, PW, sameAsPlayer), fxSame, flight);
+        check(r, same.result.outcome() == Outcome.REFUSED && "r1_second".equals(same.result.reasonToken())
+                        && r17.equals(same.result.text()) && fxSame.spawns.isEmpty(),
+                "a second folder equal to the player install = R17, nothing started (flips if window 1's game is read"
+                        + " from game.root, so the duplicate goes unseen): " + same.result);
+        Map<String, String> watchRows = new HashMap<>(sameAsPlayer);
+        watchRows.put(ServeLauncher.ROW_GAME_ROOT, g.toString());
+        Map<String, String> goodRows = new HashMap<>(watchRows);
+        goodRows.put(second, s.toString());
+        check(r, r17.equals(OpsJoinSelf.secondFolderRefusalOrNull(base, watchRows, twoKits(p, g)))
+                        && OpsJoinSelf.secondFolderRefusalOrNull(base, goodRows, twoKits(p, s)) == null,
+                "the pre-Start second-folder check agrees: second = player install is R17, second = a third game"
+                        + " passes (flips if its window-2 rows keep the player row or window 1 ignores it)");
+        FakeEffects fxG = twoKits(p, g);
+        Pressed both = pressWatch(inputs(base, g, wild, PW, Map.of(player, p.toString(), second, g.toString())), fxG,
+                flight);
+        check(r, both.result.outcome() == Outcome.OPENED && fxG.spawns.size() == 2
+                        && kitP.equals(fxG.spawns.get(0).cwd)
+                        && g.resolve("mods").resolve("CC_Client").equals(fxG.spawns.get(1).cwd)
+                        && both.stdout.contains("cc-ops join second=opened"),
+                "a second folder equal to Game folder opens both, player install then Game folder (flips if R17"
+                        + " compares game.root instead of the player install): " + both.result + " spawns="
+                        + fxG.spawns);
+    }
+
     // ---- join-texts ----
 
     /**
@@ -1323,6 +1583,12 @@ final class OpsJoinSelfSelftest {
         // The R10 sentence, as the design spells it.
         check(r, "ProtonVPN did not answer - reconnect it and press Join from this PC again".equals(texts.get("R10")),
                 "R10 is the design sentence EXACTLY (flips on any edit to the R10 sentence): " + texts.get("R10"));
+        // The Player game folder refusal, as the design spells it.
+        check(r, ("Player game folder (Setup tab) does not hold the game: %s has no starfarer_obf.jar"
+                        + " - set it to your Linux Starsector folder, or clear it to use Game folder.")
+                        .equals(texts.get("R1_PLAYER")),
+                "R1_PLAYER is the design sentence EXACTLY, one %s slot (flips on any edit to the sentence or its"
+                        + " slot): " + texts.get("R1_PLAYER"));
     }
 
     /** {@code text} through {@code String.format} with the sample args: an {@code s} slot = {@code C:\x} at index
@@ -2985,12 +3251,13 @@ final class OpsJoinSelfSelftest {
                 "an empty log = no tail and no ': ' (flips if an empty tail is still appended): " + qt);
     }
 
-    /** {@code join-predicates}: joinHere / watchHere / posixHost / windowsHost over os.name.
-     * */
+    /** {@code join-predicates}: joinHere / watchHere / posixHost / windowsHost over os.name; a Linux host joins AND
+     *  watches. */
     private static void joinPredicates(String r) {
-        check(r, ServerOpsCore.joinHere("Linux") && !ServerOpsCore.watchHere("Linux") && ServerOpsCore.posixHost("Linux")
+        check(r, ServerOpsCore.joinHere("Linux") && ServerOpsCore.watchHere("Linux") && ServerOpsCore.posixHost("Linux")
                         && !ServerOpsCore.windowsHost("Linux"),
-                "Linux joins, never watches (flips if the Linux host loses the button or gains the WATCH)");
+                "Linux joins and watches (flips if the Linux host loses the Join button or the Launch debug WATCH"
+                        + " gate goes back to Windows only)");
         check(r, ServerOpsCore.joinHere("Windows 11") && ServerOpsCore.watchHere("Windows 11")
                         && ServerOpsCore.windowsHost("Windows 11") && !ServerOpsCore.posixHost("Windows 11"),
                 "Windows joins and watches (flips if a Windows host loses either)");
@@ -3030,7 +3297,7 @@ final class OpsJoinSelfSelftest {
                 "a Windows reopen's exit 1 is still R7 (flips if the Linux tolerance leaks to Windows): " + wr);
     }
 
-    /** {@code posix-texts}: the Linux twins use '/', R9W names the WATCH's host.
+    /** {@code posix-texts}: the Linux twins use '/', R9W names the WATCH's hosts.
      * */
     private static void posixTexts(String r) {
         for (String t : List.of(OpsJoinSelf.R2P, OpsJoinSelf.R6P, OpsJoinSelf.R7P)) {
@@ -3038,10 +3305,11 @@ final class OpsJoinSelfSelftest {
                     "a Linux text names the kit's shell launcher with '/' and no backslash (flips if a Windows text is"
                             + " copied): " + t);
         }
-        check(r, OpsConsole.R9W.contains("Windows host only") && OpsConsole.R9W.contains("Join from this PC works here")
-                        && printableAscii(OpsConsole.R9W),
-                "R9W says the WATCH is Windows-only and that Join from this PC still works (flips if a Linux host is"
-                        + " told it cannot join): " + OpsConsole.R9W);
+        check(r, OpsConsole.R9W.contains("Windows or Linux host only")
+                        && OpsConsole.R9W.contains("Join from this PC works here") && printableAscii(OpsConsole.R9W),
+                "R9W names both WATCH hosts (Windows or Linux) and says Join from this PC still works (flips if the"
+                        + " refusal goes back to Windows only, drops Linux, or tells the host it cannot join): "
+                        + OpsConsole.R9W);
     }
 
     private static Pressed press(OpsJoinSelf.Inputs in, OpsJoinSelf.Effects fx) {
@@ -3458,5 +3726,61 @@ final class OpsJoinSelfSelftest {
             System.out.println("join-self selftest: temp residue at " + dir + " ("
                     + residue.getClass().getSimpleName() + ")");
         }
+    }
+
+    // ---- join-settings-scrub-posix ----
+
+    /**
+     * {@code join-settings-scrub-posix}: the Linux host's END scrub
+     * ({@link OpsJoinSelf#scrubSettingsSecret(OpsJoinSelf.Effects, OpsJoinSelf.PosixHost)}) over the file the Linux
+     * press writes ({@code join-settings.properties} in the kit folder under HOME's XDG data base): the password /
+     * passwordFor rows gone, host / port / cid kept in order, CRLF out, ONE answer row, the rewrite through the
+     * owner-only write (the fake records {@code file=0600}); the file the Windows ladder would resolve from the same
+     * HOME is neither
+     * read nor written; a missing file and a host with no usable HOME are both {@code absent} with nothing written;
+     * an over-cap file fails untouched.
+     */
+    private static void joinSettingsScrubPosix(String r) {
+        Path windowsLadder = settingsUnder(Paths.get("/home/host"));
+        byte[] decoy = ascii("host=w\r\npassword=w\r\n");
+        FakeEffects fx = new FakeEffects();
+        fx.files.put(POSIX_SETTINGS, ascii("host=h\r\nport=1\r\npassword=p\r\npasswordFor=h\\:1\r\ncid=c\r\n"));
+        fx.files.put(windowsLadder, decoy.clone());
+        Printed s = printed(() -> OpsJoinSelf.scrubSettingsSecret(fx, POSIX_HOST));
+        check(r, "scrubbed".equals(s.value()) && s.stdout().trim().equals("cc-ops join settings_secret=scrubbed")
+                        && Arrays.equals(ascii("host=h\r\nport=1\r\ncid=c\r\n"), fx.files.get(POSIX_SETTINGS)),
+                "the Linux settings file loses its password / passwordFor rows and keeps host / port / cid in order,"
+                        + " CRLF; ONE stdout row, no value (flips if a secret row survives, a kept row is lost or the"
+                        + " Linux file is not the one scrubbed): " + s.value() + " " + shown(fx.files.get(POSIX_SETTINGS)));
+        check(r, "dir=0700 file=0600".equals(fx.modes.get(POSIX_SETTINGS)) && fx.modes.size() == 1,
+                "the rewrite takes the owner-only write, file=0600 (flips if the Linux scrub takes the plain write,"
+                        + " which leaves the umask's wider mode on a file that held the password): " + fx.modes);
+        check(r, fx.reads.equals(List.of(POSIX_SETTINGS)) && fx.writes.equals(List.of(POSIX_SETTINGS))
+                        && Arrays.equals(decoy, fx.files.get(windowsLadder)),
+                "only the Linux file is read and written; the Windows ladder's file keeps its password (flips if the"
+                        + " Linux scrub consults the Windows resolvers): reads=" + fx.reads + " writes=" + fx.writes);
+
+        FakeEffects none = new FakeEffects();
+        Printed n = printed(() -> OpsJoinSelf.scrubSettingsSecret(none, POSIX_HOST));
+        check(r, "absent".equals(n.value()) && none.writes.isEmpty() && none.modes.isEmpty(),
+                "no Linux settings file = absent, nothing written (flips if a missing file is created): " + n.value());
+
+        FakeEffects homeless = new FakeEffects();
+        homeless.files.put(windowsLadder, decoy.clone());
+        Printed h = printed(() -> OpsJoinSelf.scrubSettingsSecret(homeless,
+                new OpsJoinSelf.PosixHost(null, null, null, false, null, null, null)));
+        check(r, "absent".equals(h.value()) && homeless.reads.isEmpty() && homeless.writes.isEmpty()
+                        && h.stdout().trim().equals("cc-ops join settings_secret=absent"),
+                "no usable HOME / XDG_DATA_HOME = absent, nothing read or written (flips if the scrub throws, says"
+                        + " failed, or falls back to another folder): " + h.value() + " reads=" + homeless.reads);
+
+        FakeEffects big = new FakeEffects();
+        byte[] over = new byte[OpsJoinSelf.SETTINGS_MAX_BYTES + 1];
+        Arrays.fill(over, (byte) 'x');
+        big.files.put(POSIX_SETTINGS, over.clone());
+        Printed g = printed(() -> OpsJoinSelf.scrubSettingsSecret(big, POSIX_HOST));
+        check(r, "failed (IOException)".equals(g.value()) && Arrays.equals(over, big.files.get(POSIX_SETTINGS))
+                        && big.writes.isEmpty(),
+                "an over-cap Linux file fails untouched (flips if the read cap is lost on the Linux form): " + g.value());
     }
 }

@@ -171,7 +171,8 @@ public final class OpsParity {
      * {@code setup.shape.playersApply} = the picked shape's player count and its Apply. Disjoint from
      * {@link #PACKAGE_IDS}, {@link #OWNER_IDS} and {@link #PACKAGE_ONLY_IDS} (row {@code draft-ids-parity}).
      * + {@code setup.match.pvp} = the PvP mode select (a draftable Start-time
-     * fact). */
-    public static final List<String> PAGE_ONLY_IDS = List.of("setup.gameRootSecond", "setup.shape.players",
-            "setup.shape.playersApply", "setup.match.pvp");
+     * fact). + {@code setup.gameRootPlayer} = the Player game folder (the launcher's {@code game.root.player} row the two
+     * presses read first; a draftable Setup fact like the second folder). */
+    public static final List<String> PAGE_ONLY_IDS = List.of("setup.gameRootSecond", "setup.gameRootPlayer",
+            "setup.shape.players", "setup.shape.playersApply", "setup.match.pvp");
 }
