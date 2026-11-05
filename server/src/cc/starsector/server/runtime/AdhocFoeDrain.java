@@ -91,10 +91,12 @@ public final class AdhocFoeDrain {
                             adhocOfficer);
             long adhocWireId = PersistentPilotIntentCombatServer.internWaveHull(
                     stableIdRegistry, growthKnownKeysOrNull, spawned, adhocVariantId);
-            appendRows.add(WaveOfficerRowGuard.officeredOrBare(
+            // The row names the id the roster FIELDED — the realized mint when
+            // a mod hook rolled the hull — the /spawnfoe Aleste arm fork — else
+            // the typed id; the captain re-keyed to it. The at-rest bit rides inside.
+            appendRows.add(WaveOfficerRowGuard.fieldedRow(
                     adhocWireId, adhocSide, adhocVariantId, adhocVariantId,
-                    spawned.crPerMille(), spawned.officerOrNull(), "adhoc", round, tick,
-                    spawned.atRest())); // A posed adhoc hull is at rest
+                    spawned, "adhoc", round, tick));
             // The receipt's captain tag = what was FIELDED (the 5-arg
             // attach reported the requested pick back), never the request flag
             adhocExhausted = adhocFoes.recordSpawned(
@@ -111,6 +113,8 @@ public final class AdhocFoeDrain {
                     // multi-unit spawn; placed= is this unit's own deposited pose — `-` for a
                     // pose-less unit (the wave-edge slot).
                     + " placed=" + (adhocPose == null ? "-" : AdhocFoeSpawner.formatPose(adhocPose))
+                    + (spawned.fieldedVariantIdOrNull() == null ? ""
+                            : " fielded=" + spawned.fieldedVariantIdOrNull()) //
                     + " officer=" + adhocOfficerLabel
                     + " wire_id=" + adhocWireId
                     + " stable_id=" + spawned.stableId()

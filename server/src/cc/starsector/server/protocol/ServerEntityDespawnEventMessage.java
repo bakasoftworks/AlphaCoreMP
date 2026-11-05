@@ -24,11 +24,11 @@ package cc.starsector.server.protocol;
 public final class ServerEntityDespawnEventMessage {
 
     public static final String MESSAGE_ID = "server.entity_despawn_event";
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
     public static final String CODEC_OWNER = "server.protocol.entity_despawn_event.codec";
     public static final String VALIDATION_OWNER = "server.protocol.entity_despawn_event.validation";
     public static final String RELEVANCE_RULE_ID = "entity_despawn_event.world_membership_loss";
-    public static final String COMPATIBILITY_PREDICATE_ID = "entity_despawn_event_schema_v1";
+    public static final String COMPATIBILITY_PREDICATE_ID = "entity_despawn_event_schema_v2";
     public static final String FAILURE_CODE = "ENTITY_DESPAWN_EVENT_PROTOCOL_REJECTED";
     public static final ProtocolDataClass DATA_CLASS = ProtocolDataClass.DURABLE_EVENT;
 

@@ -66,13 +66,23 @@ final class EdgeEventLane {
             // Record the REMOTE reason (net-thread put; render-thread
             // remove-take in killRemote). Before this the reason was decoded then DISCARDED
             // for non-own entities — the fighter despawn route needs it.
+            // The corpseless bit rides beside the reason under
+            // the SAME lock — add or remove on every event, so a later event for the id never
+            // inherits an earlier event's bit.
             synchronized (plugin.despawnReasonByEntity) {
-                plugin.despawnReasonByEntity.put(Long.valueOf(despawn.entityId()), despawn.reason());
+                Long key = Long.valueOf(despawn.entityId());
+                plugin.despawnReasonByEntity.put(key, despawn.reason());
+                if (despawn.corpseless()) {
+                    plugin.despawnCorpselessByEntity.add(key);
+                } else {
+                    plugin.despawnCorpselessByEntity.remove(key);
+                }
             }
             plugin.matchOverLane.noteDespawn(despawn); // results-roster ledger feed
         }
         PilotWatchLog.info("predict despawn consumed: entity=" + despawn.entityId()
                 + " tick=" + despawn.simTick() + " reason=" + despawn.reason()
+                + " corpseless=" + despawn.corpseless()
                 + (own ? " (OWN)" : ""));
     }
 

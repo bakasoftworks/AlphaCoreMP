@@ -138,7 +138,9 @@ final class SpawnSystemGate {
      *     on OTHER ships (the wing's fighters); {@code reservewing} — {@code ReserveWingStats}
      *     {@code bay.setExtraDeployments} = an engine-minted extra wing; {@code targetingfeed} —
      *     {@code TargetingFeedStats} weapon-damage mults on OTHER ships (the wing). All three
-     *     author nothing on today's replica (wings unbound) — gated by the law, cost nothing.</li>
+     *     reach the wing's fighters through {@code getWing()} — LOAD-BEARING since the persistent replica wing
+     *     ({@code RecallDeviceStats.getFighters} reaches replica fighters), so the gate is
+     *     what keeps a replica's press from phasing / landing / buffing bodies the server drives.</li>
      * </ul>
      * NOT gated (self-only, matrix rows): {@code cryoflux}, {@code damper}, {@code damper_omega},
      * {@code temporalshell}, {@code ammofeed}, {@code highenergyfocus}; {@code lidararray} (self-stat +

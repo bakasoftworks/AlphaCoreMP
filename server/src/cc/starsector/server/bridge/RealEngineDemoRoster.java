@@ -1829,7 +1829,20 @@ public final class RealEngineDemoRoster {
     /** One wave deploy's identity: the engine ship's stable id ({@code ShipAPI.getId().trim()},
      * the SAME derivation capture uses — stable-key parity) + the CR it deployed at. */
     public record WaveDeployResult(String stableId, float deployCr, List<String> moduleStableIds,
-            OfficerRosterCodec.OfficerSpec officerOrNull, float collisionRadius, boolean atRest) {
+            OfficerRosterCodec.OfficerSpec officerOrNull, float collisionRadius, boolean atRest,
+            String fieldedVariantId) {
+
+        /**
+         * {@code fieldedVariantId} = the id the hull's RAPP row names — the realized
+         * {@code cc_real_<goal>_<hex8>} id when a mod hook rolled the member's variant away from stock
+         * ({@code RealizedLoadoutLane}), else the goal id the mint was asked for; null (the pre-1506 shape
+         * below, the contract fakes) = the goal id — every reader falls back to the id it asked the mint for
+         * ({@code NPeerHooks.WaveSpawnResult.rowVariantId}).
+         */
+        public WaveDeployResult(String stableId, float deployCr, List<String> moduleStableIds,
+                OfficerRosterCodec.OfficerSpec officerOrNull, float collisionRadius, boolean atRest) {
+            this(stableId, deployCr, moduleStableIds, officerOrNull, collisionRadius, atRest, null);
+        }
 
         /** {@code moduleStableIds} = the engine-minted
          * STATION_MODULE children's stable ids (same {@code getId().trim()} derivation), read
@@ -1900,6 +1913,8 @@ public final class RealEngineDemoRoster {
         final Method getCrewComposition;
         final Method getMinCrew;
         final Method getMaxCrew;
+        /** The member's variant AFTER the ctor ran every hullmod hook — the realized compare's input. */
+        final Method getVariant;
         final Method getFleetManager;
         final Method getMapHeight;
         final Method isShipAlive;
@@ -1927,6 +1942,7 @@ public final class RealEngineDemoRoster {
             getCrewComposition = fleetMemberClass.getMethod("getCrewComposition");
             getMinCrew = fleetMemberClass.getMethod("getMinCrew");
             getMaxCrew = fleetMemberClass.getMethod("getMaxCrew");
+            getVariant = fleetMemberClass.getMethod("getVariant");
             getFleetManager = engineClass.getMethod("getFleetManager", int.class);
             getMapHeight = engineClass.getMethod("getMapHeight");
             isShipAlive = engineClass.getMethod("isShipAlive", shipApiClass);
@@ -2131,6 +2147,7 @@ public final class RealEngineDemoRoster {
                         "CombatEngine.getInstance() returned null at " + site + "(" + shipName + ")");
             }
             Object variant = resolveVariantById(loader, h.hullVariantClass, variantId);
+            Object stockVariant = variant; // the registry's stock variant: the realized-loadout compare's baseline
             // Wave lane: clone ONLY — a wave hull is a server-AI
             // combatant, vanilla default-ON autofire must survive. The clone protects the
             // registry singleton from engine build-normalization write-back.
@@ -2156,6 +2173,27 @@ public final class RealEngineDemoRoster {
             // officer tail (the client twin fields the same captain).
             OfficerRosterCodec.OfficerSpec attachedOfficer =
                     OfficerAttach.attachOrNull(member, variantId, officerOrNull);
+            // The REALIZED loadout for an AI hull — the seat seam's twin
+            // (midDeploySeat). The member ctor above ran every hullmod's
+            // applyEffectsBeforeShipCreation on this clone, and a mod hook may have rolled a
+            // weapon into it (Arma's Aleste arm swap: the flight's /spawnfoe fork, every
+            // window rolling its own); the server's member IS the roll, so a difference from the
+            // stock variant mints ONE VDEF and the returned id names it on the RAPP row every
+            // drain composes from this result. No seat (AI_SEAT), no wire id yet (interned after
+            // the spawn: the drain's spawn row joins them). A station keeps its stock id (the
+            // client's adopt lane keys the module band on it). Any miss = the goal id, never an
+            // aborted spawn (the LinkageError arm = the json-free classpath law).
+            String fieldedVariantId = variantId;
+            try {
+                if (!isStationVariant(h, variant)) {
+                    fieldedVariantId = cc.starsector.server.runtime.RealizedLoadoutLane.realizeSeatOrGoal(
+                            cc.starsector.server.runtime.RealizedLoadoutLane.AI_SEAT, -1L, variantId,
+                            stockVariant, h.getVariant.invoke(member));
+                }
+            } catch (ReflectiveOperationException | RuntimeException | LinkageError realizeMiss) {
+                System.out.println("real-engine-demo-roster " + site + " name=" + shipName
+                        + " realized_loadout=unread " + realizeMiss.getClass().getSimpleName());
+            }
             long mintEndNanos = System.nanoTime();
 
             Object manager = h.getFleetManager.invoke(engine, side);
@@ -2257,7 +2295,9 @@ public final class RealEngineDemoRoster {
             List<String> moduleStableIds = readStationModuleStableIds(
                     h, variant, ship, variantId, site, shipName);
             System.out.println("real-engine-demo-roster " + site + " side=" + side
-                    + " variant=" + variantId + " name=" + shipName + " stableId=" + stable
+                    + " variant=" + variantId
+                    + (fieldedVariantId.equals(variantId) ? "" : " fielded=" + fieldedVariantId)
+                    + " name=" + shipName + " stableId=" + stable
                     + " burnDur=" + burnDur + " spawn=" + spawnX + "," + spawnY
                     + " mapHalfY=" + mapHalfY + " modules=" + moduleStableIds.size()
                     + hullPhys(h.shipClass, ship)
@@ -2269,7 +2309,8 @@ public final class RealEngineDemoRoster {
                     (engineEndNanos - mintEndNanos) / 1_000_000.0d,
                     (postEndNanos - engineEndNanos) / 1_000_000.0d);
             return new WaveDeployResult(stable, chosenCr, moduleStableIds, attachedOfficer,
-                    collisionRadiusOrZero(h.shipClass, ship, site), burnDur < 1.0f); //
+                    collisionRadiusOrZero(h.shipClass, ship, site), burnDur < 1.0f, //
+                    fieldedVariantId); // The id the RAPP row names
         } catch (RealEngineDemoRosterException e) {
             throw e;
         } catch (Throwable t) {

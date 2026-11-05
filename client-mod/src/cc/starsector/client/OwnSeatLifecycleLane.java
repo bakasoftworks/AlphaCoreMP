@@ -127,10 +127,28 @@ final class OwnSeatLifecycleLane {
         // permanently stranded the own client. Entry on DEPARTED is safe: that branch presents
         // nothing (latch + fail-quiet arc-seed only), and post-latch the proven death-respawn
         // machinery fields the fly-in.
-        if (plugin.ownKilled || plugin.ownShip == null || plugin.engine == null
-                || (!plugin.ownShip.isAlive()
-                        && plugin.ownDespawnReason != cc.starsector.client.net.ClientDespawnReason.DEPARTED)) {
+        // The exemption ALSO covers a body the local engine has
+        // ALREADY REMOVED, at ANY wire reason. That exemption keyed on the SERVER's reason, and the server
+        // read that retreat (719/1500 hull, under its absolute 800 threshold) as DESTROYED — so
+        // the own body (flown off and removed by its own native retreat) was refused here every
+        // frame, ownKilled never latched, the respawn edge stayed dead, the seat sat in vanilla's
+        // command shuttle and the capture sampled the removed body for ~26k ticks (frozen
+        // facing + travel-drive ACCELERATE + bit 9 drove the server's fresh hull into the edge).
+        // The ONLY way an own body is out of the local engine at hp>0 is the engine's own
+        // departure (a dive playout is finishDeparture's below; a transfer-removed pod is
+        // xfer-owned, hence the transit gate), so its absence from the wire IS a lifecycle edge
+        // whatever the server called it. isEntityInPlay, not wasRemoved() (TRUE before the first
+        // add); read on this branch only (frame-loop residency).
+        if (plugin.ownKilled || plugin.ownShip == null || plugin.engine == null) {
             return;
+        }
+        boolean bodyGone = false;
+        if (!plugin.ownShip.isAlive()
+                && plugin.ownDespawnReason != cc.starsector.client.net.ClientDespawnReason.DEPARTED) {
+            bodyGone = !plugin.xfer.ownTransit() && !plugin.engine.isEntityInPlay(plugin.ownShip);
+            if (!bodyGone) {
+                return; // an in-play local hulk keeps today's refusal (OwnSeatLifecycleLaneSmoke L6e pins it)
+            }
         }
         plugin.ownKilled = true;
         plugin.ownDeathTick = plugin.lastSnapshotSimTick; // r1 kill tick — the dismount latch never sets it
@@ -178,6 +196,21 @@ final class OwnSeatLifecycleLane {
                 PilotWatchLog.info("predict killOwn: OWN ship DEPARTED (server retreat removal;"
                         + " local engine already presented the native fly-off) -> presentServerDeath"
                         + " SKIPPED despawnTick=" + plugin.ownDespawnTick);
+                return;
+            }
+            if (bodyGone) {
+                // The removed-body edge presents NOTHING — the DEPARTED skip's shape
+                // (no snap, no kill blow, no evict, no fracture mint: the body is not in the engine
+                // to take any of them, and a blow on a removed Ship runs its inline death routine
+                // off-map). The wording sits OUTSIDE watch-verdict's killOwn_reason accepted list on
+                // purpose: the wire disagreeing with the local body = an upstream misread, AMBER is
+                // the honest grade (never conceal). The latch above arms the proven fly-in respawn
+                // and the capture's ownKilled neutral.
+                PilotWatchLog.info("predict killOwn: OWN body already OUT of the local engine (its own"
+                        + " native fly-off) while the wire said "
+                        + (plugin.ownDespawnReason != null ? plugin.ownDespawnReason : "nothing-yet")
+                        + " -> presentServerDeath SKIPPED (latch only; fly-in respawn armed; upstream"
+                        + " misread) despawnTick=" + plugin.ownDespawnTick);
                 return;
             }
             ServerEntityPose deathPose = poseOrNull != null ? poseOrNull : plugin.lastOwnPose;

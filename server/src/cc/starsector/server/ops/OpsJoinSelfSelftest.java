@@ -117,9 +117,11 @@ final class OpsJoinSelfSelftest {
      * verb and the dev-tooling words a stranger's console never shows.
      */
     private static final Pattern TEXT_FIELD =
-            Pattern.compile("LABEL|TIP|TITLE|KIT_HINT|SECOND_PREFIX|NOTE_\\w*|R\\d+(_SHAPE|_PLAYER|P)?|L\\d+");
+            Pattern.compile("LABEL|TIP|TITLE|KIT_HINT|SECOND_PREFIX|NOTE_\\w*|R\\d+(_SHAPE|_PLAYER(_POSIX)?|P)?|L\\d+");
     private static final Set<String> KNOWN_TEXTS = Set.of("TITLE", "LABEL", "TIP", "KIT_HINT", "NOTE_OPENED",
-            "NOTE_REOPENED", "NOTE_REOPENED_WEB", "R1", "R1_PLAYER", "R2", "R4", "R5", "R5_SHAPE", "R6", "R7", "R8",
+            "NOTE_REOPENED", "NOTE_REOPENED_WEB", "R1", "R1_PLAYER", "R1_PLAYER_POSIX", "R1P", "R2", "R4", "R5",
+            "R5_SHAPE", "R6", "R7",
+            "R8",
             "R9", "R10",
             "R12", "R13", "R14", "R15", "NOTE_KIT_REFRESHED", "NOTE_OPENED_ADMIN", "R16", "R17", "R18",
             "SECOND_PREFIX", "NOTE_SECOND_LIVE", "R2P", "R6P", "R7P", "R19", "R20", "NOTE_REOPENED_WEB_POSIX",
@@ -197,6 +199,7 @@ final class OpsJoinSelfSelftest {
             row(failed, "join-install-player", r -> joinInstallPlayer(r, dir.resolve("installplayer")));
             row(failed, "join-player-posix", r -> joinPlayerPosix(r, dir.resolve("pxplayer")));
             row(failed, "join-player-refusal", r -> joinPlayerRefusal(r, dir.resolve("playerbad")));
+            row(failed, "join-posix-blank-player", r -> joinPosixBlankPlayer(r, dir.resolve("pxblank")));
             row(failed, "join-player-second-window", r -> joinPlayerSecondWindow(r, dir.resolve("playersecond")));
             row(failed, "join-dial", OpsJoinSelfSelftest::joinDial);
             row(failed, "join-watch-dial", r -> joinWatchDial(r, dir.resolve("watchdial")));
@@ -723,7 +726,8 @@ final class OpsJoinSelfSelftest {
         fx.files.put(install2.resolve("starsector.sh"), new byte[] {1});
         fx.files.put(install2.resolve("mods").resolve("CC_Client").resolve("join-cc.sh"), new byte[] {1});
         OpsJoinSelf.Inputs in = inputs(base, install1, live("0.0.0.0", 46337), PW,
-                Map.of(ServeLauncher.ROW_GAME_ROOT_SECOND, install2.toString())).withPosixHost(POSIX_HOST);
+                Map.of(ServeLauncher.ROW_GAME_ROOT_SECOND, install2.toString(), ServeLauncher.ROW_GAME_ROOT_PLAYER,
+                        install1.toString())).withPosixHost(POSIX_HOST);
         Pressed two = pressWatch(in, fx, base.resolve("flight"));
         Path log2 = POSIX_LOG.resolveSibling("join-press-2.log");
         check(r, two.result.outcome() == Outcome.OPENED && fx.spawns.size() == 2
@@ -1460,6 +1464,92 @@ final class OpsJoinSelfSelftest {
     }
 
     /**
+     * {@code join-posix-blank-player}: a Linux host whose Player game folder row is blank is refused
+     * {@link OpsJoinSelf#R1P} (token {@code r1}) over a good Windows Game folder - through the press, the WATCH's
+     * pre-Start {@link OpsJoinSelf#kitCheckOrNull} and the web shell's {@link OpsJoinSelf#reopenSpawn} - so the
+     * dialog names the row and never a '/mods/' remedy for the Windows game; a SET player row without
+     * {@code starsector.sh} = R2P naming THAT row's folder; a Windows host's blank player row keeps the Game folder
+     * fallback and R1.
+     */
+    private static void joinPosixBlankPlayer(String r, Path base) throws Exception {
+        String player = ServeLauncher.ROW_GAME_ROOT_PLAYER;
+        String root = ServeLauncher.ROW_GAME_ROOT;
+        Path g = stageInstall(base.resolve("game"), true, true);
+        check(r, OpsJoinSelf.installOrNull(base, Map.of(player, "   ", root, g.toString()), true) == null
+                        && OpsJoinSelf.installOrNull(base, Map.of(root, g.toString()), true) == null
+                        && OpsJoinSelf.R1P.equals(OpsJoinSelf.noInstallRefusal(Map.of(player, " ", root, g.toString()),
+                                true))
+                        && OpsJoinSelf.R1P.equals(OpsJoinSelf.noInstallRefusal(null, true)),
+                "a Linux host's blank / absent player row = no install and R1P over a good Game folder (flips if the"
+                        + " Linux law falls back to game.root, or the refusal stays R1)");
+        // A SET row holding no game on a Linux host = R1_PLAYER_POSIX naming that row, never
+        // the Windows sentence's "clear it to use Game folder" (which would only lead to R1P).
+        String noGame = base.resolve("nogame").toString();
+        String posixText = OpsJoinSelf.noInstallRefusal(Map.of(player, noGame, root, g.toString()), true);
+        check(r, String.format(Locale.ROOT, OpsJoinSelf.R1_PLAYER_POSIX, noGame).equals(posixText)
+                        && !posixText.contains("clear it")
+                        && String.format(Locale.ROOT, OpsJoinSelf.R1_PLAYER, noGame).equals(
+                                OpsJoinSelf.noInstallRefusal(Map.of(player, noGame, root, g.toString()), false)),
+                "a Linux host's SET player row holding no game = R1_PLAYER_POSIX naming the row and offering no Game"
+                        + " folder fallback, a Windows host's = R1_PLAYER (flips if the Linux press tells the host to"
+                        + " clear a row that is refused blank): " + posixText);
+        OpsJoinSelf.Inputs in = inputs(base, g, live("0.0.0.0", 46337), PW, Map.of(player, "   "))
+                .withPosixHost(POSIX_HOST);
+        FakeEffects fx = FakeEffects.withKit(g);
+        Pressed p = press(in, fx);
+        String text = p.result.text();
+        check(r, p.result.outcome() == Outcome.REFUSED && "r1".equals(p.result.reasonToken())
+                        && OpsJoinSelf.R1P.equals(text) && text.contains("Player game folder") && !text.contains("/mods/")
+                        && p.stdout.contains("cc-ops join outcome=refused reason=r1"),
+                "a Linux press with the player row blank = REFUSED r1 with R1P naming Player game folder and no"
+                        + " '/mods/' path (flips if the press judges game.root's Windows game - R2P asking for the kit"
+                        + " under its mods folder): " + p.result);
+        check(r, fx.spawns.isEmpty() && fx.writes.isEmpty() && fx.appends.isEmpty() && fx.reads.isEmpty()
+                        && fx.dirsMade.isEmpty(),
+                "the refused Linux press read, wrote, armed and started nothing (flips if the refusal lands after any"
+                        + " step past the install): spawns=" + fx.spawns.size() + " writes=" + fx.writes.size()
+                        + " reads=" + fx.reads.size());
+        FakeEffects fxK = FakeEffects.withKit(g);
+        OpsJoinSelf.KitCheck c = OpsJoinSelf.kitCheckOrNull(in, fxK);
+        OpsJoinSelf.Result kr = c == null ? null : c.refusedOrNull();
+        check(r, kr != null && "r1".equals(kr.reasonToken()) && OpsJoinSelf.R1P.equals(kr.text())
+                        && fxK.reads.isEmpty(),
+                "the Linux WATCH's pre-Start kit check refuses R1P before any kit read (flips if the check judges"
+                        + " game.root's kit on a Linux host): " + kr);
+        FakeEffects fxR = FakeEffects.withKit(g);
+        OpsJoinSelf.Result reopened = OpsJoinSelf.reopenSpawn(in, fxR);
+        check(r, reopened.outcome() == Outcome.REFUSED && "r1".equals(reopened.reasonToken())
+                        && OpsJoinSelf.R1P.equals(reopened.text()) && fxR.spawns.isEmpty(),
+                "the Linux web shell's reopen with the player row blank refuses R1P, nothing started (flips if"
+                        + " reopenSpawn starts game.root's kit): " + reopened);
+        Path set = stagePosixInstall(base.resolve("player"));
+        FakeEffects noSh = posixKit(g);
+        noSh.files.put(set.resolve("mods").resolve("CC_Client").resolve("join-cc.sh"), new byte[] {1});
+        Pressed s = press(inputs(base, g, live("0.0.0.0", 46337), PW, Map.of(player, set.toString()))
+                .withPosixHost(POSIX_HOST), noSh);
+        if (set.toString().length() > OpsJoinSelf.TEXT_PATH_MAX) {
+            throw new SetupFailure("temp path over " + OpsJoinSelf.TEXT_PATH_MAX + " chars: " + set, null);
+        }
+        String want2 = String.format(Locale.ROOT, OpsJoinSelf.R2P, set, "CC_Client-kit.zip");
+        check(r, s.result.outcome() == Outcome.REFUSED && "r2".equals(s.result.reasonToken())
+                        && want2.equals(s.result.text()) && s.result.text().contains(set + "/starsector.sh")
+                        && !s.result.text().contains(g.toString()) && noSh.spawns.isEmpty(),
+                "a Linux press whose SET player row lacks starsector.sh = R2P naming THAT row's folder (flips if a set"
+                        + " row is read as blank - R1P - or the press falls back to game.root's launchers): "
+                        + s.result);
+        check(r, g.equals(OpsJoinSelf.installOrNull(base, Map.of(player, "   ", root, g.toString()), false))
+                        && OpsJoinSelf.R1.equals(OpsJoinSelf.noInstallRefusal(Map.of(player, " "), false)),
+                "a Windows host's blank player row = the Game folder install, its unset refusal R1 (flips if the Linux"
+                        + " law leaks into the Windows host)");
+        FakeEffects fxW = FakeEffects.withKit(g);
+        Pressed w = press(inputs(base, g, live("0.0.0.0", 46337), PW, Map.of(player, "   ")), fxW);
+        check(r, w.result.outcome() == Outcome.OPENED && fxW.spawns.size() == 1
+                        && g.resolve("mods").resolve("CC_Client").equals(fxW.spawns.get(0).cwd),
+                "a Windows press with the player row blank opens from Game folder's kit (flips if a Windows host"
+                        + " refuses R1P or loses the game.root fallback): " + w.result + " spawns=" + fxW.spawns);
+    }
+
+    /**
      * {@code join-player-second-window}: the debug WATCH with a player row, Game folder and a second folder opens
      * window 1 from the player install and window 2 from the second folder (never either other); a second folder
      * equal to the player install = R17 (press and pre-Start check), one equal to Game folder opens both.
@@ -1585,10 +1675,23 @@ final class OpsJoinSelfSelftest {
                 "R10 is the design sentence EXACTLY (flips on any edit to the R10 sentence): " + texts.get("R10"));
         // The Player game folder refusal, as the design spells it.
         check(r, ("Player game folder (Setup tab) does not hold the game: %s has no starfarer_obf.jar"
-                        + " - set it to your Linux Starsector folder, or clear it to use Game folder.")
-                        .equals(texts.get("R1_PLAYER")),
+                        + " - set it to your Starsector folder (the one holding starsector.sh or starsector.exe), or"
+                        + " clear it to use Game folder.").equals(texts.get("R1_PLAYER")),
                 "R1_PLAYER is the design sentence EXACTLY, one %s slot (flips on any edit to the sentence or its"
-                        + " slot): " + texts.get("R1_PLAYER"));
+                        + " slot, or if it names Linux only again): " + texts.get("R1_PLAYER"));
+        // R1_PLAYER's Linux twin - no "clear it to use Game folder" tail (a blank row is
+        // refused there, R1P), the Linux folder named.
+        check(r, ("Player game folder (Setup tab) does not hold the game: %s has no starfarer_obf.jar"
+                        + " - set it to your Linux Starsector folder (the one holding starsector.sh).")
+                        .equals(texts.get("R1_PLAYER_POSIX")),
+                "R1_PLAYER_POSIX is the design sentence EXACTLY, one %s slot, no Game folder fallback (flips on any"
+                        + " edit, or if the Windows tail 'clear it to use Game folder' leaks back in): "
+                        + texts.get("R1_PLAYER_POSIX"));
+        // The Linux blank Player game folder refusal, as the design spells it.
+        check(r, ("Player game folder (Setup tab) is not set - type your Linux Starsector folder (the one holding"
+                        + " starsector.sh) into it, then press Join from this PC again.").equals(texts.get("R1P")),
+                "R1P is the design sentence EXACTLY, no slot (flips on any edit to the sentence, or a slot that"
+                        + " would name a folder): " + texts.get("R1P"));
     }
 
     /** {@code text} through {@code String.format} with the sample args: an {@code s} slot = {@code C:\x} at index
@@ -3055,8 +3158,11 @@ final class OpsJoinSelfSelftest {
         return fx;
     }
 
+    /** A Linux press's inputs: {@code install} in the Player game folder row (a Linux host's install law reads no
+     *  other row) and, through {@link #inputs}, in Game folder too. */
     private static OpsJoinSelf.Inputs posixInputs(Path base, Path install, OpsJoinSelf.PosixHost host) {
-        return inputs(base, install, live("0.0.0.0", 46337), PW, Map.of()).withPosixHost(host);
+        return inputs(base, install, live("0.0.0.0", 46337), PW,
+                Map.of(ServeLauncher.ROW_GAME_ROOT_PLAYER, install.toString())).withPosixHost(host);
     }
 
     /** {@code posix-press-opened}: a Linux press over a staged kit opens the window.
@@ -3152,9 +3258,39 @@ final class OpsJoinSelfSelftest {
                 "a row naming <install>/starsector-core still resolves to the install (flips if the arm is lost)");
         Path odd = base.resolve("odd");
         stagePosixInstall(odd.resolve("Starsector-Core"));
+        stageFile(odd.resolve("starsector.exe"), new byte[] {1});
         check(r, odd.equals(OpsJoinSelf.installOrNull(base, Map.of(row, odd.resolve("Starsector-Core").toString()))),
                 "the core folder's name is matched case-blind (flips if a Windows row in another case loses its"
                         + " parent)");
+        installRootFormPosix(r, base);
+    }
+
+    /** {@code install-root-form}, the launcher half: a folder NAMED starsector-core holding the jar at its own root
+     *  (the Linux layout, nothing beside it) is the install ITSELF, on both platform laws and through a Linux press;
+     *  a parent holding only {@code starsector.sh} still takes the core-form arm.
+     * */
+    private static void installRootFormPosix(String r, Path base) throws Exception {
+        String player = ServeLauncher.ROW_GAME_ROOT_PLAYER;
+        Path named = stagePosixInstall(base.resolve("home").resolve("starsector-core"));
+        check(r, named.equals(OpsJoinSelf.installOrNull(base, Map.of(player, named.toString()), true))
+                        && named.equals(OpsJoinSelf.installOrNull(base, Map.of(ServeLauncher.ROW_GAME_ROOT,
+                                named.toString()))),
+                "a folder named starsector-core with the jar at its root and no launcher beside it resolves to ITSELF"
+                        + " (flips if the core-form arm maps it to its parent by name alone)");
+        FakeEffects fx = posixKit(named);
+        Pressed p = press(inputs(base, named, live("0.0.0.0", 46337), PW, Map.of(player, named.toString()))
+                .withPosixHost(POSIX_HOST), fx);
+        check(r, p.result.outcome() == Outcome.OPENED && fx.spawns.size() == 1
+                        && named.resolve("mods").resolve("CC_Client").equals(fx.spawns.get(0).cwd),
+                "a Linux press whose player row names that folder opens from ITS kit (flips if the press judges the"
+                        + " parent - R2P naming a folder without starsector.sh): " + p.result + " spawns=" + fx.spawns);
+        Path shParent = base.resolve("shp");
+        stagePosixInstall(shParent.resolve("starsector-core"));
+        stageFile(shParent.resolve("starsector.sh"), new byte[] {1});
+        check(r, shParent.equals(OpsJoinSelf.installOrNull(base,
+                        Map.of(player, shParent.resolve("starsector-core").toString()), true)),
+                "a starsector-core folder whose parent holds starsector.sh resolves to the parent (flips if the"
+                        + " core-form arm asks for starsector.exe alone)");
     }
 
     /** {@code posix-no-kit}: R2P naming the Linux launchers with '/'. */

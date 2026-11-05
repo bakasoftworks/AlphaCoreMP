@@ -32,7 +32,11 @@ import java.util.Objects;
  * engine lethal capture proved (
  * each killed ship's hull driven from 3200 to well under the kill threshold before it
  * vanished), so feeding that capture's frames in yields a {@code DESTROYED} event per
- * real kill.
+ * real kill. The threshold is the FALLBACK read: the serve corrects it both ways on the
+ * engine's own evidence ({@link DespawnReasonEvidence} — a corpse family or an unhealthy
+ * removal proves a kill the threshold read DEPARTED; a HEALTHY removal proves a departure
+ * the threshold read DESTROYED, e.g. a damaged hull's retreat or any hull whose max sits
+ * under 800).
  *
  * <p>The detector is stateful and single-threaded: {@link #observe} each frame in
  * tick order. A frame that re-introduces an {@code entityId} after a gap is treated
@@ -93,7 +97,7 @@ public final class EntityDespawnEventDetector {
                     continue;
                 }
                 EntityDespawnEvent event = new EntityDespawnEvent(
-                        entityId, frame.simTick(), classify(previous.getValue()));
+                        entityId, frame.simTick(), classify(previous.getValue()), false);
                 emitted.add(event);
                 events.add(event);
             }
@@ -132,6 +136,16 @@ public final class EntityDespawnEventDetector {
 
     public float destroyedHullThreshold() {
         return destroyedHullThreshold;
+    }
+
+    /**
+     * The last-seen hull of an id present in the LAST observed frame — the value the
+     * threshold read of its vanish would grade — or NaN. The serve's {@code healthy_removal} row
+     * prints it beside the engine's removal truth.
+     */
+    public float lastSeenHitpointsOrNaN(long entityId) {
+        AuthoritativeEntitySnapshot last = previousByEntityId.get(entityId);
+        return last == null ? Float.NaN : last.hitpoints();
     }
 
     private cc.starsector.server.protocol.EntityDespawnReason classify(

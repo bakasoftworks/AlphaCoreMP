@@ -3256,6 +3256,9 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
             // The version-17 tally (never v1's); the rung exists while the door's
             // own version is above 17.
             case 17 -> readerCounters.helloV17Bounced++;
+            // The version-18 tally (never v1's) — the v0.4.0–v0.6.0 kits' rung;
+            // it exists while the door's own version is above 18.
+            case 18 -> readerCounters.helloV18Bounced++;
             default -> readerCounters.helloV1Bounced++;
         }
     }

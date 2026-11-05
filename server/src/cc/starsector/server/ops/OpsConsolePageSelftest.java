@@ -783,9 +783,12 @@ public final class OpsConsolePageSelftest {
             bad.add("no single Player game folder input in #bind between the Game folder and the Debug fold (flips if"
                     + " the field loses its parity id, is doubled, folds away under Debug or leaves the Network group)");
         }
-        String hint = "<p class=\"hint\" id=\"hint-game-root-player\">Linux hosts: the Linux Starsector install your own"
-                + " join window and the debug WATCH start the game from (the server keeps running from Game folder)."
-                + " Blank = Game folder - saved at Start</p>";
+        // The hint states each platform's law - Linux: the row is required (a blank row is
+        // refused, OpsJoinSelf.R1P); Windows: blank = Game folder.
+        String hint = "<p class=\"hint\" id=\"hint-game-root-player\">Linux hosts: required - the Linux Starsector folder"
+                + " (the one holding starsector.sh) that your own join window and the debug WATCH start the game from"
+                + " (the server keeps running from Game folder); blank is refused. Windows hosts: blank = Game folder"
+                + " - saved at Start</p>";
         String gameHelp = "<dt>Game folder</dt><dd data-hint=\"hint-game-root\"></dd>\n";
         String help = "<dt>Player game folder</dt><dd data-hint=\"hint-game-root-player\"></dd>";
         for (String want : List.of("<label for=\"f-game-root-player\">Player game folder</label>", hint, help)) {

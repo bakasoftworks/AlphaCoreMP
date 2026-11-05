@@ -110,7 +110,7 @@ Replaced: the program (the `jre` and `classes` folders and the other program fil
   ssh -L 7717:127.0.0.1:7717 <this computer's address>
   ```
 
-  then open the SAME printed address there.
+  then open the SAME printed address there. The tunnel is the host computer's own SSH, so keep that SSH current: on a musl-based Linux (Alpine, OpenWrt, many Docker images) an older OpenSSH accepts over-long passwords on accounts that should take none, so update OpenSSH there or set `PasswordAuthentication no` in `sshd_config`; glibc hosts (Debian, Ubuntu and the usual VPS images) are not affected by that bug.
 - Run one ops GUI per package folder. While one is running, a second `ops-web.bat` (or `sh ops-web.sh`) starts no second ops GUI: it says "the ops GUI is already running since <time> (build <stamp>)", on Windows opens the running one's page in your browser with its key, and ends. That is the way back to the page after closing its tab. The old refusal ("another console (or `update.bat`) holds `run\console.lock` for this folder - close it first") remains only while `update.bat` holds the lock, or when the running ops GUI left no `run\console.running` card (an older build): close it, or wait for the update.
 - `ops-web.bat` ends with code 3 when `jre\bin\java.exe` is missing, like `serve.bat`; `ops-web.sh` ends with `serve.sh`'s own codes 2 and 3.
 

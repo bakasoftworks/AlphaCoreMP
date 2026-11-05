@@ -14,7 +14,8 @@ import cc.starsector.server.platform.OfficerAttach;
  * ({@code OfficerAttach.validateRowSpecs} / {@code bootWarmTable}) is NOT the line this drain
  * encodes: a spec whose goal-keyed line lands in [496, 512] passes boot and blows the 512-char cap
  * at the mint, inside {@code serveFrame}. This re-runs {@link OfficerAttach#requireWireRoundTrip}
- * on the RE-KEYED spec and returns null (the hull spawns bare on BOTH ends) instead of throwing on
+ * on the RE-KEYED spec and returns null (the row goes bare; the inflater path spawns bare on BOTH
+ * ends, the post-spawn {@link #fieldedRow} path keeps the server captain — the residual below) instead of throwing on
  * the sim thread. Only the id-CHANGING case pays the encode — {@code withVariantId} returns
  * {@code this} for a same-id call and boot already proved that line (no per-spawn work
  * boot already did). Widest real line today = 275 chars inflated (sindrian_diktat w8
@@ -27,11 +28,13 @@ import cc.starsector.server.platform.OfficerAttach;
  * 5-arg row appends instead — the hull is fielded, only its captain is missing. A v2-CLASS defect
  * (blank name, bad CR) still fails fast: the bare row re-throws it, unchanged from pre-v3.
  *
- * <p>Honest about the residual (never-conceal-desync): a drop at (2) IS a real divergence for that
- * one hull — the server member keeps the captain the engine attached, the client twin gets none —
- * which is why the row is loud and why (1) exists: (1) drops BEFORE the spawn, so the re-key class
- * can never reach (2). An {@code officer_row_dropped stage=row} line in a log is a bug to fix, not
- * a state to live in.
+ * <p>Honest about the residual (never-conceal-desync): a drop at (1) or (2) IS a real divergence for
+ * that one hull — the server member keeps the captain the engine attached, every window fields none:
+ * a stat desync for this hull — which is why both rows are loud. On the {@link #fieldedRow} path
+ * the re-key runs AFTER the spawn (the roster attaches the captain, then mints), so a
+ * {@code stage=rekey} drop leaves the server hull officered too; the reorder (mint before the attach)
+ * is parked until a real line nears the cap. An
+ * {@code officer_row_dropped} line in a log is a bug to fix, not a state to live in.
  */
 public final class WaveOfficerRowGuard {
 
@@ -40,7 +43,8 @@ public final class WaveOfficerRowGuard {
 
     /**
      * The spec re-keyed to the id the hull is ACTUALLY fielded under, or null when the re-keyed
-     * line cannot ride RAPP v3 (⇒ spawn the hull bare; the client twin fields no captain either).
+     * line cannot ride RAPP v3 (⇒ the row goes bare: every window fields no captain while the server
+     * hull keeps the one the engine attached — loud, see the class javadoc).
      */
     public static OfficerRosterCodec.OfficerSpec rekeyForWireOrNull(
             OfficerRosterCodec.OfficerSpec specOrNull, String fieldedVariantId,
@@ -63,11 +67,32 @@ public final class WaveOfficerRowGuard {
                     + " captain=" + WireTextLaw.foldUnprintable(specOrNull.fullName()).replace(' ', '_')
                     + " err=" + WireTextLaw.foldUnprintable(reject.getMessage())
                     + " round=" + round + " tick=" + tick
-                    + " (the re-keyed line cannot ride RAPP v3: the hull fields NO captain on"
-                    + " either end - fix the table row, never the frame)");
+                    + " (the re-keyed line cannot ride RAPP v3: the server hull keeps the captain"
+                    + " the engine attached, every window fields none = a stat desync for this hull"
+                    + " - fix the table row, never the frame)");
             return null;
         }
         return rekeyed;
+    }
+
+    /**
+     * The ONE row composer for a hull the roster's mid-round mint fielded (the wave,
+     * probe and adhoc drains) — the row names the id the hull was ACTUALLY fielded under
+     * ({@code WaveSpawnResult.rowVariantId}: the realized {@code cc_real_<goal>_<hex8>} mint when a mod
+     * hook rolled the member away from stock, else {@code goalVariantId}), and the captain the engine
+     * attached is re-keyed to that id through law (1) (the RAPP v3 own-variant law; a realized id is
+     * the same +17-char class as an inflated one), then composed through law (2). A same-id spawn
+     * costs nothing (identity re-key, the boot-proven line).
+     */
+    public static RosterAppendFrameCodec.AppendRow fieldedRow(long wireId, int side,
+            String goalVariantId, String shipName,
+            PersistentPilotIntentCombatServer.NPeerHooks.WaveSpawnResult spawned, String lane,
+            int round, long tick) {
+        String rowVariantId = spawned.rowVariantId(goalVariantId);
+        OfficerRosterCodec.OfficerSpec officer = rekeyForWireOrNull(spawned.officerOrNull(),
+                rowVariantId, lane, shipName, round, tick);
+        return officeredOrBare(wireId, side, rowVariantId, shipName, spawned.crPerMille(), officer,
+                lane, round, tick, spawned.atRest());
     }
 
     /** The shape before the at-rest bit ({@code atRest=false}) — the contract rows' call; every drain passes the bit. */

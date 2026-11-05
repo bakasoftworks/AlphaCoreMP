@@ -166,6 +166,6 @@ public final class GrowthDespawnReclassifier {
         if (reason == event.reason()) {
             return event;
         }
-        return new EntityDespawnEvent(event.entityId(), event.simTick(), reason);
+        return new EntityDespawnEvent(event.entityId(), event.simTick(), reason, event.corpseless());
     }
 }

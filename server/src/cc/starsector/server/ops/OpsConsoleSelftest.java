@@ -3784,6 +3784,9 @@ final class OpsConsoleSelftest {
             Files.write(install.resolve("starsector.sh"), new byte[] {1});
             Files.write(install.resolve("mods").resolve("CC_Client").resolve("join-cc.sh"), new byte[] {1});
             ServerOpsLaunch.writeLauncherRow(launcher, ServeLauncher.ROW_GAME_ROOT, install.toString());
+            // A Linux watch opens its windows from the Player game folder
+            // (blank = refused by name since L3, OpsJoinSelf R1P); this rig's install IS a Linux game, so name it.
+            ServerOpsLaunch.writeLauncherRow(launcher, ServeLauncher.ROW_GAME_ROOT_PLAYER, install.toString());
             prior[3] = Files.isRegularFile(decoy) ? Files.readAllBytes(decoy) : null;
             Files.createDirectories(decoy.getParent());
             Files.write(decoy, plant);

@@ -22,17 +22,33 @@ import java.util.Objects;
  * relevance-safe upgrade is to consume the server's explicit
  * {@code ServerEntityDespawnEventMessage} (emitted from the full authoritative
  * roster) over a durable lane — the documented follow-on.
+ *
+ * <p>{@code corpseless} mirrors the server's {@code EntityDespawnEvent.corpseless}: the
+ * server's engine removed the hull with NO hulk (a failed hulk roll or a vaporize), so the
+ * REMOTE windows present it corpse-free ({@code FoeStateLaneCoordinator.killRemote}; the own / 1v1
+ * consumers keep the forced hulk — parked). It rides only the explicit EDSP frame
+ * ({@link ClientDespawnEventReader}); a roster-diff despawn cannot know it and is always
+ * {@code false} (the 3-arg constructor), as is every server event the server could not
+ * prove hulkless — unknown is never corpseless.
  */
 public final class ClientEntityDespawn {
 
     private final long entityId;
     private final long simTick;
     private final ClientDespawnReason reason;
+    private final boolean corpseless;
 
+    /** A despawn with no corpseless claim (roster diff; a server event without the bit). */
     public ClientEntityDespawn(long entityId, long simTick, ClientDespawnReason reason) {
+        this(entityId, simTick, reason, false);
+    }
+
+    /** The EDSP decode carries the server's corpseless bit. */
+    public ClientEntityDespawn(long entityId, long simTick, ClientDespawnReason reason, boolean corpseless) {
         this.entityId = entityId;
         this.simTick = simTick;
         this.reason = Objects.requireNonNull(reason, "reason");
+        this.corpseless = corpseless;
     }
 
     public long entityId() {
@@ -47,6 +63,11 @@ public final class ClientEntityDespawn {
         return reason;
     }
 
+    /** True only when the server proved the engine removed the hull with no hulk. */
+    public boolean corpseless() {
+        return corpseless;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -57,18 +78,20 @@ public final class ClientEntityDespawn {
         }
         return entityId == other.entityId
                 && simTick == other.simTick
-                && reason == other.reason;
+                && reason == other.reason
+                && corpseless == other.corpseless;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(entityId, simTick, reason);
+        return Objects.hash(entityId, simTick, reason, corpseless);
     }
 
     @Override
     public String toString() {
         return "ClientEntityDespawn{entityId=" + entityId
                 + ",simTick=" + simTick
-                + ",reason=" + reason + "}";
+                + ",reason=" + reason
+                + ",corpseless=" + corpseless + "}";
     }
 }

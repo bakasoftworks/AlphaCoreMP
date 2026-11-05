@@ -38,14 +38,12 @@ import cc.starsector.client.net.ClientListingReader;
  *       Escape closes.</li>
  * </ul>
  *
- * <p><b>Consume contract:</b> the caller consumes on every verdict EXCEPT {@link Result#PASS}.
- * <b>Declared deviation from chat's SEND-BOTH rule:</b> the picker CONSUMES its RETURN.
- * SEND-BOTH exists because RETURN is chat's own open key — passing it through keeps the engine's
- * retreat prompt reachable from a box the player is always one keystroke from opening. The
- * picker's RETURN acts only inside a modal the player deliberately summoned by TYPING the
- * listing command (the SS405 doctrine); passing it through would DOUBLE-ACT (a selection press
- * also confirming whatever engine prompt sits underneath). Escape consumed = the chat idiom
- * (the pause menu never sees it).
+ * <p><b>Consume contract:</b> the caller consumes on every verdict EXCEPT {@link Result#PASS} — the same
+ * contract as chat's {@link ChatInputLaw} now that its SEND-BOTH rule (RETURN passed
+ * through so the engine's retreat prompt stayed reachable from the box) is RETIRED
+ * after a passed-through open press retreated the typing player; the picker consumed its RETURN
+ * from the start (a selection press passing through would DOUBLE-ACT on whatever engine prompt sits
+ * underneath). Escape consumed = the chat idiom (the pause menu never sees it).
  *
  * <p><b>Other adjudicated details</b> (recorded here because the selftest pins them):
  * {@link #OPEN_KEY} while OPEN is a consumed NO-OP — the key is VESTIGIAL as a trigger since

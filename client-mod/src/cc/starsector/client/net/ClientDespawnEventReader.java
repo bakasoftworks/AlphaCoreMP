@@ -27,9 +27,16 @@ import java.io.InputStream;
  * {@code EntityDespawnEventCodec} bytes over a loopback socket and asserts this reader
  * decodes the same events, keeping the two mirrors in sync.
  *
+ * <p>The reasonCode int packs two fields: the low 8 bits are the
+ * {@link ClientDespawnReason} wire code, and {@link #CORPSELESS_BIT} says the server's
+ * engine removed the hull with no hulk. Schema 2 introduced the bit, so an older
+ * schema-1 reader refuses every frame rather than misreading a corpseless one.
+ *
+ *
  * <p>Fail-closed: a wrong magic (when read standalone), an unexpected schema version,
- * or an unknown reason code throws {@link IOException}; a clean end-of-stream at a
- * frame boundary returns {@code null} from {@link #readEvent(InputStream)}.
+ * an unknown reason code, or any reasonCode bit outside {@link #REASON_CODE_MASK}
+ * throws {@link IOException}; a clean end-of-stream at a frame boundary returns
+ * {@code null} from {@link #readEvent(InputStream)}.
  */
 public final class ClientDespawnEventReader {
 
@@ -37,7 +44,16 @@ public final class ClientDespawnEventReader {
     public static final int MAGIC = 0x45445350;
 
     /** Schema version this reader understands. Mirrors {@code EntityDespawnEventCodec.SCHEMA_VERSION}. */
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
+
+    /** reasonCode bit: the despawn left no hulk. Mirrors the server codec's {@code CORPSELESS_BIT}. */
+    public static final int CORPSELESS_BIT = 0x100;
+
+    /** The low 8 bits of reasonCode = the reason wire code. */
+    static final int REASON_BITS = 0xFF;
+
+    /** Every reasonCode bit a schema-2 frame may carry; anything outside is refused. */
+    static final int REASON_CODE_MASK = REASON_BITS | CORPSELESS_BIT;
 
     /** magic(4) + wireTypeCode(4) + schema(2) + entityId(8) + simTick(8) + reasonCode(4). */
     public static final int FRAME_BYTES = 4 + 4 + 2 + 8 + 8 + 4;
@@ -81,12 +97,19 @@ public final class ClientDespawnEventReader {
         long entityId = WireBytes.readLong(in);
         long simTick = WireBytes.readLong(in);
         int reasonCode = WireBytes.readInt(in);
+        // Split the packed code; a stray bit is a
+        // corrupt or newer frame, refused rather than silently dropped.
+        if ((reasonCode & ~REASON_CODE_MASK) != 0) {
+            throw new IOException("despawn event reason code has bits outside 0x"
+                    + Integer.toHexString(REASON_CODE_MASK) + ": 0x" + Integer.toHexString(reasonCode));
+        }
+        boolean corpseless = (reasonCode & CORPSELESS_BIT) != 0;
         ClientDespawnReason reason;
         try {
-            reason = ClientDespawnReason.fromWireCode(reasonCode);
+            reason = ClientDespawnReason.fromWireCode(reasonCode & REASON_BITS);
         } catch (IllegalArgumentException badReason) {
             throw new IOException("despawn event reason code invalid: " + reasonCode, badReason);
         }
-        return new ClientEntityDespawn(entityId, simTick, reason);
+        return new ClientEntityDespawn(entityId, simTick, reason, corpseless);
     }
 }

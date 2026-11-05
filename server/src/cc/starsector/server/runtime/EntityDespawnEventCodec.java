@@ -24,7 +24,8 @@ import java.util.function.Consumer;
  * its registry entry: every frame stamps the registered wire type code and schema
  * version of {@code server.entity_despawn_event}, so the bytes are the registered
  * message, not an ad-hoc one. Read is fail-closed: a wrong magic, type code,
- * schema, unknown reason code, or short read throws {@link IOException} and yields
+ * schema, unknown reason code, a reason-code bit outside the reason byte and
+ * {@link #CORPSELESS_BIT}, or short read throws {@link IOException} and yields
  * no event.
  */
 public final class EntityDespawnEventCodec {
@@ -46,6 +47,20 @@ public final class EntityDespawnEventCodec {
     public static final int FRAME_BYTES =
             Integer.BYTES + Integer.BYTES + Short.BYTES + Long.BYTES + Long.BYTES + Integer.BYTES;
 
+    /**
+     * Bit OR-ed into the {@code reasonCode} int above the 8-bit reason: the server knows the
+     * kill left no wreck ({@link EntityDespawnEvent#corpseless()}). The low byte stays the
+     * reason's own wire code, so the frame size is unchanged; a reader rejects any bit
+     * outside {@link #REASON_CODE_KNOWN_BITS}.
+     */
+    public static final int CORPSELESS_BIT = 0x100;
+
+    /** The low-byte reason mask: {@code code & REASON_MASK} is the reason's wire code. */
+    public static final int REASON_MASK = 0xFF;
+
+    /** Every bit a valid {@code reasonCode} may carry (the reason byte + {@link #CORPSELESS_BIT}). */
+    public static final int REASON_CODE_KNOWN_BITS = REASON_MASK | CORPSELESS_BIT;
+
     private EntityDespawnEventCodec() {
     }
 
@@ -59,7 +74,7 @@ public final class EntityDespawnEventCodec {
         data.writeShort(SCHEMA_VERSION);
         data.writeLong(event.entityId());
         data.writeLong(event.simTick());
-        data.writeInt(event.reason().wireCode());
+        data.writeInt(event.reason().wireCode() | (event.corpseless() ? CORPSELESS_BIT : 0));
         data.flush();
     }
 
@@ -76,8 +91,8 @@ public final class EntityDespawnEventCodec {
 
     /**
      * Read exactly one despawn-event frame. Fail-closed: a truncated frame, a wrong
-     * magic / type code / schema version / unknown reason code throws
-     * {@link IOException}.
+     * magic / type code / schema version / unknown reason code / stray reason-code bit
+     * throws {@link IOException}.
      */
     public static EntityDespawnEvent readEvent(InputStream in) throws IOException {
         Objects.requireNonNull(in, "in");
@@ -105,14 +120,10 @@ public final class EntityDespawnEventCodec {
         long entityId = data.readLong();
         long simTick = data.readLong();
         int reasonCode = data.readInt();
-        EntityDespawnReason reason;
+        EntityDespawnReason reason = reasonOf(reasonCode);
+        boolean corpseless = (reasonCode & CORPSELESS_BIT) != 0;
         try {
-            reason = EntityDespawnReason.fromWireCode(reasonCode);
-        } catch (IllegalArgumentException badReason) {
-            throw new IOException("despawn event reason code invalid: " + reasonCode, badReason);
-        }
-        try {
-            return new EntityDespawnEvent(entityId, simTick, reason);
+            return new EntityDespawnEvent(entityId, simTick, reason, corpseless);
         } catch (IllegalArgumentException badEvent) {
             throw new IOException("despawn event fields invalid: " + badEvent.getMessage(), badEvent);
         }
@@ -154,17 +165,30 @@ public final class EntityDespawnEventCodec {
             long entityId = data.readLong();
             long simTick = data.readLong();
             int reasonCode = data.readInt();
-            EntityDespawnReason reason;
+            EntityDespawnReason reason = reasonOf(reasonCode);
+            boolean corpseless = (reasonCode & CORPSELESS_BIT) != 0;
             try {
-                reason = EntityDespawnReason.fromWireCode(reasonCode);
-            } catch (IllegalArgumentException badReason) {
-                throw new IOException("despawn event reason code invalid: " + reasonCode, badReason);
-            }
-            try {
-                consumer.accept(new EntityDespawnEvent(entityId, simTick, reason));
+                consumer.accept(new EntityDespawnEvent(entityId, simTick, reason, corpseless));
             } catch (IllegalArgumentException badEvent) {
                 throw new IOException("despawn event fields invalid: " + badEvent.getMessage(), badEvent);
             }
+        }
+    }
+
+    /**
+     * The reason in the low byte of {@code reasonCode}. Fail-closed: a bit outside
+     * {@link #REASON_CODE_KNOWN_BITS} (a future flag this reader cannot honour, or a negative
+     * int) or an unknown reason byte throws {@link IOException}.
+     */
+    private static EntityDespawnReason reasonOf(int reasonCode) throws IOException {
+        if ((reasonCode & ~REASON_CODE_KNOWN_BITS) != 0) {
+            throw new IOException("despawn event reason code invalid: 0x" + Integer.toHexString(reasonCode));
+        }
+        try {
+            return EntityDespawnReason.fromWireCode(reasonCode & REASON_MASK);
+        } catch (IllegalArgumentException badReason) {
+            throw new IOException("despawn event reason code invalid: 0x"
+                    + Integer.toHexString(reasonCode), badReason);
         }
     }
 

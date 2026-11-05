@@ -450,7 +450,7 @@ final class OpsConsolePageHtml {
 <div class="frow">
 <label for="f-game-root-player">Player game folder</label>
 <div class="ctl"><input id="f-game-root-player" data-cc="setup.gameRootPlayer" type="text" size="40" autocomplete="off" spellcheck="false" aria-describedby="hint-game-root-player"></div>
-<p class="hint" id="hint-game-root-player">Linux hosts: the Linux Starsector install your own join window and the debug WATCH start the game from (the server keeps running from Game folder). Blank = Game folder - saved at Start</p>
+<p class="hint" id="hint-game-root-player">Linux hosts: required - the Linux Starsector folder (the one holding starsector.sh) that your own join window and the debug WATCH start the game from (the server keeps running from Game folder); blank is refused. Windows hosts: blank = Game folder - saved at Start</p>
 </div>
 <details id="setup-debug" class="fold">
 <summary data-cc="setup.fold.debug">Debug &#9662;</summary>

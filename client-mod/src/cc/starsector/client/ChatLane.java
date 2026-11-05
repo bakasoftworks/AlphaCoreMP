@@ -212,9 +212,9 @@ public final class ChatLane {
 
     /**
      * Feed KEYBOARD events to the chat {@link ChatInputLaw} and mirror its
-     * verdicts onto the engine: consume what the law swallows (CONSUMED only — the RETURN
-     * dispositions handle-and-pass-through per the send-both rule, so chat Enter never blocks
-     * the engine's retreat prompt), deposit a SENT line for the net
+     * verdicts onto the engine: consume every verdict but PASS (the box-OPENING press is PASS so
+     * vanilla's bottom-edge retreat prompt sees it — opening chat at the edge also retreats, by design;
+     * once open, every RETURN is consumed), deposit a SENT line for the net
      * thread ({@link #queueChatSend}), and surface RATE_BLOCKED as the local-only
      * {@code "chat: too fast"} line down the same HUD drain path (never sent — the local bucket
      * mirrors the server's, so a conforming user never trips the server's {@code chatRateDropped}).
@@ -285,13 +285,14 @@ public final class ChatLane {
                 }
                 ChatInputLaw.Result verdict = chatInput.onKeyboardEvent(
                         keyDown, isRepeat, keyCode, eventChar, System.currentTimeMillis());
-                // The send-both rule: consume ONLY on CONSUMED — the law's RETURN dispositions
-                // (open, blank-close, SENT, RATE_BLOCKED) handle-AND-pass-through so the engine's
-                // own Enter consumers (the retreat prompt) still see the press. PASS may still
-                // have acted (opened/closed the box); SENT/RATE_BLOCKED act AND pass through.
-                if (verdict == ChatInputLaw.Result.CONSUMED) {
+                // Every verdict but PASS is consumed — blank-close, SENT and RATE_BLOCKED included —
+                // so once the box is open the engine's Enter consumers never see a chat press; the
+                // box-OPENING press returns PASS and reaches vanilla's edge prompt, so opening chat at
+                // the edge also retreats, by design. Nothing below touches the event.
+                if (verdict != ChatInputLaw.Result.PASS) {
                     event.consume();
-                } else if (verdict == ChatInputLaw.Result.SENT) {
+                }
+                if (verdict == ChatInputLaw.Result.SENT) {
                     String sent = chatInput.sentText();
                     plugin.picker.noteSentLine(sent); // A bare /unban vs /banned picks the menu's open rung
                     if (sent != null && sent.trim().equalsIgnoreCase("/settings")) {

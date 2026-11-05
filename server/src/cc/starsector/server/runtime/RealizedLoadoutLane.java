@@ -39,7 +39,8 @@ import org.json.JSONObject;
  * ordinary hullmod, so the client's copy of the hook sees it and does not roll. No new wire family, no new
  * client-trusted input.
  *
- * <p>The law, per seat fly-in ({@link #realize}): the member's variant and the registry's stock variant for the
+ * <p>The law, per fly-in ({@link #realize}) — a seat's, or an AI hull's under {@link #AI_SEAT}:
+ * the member's variant and the registry's stock variant for the
  * fielded (goal) id are serialized by the probe-api twin ({@link #ENGINE_METHOD}, by NAME — the product unit stays
  * game-jar-free) and compared as CANONICAL text (keys sorted, the set-valued hullmod / tag lists sorted, the id
  * dropped). Equal = nothing (every vanilla hull: one compare). Different = the minted id
@@ -60,15 +61,25 @@ import org.json.JSONObject;
  * compare fault) or per minted id (a mint fault), memoized so a refused body never re-runs the engine pass.
  *
  * <p>Coverage: every SEAT hull — the roster's {@code midDeploySeat} is the one deploy every join, respawn and
- * round-reset fly-in passes, and it hands its {@code SeatDeployResult} variant id to both fly-in composers.
+ * round-reset fly-in passes, and it hands its {@code SeatDeployResult} variant id to both fly-in composers — and,
+ *every AI hull the roster's shared mid-round mint body ({@code midDeployCore}: the wave
+ * drain, the {@code /spawnfoe} adhoc drain, the wave probe, the pod-scenario targets) fields under
+ * {@link #AI_SEAT}: its {@code WaveDeployResult} carries the fielded id to every RAPP row composer, and the ONE
+ * RAPP fan point ({@code PersistentPilotIntentCombatServer.fanRosterAppendChunks}) drains the pending realized
+ * VDEFs first, so no lane can name a minted id before its body. An AI hull has no seat, so no sticky memory: each
+ * spawn is its own roll (the way the campaign rolls each ship once at its creation) and equal rolls dedupe on the
+ * content cache. A STATION is skipped (the client's station adopt lane keys its module band on the stock id).
  * NOT covered: hulls no RAPP row names (the battle-start AI rows and station the context's {@code deployAll}
- * fields, which every window builds from the match descriptor), a command transfer onto such a hull, the vacated
+ * fields, which every window builds from the match descriptor), a command transfer onto such a hull, a command
+ * transfer onto / off a MINTED AI hull (the seat re-point names the GOAL — {@code SeatRebind} reads the engine's
+ * own variant id, the stock clone's — so the transferring window re-fields from the goal: the fork returns for that
+ * one hull, loud on the client's fork row; the fix when it bites = {@link #realizeSeatOrGoal} on the target member
+ * at the re-point, the content cache returning the same minted id), the vacated
  * SOURCE of a command transfer off a seat's FIRST life of a rolled hull (its re-homed announce row,
  * {@link CommandTransferServeLane#sourceAnnounceRow}, names the hull's own engine variant id, which on that life is
  * the stock id — the member was built from the stock clone — so a window that mints that body on a rejoin rolls its
  * own; the client's replica-loadout fork row meters it; a STICKY life's hull is built from the minted body and
- * carries its id), a wave row the inflater skipped (an inflated wave body already carries the realized roll), and a
- * module's own roll (the body names the stock module ids).
+ * carries its id), and a module's own roll (the body names the stock module ids).
  *
  * <p>STICKY roll: one roll per seat per match, the way a campaign ship keeps the roll the mod
  * made once at its creation. Every life of a seat is a new {@code FleetMember}, so without this each join, respawn
@@ -82,9 +93,12 @@ import org.json.JSONObject;
  * <p>Threads: {@link #realize} and {@link #flushToDoor} run on the sim thread (the roster's monitor / the serve
  * loop); {@link #frames} is read by the door's reader thread at admission (copy-on-write). The process lane's live
  * fan is DEFERRED: the roster mints before any door is in hand, so its frames queue in {@link PendingFan} (bounded
- * by {@link #REGISTER_CAP}: one frame per mint) and the seat announce drains them to every live session BEFORE it
- * builds the RAPP row (VDEF before RAPP on the one CTRL FIFO). Late joiners read the spool through the door's
- * server-generated catalog slot, composed after the wave bodies ({@link #attachSpool}).
+ * by {@link #REGISTER_CAP}: one frame per mint) and the ONE RAPP fan point
+ * ({@code PersistentPilotIntentCombatServer.fanRosterAppendChunks}) drains them to every live session after its
+ * rows are built and BEFORE it fans them (VDEF before RAPP on the one CTRL FIFO); the seat announce's own flush
+ * ({@code SeatAnnounceTracker}) is an earlier drain of the same list, so a second drain is a no-op. Late joiners
+ * read the spool through the door's server-generated catalog slot, composed after the wave bodies
+ * ({@link #attachSpool}; the first drain attaches it).
  *
  * <p>LINK LAW: the fly-in / announce path of EVERY serve links this class ({@link #realizeSeatOrGoal},
  * {@link #stickyIdForSeat}, {@link #flushToDoor}, {@link #goalOf}) — a serve whose classpath carries no json.jar included (the NPeer contract
@@ -115,6 +129,12 @@ public final class RealizedLoadoutLane {
      * {@code over_cap} row per goal and the counted {@link #overCapRefusals}).
      */
     public static final int REGISTER_CAP = 64;
+    /**
+     * The seat id an AI hull (wave / adhoc / probe / pod target) realizes under — below every
+     * hull seat (&gt;= 1), so {@link #realize} keeps NO sticky memory for it: each AI spawn is its own roll, equal
+     * rolls dedupe on the content cache, and a seat's sticky roll is never read or written by an AI mint.
+     */
+    public static final int AI_SEAT = 0;
     /** The probe-api twin's method name ({@code WaveLoadoutInflater.AUTOFIT_CLASS}). */
     public static final String ENGINE_METHOD = "realizedVariantJson";
     public static final int FAIL_DETAIL_MAX_CHARS = 160;
@@ -254,8 +274,8 @@ public final class RealizedLoadoutLane {
     // ------------------------------------------------------------------ the lane
 
     /**
-     * One seat fly-in (sim thread): compare, then mint or hand the goal back. Never throws — every fault keeps the
-     * goal id ({@code seatId} / {@code wireId} ride the rows only).
+     * One fly-in (sim thread; a seat's, or an AI hull's under {@link #AI_SEAT}): compare, then mint or hand the goal
+     * back. Never throws — every fault keeps the goal id ({@code seatId} / {@code wireId} ride the rows only).
      */
     public synchronized Outcome realize(int seatId, long wireId, String goalId, Object stockVariant,
             Object realizedVariant) {
@@ -265,7 +285,8 @@ public final class RealizedLoadoutLane {
         if (isRealizedId(goalId)) {
             return Outcome.goal(goalId, "skip:already_realized", 0L, 0L);
         }
-        String lastMinted = lastMintedBySeat.get(seatId);
+        boolean seatHull = seatId >= 1; // An AI hull (AI_SEAT) keeps no sticky memory
+        String lastMinted = seatHull ? lastMintedBySeat.get(seatId) : null;
         if (lastMinted != null && !goalId.equals(goalOf(lastMinted))) {
             lastMintedBySeat.remove(seatId); // a pick change: the seat's next life under the old goal rolls fresh
         }
@@ -310,7 +331,9 @@ public final class RealizedLoadoutLane {
         String known = canonicalByMintedId.get(mintedId);
         if (known != null) {
             if (known.equals(canonical)) {
-                lastMintedBySeat.put(seatId, mintedId);
+                if (seatHull) {
+                    lastMintedBySeat.put(seatId, mintedId);
+                }
                 long mintNanos = System.nanoTime() - mintStart;
                 mintRow(seatId, wireId, goalId, mintedId, true, diff, compareNanos, mintNanos);
                 return new Outcome(mintedId, true, true, "cached", compareNanos, mintNanos);
@@ -350,7 +373,9 @@ public final class RealizedLoadoutLane {
             }
             registered++;
             canonicalByMintedId.put(mintedId, canonical);
-            lastMintedBySeat.put(seatId, mintedId);
+            if (seatHull) {
+                lastMintedBySeat.put(seatId, mintedId);
+            }
             long mintNanos = System.nanoTime() - mintStart;
             mintRow(seatId, wireId, goalId, mintedId, false, diff, compareNanos, mintNanos);
             return new Outcome(mintedId, true, false, "minted", compareNanos, mintNanos);
@@ -383,7 +408,7 @@ public final class RealizedLoadoutLane {
      * pick change since). The id is registered (written only after an accepted pass or a cache hit).
      */
     public synchronized String stickyIdFor(int seatId, String goalId) {
-        String last = lastMintedBySeat.get(seatId);
+        String last = seatId >= 1 ? lastMintedBySeat.get(seatId) : null; // Never for AI_SEAT
         return last != null && goalId != null && goalId.equals(goalOf(last)) ? last : null;
     }
 
@@ -434,7 +459,10 @@ public final class RealizedLoadoutLane {
 
     // ------------------------------------------------------------------ the process seam (the roster + the door)
 
-    /** The process lane's deferred live fan: frames queue at mint, the seat announce drains them to the door. */
+    /**
+     * The process lane's deferred live fan: frames queue at mint; {@code fanRosterAppendChunks} (the one RAPP fan
+     * point) drains them to the door, the seat announce's flush an earlier drain of the same list.
+     */
     private static final class PendingFan implements VariantFan {
         private final List<byte[]> pending = new ArrayList<>();
 
@@ -459,9 +487,12 @@ public final class RealizedLoadoutLane {
             Collections.newSetFromMap(new WeakHashMap<>());
 
     /**
-     * The roster's seat fly-in seam (sim thread, the roster's monitor held): the id the seat's RAPP row names — a
+     * The roster's fly-in seam (sim thread, the roster's monitor held): the id the hull's RAPP row names — a
      * minted realized id when the member's variant differs from the registry's stock variant, else {@code goalId}.
-     * Builds the process lane on first use; an absent engine half or id table = the goal id, always.
+     * {@code seatId} = the hull seat (&gt;= 1) or {@link #AI_SEAT} for a wave / adhoc / probe / pod hull
+     * ({@code wireId} is then {@code -1}: an AI hull is interned AFTER its mint, the drain's own spawn
+     * row joins the ids). Builds the process lane on first use; an absent engine half or id table = the goal id,
+     * always.
      */
     public static String realizeSeatOrGoal(int seatId, long wireId, String goalId, Object stockVariant,
             Object realizedVariant) {
@@ -486,9 +517,11 @@ public final class RealizedLoadoutLane {
     }
 
     /**
-     * The seat announce's drain (sim thread): send every queued realized frame to each live session of
-     * {@code door}, BEFORE the caller builds its RAPP row, and make sure the door's late-joiner slot carries the
-     * spool. No process lane = a no-op (a game-free serve, a contract door). Returns the frames sent per session.
+     * The drain (sim thread): send every queued realized frame to each live session of {@code door} and make sure
+     * the door's late-joiner slot carries the spool. Called by {@code fanRosterAppendChunks}, the ONE RAPP fan point
+     * (after its rows are built, BEFORE it fans them: no fanned row names a minted id ahead of its body), and earlier
+     * by the seat announce ({@code SeatAnnounceTracker}) — a second drain is a no-op. No process lane = a no-op (a
+     * game-free serve, a contract door). Returns the frames sent per session.
      */
     public static int flushToDoor(PilotIntentDatagramServer door) {
         RealizedLoadoutLane lane = processLaneOrNull;
@@ -567,7 +600,7 @@ public final class RealizedLoadoutLane {
             processLaneOrNull = lane;
             System.out.println("npeer-serve realized_loadout_boot enabled=true cap=" + REGISTER_CAP + " budget="
                     + VariantDefinitionFrameCodec.VDEF_BUDGET_TOTAL
-                    + " (a seat hull whose member variant differs from stock flies a minted VDEF)");
+                    + " (a seat or AI hull whose member variant differs from stock flies a minted VDEF)");
             return lane;
         }
     }

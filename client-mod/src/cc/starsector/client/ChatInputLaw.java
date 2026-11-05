@@ -13,21 +13,25 @@ import cc.starsector.client.net.ChatWriter;
  * time is injected ({@code nowMillis}) so the selftest owns the clock. Render-thread only —
  * no synchronization.
  *
- * <p>States and transitions (the law, RETURN dispositions amended by the SEND-BOTH rule —
- * chat Enter must never block the engine's retreat prompt, so every RETURN handles AND passes
- * through: the caller consumes ONLY on {@link Result#CONSUMED}):
+ * <p>States and transitions (the law; CHAT OWNS ENTER — the SEND-BOTH rule
+ * is RETIRED for the OPEN state: the Enter that OPENED the box once also accepted vanilla's bottom-edge
+ * "PRESS ENTER TO RETREAT" prompt and retreated the player
+ * mid-sentence, so every OPEN-state RETURN disposition is consumed; the OPENING press itself still passes
+ * through — opening chat at the edge also retreats, by design, and consuming it starved that prompt.
+ * The caller consumes on every result but {@link Result#PASS}):
  * <ul>
- *   <li>CLOSED + RETURN fresh press ⇒ OPEN, but the event is NOT consumed ({@link Result#PASS}
- *       — the engine's own Enter consumers still see it). Every other event passes through
- *       untouched ({@link Result#PASS}) — the ship flies normally.</li>
+ *   <li>CLOSED + RETURN fresh press ⇒ OPEN, NOT consumed ({@link Result#PASS} — the engine's own
+ *       Enter consumer, the bottom-edge retreat prompt, sees the same press, so opening chat at the
+ *       edge also retreats; consuming it starved that prompt). Every other event
+ *       passes through untouched ({@link Result#PASS}) — the ship flies normally.</li>
  *   <li>OPEN ⇒ every NON-RETURN keyboard event is consumed (the caller mirrors that with
  *       {@code InputEventAPI.consume()} + the per-frame movement-verb block — the leg-4
  *       adjudicated twin gate; mouse events are never fed, so aim/fire stay live).</li>
  *   <li>OPEN + RETURN fresh press: trimmed-nonblank buffer ⇒ submit through the local token
  *       bucket — token available ⇒ {@link Result#SENT} (read {@link #sentText()}) + close;
  *       bucket empty ⇒ {@link Result#RATE_BLOCKED}, stay open, KEEP the buffer (the user's
- *       line must not be lost to pacing). Blank buffer ⇒ close sans send ({@link Result#PASS}).
- *       All three pass the event through (SEND-BOTH).</li>
+ *       line must not be lost to pacing). Blank buffer ⇒ close sans send ({@link Result#CONSUMED}).
+ *       All three are consumed (chat owns Enter).</li>
  *   <li>OPEN + ESCAPE fresh press ⇒ discard + close (consumed — the pause menu never sees it).</li>
  *   <li>OPEN + TAB fresh press ⇒ discard + close, NOT consumed ({@link Result#PASS} — the engine's
  *       tab-map toggle sees the same press).</li>
@@ -159,20 +163,19 @@ public final class ChatInputLaw {
      *  zero server surface). */
     public static final int PASTE_MAX_CODE_POINTS = 512;
 
-    /** What one fed keyboard event did. Consume contract (the SEND-BOTH rule): the caller
-     *  consumes ONLY on {@link #CONSUMED} — every other result passes the event through, even
-     *  when the law acted on it (opened, closed, sent, rate-blocked). */
+    /** What one fed keyboard event did. Consume contract (chat owns Enter; the SEND-BOTH rule
+     * is retired): the caller consumes on every result but {@link #PASS}. */
     public enum Result {
-        /** Not consumed. May still have acted: the closed-state opening RETURN and the
-         *  open-state blank-close RETURN both land here (handle-and-pass-through). */
+        /** Not consumed, not acted on: a closed-state non-RETURN event (and the OPEN + TAB
+         *  hand-off, which closes the box and lets the tab-map press through). */
         PASS,
-        /** Swallowed (open-state non-RETURN event): consume, no send. */
+        /** Swallowed: an open-state non-RETURN event, the closed-state opening RETURN and the
+         *  open-state blank-close RETURN. Consume, no send. */
         CONSUMED,
-        /** A line was submitted: do NOT consume (SEND-BOTH); {@link #sentText()} carries the
-         *  trimmed line. */
+        /** A line was submitted: consume; {@link #sentText()} carries the trimmed line. */
         SENT,
-        /** Submit refused by the local bucket: do NOT consume (SEND-BOTH), stay open, buffer
-         *  kept — show the local-only "chat: too fast" line. */
+        /** Submit refused by the local bucket: consume, stay open, buffer kept — show the
+         *  local-only "chat: too fast" line. */
         RATE_BLOCKED
     }
 
@@ -263,20 +266,22 @@ public final class ChatInputLaw {
             long nowMillis) {
         if (!open) {
             if (keyDown && !repeat && keyCode == KEY_RETURN) {
-                // SEND-BOTH: open the box but let the press through — the engine's
-                // own Enter consumers (retreat prompt) must never be starved by chat.
+                // The OPENING press passes through: vanilla's bottom-edge "PRESS ENTER TO RETREAT" prompt
+                // sees the same press, so a player at the edge who opens chat retreats too — by design;
+                // consuming it here starved that prompt and Enter-to-retreat stopped working. Once OPEN,
+                // every RETURN below is consumed — chat owns Enter from then on.
                 open = true;
                 return Result.PASS;
             }
             return Result.PASS;
         }
-        // OPEN: the box owns the keyboard EXCEPT the RETURN dispositions below — those
-        // handle-and-pass-through (SEND-BOTH; the caller consumes CONSUMED only).
+        // OPEN: the box owns the keyboard, the RETURN dispositions included (the caller consumes
+        // every result but PASS; only the TAB hand-off below passes through).
         if (keyDown && !repeat && keyCode == KEY_RETURN) {
             String line = buffer.toString().trim();
             if (line.isEmpty()) {
                 close(CLOSE_BLANK);
-                return Result.PASS;
+                return Result.CONSUMED;
             }
             if (!takeToken(nowMillis)) {
                 return Result.RATE_BLOCKED;

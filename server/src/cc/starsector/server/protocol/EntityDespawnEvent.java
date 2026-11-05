@@ -21,8 +21,22 @@ import java.util.Objects;
  * {@code ShipAPI.getId()}) the snapshot stream uses, so a despawn event
  * names exactly the entity whose {@code entityId} stops appearing — the same
  * identity that survives a roster renumber.
+ *
+ * <p>{@code corpseless} marks a kill the server KNOWS left no wreck: the engine
+ * removed the hull while unhealthy and no corpse family was born for it, so a
+ * client must present the death without waiting for (or minting) a hulk. It is
+ * {@code false} whenever the server does not know — a corpse family may land a
+ * tick late, so "unknown" never reads corpseless. The reason enum keeps its
+ * meaning; the bit rides beside it rather than adding a third reason, so every
+ * {@code == DESTROYED} consumer stays correct.
  */
-public record EntityDespawnEvent(long entityId, long simTick, EntityDespawnReason reason) {
+public record EntityDespawnEvent(long entityId, long simTick, EntityDespawnReason reason,
+        boolean corpseless) {
+
+    /** A despawn that carries no corpseless knowledge ({@code corpseless == false}). */
+    public EntityDespawnEvent(long entityId, long simTick, EntityDespawnReason reason) {
+        this(entityId, simTick, reason, false);
+    }
 
     public EntityDespawnEvent {
         if (entityId <= 0L) {
@@ -34,13 +48,21 @@ public record EntityDespawnEvent(long entityId, long simTick, EntityDespawnReaso
         Objects.requireNonNull(reason, "reason");
     }
 
-    /** A combat-kill despawn for {@code entityId} at {@code simTick}. */
+    /** A combat-kill despawn for {@code entityId} at {@code simTick} (not known corpseless). */
     public static EntityDespawnEvent destroyed(long entityId, long simTick) {
-        return new EntityDespawnEvent(entityId, simTick, EntityDespawnReason.DESTROYED);
+        return new EntityDespawnEvent(entityId, simTick, EntityDespawnReason.DESTROYED, false);
     }
 
-    /** A non-lethal departure despawn for {@code entityId} at {@code simTick}. */
+    /**
+     * A combat-kill despawn for {@code entityId} at {@code simTick}; {@code corpseless} =
+     * the server knows the kill left no wreck.
+     */
+    public static EntityDespawnEvent destroyed(long entityId, long simTick, boolean corpseless) {
+        return new EntityDespawnEvent(entityId, simTick, EntityDespawnReason.DESTROYED, corpseless);
+    }
+
+    /** A non-lethal departure despawn for {@code entityId} at {@code simTick} (never corpseless). */
     public static EntityDespawnEvent departed(long entityId, long simTick) {
-        return new EntityDespawnEvent(entityId, simTick, EntityDespawnReason.DEPARTED);
+        return new EntityDespawnEvent(entityId, simTick, EntityDespawnReason.DEPARTED, false);
     }
 }

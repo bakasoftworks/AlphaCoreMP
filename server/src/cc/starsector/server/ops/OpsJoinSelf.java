@@ -292,9 +292,24 @@ final class OpsJoinSelf {
     /** R1's twin for a SET Player game folder row that holds no game: {@code %s} = the row, trimmed and cut to
      *  {@link #TEXT_PATH_MAX}. WHY its own text: the host typed that row on purpose, so the press names it and never
      *  falls back to Game folder ({@link #noInstallRefusal}). The jar is named by {@link ServeLauncher#CORE_JAR}, the
-     *  very file {@link ServeLauncher#resolveGame} looks for. */
+     *  very file {@link ServeLauncher#resolveGame} looks for.
+     *  The folder it asks for names both launchers - the row is honoured on every
+     *  platform, so the sentence never assumes the host is Linux. */
     static final String R1_PLAYER = "Player game folder (Setup tab) does not hold the game: %s has no "
-            + ServeLauncher.CORE_JAR + " - set it to your Linux Starsector folder, or clear it to use Game folder.";
+            + ServeLauncher.CORE_JAR + " - set it to your Starsector folder (the one holding starsector.sh or"
+            + " starsector.exe), or clear it to use Game folder.";
+    /** {@link #R1_PLAYER}'s Linux twin ({@link #noInstallRefusal(Map, boolean)}): a SET Player game folder row that
+     *  holds no game on a Linux host. WHY no "clear it to use Game folder" tail: a Linux host's blank row is refused
+     *  ({@link #R1P}), so that advice could only lead to a second refusal; the folder it asks for is the Linux one.
+     * */
+    static final String R1_PLAYER_POSIX = "Player game folder (Setup tab) does not hold the game: %s has no "
+            + ServeLauncher.CORE_JAR + " - set it to your Linux Starsector folder (the one holding starsector.sh).";
+    /** R1's Linux twin: a Linux host whose Player game folder row is blank ({@link #noInstallRefusal}). WHY its own
+     *  text and no Game folder fallback there: a Linux host's Game folder holds the WINDOWS game files its serve
+     *  runs, which never hold {@value #GAME_SH}, so a fallback could only end in {@link #R2P} asking the host to
+     *  extract the kit into a folder that can never launch it. */
+    static final String R1P = "Player game folder (Setup tab) is not set - type your Linux Starsector folder (the one"
+            + " holding starsector.sh) into it, then press Join from this PC again.";
     /** {@code %1$s} = the install, {@code %2$s} = the kit hint. */
     static final String R2 = "No player kit in this game: %1$s\\mods\\CC_Client\\join-cc.bat or"
             + " %1$s\\starsector.exe is missing. Extract CC_Client from %2$s into %1$s\\mods\\, then press Join"
@@ -1024,16 +1039,37 @@ final class OpsJoinSelf {
      * unparsable = null) and {@link ServeLauncher#resolveGame} (the folder or its {@code starsector-core} form must
      * hold the core jar, else null). The row may name the install OR its {@code starsector-core} folder; the install
      * is returned either way. The core-form arm (the parent returned) fires
-     * only when the folder holding the jar IS a {@code starsector-core} folder (case-blind, as Windows names it) - a
-     * Linux install keeps the jar at its own root, so a row naming it resolves to itself, never to its parent.
+     * only when the folder holding the jar IS a {@code starsector-core} folder (case-blind, as Windows names it) whose
+     * parent holds a game launcher ({@link #coreForm}) - a Linux install keeps the jar at its own root, so a row
+     * naming it resolves to itself, never to its parent, whatever the folder is called.
      * WHY the player row first - a Linux host's serve runs the Windows game
      * files from {@code game.root} while its own join window needs the Linux download; a SET player row that
      * resolves to no install returns null and NEVER consults {@code game.root} (the host typed it on purpose; the
      * callers refuse with {@link #noInstallRefusal}). The serve's Start reads only {@code game.root}. Thread: any.
+     * This form = a Windows host's law ({@code posixHost} false).
      */
     static Path installOrNull(Path packageRoot, Map<String, String> rows) {
+        return installOrNull(packageRoot, rows, false);
+    }
+
+    /**
+     * {@link #installOrNull(Path, Map)} for the host's platform. On a Linux
+     * host ({@code posixHost}) a blank player row = null and {@code game.root} is never read - that row names the
+     * Windows game its serve runs, so the callers refuse with {@link #R1P} instead of judging the wrong folder. The
+     * core-form arm returns the parent only when the parent holds {@value #GAME_EXE} or {@value #GAME_SH} (the
+     * installed layout: the launchers beside a {@code starsector-core} folder); a folder that merely carries that
+     * name and holds the jar at its own root is the install itself. WHY the real disk ({@link #LIVE}) and not the
+     * callers' {@link Effects}: the jar probe that picks the install ({@link ServeLauncher#resolveGame}) reads the
+     * real disk, and the parent probe decides the same thing (which folder IS the install), so both read one
+     * filesystem; the kit law ({@link #installRefusalOrNull}) reads the launchers through the effects after. Thread:
+     * any.
+     */
+    static Path installOrNull(Path packageRoot, Map<String, String> rows, boolean posixHost) {
         String row = playerRow(rows);
         if (row.isEmpty()) {
+            if (posixHost) {
+                return null;
+            }
             row = trimmed(rows == null ? null : rows.get(ServeLauncher.ROW_GAME_ROOT));
         }
         if (row.isEmpty() || packageRoot == null) {
@@ -1047,10 +1083,20 @@ final class OpsJoinSelf {
         if (core == null) {
             return null;
         }
-        Path coreName = core.getFileName();
-        boolean coreForm = core.equals(path) && coreName != null
-                && ServeLauncher.CORE_DIR.equalsIgnoreCase(coreName.toString());
-        return coreForm ? path.getParent() : path;
+        return coreForm(path, core) ? path.getParent() : path;
+    }
+
+    /** Does {@code path} (a row's folder; {@code core} = where {@link ServeLauncher#resolveGame} found the jar) name
+     *  an install's {@code starsector-core} folder? Its name matches case-blind (as Windows names it), the jar sits
+     *  at its own root, AND its parent holds {@value #GAME_EXE} or {@value #GAME_SH} as a regular file. The reads go
+     *  through {@link #LIVE} (the real disk, the one seam the residency law declares for this class). Thread: any.
+     * */
+    private static boolean coreForm(Path path, Path core) {
+        Path name = core.getFileName();
+        Path parent = path.getParent();
+        return core.equals(path) && name != null && ServeLauncher.CORE_DIR.equalsIgnoreCase(name.toString())
+                && parent != null && (LIVE.isRegularFile(parent.resolve(GAME_EXE))
+                        || LIVE.isRegularFile(parent.resolve(GAME_SH)));
     }
 
     /** The {@code game.root.player} row trimmed; null rows / an absent or blank row = {@code ""}. Thread: any.
@@ -1066,15 +1112,28 @@ final class OpsJoinSelf {
     }
 
     /** The refusal for a press whose {@link #installOrNull} is null: {@link #R1_PLAYER} naming the bounded player
-     *  row when {@link #playerRowSet}, else {@link #R1}. Thread: any. */
+     *  row when {@link #playerRowSet}, else {@link #R1}. Thread: any. This form
+     *  = a Windows host's law ({@code posixHost} false). */
     static String noInstallRefusal(Map<String, String> rows) {
-        return playerRowSet(rows) ? String.format(Locale.ROOT, R1_PLAYER, boundedText(playerRow(rows))) : R1;
+        return noInstallRefusal(rows, false);
     }
 
-    /** {@link #noInstallRefusal} as a REFUSED result: token {@code r1_player} when {@link #playerRowSet}, else
-     *  {@code r1}. Thread: any. */
-    private static Result refusedNoInstall(Map<String, String> rows) {
-        return refused(playerRowSet(rows) ? "r1_player" : "r1", noInstallRefusal(rows));
+    /** {@link #noInstallRefusal(Map)} for the host's platform: an unset player row on a Linux host
+     *  ({@code posixHost}) = {@link #R1P} (its {@link #installOrNull(Path, Map, boolean)} never reads Game folder); a
+     *  set row holding no game there = {@link #R1_PLAYER_POSIX} (no Game folder fallback to offer). Thread: any.
+     *  The posix twin. */
+    static String noInstallRefusal(Map<String, String> rows, boolean posixHost) {
+        if (playerRowSet(rows)) {
+            return String.format(Locale.ROOT, posixHost ? R1_PLAYER_POSIX : R1_PLAYER, boundedText(playerRow(rows)));
+        }
+        return posixHost ? R1P : R1;
+    }
+
+    /** {@link #noInstallRefusal(Map, boolean)} as a REFUSED result: token {@code r1_player} when
+     *  {@link #playerRowSet}, else {@code r1} ({@link #R1P} = R1's Linux twin, as R2P rides {@code r2}). Thread:
+     *  any. */
+    private static Result refusedNoInstall(Map<String, String> rows, boolean posixHost) {
+        return refused(playerRowSet(rows) ? "r1_player" : "r1", noInstallRefusal(rows, posixHost));
     }
 
     /** R1 for no install; R2 (naming the install and {@code kitHint}, each cut to {@link #TEXT_PATH_MAX}) when
@@ -1729,13 +1788,13 @@ final class OpsJoinSelf {
      * the launcher's second copy finds the live window, which brings its tab back and answers the copy's wait with
      * a cancel, so that copy ends "Launch cancelled" with exit 1 by design (its {@code window_cancelled} path)
      * while the live window stays up (the press found it by the endpoint ping). An install gone since the press =
-     * R1, or {@link #R1_PLAYER} (token {@code r1_player}) when the player row is set. Thread: any.
-     *
+     * R1, or {@link #R1_PLAYER} (token {@code r1_player}) when the player row is set, or {@link #R1P} on a Linux
+     * host whose player row is blank. Thread: any.
      */
     static Result reopenSpawn(Inputs in, Effects fx) {
-        Path install = installOrNull(in.packageRoot(), in.launcherRows());
+        Path install = installOrNull(in.packageRoot(), in.launcherRows(), in.posixHost());
         if (install == null) {
-            return refusedNoInstall(in.launcherRows());
+            return refusedNoInstall(in.launcherRows(), in.posixHost());
         }
         String shown = boundedText(install.toString());
         boolean posix = in.posixHost();
@@ -2052,15 +2111,18 @@ final class OpsJoinSelf {
     }
 
     /**
-     * Window 2's launcher rows: {@code rows} with {@code game.root} = {@code row2} and the {@code game.root.player}
-     * row REMOVED. WHY the removal: {@link #installOrNull} reads a set player row first, so a copy that kept it
-     * would resolve window 2 to window 1's own game and {@link #R17} would refuse every two-window press on a host
-     * that sets the row. Window 1 keeps {@code rows} as they are (its install = the player row when set).
-     * {@code rows} non-null (a blank row 2 returns before this). Thread: any.
+     * Window 2's launcher rows: {@code rows} with BOTH {@code game.root} and {@code game.root.player} =
+     * {@code row2}. WHY window 1's player row is replaced: {@link #installOrNull} reads a set player row first, so a
+     * copy that kept it would resolve window 2 to window 1's own game and {@link #R17} would refuse every two-window
+     * press on a host that sets the row. Window 1 keeps {@code rows} as they are (its install = the player row when
+     * set). {@code rows} non-null (a blank row 2 returns before this). Thread: any.
+     * WHY row 2 rides the player row too - a Linux host's install
+     * law never reads Game folder for a blank player row ({@link #R1P}), so a copy with the player row removed would
+     * refuse window 2 there; a set player row resolves to row 2 alone on every platform (no fallback either way).
      */
     private static Map<String, String> secondWindowRows(Map<String, String> rows, String row2) {
         Map<String, String> rows2 = new HashMap<>(rows);
-        rows2.remove(ServeLauncher.ROW_GAME_ROOT_PLAYER);
+        rows2.put(ServeLauncher.ROW_GAME_ROOT_PLAYER, row2);
         rows2.put(ServeLauncher.ROW_GAME_ROOT, row2);
         return rows2;
     }
@@ -2118,11 +2180,12 @@ final class OpsJoinSelf {
 
     /** (1) The install: R1 / {@link #R1_PLAYER} (token {@code r1_player}, a set player row that holds no game) /
      *  R2 / R2P = REFUSED; nothing read, written or started. A set player row's install is the one the platform's
-     *  kit law judges. The no-install arm. */
+     *  kit law judges. The no-install arm. A Linux host with the player row
+     *  blank = {@link #R1P} (token {@code r1}), Game folder never judged. */
     private static Result step1Install(Press p) {
-        p.install = installOrNull(p.in.packageRoot(), p.in.launcherRows());
+        p.install = installOrNull(p.in.packageRoot(), p.in.launcherRows(), p.in.posixHost());
         if (p.install == null) {
-            return refusedNoInstall(p.in.launcherRows());
+            return refusedNoInstall(p.in.launcherRows(), p.in.posixHost());
         }
         String refusal = installRefusalOrNull(p.install, p.fx, p.in.kitHint(), p.in.posixHost());
         return refusal == null ? null : refused("r2", refusal);
@@ -2174,7 +2237,8 @@ final class OpsJoinSelf {
 
     /**
      * The kit check alone, before a Start: step (1)'s install law first (an unset or bad Game folder = its R1 / R2
-     * here, a set Player game folder that holds no game = {@link #R1_PLAYER}; nothing read past it), then
+     * here, a set Player game folder that holds no game = {@link #R1_PLAYER}, a blank one on a Linux host =
+     * {@link #R1P}; nothing read past it), then
      * {@link #kitCheckOf}. Null = the kit is current or the check is skipped
      * (proceed, nothing to say). Thread: any, as {@link #press}.
      */

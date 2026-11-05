@@ -218,8 +218,9 @@ public final class PodScenarioEnginePort implements PodScenarioDriver.Port {
             }
             int crPerMille = Math.max(0, Math.min(1000, Math.round(spawned.deployCr() * 1000f)));
             PersistentPilotIntentCombatServer.fanRosterAppendChunks(door,
-                    List.of(new RosterAppendFrameCodec.AppendRow(wire, side, variant, label,
-                            crPerMille, 0L, RosterAppendFrameCodec.BAY_NONE, "",
+                    List.of(new RosterAppendFrameCodec.AppendRow(wire, side,
+                            spawned.fieldedVariantId() == null ? variant : spawned.fieldedVariantId(), //
+                            label, crPerMille, 0L, RosterAppendFrameCodec.BAY_NONE, "",
                             spawned.atRest())), roundRosterAppendFrames); // midDeployAtRest
             transferLane.markCensusDirty();
             stableByWire.put(wire, spawned.stableId());
@@ -271,8 +272,9 @@ public final class PodScenarioEnginePort implements PodScenarioDriver.Port {
             }
             int crPerMille = Math.max(0, Math.min(1000, Math.round(spawned.deployCr() * 1000f)));
             PersistentPilotIntentCombatServer.fanRosterAppendChunks(door,
-                    List.of(new RosterAppendFrameCodec.AppendRow(wire, foeSide, variantId, label,
-                            crPerMille, 0L, RosterAppendFrameCodec.BAY_NONE, "",
+                    List.of(new RosterAppendFrameCodec.AppendRow(wire, foeSide,
+                            spawned.fieldedVariantId() == null ? variantId : spawned.fieldedVariantId(), //
+                            label, crPerMille, 0L, RosterAppendFrameCodec.BAY_NONE, "",
                             spawned.atRest())), roundRosterAppendFrames); // midDeployAtRest
             transferLane.markCensusDirty();
             stableByWire.put(wire, spawned.stableId());

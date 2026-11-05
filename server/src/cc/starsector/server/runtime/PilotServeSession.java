@@ -299,6 +299,8 @@ public final class PilotServeSession {
     private int asteroidRefreshTicks; //
     private EntityDespawnEventDetector despawnDetector;
     private Map<Long, Long> departedShipDespawnTickById;
+    /** Ship despawns published DESTROYED this round (id -> publish tick) — the (d2) drain's late-HEALTHY row keys on it. */
+    private Map<Long, Long> destroyedShipDespawnTickById;
     private DespawnReasonEvidence despawnReasonEvidence;
     private MissileSplitEventDetector missileSplitDetector;
     private AutofireTargetLane afTargetLane;
@@ -1275,9 +1277,12 @@ public final class PilotServeSession {
         // already-published DEPARTED (instrumentation only; same-tick evidence corrects
         // inline at the observe). Ship-scale per round, never pruned.
         departedShipDespawnTickById = new HashMap<>();
+        destroyedShipDespawnTickById = new HashMap<>();
         // Second same-tick evidence for that correction — UNHEALTHY
         // repository removals of NON-growth ids deposited at the (d2) growth drain (a
         // hulkless dweller kill mints no corpse family, so the despawn rule alone published DEPARTED).
+        // And the same callback's HEALTHY truth for the reverse correction (a
+        // damaged hull's retreat read DESTROYED under the absolute threshold).
         despawnReasonEvidence = new DespawnReasonEvidence();
         // per-round MIRV split detector — pure fold over the
         // published snap's non-ship missile records; contentId resolves through the
@@ -2882,14 +2887,16 @@ public final class PilotServeSession {
                 // tail (row spec or table row; null = bare) — the client twin fields the same.
                 // CONTAINED — a codec/grammar reject drops the captain
                 // (bare row + one officer_row_dropped), never the serve (the blast radius of the fatal above).
-                appendRows.add(WaveOfficerRowGuard.officeredOrBare(
+                // The row names the id the roster FIELDED (a realized mint when
+                // a mod hook rolled the hull; the captain re-keyed to it), else spawnVariantId.
+                appendRows.add(WaveOfficerRowGuard.fieldedRow(
                         waveWireId, waveRow.side(), spawnVariantId,
-                        waveShipName, spawned.crPerMille(), spawned.officerOrNull(),
-                        "wave", round, lastSimTick + 1, spawned.atRest())); //
+                        waveShipName, spawned, "wave", round, lastSimTick + 1)); // the at-rest bit rides inside
                 System.out.println("npeer-serve wave_spawn side=" + waveRow.side()
                         + " variant=" + waveRow.variantId()
                         + " inflated=" + (waveRow.inflatedVariantId() == null ? "none"
                                 : waveRow.inflatedVariantId())
+                        + " fielded=" + spawned.rowVariantId(spawnVariantId)
                         + " name=" + waveShipName
                         + " slot=" + waveRow.shipName()
                         + " wire_id=" + waveWireId
@@ -2967,12 +2974,12 @@ public final class PilotServeSession {
                 // Contained like the wave mint above — the probe lane keeps
                 // its deliberate spawn-throw fail-fast, but a codec reject on the officer TAIL is
                 // a config fault, not an engine-deploy failure.
-                probeAppendRows.add(WaveOfficerRowGuard.officeredOrBare(
+                probeAppendRows.add(WaveOfficerRowGuard.fieldedRow(
                         probeWireId, 1, probeRow.variantId,
-                        probeRow.shipName, spawned.crPerMille(), spawned.officerOrNull(),
-                        "probe", round, lastSimTick + 1, spawned.atRest())); //
+                        probeRow.shipName, spawned, "probe", round, lastSimTick + 1)); //
                 System.out.println("npeer-serve wave_probe_spawn side=1"
                         + " variant=" + probeRow.variantId
+                        + " fielded=" + spawned.rowVariantId(probeRow.variantId)
                         + " name=" + probeRow.shipName
                         + " wire_id=" + probeWireId
                         + " stable_id=" + spawned.stableId()
@@ -3247,47 +3254,75 @@ public final class PilotServeSession {
                     growthReclassifier.recordSeamTruth(
                             stableIdRegistry.networkIdFor(growthEvent.stableKey()),
                             growthEvent.removedHealthy());
-                } else if (!growthEvent.removedHealthy()) {
-                    // A NON-growth (roster/wave) Ship removed
-                    // UNHEALTHY (isHulk || hitpoints<=0 at the repo callback) is a
-                    // death the detector reads DEPARTED when the kill blow removed
-                    // it inside one tick with no corpse family (hulk chance 0 —
-                    // the shrouded tendril, served 0904-062817 id=3 @1693). The
-                    // loop below consumes it THIS tick. LOOKUP only — an
-                    // unknown key is never minted. Truth landing AFTER a DEPARTED
-                    // already published = loud line (the lag class is measured
-                    // before any code holds roster despawns for it).
+                } else {
+                    // A NON-growth (roster/wave) Ship's
+                    // repository-removal truth, BOTH ways. UNHEALTHY (isHulk ||
+                    // hitpoints<=0 at the callback) = a death the detector reads
+                    // DEPARTED when the kill blow removed it inside one tick with no
+                    // corpse family (hulk chance 0 — the shrouded tendril, served
+                    // 0904-062817 id=3 @1693). HEALTHY (alive and intact) = a
+                    // DEPARTURE the detector reads DESTROYED whenever the last-seen
+                    // ABSOLUTE hull sat at or under its 800 threshold (
+                    // the owner's afflictor retreated at 719/1500 -> DESTROYED /
+                    // HULL_DEATH, the other window painted a kill, the own client
+                    // stranded in the shuttle). The loop below consumes either
+                    // THIS tick. LOOKUP only — an unknown key is never minted. Truth
+                    // landing AFTER the event already published = loud line (the lag
+                    // class is measured before any code holds roster despawns for it).
                     Long removedWireId = stableIdRegistry.networkIdForOrNull(
                             growthEvent.stableKey());
-                    if (removedWireId != null
-                            && despawnDetector.wasPresentInLastObservedFrame(
-                                    removedWireId)) {
+                    if (removedWireId == null) {
+                        continue;
+                    }
+                    boolean healthy = growthEvent.removedHealthy();
+                    if (despawnDetector.wasPresentInLastObservedFrame(removedWireId)) {
                         // Vanish NOT yet observed ⇒ this tick's despawn read will
                         // consume it. (A removal of an id whose despawn already
                         // published — overkill vaporize / off-camera hulk fade of
                         // a dead seat hull — must NOT deposit: the wire id is
                         // re-pointed at the T4 remount and a stale deposit would
-                        // flip the refield hull's later retreat to DESTROYED.)
+                        // flip the refield hull's later despawn.)
                         //
-                        despawnReasonEvidence.recordUnhealthyRemoval(
-                                removedWireId, snap.simTick());
-                        // Loud per deposit (ship-scale: only hulkless deaths land
-                        // here) — pairs with the same tick's `despawn id=` row to
-                        // prove the callback lands the tick of absence.
-                        System.out.println("npeer-serve unhealthy_removal id="
-                                + removedWireId
-                                + " variant=" + growthEvent.variantId()
-                                + " round=" + round + " tick=" + snap.simTick());
-                    } else if (removedWireId != null) {
-                        Long departedAtTick =
-                                departedShipDespawnTickById.get(removedWireId);
-                        if (departedAtTick != null
-                                && departedAtTick < snap.simTick()
-                                && snap.simTick() - departedAtTick <= 10L) {
-                            System.out.println("npeer-serve"
-                                    + " despawn_reason_late_unhealthy_removal id="
+                        if (healthy) {
+                            despawnReasonEvidence.recordHealthyRemoval(
+                                    removedWireId, snap.simTick());
+                            // Loud per deposit (ship-scale: retreats, dives, operator
+                            // despawns) — pairs with the same tick's `despawn id=` row;
+                            // hull= is the detector's last-seen read, the value the
+                            // threshold alone would have graded.
+                            System.out.println("npeer-serve healthy_removal id="
                                     + removedWireId
-                                    + " published=DEPARTED@" + departedAtTick
+                                    + " variant=" + growthEvent.variantId()
+                                    + " hull=" + despawnDetector.lastSeenHitpointsOrNaN(
+                                            removedWireId)
+                                    + " round=" + round + " tick=" + snap.simTick());
+                        } else {
+                            despawnReasonEvidence.recordUnhealthyRemoval(
+                                    removedWireId, snap.simTick());
+                            // Loud per deposit (ship-scale: only hulkless deaths land
+                            // here) — pairs with the same tick's `despawn id=` row to
+                            // prove the callback lands the tick of absence.
+                            System.out.println("npeer-serve unhealthy_removal id="
+                                    + removedWireId
+                                    + " variant=" + growthEvent.variantId()
+                                    + " round=" + round + " tick=" + snap.simTick());
+                        }
+                    } else {
+                        // The published event stands; the row names the correction
+                        // this truth would have made (the headless retreat-report lag
+                        // class for the healthy side — measured, never held for).
+                        Long publishedAtTick = (healthy
+                                ? destroyedShipDespawnTickById
+                                : departedShipDespawnTickById).get(removedWireId);
+                        if (publishedAtTick != null
+                                && publishedAtTick < snap.simTick()
+                                && snap.simTick() - publishedAtTick <= 10L) {
+                            System.out.println("npeer-serve"
+                                    + " despawn_reason_late_"
+                                    + (healthy ? "healthy" : "unhealthy")
+                                    + "_removal id=" + removedWireId
+                                    + " published=" + (healthy ? "DESTROYED@" : "DEPARTED@")
+                                    + publishedAtTick
                                     + " removed_tick=" + snap.simTick()
                                     + " (correction MISSED - published event stands)"
                                     + " round=" + round);
@@ -3552,9 +3587,19 @@ public final class PilotServeSession {
             final long tickNow = snap.simTick();
             tickDespawns = despawnReasonEvidence.correctDepartedReads(
                     tickDespawns, hulkRootsBorn,
+                    // Both directions ride this sink (a HEALTHY engine removal
+                    // restores DEPARTED for a threshold-misread retreat); the label decides.
                     (d, evidence) -> System.out.println(
                             "npeer-serve despawn_reason_corrected id="
-                            + d.entityId() + " DEPARTED->DESTROYED"
+                            + d.entityId() + " " + d.reason() + "->"
+                            + DespawnReasonEvidence.correctedReasonFor(evidence)
+                            + " evidence=" + evidence
+                            + " round=" + roundNow + " tick=" + tickNow),
+                    // A native DESTROYED read the engine removed unhealthy with no
+                    // corpse family born: re-minted corpseless, so each client presents
+                    // the death without waiting on (or minting) a wreck.
+                    (d, evidence) -> System.out.println(
+                            "npeer-serve despawn_corpseless id=" + d.entityId()
                             + " evidence=" + evidence
                             + " round=" + roundNow + " tick=" + tickNow),
                     // Still-DEPARTED ship despawn: remember it so a LATE corpse
@@ -3615,6 +3660,11 @@ public final class PilotServeSession {
             System.out.println("npeer-serve despawn id=" + d.entityId()
                     + " reason=" + d.reason() + " at=" + d.simTick()
                     + " round=" + round + " tick=" + snap.simTick());
+            if (d.reason() == EntityDespawnReason.DESTROYED) {
+                // A HEALTHY removal truth landing AFTER this publish prints
+                // loud at the (d2) drain (despawn_reason_late_healthy_removal).
+                destroyedShipDespawnTickById.put(d.entityId(), snap.simTick());
+            }
         }
         // AWSD anchor evict — UNGATED (the compose arg below
         // stays eventLaneOn-gated for the WIRE; eviction is ground truth every tick).

@@ -1384,8 +1384,14 @@ public final class PersistentPilotIntentCombatServer {
         public record WaveSpawnResult(String stableId, int crPerMille,
                 List<String> moduleStableIds,
                 cc.starsector.server.match.OfficerRosterCodec.OfficerSpec officerOrNull,
-                float collisionRadius, boolean atRest) {
+                float collisionRadius, boolean atRest, String fieldedVariantIdOrNull) {
             public WaveSpawnResult {
+                // fieldedVariantIdOrNull = the id the roster ACTUALLY fielded the
+                // hull under (a realized cc_real_<goal>_<hex8> mint when a mod hook rolled the member's
+                // variant away from stock, RealizedLoadoutLane) — null / blank = the goal id the drain
+                // asked for (every contract fake + the pre-1506 shapes). Read through rowVariantId.
+                fieldedVariantIdOrNull = fieldedVariantIdOrNull == null
+                        || fieldedVariantIdOrNull.isEmpty() ? null : fieldedVariantIdOrNull;
                 // collisionRadius = the spawned hull's engine
                 // collision radius (the adhoc cluster spacing source); VALUE-DOMAIN finite >= 0,
                 // anything else (and every contract fake / legacy shape) reads 0 = unread.
@@ -1399,6 +1405,23 @@ public final class PersistentPilotIntentCombatServer {
                 // officerOrNull = the captain the engine roster ACTUALLY attached
                 // (row spec or table row) — the RAPP v3 officer tail; null on a bare hull and
                 // from every contract fake (the 2/3-arg shapes).
+            }
+
+            /**
+             * The variant id the hull's RAPP row names — the realized id when the
+             * roster minted one, else {@code goalVariantId} (the id the drain asked the mint for). The
+             * drains pass THIS to the row (and re-key an officer spec to it: {@code WaveOfficerRowGuard}),
+             * never the goal, so a window builds the server's own roll.
+             */
+            public String rowVariantId(String goalVariantId) {
+                return fieldedVariantIdOrNull == null ? goalVariantId : fieldedVariantIdOrNull;
+            }
+
+            /** The shape before the fielded id — the row names the goal id. */
+            public WaveSpawnResult(String stableId, int crPerMille, List<String> moduleStableIds,
+                    cc.starsector.server.match.OfficerRosterCodec.OfficerSpec officerOrNull,
+                    float collisionRadius, boolean atRest) {
+                this(stableId, crPerMille, moduleStableIds, officerOrNull, collisionRadius, atRest, null);
             }
 
             /**
@@ -2109,7 +2132,9 @@ public final class PersistentPilotIntentCombatServer {
 
     /** One encoded 38-B SEAT frame per event, in the authority's emission order (ctrl lane). */
     /**
-     * The ONE RAPP chunk+fan+record loop — chunk under
+     * The ONE RAPP chunk+fan+record loop — first drain every pending
+     * realized-loadout VDEF to the door ({@code RealizedLoadoutLane.flushToDoor})
+     * so no row below names a minted id ahead of its body, then chunk under
      * {@code MAX_ROWS_PER_FRAME}, fan each frame, and append it AS SENT to the round's
      * late-joiner replay log. Shared by the wave lane (its original home) and the growth
      * drain; extracted so the copy never mints (tripwire (iii) adjudication).
@@ -2126,6 +2151,13 @@ public final class PersistentPilotIntentCombatServer {
     static void fanRosterAppendChunks(PilotIntentDatagramServer door,
             List<RosterAppendFrameCodec.AppendRow> appendRows,
             List<byte[]> roundRosterAppendFrames) throws IOException {
+        // Every realized-loadout VDEF the roster minted since the last flush
+        // reaches every live window BEFORE any row below can name its id (the one CTRL FIFO
+        // keeps the order; the first call attaches the late-joiner catalog slot; a no-op with
+        // nothing pending or no process lane). This is the ONE
+        // RAPP fan point, so the wave / adhoc / probe / pod / growth / transfer lanes all inherit
+        // the VDEF-before-RAPP law the seat announce keeps for itself (SeatAnnounceTracker).
+        RealizedLoadoutLane.flushToDoor(door);
         // Chunk BY BYTES (an officered v3 row is ~300 B; the count-only split
         // would fail the encode closed on a 4-officer wave) — the codec owns the law.
         for (List<RosterAppendFrameCodec.AppendRow> chunk : RosterAppendFrameCodec.chunk(appendRows)) {

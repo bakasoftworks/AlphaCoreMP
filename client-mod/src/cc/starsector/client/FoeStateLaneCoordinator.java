@@ -210,9 +210,10 @@ final class FoeStateLaneCoordinator {
      * lane flagged LAST frame from {@link PredictReconcileCombatPlugin#remoteEntities}. Runs at the
      * top of {@link #maintainRemoteEntities}, BEFORE the walk, so (a) the kill (which fires inside
      * that walk) never mutates the map under its own iterator and (b) every lane saw one full
-     * render frame of {@code killed=true} on the entry first. Fighters only (flagged in
-     * {@link #killFighterRemote}): the engine instant-removes a fighter corpse and its growth
-     * wire id is never re-issued, so the entry is dead weight — before this sweep it stayed forever and
+     * render frame of {@code killed=true} on the entry first. Fighters and corpseless / dweller NON-SEAT
+     * bodies only (flagged in {@link #killFighterRemote} / {@link #killRemote}): the engine instant-removes
+     * the corpse and a non-seat wire id is never re-issued, so the entry is dead weight — a SEAT's id IS
+     * re-issued at its remount, so its entry is never flagged. Before this sweep it stayed forever and
      * the per-frame registry walks (~17 sites, one O(N²)) grew with the CUMULATIVE launch count
      * (858 rows, ~90 alive: the client frame overruns). A same-id re-life in the one
      * frame between flag and sweep ({@code respawnRemote} clears {@code reapTick}) or a RAPP
@@ -263,7 +264,7 @@ final class FoeStateLaneCoordinator {
         if (reaped > 0) {
             plugin.remoteReaped += reaped;
             if (plugin.remoteReaped <= 8 || (plugin.remoteReaped % 100) < reaped) {
-                PilotWatchLog.info("predict reap: " + reaped + " fighter entr" + (reaped == 1 ? "y" : "ies")
+                PilotWatchLog.info("predict reap: " + reaped + " fighter/corpseless entr" + (reaped == 1 ? "y" : "ies")
                         + " dropped from the registry (total=" + plugin.remoteReaped
                         + " registry=" + plugin.remoteEntities.size() + ") tick=" + simTick);
             }
@@ -520,8 +521,14 @@ final class FoeStateLaneCoordinator {
         // non-fighter path honors DEPARTED corpse-free (was: map hygiene
         // only); DESTROYED/absent keep the verbatim death path below.
         cc.starsector.client.net.ClientDespawnReason reason;
+        boolean corpseless;
         synchronized (plugin.despawnReasonByEntity) {
             reason = plugin.despawnReasonByEntity.remove(Long.valueOf(re.entityId));
+            // The corpseless bit is taken with its reason (same
+            // lock, same event). It counts only beside a taken reason: a reason consumed by another
+            // retire path can leave a stale id in the set, and a stale bit presenting a later real
+            // death corpse-free would mask a desync — unknown is never corpseless.
+            corpseless = plugin.despawnCorpselessByEntity.remove(Long.valueOf(re.entityId)) && reason != null;
         }
         if (re.ship.isFighter()) {
             if (reason == null) {
@@ -578,11 +585,18 @@ final class FoeStateLaneCoordinator {
         }
         re.killed = true;
         re.deathTick = simTick; // r1 kill tick (ServerDealtSourceLaw)
-        // The dweller entry is flagged for the reap sweep BEFORE the try — the
+        // The dweller (or corpseless) entry is flagged for the reap sweep BEFORE the try — the
         // fighter lane's order (killFighterRemote) — so a throw inside the presentation can never
         // leave a killed entry walked per frame.
         boolean dweller = DwellerHullLaw.isDweller(re.ship);
-        if (dweller && !re.droneGate) {
+        // The reap is only for an entry with NO future life. A descriptor SEAT's
+        // wire id is fixed for the round — the T4 remount re-uses it and nothing re-creates a reaped entry (the
+        // re.killed → respawnRemote edge of maintainRemoteEntities walks the registry; a same-variant remount
+        // fans no RAPP row) — so a SEAT's corpseless (or dweller) death keeps its entry killed like the hulk
+        // path: presented instant-remove + evicted below, no family, and the remount edge re-captures the
+        // fresh hull at the same id. Rows: CorpselessReapRows reap-seat-kept / reap-nonseat-dropped.
+        boolean seat = MatchMissionBuilder.isSeatShipId(re.entityId);
+        if ((dweller || corpseless) && !seat && !re.droneGate) {
             re.reapTick = simTick;
             plugin.remoteReapQueue.add(re);
         }
@@ -600,11 +614,19 @@ final class FoeStateLaneCoordinator {
             // row) — route it to the instant-remove death, mint no fracture family (that is what
             // pinned the invisible hulk alive), and flag the entry for the reap sweep exactly as
             // the fighter lane does for a body the engine removes on the spot.
-            if (dweller) {
+            // A CORPSELESS despawn (the server's engine removed
+            // the hull with no hulk, for any hull class) takes the same instant-remove death: the
+            // server publishes no hulk row, so a minted fracture family would be a corpse it never had.
+            if (dweller || corpseless) {
                 plugin.presenter.presentServerFighterDeath(re.ship, lastPose != null ? lastPose.facing() : Float.NaN);
-                deployedEvict.evict(plugin.engine, re.ship, "dweller-destroyed");
-                PilotWatchLog.info("predict bots kill: REMOTE entity " + re.entityId + " (side " + re.side
-                        + ") DWELLER server-decided death -> instant-remove, no hulk/fracture tick=" + simTick);
+                deployedEvict.evict(plugin.engine, re.ship, corpseless ? "corpseless-destroyed" : "dweller-destroyed");
+                if (corpseless) {
+                    PilotWatchLog.info("predict bots kill: REMOTE entity " + re.entityId + " (side " + re.side
+                            + ") CORPSELESS server-decided death -> instant-remove, no hulk/fracture tick=" + simTick);
+                } else {
+                    PilotWatchLog.info("predict bots kill: REMOTE entity " + re.entityId + " (side " + re.side
+                            + ") DWELLER server-decided death -> instant-remove, no hulk/fracture tick=" + simTick);
+                }
                 return;
             }
             plugin.presenter.presentServerDeath(re.ship, lastPose != null ? lastPose.facing() : Float.NaN);
@@ -618,8 +640,8 @@ final class FoeStateLaneCoordinator {
     }
 
     /**
-     * The fighter kill lane — the server keeps no fighter corpse (hulkChance 0 ⇒
-     * its engine took the instant-remove branch), so neither may the replica. DEPARTED (carrier
+     * The fighter kill lane — the replica keeps no fighter corpse (the engine rolls
+     * 0.5 for fighters; the wire's corpseless bit now says it for any hull). DEPARTED (carrier
      * recall/retreat) = the recall hold-and-animate (~0.6 s of vanilla's own
      * RecallDeviceStats presentation on the local body, then {@code removeEntity}; knob
      * {@code cc.predict.recallFx}, {@code off} = the older silent reap); DESTROYED or reason

@@ -1222,6 +1222,12 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     final java.util.HashMap<Long, cc.starsector.client.net.ClientDespawnReason>
             despawnReasonByEntity =
                     new java.util.HashMap<Long, cc.starsector.client.net.ClientDespawnReason>();
+    /** net-thread intake of the EDSP corpseless bit per REMOTE
+     *  entity, keyed by wire id — GUARDED BY the {@link #despawnReasonByEntity} lock (every EDSP put
+     *  writes both under it, so a present reason always carries its own event's bit; render-thread
+     *  remove-take in {@link FoeStateLaneCoordinator#killRemote}). Round-local (cleared beside the
+     *  reason map at finishMatchReset). */
+    final java.util.Set<Long> despawnCorpselessByEntity = new java.util.HashSet<Long>();
     /** Max net ticks a fighter kill waits for its trailing EDSP reason. */
     static final long FIGHTER_REASON_HOLD_TICKS = 3L;
     /** mount-lifecycle re-key pose hold, in sim ticks. MMNT rides CTRL and fans
@@ -5579,6 +5585,10 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         }
         // Outgoing body: keep a server-mirrored corpse, dispose residue (the old blanket disposal
         // WAS the deletion seen in play). Guarded inside: never throws.
+        // The fighter-fx / HUD reap relay runs here too — this exit nulls re.ship
+        // OUTSIDE the reap sweep (FoeStateLaneCoordinator.reapFlaggedRemotes), so a respawned fighter/drone body
+        // would stay a member (and maybe the leader) of its replica wing. Idempotent on a reaped body.
+        fighterHud.onRemoteReaped(re);
         // Release the god mirror FIRST, unconditionally — the corpse lane keeps
         // live station modules alive, and nothing maintains an unbound body again.
         godMirror.releaseIfCarrying(re.ship);
@@ -7094,6 +7104,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         ownDespawnTick = -1L;
         synchronized (despawnReasonByEntity) {
             despawnReasonByEntity.clear(); // Remote reasons are round-local too
+            despawnCorpselessByEntity.clear();
         }
         recallFx.resetRound(engine); // mid-animation bodies die with the round
         phaseDive.resetRound(engine); // mid-dive bodies die with the round
@@ -7408,6 +7419,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     cc.starsector.client.net.ClientDespawnReason retiring;
                     synchronized (despawnReasonByEntity) {
                         retiring = despawnReasonByEntity.remove(Long.valueOf(re.entityId));
+                        despawnCorpselessByEntity.remove(Long.valueOf(re.entityId));
                     }
                     PilotWatchLog.info("predict dismount depart-hold: entity " + re.entityId
                             + " vacate reflected (row absent) -> spawn-on-sight re-armed"

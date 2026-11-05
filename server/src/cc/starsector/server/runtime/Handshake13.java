@@ -62,11 +62,15 @@ public final class Handshake13 {
      *
      * 17 = the {@code LUNA} probe document beside {@code DESC} + the {@code KMAP} family reservation; no F1 byte changed.
      * 18 = the HELLO report bit {@code 0x20} ({@link #FLAG_PILOT_REPLICA}) is defined; no other F1 byte changed.
+     * 19 = the version-18 bytes unchanged; the bump gates the entity-despawn frame's corpseless bit, which a
+     * version-18 kit cannot read, so that kit's F1 never opens at this door: it meets the {@code HandshakeBounceLadder}
+     * v18 rung and reads {@code kit_outdated} (the rung landed at the fold).
+     *
      * A bump re-mints the {@code Handshake13KatRows} K0..K7 goldens in the SAME commit (two temporary hex-print
      * passes, never committed): the byte heads every frozen message, so the 15 and 16 bumps both went red on it.
      *
      */
-    public static final int VERSION = 18;
+    public static final int VERSION = 19;
     /** The highest lawful {@code team} byte; a sealed 3..255 opens as {@code bodyOk == false}. */
     public static final int TEAM_MAX = 2;
     /** The sealed F2 body's trailing pilot keymap: one byte per {@link PilotIntentFrame#CONTROL_KEY_NAMES} entry. */

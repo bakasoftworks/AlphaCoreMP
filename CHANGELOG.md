@@ -2,6 +2,17 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.6.1 - 2026-11-05
+
+- Fixed a crash with the Arma Armatura mod on the server: when a player picked the Valkazard Kai or the Raiden EX, every player's game crashed once its blade drones launched (0.4.0 to 0.6.0). Fighters launched from another player's or an AI carrier now carry a fighter wing on your screen, as the game expects, and a wing that refills after losing every fighter follows a live fighter on the radar.
+- A spawned AI ship of a mod that randomizes its weapons at spawn (Arma Armatura's Aleste) now carries the same weapons on every player's screen; before, each game rolled its own.
+- Retreating with a healthy ship (the bottom edge's Enter prompt, or a retreat order from the tab map) no longer strands you as a shuttle with no respawn while the other players see your ship bouncing at the map edge: the server now reads a healthy departure as a departure, not a kill, and you fly back in. `/despawn`, the end of a transfer pod and a phase dive now vanish the ship on the other screens rather than kill it.
+- With the chat box open, Enter sends the line and does nothing else, so typing a command can no longer retreat your ship. With chat closed at the bottom edge, Enter still opens chat and retreats, as the game's prompt says.
+- A kill that leaves no wreck on the server (a ship blown apart by one heavy volley) now leaves no wreck on the players' screens either. Tested in rows only; not yet seen in a match.
+- Linux hosts: "Player game folder" is required for "Join from this PC" and "Launch debug WATCH". A blank row is now refused by name (0.6.0 judged the Windows game files in "Game folder" instead and asked for a kit under a folder that could never start the game), and the Setup tab's hint states the rule for each platform. A set folder that holds no game is named, without the "clear it" advice that could only fail on Linux.
+- The joiner kit must be updated to 0.6.1: the connection format changed, and a 0.4.0 to 0.6.0 kit is refused at the door with "kit outdated".
+- The hosting README's ops GUI section adds a caution for hosts who reach the ops GUI through an ssh tunnel: keep the host's OpenSSH current (an older OpenSSH on musl-based Linux accepts over-long passwords on accounts that should take none).
+
 ## 0.6.0 - 2026-11-04
 
 - New "Player game folder" (Setup tab, beside "Game folder"): on a Linux host, the Linux install of the game that "Join from this PC" and "Launch debug WATCH" start your own windows from, while the server keeps running the Windows game files in "Game folder". Blank means "Game folder". A folder set there that holds no game refuses the press and names the row. Without it, those two buttons could not work on a Linux host, though 0.5.0 said "Join from this PC" did.

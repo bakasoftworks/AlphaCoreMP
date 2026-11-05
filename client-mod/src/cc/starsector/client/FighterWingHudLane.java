@@ -38,9 +38,11 @@ import java.util.Map;
  *   Pips are lit by {@code wing.getMembers().size()} (pure list
  *   length), so a bound fighter replica whose RAPP row names this carrier+bay is
  *   {@code addMember}-ed and a reaped one {@code removeMember}-ed. The replica is NEVER
- *   {@code setWing}-ed: a wing only enters the engine repository through a ship whose
- *   {@code getWing()==wing}, so the replica wing stays
- *   INERT — no {@code M.advance}, no return orders, no local replacement mint.</li>
+ *   {@code setWing}-ed to THIS wing: a wing only enters the engine repository through a ship whose
+ *   {@code getWing()==wing} at promotion, so the HUD pip wing stays
+ *   INERT — no {@code M.advance}, no return orders, no local replacement mint. The fighter's
+ *   {@code getWing()} IS set — to {@link CarrierBornFighterFx}'s persistent, source-less replica wing,
+ *   attached AFTER promotion so it is never enrolled either (THE PERSISTENT WING).</li>
  * <li><b>Rate text:</b> the served per-carrier percent (AWSD v12 keyframe byte,
  *   {@code ServerEntityPose.fighterReplacementPct()}) is written over the panel's own label from
  *   this plugin's {@code advance}: {@code CombatState.advance} runs {@code widgetPanel.advance}
@@ -177,7 +179,7 @@ final class FighterWingHudLane implements OwnCarrierDrones.Roster {
     /** Round wrap: replicas die with the round; wings of the dead bodies are unreachable to the
      *  next panel (identity filter), so only our bookkeeping resets. */
     void resetForMatchReset() {
-        fighterFx.resetForMatchReset(); // round-scoped latch/pending/transient wings
+        fighterFx.resetForMatchReset(); // round-scoped latch/pending/the persistent wings
         if (registrations > 0 || enrolled > 0 || overrides > 0) {
             PilotWatchLog.info("predict fighter-hud: round meter " + meter());
         }

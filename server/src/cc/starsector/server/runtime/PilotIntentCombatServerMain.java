@@ -1005,7 +1005,8 @@ public final class PilotIntentCombatServerMain {
                     // adhoc cluster spacing source; never a wire byte).
                     return new NPeerHooks.WaveSpawnResult(deployed.stableId(), crPerMille,
                             deployed.moduleStableIds(), deployed.officerOrNull(),
-                            deployed.collisionRadius(), deployed.atRest()); // RAPP v5 bit
+                            deployed.collisionRadius(), deployed.atRest(), // RAPP v5 bit
+                            deployed.fieldedVariantId()); // The realized id the row names
                 } catch (RuntimeException spawnFailure) {
                     throw new IOException("wave spawn failed for " + shipName + " (" + variantId
                             + ", side " + side + "): " + spawnFailure.getMessage(), spawnFailure);
