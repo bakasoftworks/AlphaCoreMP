@@ -2,6 +2,11 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.6.2 - 2026-11-05
+
+- Linux hosts: the hosting README's step 2 now explains how to use "Join from this PC" and "Launch debug WATCH" on the host itself: unpack the Linux download of the game, put `CC_Client` from the joiner kit into its `mods` folder, and type that folder into "Player game folder" at the first start; the server keeps running from "Game folder". Step 4's example now names the copied Windows folder, never the "Player game folder".
+- The joiner kit must be updated to 0.6.2: the version number is part of the kit's content check, so a 0.6.1 kit is refused at the door. No other change to the server or the client mod.
+
 ## 0.6.1 - 2026-11-05
 
 - Fixed a crash with the Arma Armatura mod on the server: when a player picked the Valkazard Kai or the Raiden EX, every player's game crashed once its blade drones launched (0.4.0 to 0.6.0). Fighters launched from another player's or an AI carrier now carry a fighter wing on your screen, as the game expects, and a wing that refills after losing every fighter follows a live fighter on the radar.

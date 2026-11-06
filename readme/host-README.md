@@ -348,10 +348,10 @@ This package runs on x86-64 only (its `jre` folder and the game's native librari
    C:\Program Files (x86)\Fractal Softworks\Starsector\starsector-core
    ```
 
-   To use "Join from this PC" or "Launch debug WATCH" on this host as well, also unpack the LINUX download of the same version somewhere on the host and, at your first start (step 6), type that folder into "Player game folder" (beside "Game folder"). Your own join window and the test match's windows start the game from it; the server keeps running from "Game folder". Blank means "Game folder", which is right on Windows.
+   To use "Join from this PC" or "Launch debug WATCH" on this host as well, also unpack the LINUX download of the same version somewhere on the host, e.g. `/home/<you>/Starsector` (the folder holding `starsector.sh`), and extract `CC_Client` from the joiner kit into that folder's `mods` folder (so `/home/<you>/Starsector/mods/CC_Client/join-cc.sh` exists). At your first start (step 6), type that folder into "Player game folder" (beside "Game folder"). Your own join window and the test match's windows start the game from it; the server keeps running from "Game folder". On Linux a blank "Player game folder" is refused, since the Windows game files the server runs cannot open the join window; blank means "Game folder" on Windows only.
 
 3. Unzip the package into a folder whose path has no spaces or colons, on a Linux file system (not a Windows share).
-4. Set the game folder at your first start (step 6): type it into "Game folder" in the ops GUI, or, after a first `sh serve.sh` has made `launcher.properties`, set `game.root=` there. Use the folder you copied, with `/` between folder names and no colon in the path, e.g. `/home/<you>/starsector-core`
+4. Set the game folder at your first start (step 6): type it into "Game folder" in the ops GUI, or, after a first `sh serve.sh` has made `launcher.properties`, set `game.root=` there. Use the folder you copied, with `/` between folder names and no colon in the path, e.g. `/home/<you>/starsector-core` (the copied Windows folder - never the "Player game folder", which is the Linux download from step 2).
 5. Activation: the server reads it from the Java preferences of the account that runs it. On a host without a screen, copy it from the computer where you activated the game: there, in a Command Prompt in the folder of an extracted Windows package (`cc-server-<date>-<time>.zip`), run
 
    ```
