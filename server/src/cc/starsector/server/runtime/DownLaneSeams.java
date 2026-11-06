@@ -479,6 +479,14 @@ final class DownLaneSeams {
                 // across owned ships (per-round, >= 0).
                 + " pilot_mark_writes=" + summary.pilotMarkWrites()
                 + " pilot_mark_clears=" + summary.pilotMarkClears()
-                + " ability_edge_quarantined=" + summary.abilityEdgeQuarantined();
+                + " ability_edge_quarantined=" + summary.abilityEdgeQuarantined()
+                // appended fields only: the pacer's sleep-late
+                // discriminator — paced frames that SLEPT and still woke > 8 ms past the deadline (the OS
+                // timer's coarse window, never the work: a work overrun is overrun_frames, the two are
+                // disjoint). Reads 0 on a healthy host; separates "timer window" from "work stall" on a
+                // stranger's log without JFR. Reader = the flight brief's rounds line.
+                + " sleep_late_frames=" + summary.sleepLateFrames()
+                + " sleep_late_max_ms="
+                + String.format(java.util.Locale.ROOT, "%.2f", summary.sleepLateMaxMillis());
     }
 }

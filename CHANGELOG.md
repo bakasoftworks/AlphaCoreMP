@@ -2,6 +2,13 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.6.3 - 2026-11-06
+
+- Hosts: each round line in the server log now reports late pacer wake-ups (`sleep_late_frames=` and `sleep_late_max_ms=`), so a host whose machine hands the server a coarse timer can see it in the log. The server's behaviour is unchanged.
+- The joiner kit must be updated to 0.6.3: the version number is part of the kit's content check, so an older kit is refused at the door.
+- Correction to the 0.6.1 notes: the tab-map retreat route described there is untested in play.
+- No other change to the server or the client mod.
+
 ## 0.6.2 - 2026-11-05
 
 - Linux hosts: the hosting README's step 2 now explains how to use "Join from this PC" and "Launch debug WATCH" on the host itself: unpack the Linux download of the game, put `CC_Client` from the joiner kit into its `mods` folder, and type that folder into "Player game folder" at the first start; the server keeps running from "Game folder". Step 4's example now names the copied Windows folder, never the "Player game folder".

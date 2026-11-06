@@ -813,11 +813,26 @@ public final class PersistentPilotIntentCombatServer {
             //
             int pilotMarkWrites,
             int pilotMarkClears,
-            int abilityEdgeQuarantined) {
+            int abilityEdgeQuarantined,
+            // Tail-appended: the pacer's SLEEP-LATE discriminator —
+            // paced frames that SLEPT (deadline still ahead at the pacer) and woke more than
+            // PilotServeSession.SLEEP_LATE_TRIGGER_NANOS past it = the OS timer's doing (a Windows
+            // coarse-timer window rounds every sleep up to the 15.625 ms quantum), never the frame's work.
+            // Disjoint from overrunFrames by construction (a work overrun never sleeps). Printed as
+            // sleep_late_frames= / sleep_late_max_ms= on the round line. 0 on a healthy host (155,699
+            // real-flight pacer sleeps: max 6.3 ms late); a stranger's 60 Hz serve inside a window shows
+            // here while overrun_frames stays ~0 (the 16.67 ms slack hides the late wake, p95 period 31 ms).
+            int sleepLateFrames,
+            long sleepLateMaxNanos) {
 
         /** Worst single-frame overrun this round, in milliseconds (derived from {@link #overrunMaxNanos()}). */
         public double overrunMaxMillis() {
             return overrunMaxNanos / 1_000_000.0d;
+        }
+
+        /** Worst sleep-late wake this round, in milliseconds (derived from {@link #sleepLateMaxNanos()}). */
+        public double sleepLateMaxMillis() {
+            return sleepLateMaxNanos / 1_000_000.0d;
         }
 
         /** Longest sprint episode's wall span this round, in milliseconds. */

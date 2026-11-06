@@ -378,6 +378,24 @@ public final class PilotServeSession {
     private int detEdgesSplitRows;
     private int overrunFrames;
     private long overrunMaxNanos;
+    /**
+     * The pacer's SLEEP-LATE discriminator. A paced frame that SLEPT (its
+     * deadline was still ahead at the pacer) and woke more than {@link #SLEEP_LATE_TRIGGER_NANOS} past
+     * it is the OS timer's doing, never the frame's work: a Windows coarse-timer window (a JVM whose
+     * 1 ms timer request goes unhonoured — reproducer {@code -XX:+ForceTimeHighResolution} on this
+     * JDK 17) rounds every sleep up to the 15.625 ms quantum (0–15.6 ms late), while a normal wake is
+     * ≤ 1–2 ms late. Disjoint from {@link #overrunFrames} (a work overrun never sleeps). Measured from
+     * the work meter's own {@code nanoTime} read — zero extra syscalls per frame.
+     */
+    private int sleepLateFrames;
+    private long sleepLateMaxNanos;
+    /**
+     * 8 ms, not the bench's 2 ms ({@code WanPathologyBench.SLEEP_OVERSHOOT_TRIGGER_NANOS}): over 155,699
+     * pacer sleeps in five real flights' JFR ({@code jdk.ThreadSleep}) the normal overshoot
+     * maxed at 6.3 ms and 7.6–9.4 % of sleeps overshot 2–4 ms, so 2 ms would read ~1,000–4,500 per
+     * healthy flight; 8 ms sits above every measured normal wake and inside a window's 0–15.6 ms spread.
+     */
+    static final long SLEEP_LATE_TRIGGER_NANOS = 8_000_000L;
     private int sprintEpisodes;
     private int sprintRunFrames;
     private int sprintRunMaxFrames;
@@ -1719,6 +1737,8 @@ public final class PilotServeSession {
         detEdgesSplitRows = 0; // Capped det_edges_split rows (the finer edges split)
         overrunFrames = 0;
         overrunMaxNanos = 0L;
+        sleepLateFrames = 0; // The sleep-late discriminator resets with its neighbour
+        sleepLateMaxNanos = 0L;
         // Sprint-debt meters: the
         // CombatClock vocabulary finally metered on the LIVE pacer — debtNowNanos ≙
         // accumulator(), sprint frames ≙ catchUpCount() (adapter/CombatClock.java's
@@ -1802,7 +1822,8 @@ public final class PilotServeSession {
                     pilotStep.fireLockReadErrors(), // fire-lock reads that threw
                     pilotStep.pilotMarkWrites(), // pilot-mark meters
                     pilotStep.pilotMarkClears(),
-                    pilotStep.abilityEdgeQuarantined());
+                    pilotStep.abilityEdgeQuarantined(),
+                    sleepLateFrames, sleepLateMaxNanos); // tail-appended, resets with overrunFrames
             String warmTailDiscarded = DownLaneSeams.roundCounterTail(warmSummary, frameTargetNanos,
                     fanPassMaxNanos, sendSlowestNanos, door, pilotStep,
                     fireLaneDischargeDetector, downComposer, peerGrade,
@@ -2089,6 +2110,10 @@ public final class PilotServeSession {
         // (a) pacer: absolute deadlines anchored at round frame 0 (the anchor
         // frame skips the sleep/overrun arithmetic, else a phantom frame-0 overrun;
         // there is no first-exchange to anchor on — joins are mid-round-normal at N).
+        // The deadline this frame SLEPT to (0 + false = no sleep this frame) — read
+        // back against the work meter's nanoTime below, the sleep-late discriminator's only input.
+        boolean pacerSlept = false;
+        long pacerSleptDeadlineNanos = 0L;
         if (config.paceToWallClock()) {
             if (frame == 0) {
                 pacerAnchorNanos = System.nanoTime();
@@ -2108,6 +2133,8 @@ public final class PilotServeSession {
                     // open sprint episode closes here (wall max already folded).
                     debtNowNanos = 0L;
                     sprintRunFrames = 0;
+                    pacerSlept = true;
+                    pacerSleptDeadlineNanos = deadlineNanos;
                 } else if (sleepNanos < 0L) {
                     overrunFrames++;
                     if (-sleepNanos > overrunMaxNanos) {
@@ -2161,6 +2188,19 @@ public final class PilotServeSession {
         // never blocks on a peer (spooled sends, non-blocking takes), so the measure
         // is pure serve cost, the capacity-truth utilization number.
         long frameWorkStartNanos = System.nanoTime();
+        // sleep-late discriminator: nothing runs between the pacer's sleep and this
+        // read, so (now − slept-to deadline) is the wake's lateness. Pure arithmetic on the work
+        // meter's own read — no new syscall on the sim thread. A frame that did not sleep
+        // (work overrun, anchor frame, pacing off) never counts here.
+        if (pacerSlept) {
+            long sleepLateNanos = frameWorkStartNanos - pacerSleptDeadlineNanos;
+            if (sleepLateNanos > SLEEP_LATE_TRIGGER_NANOS) {
+                sleepLateFrames++;
+                if (sleepLateNanos > sleepLateMaxNanos) {
+                    sleepLateMaxNanos = sleepLateNanos;
+                }
+            }
+        }
         // per-bracket I/O baselines — stdout counter + ccwr
         // sink write+flush total (all threads; the DOWN write is this thread's).
         long witnessIoFrameStart = ServeStdoutIoMeter.nanosOf(ioMeter);
@@ -2295,7 +2335,8 @@ public final class PilotServeSession {
                     pilotStep.fireLockReadErrors(), // fire-lock reads that threw
                     pilotStep.pilotMarkWrites(), // pilot-mark meters
                     pilotStep.pilotMarkClears(),
-                    pilotStep.abilityEdgeQuarantined());
+                    pilotStep.abilityEdgeQuarantined(),
+                    sleepLateFrames, sleepLateMaxNanos); // tail-appended, resets with overrunFrames
             worstFrames.flushRound(round); // (104)(d): a truncated round confesses
             // Cause note AFTER the flush — flushRound resets per-tick causes,
             // so a note before it can never reach its own frame's observe().
@@ -4684,7 +4725,8 @@ public final class PilotServeSession {
                     pilotStep.fireLockReadErrors(), // fire-lock reads that threw
                     pilotStep.pilotMarkWrites(), // pilot-mark meters
                     pilotStep.pilotMarkClears(),
-                    pilotStep.abilityEdgeQuarantined());
+                    pilotStep.abilityEdgeQuarantined(),
+                    sleepLateFrames, sleepLateMaxNanos); // tail-appended, resets with overrunFrames
         rounds.add(summary);
         lastRoundMatchOver = matchOver;
         // Carry the round's verdict out of round scope for the
