@@ -459,112 +459,264 @@ public final class AuthoritativeWorldSnapshotCodec {
     }
 
     /**
-     * True when this snapshot is stamped schema v11 — i.e. at least one flux record
-     * carries a nonzero quantized shield-facing u8. The predicate is
-     * VALUE-based, not shield-flag-based: all facing-0 content (every pre-v11 fixture
-     * and capture, shielded or not) keeps its v10-or-lower stamp and bytes, and a
-     * schema-capped serve to a sub-v11 peer stays expressible via
-     * {@code AuthoritativeWorldSnapshot#withShieldFacingZeroed()}. Documented edge: a
-     * live frame where EVERY shielded ship's facing quantizes to 0 stamps ≤v10 — the
-     * byte is absent and all true values are 0, so nothing is lost; the client pose
-     * lane treats absent facing as UNKNOWN (keep-last-forced sticky).
+     * The frame's size census: per-tier record counts, the
+     * content dictionary's entry bytes, and the four VALUE-based stamp flags. It holds the ONE
+     * copy of the four value predicates ({@link #addFlux}, {@link #addNonShip}) and of the
+     * higher-tier-forces-lower size ladder ({@link #bodyBytes}); {@link #writeFrame} stamps
+     * from these same flags and its written-length check compares this census against the
+     * bytes actually written, so the sizer and the stamper cannot drift apart.
+     *
+     * <p>Additive by construction: every count adds and every flag ORs over disjoint record
+     * sets, so the census of a union of record sets is the combination of their censuses —
+     * which lets the snapshot chunker price a candidate chunk without minting it. Bytes are
+     * always evaluated over the WHOLE census, never summed per record set: one flag, or the
+     * first record of a tier, widens records and forces sections the other sets already hold.
+     * The never-encoded profile tier has no field (it costs no wire bytes).
      */
-    private static boolean carriesShieldFacingTier(AuthoritativeWorldSnapshot snapshot) {
-        for (ShipFluxSnapshot flux : snapshot.fluxStates()) {
-            if (flux.shieldFacingU8() != 0) {
-                return true;
-            }
-        }
-        return false;
-    }
+    static final class FrameCensus {
+        int entities;
+        int nonShips;
+        int beams;
+        int missiles;
+        int flux;
+        int mounts;
+        int allegiance;
+        int engine;
+        int maneuver;
+        int system;
+        int markers;
+        int cloak;
+        int cr;
+        int dictEntries;
+        /** Sum over dictionary entries of the entry prefix plus the key's UTF-8 length. */
+        int dictEntryBytes;
+        /**
+         * Schema v11 — at least one flux record carries a nonzero quantized shield-facing u8.
+         *VALUE-based, not shield-flag-based: all facing-0 content
+         * (every pre-v11 fixture and capture, shielded or not) keeps its v10-or-lower stamp
+         * and bytes, and a schema-capped serve to a sub-v11 peer stays expressible via
+         * {@code AuthoritativeWorldSnapshot#withShieldFacingZeroed()}. Documented edge: a
+         * live frame where EVERY shielded ship's facing quantizes to 0 stamps ≤v10 — the
+         * byte is absent and all true values are 0, so nothing is lost; the client pose
+         * lane treats absent facing as UNKNOWN (keep-last-forced sticky).
+         */
+        boolean shieldFacing;
+        /**
+         * Schema v12 — at least one kind=BEAM non-ship record carries a resolved source
+         * binding. VALUE-based like v11: all source-less content keeps its
+         * v11-or-lower stamp and bytes, and a schema-capped serve to a sub-v12 peer stays
+         * expressible via {@code AuthoritativeWorldSnapshot#withBeamSourcesCleared()}. In a
+         * v12 body EVERY beam record carries the {@link #BEAM_SOURCE_EXTRA_BYTES} pair
+         * (sentinels 0/−1 when unresolved) — record width is keyed by kind, never per-record
+         * by value — and the flux records take the v11 widened width regardless of facing
+         * values (higher-tier-forces-lower).
+         */
+        boolean beamSource;
+        /**
+         * Schema v13 — at least one kind=MISSILE non-ship record carries a resolved source
+         * binding. The v13 stamp rides this flag ALONE: beam sources may be
+         * all-sentinel in a v13 frame (a resolved beam without a resolved missile stamps
+         * v12). A schema-capped serve to a v12 peer stays expressible via
+         * {@code AuthoritativeWorldSnapshot#withMissileSourcesCleared()}. In a v13 body EVERY
+         * missile record carries the {@link #MISSILE_SOURCE_EXTRA_BYTES} pair and EVERY beam
+         * record the {@link #BEAM_SOURCE_EXTRA_BYTES} pair, and the flux records take the v11
+         * widened width plus the phase-cloak section regardless of values.
+         */
+        boolean missileSource;
+        /**
+         * Schema v16 — at least one kind=MISSILE non-ship record carries a minted pose;
+         * rides poseFlags alone (every server-minted pose sets
+         * POSE_FLAG_VALID; the sentinel is flags==0). In a v16 body EVERY missile record
+         * carries the {@link #MISSILE_POSE_EXTRA_BYTES} pair after its source pair, and the
+         * content-dictionary + ship-CR tail sections are forced present though each MAY be
+         * empty (the ≥1-entry dictionary mirror stays exactly-v15's own). A schema-capped
+         * serve to a sub-v16 peer stays expressible via
+         * {@code AuthoritativeWorldSnapshot#withMissilePosesCleared()}.
+         */
+        boolean missilePose;
 
-    /**
-     * True when this snapshot is stamped schema v12 — i.e. at least one kind=BEAM
-     * non-ship record carries a resolved source binding. VALUE-based like
-     * the v11 predicate: all source-less content (every pre-v12 fixture and capture,
-     * beams included) keeps its v11-or-lower stamp and bytes, and a schema-capped
-     * serve to a sub-v12 peer stays expressible via
-     * {@code AuthoritativeWorldSnapshot#withBeamSourcesCleared()}. In a v12 body EVERY
-     * beam record carries the {@link #BEAM_SOURCE_EXTRA_BYTES} pair (sentinels 0/−1
-     * when unresolved) — record width is keyed by kind, never per-record by value —
-     * and the flux records take the v11 widened width regardless of facing values
-     * (higher-tier-forces-lower).
-     */
-    private static boolean carriesBeamSourceTier(AuthoritativeWorldSnapshot snapshot) {
-        for (NonShipEntitySnapshot nonShip : snapshot.nonShipEntities()) {
-            if (nonShip.kind() == CombatEntityView.Kind.BEAM
-                    && nonShip.sourceEntityId() != NonShipEntitySnapshot.NO_SOURCE) {
-                return true;
+        /** One pass per tier list of {@code snapshot}. */
+        static FrameCensus of(AuthoritativeWorldSnapshot snapshot) {
+            FrameCensus census = new FrameCensus();
+            census.entities = snapshot.entityCount();
+            for (NonShipEntitySnapshot nonShip : snapshot.nonShipEntities()) {
+                census.addNonShip(nonShip);
             }
+            for (ShipFluxSnapshot fluxState : snapshot.fluxStates()) {
+                census.addFlux(fluxState);
+            }
+            census.mounts = snapshot.weaponMountCount();
+            census.allegiance = snapshot.allegianceStateCount();
+            census.engine = snapshot.engineStateCount();
+            census.maneuver = snapshot.maneuverCommandCount();
+            census.system = snapshot.systemStateCount();
+            census.markers = snapshot.fragmentMarkerCount();
+            census.cloak = snapshot.phaseCloakStateCount();
+            census.cr = snapshot.crStateCount();
+            census.setDictionary(snapshot.contentDictionary());
+            return census;
         }
-        return false;
-    }
 
-    /** Count of kind=BEAM records in the non-ship tier (the v12 variable-width extras). */
-    private static int beamRecordCount(AuthoritativeWorldSnapshot snapshot) {
-        int beams = 0;
-        for (NonShipEntitySnapshot nonShip : snapshot.nonShipEntities()) {
+        /** Counts one flux record; the v11 shield-facing value predicate. */
+        void addFlux(ShipFluxSnapshot fluxState) {
+            flux++;
+            shieldFacing |= fluxState.shieldFacingU8() != 0;
+        }
+
+        /** Counts one non-ship record; the v12 / v13 / v16 value predicates. */
+        void addNonShip(NonShipEntitySnapshot nonShip) {
+            nonShips++;
             if (nonShip.kind() == CombatEntityView.Kind.BEAM) {
                 beams++;
-            }
-        }
-        return beams;
-    }
-
-    /**
-     * True when this snapshot is stamped schema v13 — i.e. at least one kind=MISSILE
-     * non-ship record carries a resolved source binding. VALUE-based like
-     * the v11/v12 predicates, and the v13 stamp rides this predicate ALONE: beam
-     * sources may be all-sentinel in a v13 frame (a resolved beam without a resolved
-     * missile stamps v12). All missile-source-less content keeps its v12-or-lower
-     * stamp and bytes, and a schema-capped serve to a v12 peer stays expressible via
-     * {@code AuthoritativeWorldSnapshot#withMissileSourcesCleared()}. In a v13 body
-     * EVERY missile record carries the {@link #MISSILE_SOURCE_EXTRA_BYTES} pair and
-     * EVERY beam record the {@link #BEAM_SOURCE_EXTRA_BYTES} pair (sentinels 0/−1
-     * when unresolved) — record width is keyed by kind, never per-record by value —
-     * and the flux records take the v11 widened width plus the phase-cloak section
-     * regardless of values (higher-tier-forces-lower).
-     */
-    private static boolean carriesMissileSourceTier(AuthoritativeWorldSnapshot snapshot) {
-        for (NonShipEntitySnapshot nonShip : snapshot.nonShipEntities()) {
-            if (nonShip.kind() == CombatEntityView.Kind.MISSILE
-                    && nonShip.sourceEntityId() != NonShipEntitySnapshot.NO_SOURCE) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * True when this snapshot is stamped schema v16 — i.e. at least one kind=MISSILE
-     * non-ship record carries a minted pose. VALUE-based like the
-     * v11/v12/v13 predicates and rides poseFlags alone (every server-minted pose sets
-     * POSE_FLAG_VALID; the sentinel is flags==0). In a v16 body EVERY missile record
-     * carries the {@link #MISSILE_POSE_EXTRA_BYTES} pair after its source pair —
-     * record width is keyed by kind, never per-record by value — and the
-     * content-dictionary + ship-CR tail sections are forced present though each MAY
-     * be empty (the ≥1-entry dictionary mirror stays exactly-v15's own). A
-     * schema-capped serve to a sub-v16 peer stays expressible via
-     * {@code AuthoritativeWorldSnapshot#withMissilePosesCleared()}.
-     */
-    private static boolean carriesMissilePoseTier(AuthoritativeWorldSnapshot snapshot) {
-        for (NonShipEntitySnapshot nonShip : snapshot.nonShipEntities()) {
-            if (nonShip.kind() == CombatEntityView.Kind.MISSILE && nonShip.poseFlags() != 0) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** Count of kind=MISSILE records in the non-ship tier (the v13 variable-width extras). */
-    private static int missileRecordCount(AuthoritativeWorldSnapshot snapshot) {
-        int missiles = 0;
-        for (NonShipEntitySnapshot nonShip : snapshot.nonShipEntities()) {
-            if (nonShip.kind() == CombatEntityView.Kind.MISSILE) {
+                beamSource |= nonShip.sourceEntityId() != NonShipEntitySnapshot.NO_SOURCE;
+            } else if (nonShip.kind() == CombatEntityView.Kind.MISSILE) {
                 missiles++;
+                missileSource |= nonShip.sourceEntityId() != NonShipEntitySnapshot.NO_SOURCE;
+                missilePose |= nonShip.poseFlags() != 0;
             }
         }
-        return missiles;
+
+        /** Sets (replaces) the dictionary tier: entry count and wire bytes. */
+        void setDictionary(List<ContentDictionaryEntry> contentDictionary) {
+            dictEntries = contentDictionary.size();
+            int bytes = 0;
+            for (ContentDictionaryEntry entry : contentDictionary) {
+                bytes += CONTENT_DICTIONARY_ENTRY_PREFIX_BYTES
+                        + entry.key().getBytes(StandardCharsets.UTF_8).length;
+            }
+            dictEntryBytes = bytes;
+        }
+
+        void clear() {
+            entities = 0;
+            nonShips = 0;
+            beams = 0;
+            missiles = 0;
+            flux = 0;
+            mounts = 0;
+            allegiance = 0;
+            engine = 0;
+            maneuver = 0;
+            system = 0;
+            markers = 0;
+            cloak = 0;
+            cr = 0;
+            dictEntries = 0;
+            dictEntryBytes = 0;
+            shieldFacing = false;
+            beamSource = false;
+            missileSource = false;
+            missilePose = false;
+        }
+
+        void copyFrom(FrameCensus other) {
+            entities = other.entities;
+            nonShips = other.nonShips;
+            beams = other.beams;
+            missiles = other.missiles;
+            flux = other.flux;
+            mounts = other.mounts;
+            allegiance = other.allegiance;
+            engine = other.engine;
+            maneuver = other.maneuver;
+            system = other.system;
+            markers = other.markers;
+            cloak = other.cloak;
+            cr = other.cr;
+            dictEntries = other.dictEntries;
+            dictEntryBytes = other.dictEntryBytes;
+            shieldFacing = other.shieldFacing;
+            beamSource = other.beamSource;
+            missileSource = other.missileSource;
+            missilePose = other.missilePose;
+        }
+
+        /** Whole encoded frame: header + body + trailing checksum. */
+        int frameBytes() {
+            return HEADER_BYTES + bodyBytes() + Integer.BYTES;
+        }
+
+        int bodyBytes() {
+            // A higher tier forces every lower section to be present (even if empty) so the
+            // decoder can locate it: v11 => all nine sections with the widened flux record;
+            // v10 => all nine sections; v9 => non-ship through fragment-marker; v8 =>
+            // non-ship through system-state; v7 => non-ship + flux + weapon-mount +
+            // allegiance + engine-state + maneuver-command; v6 => non-ship + flux +
+            // weapon-mount + allegiance + engine-state; v5 => non-ship + flux + weapon-mount
+            // + allegiance; v4 => non-ship + flux + weapon-mount; v3 => non-ship + flux;
+            // v2 => non-ship; v1 => none. v14 => all ten sections at the full v13 widths.
+            // v15 => all eleven sections (the content-dictionary tail forces the CR
+            // section to be present even when empty). v16 => the missile-pose widening on
+            // every missile record; still eleven sections, dictionary AND CR may be empty.
+            boolean posePresent = missilePose;
+            boolean dictPresent = dictEntries > 0 || posePresent;
+            boolean crPresent = cr > 0 || dictPresent;
+            // v14 WIDTH LAW: a v14 body forces the v13 missile pair (and through
+            // it the v12 beam pair + v11 flux width below) onto every record even when all
+            // source values are sentinel — decodeBodyV14 reads the fully-widened v13 layout.
+            boolean missileSourcePresent = missileSource || crPresent;
+            // v13 WIDTH LAW: a v13 body forces the v12 beam pair onto EVERY
+            // beam record even when all beam sources are sentinel.
+            boolean beamPairPresent = beamSource || missileSourcePresent;
+            boolean shieldFacingPresent = shieldFacing;
+            // v12/v13 force the v11 widened flux record even when every facing is 0 (the
+            // higher-tier-forces-lower law applied to a record WIDTH rather than a section).
+            boolean fluxRecordWidened = shieldFacingPresent || beamPairPresent;
+            boolean phaseCloakPresent = cloak > 0 || shieldFacingPresent || beamPairPresent;
+            boolean markerPresent = markers > 0 || phaseCloakPresent;
+            boolean systemStatePresent = system > 0 || markerPresent;
+            boolean maneuverPresent = maneuver > 0 || systemStatePresent;
+            boolean engineStatePresent = engine > 0 || maneuverPresent;
+            boolean allegiancePresent = allegiance > 0 || engineStatePresent;
+            boolean weaponPresent = mounts > 0 || allegiancePresent;
+            boolean fluxPresent = flux > 0 || weaponPresent;
+            boolean nonShipPresent = nonShips > 0 || fluxPresent;
+            int count = BODY_PREFIX_BYTES + ENTITY_BYTES * entities;
+            if (nonShipPresent) {
+                count += NON_SHIP_COUNT_BYTES + NON_SHIP_ENTITY_BYTES * nonShips;
+                if (beamPairPresent) {
+                    count += BEAM_SOURCE_EXTRA_BYTES * beams;
+                }
+                if (missileSourcePresent) {
+                    count += MISSILE_SOURCE_EXTRA_BYTES * missiles;
+                }
+                if (posePresent) {
+                    count += MISSILE_POSE_EXTRA_BYTES * missiles;
+                }
+            }
+            if (fluxPresent) {
+                count += FLUX_COUNT_BYTES
+                        + (fluxRecordWidened ? FLUX_ENTITY_BYTES_V11 : FLUX_ENTITY_BYTES) * flux;
+            }
+            if (weaponPresent) {
+                count += WEAPON_MOUNT_COUNT_BYTES + WEAPON_MOUNT_ENTITY_BYTES * mounts;
+            }
+            if (allegiancePresent) {
+                count += ALLEGIANCE_COUNT_BYTES + ALLEGIANCE_ENTITY_BYTES * allegiance;
+            }
+            if (engineStatePresent) {
+                count += ENGINE_STATE_COUNT_BYTES + ENGINE_STATE_ENTITY_BYTES * engine;
+            }
+            if (maneuverPresent) {
+                count += MANEUVER_COMMAND_COUNT_BYTES + MANEUVER_COMMAND_ENTITY_BYTES * maneuver;
+            }
+            if (systemStatePresent) {
+                count += SYSTEM_STATE_COUNT_BYTES + SYSTEM_STATE_ENTITY_BYTES * system;
+            }
+            if (markerPresent) {
+                count += FRAGMENT_MARKER_COUNT_BYTES + FRAGMENT_MARKER_ENTITY_BYTES * markers;
+            }
+            if (phaseCloakPresent) {
+                count += PHASE_CLOAK_COUNT_BYTES + PHASE_CLOAK_ENTITY_BYTES * cloak;
+            }
+            if (crPresent) {
+                count += CR_COUNT_BYTES + CR_ENTITY_BYTES * cr;
+            }
+            if (dictPresent) {
+                count += CONTENT_DICTIONARY_COUNT_BYTES + dictEntryBytes;
+            }
+            return count;
+        }
     }
 
     /**
@@ -593,95 +745,7 @@ public final class AuthoritativeWorldSnapshotCodec {
     }
 
     private static int bodyByteCount(AuthoritativeWorldSnapshot snapshot) {
-        // A higher tier forces every lower section to be present (even if empty) so the
-        // decoder can locate it: v11 => all nine sections with the widened flux record;
-        // v10 => all nine sections; v9 => non-ship through fragment-marker; v8 =>
-        // non-ship through system-state; v7 => non-ship + flux + weapon-mount +
-        // allegiance + engine-state + maneuver-command; v6 => non-ship + flux +
-        // weapon-mount + allegiance + engine-state; v5 => non-ship + flux + weapon-mount
-        // + allegiance; v4 => non-ship + flux + weapon-mount; v3 => non-ship + flux;
-        // v2 => non-ship; v1 => none. v14 => all ten sections at the full v13 widths.
-        // v15 => all eleven sections (the content-dictionary tail forces the CR
-        // section to be present even when empty). v16 => the missile-pose widening on
-        // every missile record; still eleven sections, dictionary AND CR may be empty.
-        boolean posePresent = carriesMissilePoseTier(snapshot);
-        boolean dictPresent = carriesContentDictionaryTier(snapshot) || posePresent;
-        boolean crPresent = carriesCrTier(snapshot) || dictPresent;
-        // v14 WIDTH LAW: a v14 body forces the v13 missile pair (and through
-        // it the v12 beam pair + v11 flux width below) onto every record even when all
-        // source values are sentinel — decodeBodyV14 reads the fully-widened v13 layout.
-        boolean missileSourcePresent = carriesMissileSourceTier(snapshot) || crPresent;
-        // v13 WIDTH LAW: a v13 body forces the v12 beam pair onto EVERY
-        // beam record even when all beam sources are sentinel.
-        boolean beamPairPresent = carriesBeamSourceTier(snapshot) || missileSourcePresent;
-        boolean shieldFacingPresent = carriesShieldFacingTier(snapshot);
-        // v12/v13 force the v11 widened flux record even when every facing is 0 (the
-        // higher-tier-forces-lower law applied to a record WIDTH rather than a section).
-        boolean fluxRecordWidened = shieldFacingPresent || beamPairPresent;
-        boolean phaseCloakPresent =
-                carriesPhaseCloakTier(snapshot) || shieldFacingPresent || beamPairPresent;
-        boolean markerPresent = carriesFragmentMarkerTier(snapshot) || phaseCloakPresent;
-        boolean systemStatePresent = carriesSystemStateTier(snapshot) || markerPresent;
-        boolean maneuverPresent = carriesManeuverCommandTier(snapshot) || systemStatePresent;
-        boolean engineStatePresent = carriesEngineStateTier(snapshot) || maneuverPresent;
-        boolean allegiancePresent = carriesAllegianceTier(snapshot) || engineStatePresent;
-        boolean weaponPresent = carriesWeaponMountTier(snapshot) || allegiancePresent;
-        boolean fluxPresent = carriesFluxTier(snapshot) || weaponPresent;
-        boolean nonShipPresent = carriesNonShipTier(snapshot) || fluxPresent;
-        int count = BODY_PREFIX_BYTES + ENTITY_BYTES * snapshot.entityCount();
-        if (nonShipPresent) {
-            count += NON_SHIP_COUNT_BYTES + NON_SHIP_ENTITY_BYTES * snapshot.nonShipEntityCount();
-            if (beamPairPresent) {
-                count += BEAM_SOURCE_EXTRA_BYTES * beamRecordCount(snapshot);
-            }
-            if (missileSourcePresent) {
-                count += MISSILE_SOURCE_EXTRA_BYTES * missileRecordCount(snapshot);
-            }
-            if (posePresent) {
-                count += MISSILE_POSE_EXTRA_BYTES * missileRecordCount(snapshot);
-            }
-        }
-        if (fluxPresent) {
-            count += FLUX_COUNT_BYTES
-                    + (fluxRecordWidened ? FLUX_ENTITY_BYTES_V11 : FLUX_ENTITY_BYTES)
-                            * snapshot.fluxStateCount();
-        }
-        if (weaponPresent) {
-            count += WEAPON_MOUNT_COUNT_BYTES + WEAPON_MOUNT_ENTITY_BYTES * snapshot.weaponMountCount();
-        }
-        if (allegiancePresent) {
-            count += ALLEGIANCE_COUNT_BYTES + ALLEGIANCE_ENTITY_BYTES * snapshot.allegianceStateCount();
-        }
-        if (engineStatePresent) {
-            count += ENGINE_STATE_COUNT_BYTES + ENGINE_STATE_ENTITY_BYTES * snapshot.engineStateCount();
-        }
-        if (maneuverPresent) {
-            count += MANEUVER_COMMAND_COUNT_BYTES
-                    + MANEUVER_COMMAND_ENTITY_BYTES * snapshot.maneuverCommandCount();
-        }
-        if (systemStatePresent) {
-            count += SYSTEM_STATE_COUNT_BYTES
-                    + SYSTEM_STATE_ENTITY_BYTES * snapshot.systemStateCount();
-        }
-        if (markerPresent) {
-            count += FRAGMENT_MARKER_COUNT_BYTES
-                    + FRAGMENT_MARKER_ENTITY_BYTES * snapshot.fragmentMarkerCount();
-        }
-        if (phaseCloakPresent) {
-            count += PHASE_CLOAK_COUNT_BYTES
-                    + PHASE_CLOAK_ENTITY_BYTES * snapshot.phaseCloakStateCount();
-        }
-        if (crPresent) {
-            count += CR_COUNT_BYTES + CR_ENTITY_BYTES * snapshot.crStateCount();
-        }
-        if (dictPresent) {
-            count += CONTENT_DICTIONARY_COUNT_BYTES;
-            for (ContentDictionaryEntry entry : snapshot.contentDictionary()) {
-                count += CONTENT_DICTIONARY_ENTRY_PREFIX_BYTES
-                        + entry.key().getBytes(StandardCharsets.UTF_8).length;
-            }
-        }
-        return count;
+        return FrameCensus.of(snapshot).bodyBytes();
     }
 
     public static int writeFrame(OutputStream output, AuthoritativeWorldSnapshot snapshot)
@@ -689,6 +753,9 @@ public final class AuthoritativeWorldSnapshotCodec {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(snapshot, "snapshot");
 
+        // The four value-based stamp flags come from the census, the same copy the size
+        // ladder reads, so the stamp and the encoded body length can never disagree.
+        FrameCensus census = FrameCensus.of(snapshot);
         boolean carriesNonShipTier = carriesNonShipTier(snapshot);
         boolean carriesFluxTier = carriesFluxTier(snapshot);
         boolean carriesWeaponMountTier = carriesWeaponMountTier(snapshot);
@@ -698,12 +765,12 @@ public final class AuthoritativeWorldSnapshotCodec {
         boolean carriesSystemStateTier = carriesSystemStateTier(snapshot);
         boolean carriesFragmentMarkerTier = carriesFragmentMarkerTier(snapshot);
         boolean carriesPhaseCloakTier = carriesPhaseCloakTier(snapshot);
-        boolean carriesShieldFacingTier = carriesShieldFacingTier(snapshot);
-        boolean carriesBeamSourceTier = carriesBeamSourceTier(snapshot);
-        boolean carriesMissileSourceTier = carriesMissileSourceTier(snapshot);
+        boolean carriesShieldFacingTier = census.shieldFacing;
+        boolean carriesBeamSourceTier = census.beamSource;
+        boolean carriesMissileSourceTier = census.missileSource;
         boolean carriesCrTier = carriesCrTier(snapshot);
         boolean carriesContentDictionaryTier = carriesContentDictionaryTier(snapshot);
-        boolean carriesMissilePoseTier = carriesMissilePoseTier(snapshot);
+        boolean carriesMissilePoseTier = census.missilePose;
         short schemaVersion = carriesMissilePoseTier
                 ? SCHEMA_VERSION_V16
                 : (carriesContentDictionaryTier
@@ -734,7 +801,7 @@ public final class AuthoritativeWorldSnapshotCodec {
                                                                                 ? SCHEMA_VERSION_V3
                                                                                 : (carriesNonShipTier ? SCHEMA_VERSION_V2 : SCHEMA_VERSION))))))))))))));
         byte[] body = encodeBody(
-                snapshot, carriesNonShipTier, carriesFluxTier, carriesWeaponMountTier,
+                snapshot, census.bodyBytes(), carriesNonShipTier, carriesFluxTier, carriesWeaponMountTier,
                 carriesAllegianceTier, carriesEngineStateTier, carriesManeuverCommandTier,
                 carriesSystemStateTier, carriesFragmentMarkerTier, carriesPhaseCloakTier,
                 carriesShieldFacingTier, carriesBeamSourceTier, carriesMissileSourceTier,
@@ -884,6 +951,7 @@ public final class AuthoritativeWorldSnapshotCodec {
 
     private static byte[] encodeBody(
             AuthoritativeWorldSnapshot snapshot,
+            int expectedBodyBytes,
             boolean carriesNonShipTier,
             boolean carriesFluxTier,
             boolean carriesWeaponMountTier,
@@ -921,7 +989,7 @@ public final class AuthoritativeWorldSnapshotCodec {
         boolean weaponPresent = carriesWeaponMountTier || allegiancePresent;
         boolean fluxPresent = carriesFluxTier || weaponPresent;
         boolean nonShipPresent = carriesNonShipTier || fluxPresent;
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream(bodyByteCount(snapshot));
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream(expectedBodyBytes);
         DataOutputStream data = new DataOutputStream(bytes);
         data.writeLong(snapshot.simTick());
         data.writeInt(snapshot.entityCount());
@@ -1122,7 +1190,8 @@ public final class AuthoritativeWorldSnapshotCodec {
         }
         data.flush();
         byte[] body = bytes.toByteArray();
-        if (body.length != bodyByteCount(snapshot)) {
+        // The census (size ladder + value flags) must agree with the bytes actually written.
+        if (body.length != expectedBodyBytes) {
             throw new IOException("world snapshot body size bug: " + body.length);
         }
         return body;

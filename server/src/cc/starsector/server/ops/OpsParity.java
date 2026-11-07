@@ -83,6 +83,8 @@ public final class OpsParity {
      *  the Use combo keeps required / optional, greyed while off), shown in BOTH modes - 106 in the list.
  *  + {@code mods.col.needs} (the Mods table's Needs column: what a mod needs,
  *  what needs it, what the next start does about it), shown in BOTH modes, its page twin landed with it - 107 in the list.
+ *  + {@code verb.chatMute} / {@code verb.chatUnmute} (Seat actions' Mute chat /
+ *  Unmute chat, a seat's text chat silenced short of a ban), shown in BOTH modes, page twins landed with them - 109 in the list.
      *  The {@code WEB_TWIN_PENDING} list (the parity port's hatch: a control that landed before its
      *  page twin was skipped by the twin row) is DELETED
      * - an id listed here without a page twin turns {@code parity-web-twin} red as soon as
@@ -96,6 +98,7 @@ public final class OpsParity {
             "live.seat.col.customs",
             "load.uplink",
             "verb.startServer", "verb.watch", "verb.endRound", "verb.endMatch", "verb.kill", "verb.kickSelected",
+            "verb.chatMute", "verb.chatUnmute",
             "verb.banPlayer", "verb.banSource", "verb.unbanPlayer", "verb.customBan",
             "verb.customExport", "verb.customAllow", "verb.customUnban", "verb.customKeep",
             "verb.customForget", "verb.shipHide", "verb.shipShow", "verb.simSpeed.field",

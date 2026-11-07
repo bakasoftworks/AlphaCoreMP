@@ -207,7 +207,8 @@ public final class ServeWarmupRound {
     /**
      * The real-engine entry (the ONE production caller): builds the world/step pair on the
      * live binding, resolves the warm-up roster ({@link #warmupSeatIds}) and a per-pass schedule mint
-     * exactly as {@code serveNPeer} does, runs {@link #run}, and prints the grade-anchor row.
+     * exactly as {@code serveNPeer} does, runs {@link #run}, prints the grade-anchor row, then warms
+     * the capture's typed getters on the reset roster ({@code warm_typed_getters} row).
      * A boot without a descriptor (the fallback 1v1 lane) has no seat fly-ins and no schedule:
      * it still runs its t=0 rows. Compile/classload deltas come from the platform beans (the
      * standard {@link CompilationMXBean} exposes total time only — per-method counts are the
@@ -294,6 +295,14 @@ public final class ServeWarmupRound {
                 + " classes_loaded=" + (classes.getTotalLoadedClassCount() - classesBefore)
                 + " failed=" + receipt.failed()
                 + " reset=ok");
+        // The capture's typed getters link their call sites and
+        // customize their handles here, on the redeployed roster the first served round opens on, so
+        // no served tick pays those one-time class spins. Read-only getters only (no RNG draw, no
+        // engine write); a role the roster cannot fill is a counted miss, never a throw.
+        long typedWarmStart = System.nanoTime();
+        String typedWarm = binding.warmTypedGetters();
+        System.out.println("npeer-serve warm_typed_getters " + typedWarm
+                + " ms=" + (System.nanoTime() - typedWarmStart) / 1_000_000L);
         return receipt;
     }
 

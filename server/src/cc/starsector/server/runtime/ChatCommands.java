@@ -207,6 +207,25 @@ public final class ChatCommands {
          * {@code /shipkeep <id> replaces <ship id>} (the supersede): {@code arg} = {@code "<id> replaces <ship id>"},
          * both ids as typed. */
         HOST_SHIP_LIST, HOST_SHIP_KEEP, HOST_SHIP_REMOVE, HOST_SHIP_RESTORE,
+        /** The admin text-chat mute pair (nothing in the text
+         * grants admin — the gate is the SESSION's bit, answered {@link #ADMIN_ONLY}; the verdict
+         * body is {@link AdminChatMuteCommand#handle}). Bare
+         * {@code /chatmute} = {@code CHATMUTE_LIST} (a private text list of the live players);
+         * {@code /chatmute #n} = {@code CHATMUTE_INDEX} ({@code arg} = the 1..4 digits: row n of
+         * the caller's OWN last list, never a wire id as in {@code /kick} and {@code /mute});
+         * {@code /chatmute <name>} = {@code CHATMUTE_NAME} ({@code arg} = the ONE token as typed,
+         * matched by dispatch against the live sessions only); any other shape (a name with a
+         * space included) = {@code CHATMUTE_USAGE}, whose reply points at the bare list — its own
+         * kind (never {@link #USAGE}) so the admin gate can answer it like its siblings (the
+         * {@code BAN_USAGE} precedent). Bare
+         * {@code /chatunmute} = {@code CHATUNMUTE_LIST} (page 1 of every mute, players who left
+         * included), {@code /chatunmute <digits>} = {@code CHATUNMUTE_PAGE}, {@code /chatunmute #n}
+         * = {@code CHATUNMUTE_INDEX} (row n of the caller's pinned mute numbering); a malformed
+         * line = {@link #USAGE} (the {@code /unban} shape). {@code UNMUTE} = any {@code /unmute}
+         * line: a constant pointer reply ({@link #unmutePointer}) composed at dispatch, so a
+         * typed {@code /unmute} is never autocorrected into the voice toggle. */
+        CHATMUTE_LIST, CHATMUTE_INDEX, CHATMUTE_NAME, CHATMUTE_USAGE,
+        CHATUNMUTE_LIST, CHATUNMUTE_PAGE, CHATUNMUTE_INDEX, UNMUTE,
         USAGE, UNKNOWN }
 
     /** The /godmode usage reply (constant-only; bare = toggle). */
@@ -312,6 +331,13 @@ public final class ChatCommands {
     /** The /banned usage ({@code #n} alone, {@code #n lift},
      *  a non-ladder term — never an echo). */
     public static final String BANNED_USAGE = "usage: /banned [#n <term>] (admin; 30m 1d 1w 1mo perm)";
+    /** The text-mute usage replies (constants, never an echo).
+     *  A player name may hold a space, so a multi-token {@code /chatmute} arg can never be a name
+     *  match: the reply points at the numbered bare list instead. */
+    public static final String CHATMUTE_USAGE =
+            "usage: /chatmute <name> or #n (admin; a name with a space: type /chatmute alone and pick its #n)";
+    public static final String CHATUNMUTE_USAGE =
+            "usage: /chatunmute #n or a page number (admin; type /chatunmute alone for the list)";
     // + `wrap` (the round-wrap staging verb).
     private static final String WAVE_USAGE =
             "usage: /wave skip|pause|wrap|set <n>|inflate [on|off]|<type> [reset] (no arg = menu)";
@@ -491,6 +517,13 @@ public final class ChatCommands {
      * echo, no hint which credential would have worked (the door decides; the grammar only owns
      * the text so every admin kind answers identically). */
     public static final String ADMIN_ONLY = "admin only";
+
+    /** The one reply for a recognised command that the
+     * dispatcher has no case for (a verb the door answers before dispatch, or a grammar that
+     * landed before its handler). Constant, no echo, the same posture as {@link #ADMIN_ONLY}: the
+     * typing player gets a plain answer and keeps the session, where the old throwing fallback
+     * reached the reader's fault belt and disconnected them over one chat line. */
+    public static final String UNROUTED_REPLY = "that command is not available on this server";
 
     /** The /auth usage reply (constant-only, the same no-echo law — a
      * malformed attempt may hold a mistyped password, so the reply never quotes anything). */
@@ -771,6 +804,44 @@ public final class ChatCommands {
                 return page == null ? new Parsed(Kind.USAGE, null, BANS_USAGE)
                         : new Parsed(Kind.BANS_LIST, page, null);
             }
+            case "chatmute": {
+                // Bare = the list; `#<1..4 digits>` = a row of
+                // the caller's own last list (the /unban index law, never a wire id); one other
+                // token = a name, matched against the live sessions only (never a path or exec
+                // input); anything else = its own usage kind, never the generic USAGE.
+                if (!emptyToken && tokens.length == 1) {
+                    return new Parsed(Kind.CHATMUTE_LIST, null, null);
+                }
+                if (emptyToken || tokens.length != 2) {
+                    return new Parsed(Kind.CHATMUTE_USAGE, null, CHATMUTE_USAGE);
+                }
+                if (!tokens[1].startsWith("#")) {
+                    return new Parsed(Kind.CHATMUTE_NAME, tokens[1], null);
+                }
+                String row = smallDigitsOrNull(tokens[1].substring(1));
+                return row == null ? new Parsed(Kind.CHATMUTE_USAGE, null, CHATMUTE_USAGE)
+                        : new Parsed(Kind.CHATMUTE_INDEX, row, null);
+            }
+            case "chatunmute": {
+                // Bare = page 1 of every mute; `<1..4 digits>` =
+                // that page (the /bans page law); `#<1..4 digits>` = a row of the caller's pinned mute
+                // numbering (the /unban index law); anything else = the constant usage reply.
+                if (!emptyToken && tokens.length == 1) {
+                    return new Parsed(Kind.CHATUNMUTE_LIST, null, null);
+                }
+                if (!emptyToken && tokens.length == 2) {
+                    boolean indexed = tokens[1].startsWith("#");
+                    String digits = smallDigitsOrNull(indexed ? tokens[1].substring(1) : tokens[1]);
+                    if (digits != null) {
+                        return new Parsed(indexed ? Kind.CHATUNMUTE_INDEX : Kind.CHATUNMUTE_PAGE, digits, null);
+                    }
+                }
+                return new Parsed(Kind.USAGE, null, CHATUNMUTE_USAGE);
+            }
+            case "unmute":
+                // A known verb so autocorrect never turns it into
+                // the voice toggle; every shape gets the one constant pointer composed at dispatch.
+                return new Parsed(Kind.UNMUTE, null, null);
             case "endmatch":
                 // The in-game F10 of a signed-in seat — no-argument form only (the
                 // /suicide shape); the door gates it on the SESSION's admin bit, never on the text.
@@ -1120,7 +1191,8 @@ public final class ChatCommands {
     /**
      * Verbs autocorrect only SUGGESTS — never runs a corrected line for: the
      * password verb; every verb that acts on ANOTHER seat ({@code kick}, {@code ban} /
-     * {@code unban}, {@code switchteams}); the self-destructive, match-state and debug-state
+     * {@code unban}, {@code switchteams}, {@code chatmute} / {@code chatunmute}); the
+     * self-destructive, match-state and debug-state
      * verbs ({@code suicide}, {@code godmode}, {@code teleport}, {@code wave}, {@code endless},
      * {@code podtest}, {@code knob}, {@code customs}, {@code despawn}, {@code terrain},
      * {@code bans}, {@code banned}); and the client-local {@code /settings} menu the server cannot
@@ -1141,6 +1213,7 @@ public final class ChatCommands {
             "team", // A team change off a typo would surprise — named, never run
             // the host ship verbs change the list for every player — named, never run off a typo
             "shiplist", "shipkeep", "shipremove", "shiprestore",
+            "chatmute", "chatunmute", // a text mute acts on ANOTHER seat - named, never run off a typo
             "banned"); // A retime, never run off a typo (surprise 9)
 
     /** {@link #KNOWN_VERBS} + the client-local {@code settings} (suggest-only), sorted so the
@@ -1292,6 +1365,7 @@ public final class ChatCommands {
             "banned", //
             "team", //
             "shiplist", "shipkeep", "shipremove", "shiprestore", //
+            "chatmute", "chatunmute", "unmute", //
             "endmatch"); //
 
     /**
@@ -1494,10 +1568,14 @@ public final class ChatCommands {
             lines.add("/transfer <player> - take over another ship (no arg = list; #id works)");
         }
         if (voiceArmed) {
-            lines.add("/mute <player> - toggle a voice mute (no arg = list; #id works)");
+            lines.add("/mute <player> - mute or unmute a player's voice for you only (no arg = list; #id works)");
         }
         if (admin) {
             lines.add("/kick <player> - kick a player (admin; no arg = list; #id works)");
+            // The text mute pair beside kick; "#n" there is a row of
+            // the caller's own list (a wire id in the kick and voice verbs), so the line says "from it".
+            lines.add("/chatmute <player> - stop a player's text chat reaching anyone (admin; no arg = list; #n from it)");
+            lines.add("/chatunmute #n - lift a text chat mute (admin; no arg = list of mutes; a page number selects a page)");
             lines.add("/wave skip - kill the current wave (admin)");
             lines.add("/wave pause - pause or resume the wave clock (admin)");
             lines.add("/wave <type> - next wave becomes that faction (admin; no arg = menu; add reset to restart at the opener)");
@@ -1553,6 +1631,29 @@ public final class ChatCommands {
             lines.add("/bans - list admin bans (admin; a page number selects a page)");
         }
         return lines;
+    }
+
+    /** The {@link #unmutePointer} replies (constants, each well under the chat line cap). */
+    public static final String UNMUTE_POINTER_BOTH =
+            "to unmute: /chatunmute lifts a text chat mute (admin), /mute <player> again unmutes their voice for you";
+    public static final String UNMUTE_POINTER_ADMIN =
+            "to unmute: /chatunmute lifts a text chat mute (no arg = list of mutes)";
+    public static final String UNMUTE_POINTER_VOICE =
+            "to unmute: /mute <player> again unmutes their voice for you (no arg = list)";
+    public static final String UNMUTE_POINTER_NONE = "nothing to unmute here";
+
+    /**
+     * The one reply to any {@code /unmute} line ({@link Kind#UNMUTE}). It names {@code /chatunmute}
+     * only to an admin (the SESSION's bit — anyone else would get {@link #ADMIN_ONLY}) and
+     * {@code /mute} only when this serve armed voice, the never-advertise-unavailable law of
+     * {@link #helpLines}; neither applies = a plain constant. Never an echo of the typed tail.
+     *
+     */
+    public static String unmutePointer(boolean admin, boolean voiceArmed) {
+        if (admin) {
+            return voiceArmed ? UNMUTE_POINTER_BOTH : UNMUTE_POINTER_ADMIN;
+        }
+        return voiceArmed ? UNMUTE_POINTER_VOICE : UNMUTE_POINTER_NONE;
     }
 
     /**

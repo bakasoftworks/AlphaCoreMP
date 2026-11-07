@@ -120,6 +120,8 @@ public final class OpsConsoleFormsSelftest {
                 {"verb=kick&seat=2", "kick 2 " + K2},
                 {"verb=ban&seat=2", "ban 2 " + K2},
                 {"verb=ban-src&seat=2", "ban-src 2 " + K2},
+                {"verb=chat-mute&seat=2", "chat-mute 2 " + K2}, // The house parser knows both since P3a
+                {"verb=chat-unmute&seat=2", "chat-unmute 2 " + K2},
                 {"verb=custom-allow&seat=3", "custom-allow 3"},
                 {"verb=custom-ban&seat=2", "custom-ban cc-v2-brawl"},
                 {"verb=custom-export&seat=2", "custom-export cc-v2-brawl"},
@@ -238,7 +240,8 @@ public final class OpsConsoleFormsSelftest {
         need("Seat 2 changed hands - nothing sent".equals(moved),
                 "kick with the c2 key on a seat now held by c9 answered '" + moved
                         + "' (flips if the occupant compare is dropped)");
-        for (String verb : List.of("ban", "ban-src", "custom-allow", "custom-ban", "custom-export")) {
+        for (String verb : List.of("ban", "ban-src", "chat-mute", "chat-unmute", "custom-allow", "custom-ban",
+                "custom-export")) {
             String w = refusal(() -> OpsConsoleForms.verbLine(
                     OpsConsoleForms.decodeForm("verb=" + verb + "&seat=2&key=" + K9), SNAP_A));
             need("Seat 2 changed hands - nothing sent".equals(w), verb + " with a foreign key answered '"
@@ -252,6 +255,13 @@ public final class OpsConsoleFormsSelftest {
         String rowKey = OpsConsoleForms.verbLine(OpsConsoleForms.decodeForm("verb=kick&seat=2"), SNAP_B);
         need(("kick 2 " + K9).equals(rowKey), "a key-less kick on the new occupant carries c9's key from"
                 + " the ROW; got " + rowKey + " (flips if the line is minted without the snapshot key)");
+        // The mute pair mints the ROW's key on its own verb word (verbGrammar's
+        // REAL-grammar parse covers the pair too since the P3a merge taught the house-file parser both verbs).
+        String mute = OpsConsoleForms.verbLine(OpsConsoleForms.decodeForm("verb=chat-mute&seat=2"), SNAP_A);
+        String unmute = OpsConsoleForms.verbLine(OpsConsoleForms.decodeForm("verb=chat-unmute&seat=3"), SNAP_A);
+        need(("chat-mute 2 " + K2).equals(mute) && ("chat-unmute 3 " + K3).equals(unmute), "key-less chat-mute"
+                + " seat 2 / chat-unmute seat 3 minted '" + mute + "' / '" + unmute + "' (flips if the arm swaps the"
+                + " two verbs, drops the row's key or resolves another seat)");
     }
 
     static void verbConfirm() {
@@ -276,6 +286,12 @@ public final class OpsConsoleFormsSelftest {
         expect("verb=ban&seat=2", 0L, "ban:2:" + K2, "Ban player", ServerOpsCore.banConfirmText(2, "c2"));
         expect("verb=ban-src&seat=2", 0L, "ban-src:2:" + K2, "Ban source",
                 ServerOpsCore.banSrcConfirmText(2, "c2", "127.0.0.1:2"));
+        // The mute asks with the shared text, the unmute with Kick's one-liner
+        expect("verb=chat-mute&seat=2", 0L, "chat-mute:2:" + K2, "Mute chat", "Mute seat 2 (c2)'s text chat until"
+                + " the server stops? Nobody sees their lines; they keep playing and their commands still work."
+                + " A fresh client id from a new address escapes it - then use Ban player.");
+        expect("verb=chat-unmute&seat=3", 0L, "chat-unmute:3:" + K3, "Unmute chat",
+                "Unmute seat 3 (c3)'s text chat?");
         // a typed address binds the STORED key, never the typing: the padded RFC form confirms its byte key
         expect("verb=ban-ip&key=1.2.3.0%2F24", 0L, "ban-ip:1.2.3.0/24", "Ban address",
                 ServerOpsCore.banIpConfirmText("1.2.3.0/24"));

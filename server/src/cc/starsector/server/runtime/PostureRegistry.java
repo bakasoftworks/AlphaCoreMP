@@ -264,6 +264,10 @@ public final class PostureRegistry {
             // sysprop-or-env read (DwellerCensusProbe.ARMED); the headless
             // Shrouded Dweller census for the fidelity rig — a one-serve -ExtraJvmFlags delta, never config.
             new Knob("cc.probe.dwellerCensus", "CC_PROBE_DWELLER_CENSUS", null, KnobClass.INSTRUMENT),
+            // sysprop-only (EngineReflectionBinding.AREA_SHADOW_PROPERTY, Boolean.getBoolean);
+            // the remnant bounds-area memo's shadow compare (served vs uncached, mismatches counted) — a one-serve
+            // -ExtraJvmFlags delta, never config. Unregistered it REFUSED the postured boot (the shadow leg).
+            new Knob("cc.remnant.areaShadow", null, null, KnobClass.INSTRUMENT),
             // sysprop-or-env read (FlareGlowProbe.ARMED); the headless flare glow
             // census (ACCELERATE command flag vs the engine glow's own flag + flame level) — never config.
             new Knob("cc.probe.flareGlow", "CC_PROBE_FLARE_GLOW", null, KnobClass.INSTRUMENT),

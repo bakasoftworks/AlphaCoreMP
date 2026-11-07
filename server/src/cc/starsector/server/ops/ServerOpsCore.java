@@ -978,6 +978,17 @@ public final class ServerOpsCore {
                     throw new IllegalArgumentException(banVerb + " needs a seatId > 0, got " + seatId);
                 }
                 return banVerb + " " + seatId;
+            case CHAT_MUTE:
+            case CHAT_UNMUTE: {
+                // The text-chat mute twins of the seat bans: this key-less line = the HOUSE-FILE shape only
+                // (seat > 0, the parser's law); the ops GUI mints the occupant-bound line through its own
+                // seat-line minter, the ban's F1 posture.
+                String muteVerb = verb == OperatorCommandFile.Verb.CHAT_MUTE ? "chat-mute" : "chat-unmute";
+                if (seatId <= 0) {
+                    throw new IllegalArgumentException(muteVerb + " needs a seatId > 0, got " + seatId);
+                }
+                return muteVerb + " " + seatId;
+            }
             case BANS:
                 return "bans";
             case BAN_CID:
@@ -1532,6 +1543,35 @@ public final class ServerOpsCore {
         return head + " " + key;
     }
 
+    /** The ops GUI's seat text-chat mute / unmute —
+     * {@code chat-mute N <key>} / {@code chat-unmute N <key>}, the key = the snapshot's {@code cidKey}
+     * for that seat (the operator's EXPECTED occupant; the server refuses {@code target_changed} when
+     * another cid now holds the seat, so a mute never lands on whoever took the seat since the
+     * snapshot). {@link #banSeatLine}'s shape: {@code seatId} &gt; 0 ({@link #verbLine}'s law); the
+     * key trimmed + ASCII-folded and {@link BanSet#isCidKey}-checked; an EMPTY key throws for BOTH
+     * verbs — the occupant-bound line is the ONLY shape a GUI press mints (the key-less line stays the
+     * house file's). The key is never echoed into the message (it arrives from a form). */
+    public static String chatMuteSeatLine(OperatorCommandFile.Verb muteOrUnmute, int seatId,
+            String cidKeyHex) {
+        if (muteOrUnmute != OperatorCommandFile.Verb.CHAT_MUTE
+                && muteOrUnmute != OperatorCommandFile.Verb.CHAT_UNMUTE) {
+            throw new IllegalArgumentException("chatMuteSeatLine mints chat-mute / chat-unmute only, got "
+                    + muteOrUnmute);
+        }
+        String head = verbLine(muteOrUnmute, seatId); // the seat > 0 law
+        String key = cidKeyHex == null ? "" : cidKeyHex.trim().toLowerCase(Locale.ROOT);
+        if (key.isEmpty()) {
+            throw new IllegalArgumentException("seat " + seatId + " has no client-id key in the"
+                    + " last snapshot (an older server, or a blank client id) - nothing sent");
+        }
+        if (!BanSet.isCidKey(key)) {
+            throw new IllegalArgumentException(head.substring(0, head.indexOf(' '))
+                    + " needs the seat's hex cid key (even length, 2.."
+                    + (2 * BanSet.CID_MAX_BYTES) + " chars of 0-9a-f) - nothing sent");
+        }
+        return head + " " + key;
+    }
+
     /** The GUI/web seat kick —
      * {@code kick N <key>}, the key = the snapshot's {@code cidKey} for that seat (the operator's
      * EXPECTED occupant; the door refuses {@code target_changed} when another cid now holds the
@@ -1614,6 +1654,20 @@ public final class ServerOpsCore {
     public static String banConfirmText(int seatId, String clientId) {
         return fillBanConfirm(BAN_CONFIRM_TEMPLATE, seatId, clientId);
     }
+
+    /** The Mute chat confirm, filled through the ban confirms'
+     * one {@value #CONFIRM_SEAT} / {@value #CONFIRM_CID} filler (seat first, cid last). Its claims are
+     * the mute's own ({@link OperatorCommandFile.Verb#CHAT_MUTE}): in memory until lifted or the server
+     * stops, keyed on the occupant's client id and address — so a fresh id from a new address is not
+     * covered, and the text sends the host to Ban player for that case. */
+    public static String chatMuteConfirmText(int seatId, String clientId) {
+        return fillBanConfirm(CHAT_MUTE_CONFIRM_TEMPLATE, seatId, clientId);
+    }
+
+    /** The {@link #chatMuteConfirmText} template: plain words a stranger hosting a serve reads. */
+    public static final String CHAT_MUTE_CONFIRM_TEMPLATE = "Mute seat {seat} ({cid})'s text chat until the"
+            + " server stops? Nobody sees their lines; they keep playing and their commands still work."
+            + " A fresh client id from a new address escapes it - then use Ban player.";
 
     /** The confirm TEMPLATES — the ONE text
      * law behind both surfaces: Swing and the web console ({@code OpsConsoleForms.verbConfirm},

@@ -72,12 +72,14 @@ public final class OpsConsolePageSelftest {
      * after the accept box - this list is the page's own order; Swing's v3 bar carries the two in a sixth KEPT
      * cluster beside SIM-SPEED (a width fit), and the parity rows compare the id SETS, never this order.
      * Launch debug WATCH sits between Start and Join from this PC (the Swing
-     * SERVER cluster's own order). */
+     * SERVER cluster's own order).
+     * Mute chat / Unmute chat follow Kick selected in SEAT (the page's own
+     * order; both modes carry them). */
     static final List<String> BAR_ORDER = List.of(
             "verb.startServer", "verb.watch", "verb.joinerGui", "verb.devEditor",
             "verb.endRound", "verb.endMatch", "verb.kill",
             "verb.simSpeed.field", "verb.simSpeedSet", "verb.simSpeedAuto", "verb.simSpeedAuto.off",
-            "verb.kickSelected", "verb.banPlayer", "verb.banSource", "verb.unbanPlayer", "verb.customReject",
+            "verb.kickSelected", "verb.chatMute", "verb.chatUnmute", "verb.banPlayer", "verb.banSource", "verb.unbanPlayer", "verb.customReject",
             "verb.customAllow",
             "verb.customId", "verb.customBan", "verb.customExport", "verb.customUnban",
             "verb.customSubmissions", "verb.customKeep", "verb.customForget");

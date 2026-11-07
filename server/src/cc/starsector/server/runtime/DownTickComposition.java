@@ -33,22 +33,37 @@ import java.util.Objects;
  *
  * <p>Returned lists are unmodifiable and the byte arrays are the encoder's only copies — callers
  * hand them to send/record paths as-is and never mutate them.
+ *
+ * <p>STAGED form (send-first): {@link #composeCtrl} encodes only the ctrl frames and holds the
+ * SNAP chunks un-encoded, so a tick whose wire lane is something else (the delta lane) can be
+ * fanned before the raw absolute frames — needed only by the DOWN record — are encoded by
+ * {@link #withAbsoluteFrames}. While that raw lane is pending, {@link #rawSnapFrames()} and
+ * {@link #composedDownRecord()} THROW rather than answer with a partial record; while no wire
+ * lane is staged, {@link #snapFrames()} throws. The finished form is byte-identical to the
+ * one-shot {@link #compose} (which is exactly {@code composeCtrl} then {@code withAbsoluteFrames}).
  */
 public final class DownTickComposition {
 
     private final List<byte[]> gpeeFrames;
     private final List<byte[]> edspFrames;
     private final List<byte[]> diveFrames;
+    /** Null while the raw lane is pending ({@link #pendingChunks} non-null). */
     private final List<byte[]> rawSnapFrames;
+    /** Null until a wire SNAP lane is staged. */
     private final List<byte[]> snapFrames;
+    /** The chunker's output awaiting its raw encode; null once encoded. */
+    private final List<cc.starsector.server.protocol.AuthoritativeWorldSnapshot> pendingChunks;
 
     private DownTickComposition(List<byte[]> gpeeFrames, List<byte[]> edspFrames,
-            List<byte[]> diveFrames, List<byte[]> rawSnapFrames, List<byte[]> snapFrames) {
+            List<byte[]> diveFrames, List<byte[]> rawSnapFrames, List<byte[]> snapFrames,
+            List<cc.starsector.server.protocol.AuthoritativeWorldSnapshot> pendingChunks) {
         this.gpeeFrames = Collections.unmodifiableList(gpeeFrames);
         this.edspFrames = Collections.unmodifiableList(edspFrames);
         this.diveFrames = Collections.unmodifiableList(diveFrames);
-        this.rawSnapFrames = Collections.unmodifiableList(rawSnapFrames);
-        this.snapFrames = Collections.unmodifiableList(snapFrames);
+        this.rawSnapFrames = rawSnapFrames == null ? null
+                : Collections.unmodifiableList(rawSnapFrames);
+        this.snapFrames = snapFrames == null ? null : Collections.unmodifiableList(snapFrames);
+        this.pendingChunks = pendingChunks;
     }
 
     /** Encode one tick's DOWN frame set exactly once, in wire order (K=1 snapshot). */
@@ -90,6 +105,22 @@ public final class DownTickComposition {
             List<cc.starsector.server.protocol.EntityDespawnEvent> despawns,
             List<cc.starsector.server.protocol.PhaseDiveEvent> dives)
             throws IOException {
+        return composeCtrl(snapshots, events, despawns, dives).withAbsoluteFrames();
+    }
+
+    /**
+     * The staged first half of {@link #compose}: every ctrl frame ({@code GPEE}, {@code EDSP},
+     * {@code DIVE}) encoded once, the SNAP chunks validated and held un-encoded — the raw lane
+     * is PENDING and no wire SNAP lane is staged yet. Argument checks are the one-shot
+     * compose's, so a bad tick still throws here, before anything is sent.
+     *
+     */
+    public static DownTickComposition composeCtrl(
+            List<cc.starsector.server.protocol.AuthoritativeWorldSnapshot> snapshots,
+            List<cc.starsector.server.protocol.GameplayEdgeEvent> events,
+            List<cc.starsector.server.protocol.EntityDespawnEvent> despawns,
+            List<cc.starsector.server.protocol.PhaseDiveEvent> dives)
+            throws IOException {
         Objects.requireNonNull(snapshots, "snapshots");
         Objects.requireNonNull(events, "events");
         Objects.requireNonNull(despawns, "despawns");
@@ -115,14 +146,52 @@ public final class DownTickComposition {
             PhaseDiveEventCodec.writeEvent(cap, diveEvent);
             dive.add(cap.toByteArray());
         }
-        List<byte[]> snaps = new ArrayList<>(snapshots.size());
+        List<cc.starsector.server.protocol.AuthoritativeWorldSnapshot> chunks =
+                new ArrayList<>(snapshots.size());
         for (cc.starsector.server.protocol.AuthoritativeWorldSnapshot snapshot : snapshots) {
-            Objects.requireNonNull(snapshot, "snapshot");
+            chunks.add(Objects.requireNonNull(snapshot, "snapshot"));
+        }
+        return new DownTickComposition(gpee, edsp, dive, null, null,
+                Collections.unmodifiableList(chunks));
+    }
+
+    /**
+     * The staged second half of {@link #compose}: the pending SNAP chunks encoded as RAW
+     * {@code AWSS} frames, once each, in chunk order — the codec truth the DOWN record carries.
+     * A staged wire lane (the delta lane) is kept as-is; with none staged the raw frames ARE
+     * the wire lane (the same arrays, as the one-shot compose returns them). Already encoded:
+     * returns this.
+     *
+     */
+    public DownTickComposition withAbsoluteFrames() throws IOException {
+        if (pendingChunks == null) {
+            return this;
+        }
+        List<byte[]> snaps = new ArrayList<>(pendingChunks.size());
+        for (cc.starsector.server.protocol.AuthoritativeWorldSnapshot snapshot : pendingChunks) {
             ByteArrayOutputStream cap = new ByteArrayOutputStream(256);
             AuthoritativeWorldSnapshotCodec.writeFrame(cap, snapshot);
             snaps.add(cap.toByteArray());
         }
-        return new DownTickComposition(gpee, edsp, dive, snaps, snaps);
+        return new DownTickComposition(gpeeFrames, edspFrames, diveFrames, snaps,
+                snapFrames != null ? snapFrames : snaps, null);
+    }
+
+    /** Whether the raw SNAP lane still awaits {@link #withAbsoluteFrames}. */
+    public boolean rawPending() {
+        return pendingChunks != null;
+    }
+
+    private int rawCount() {
+        return pendingChunks != null ? pendingChunks.size() : rawSnapFrames.size();
+    }
+
+    private void requireRawEncoded(String what) {
+        if (pendingChunks != null) {
+            throw new IllegalStateException(what + " read while the raw SNAP lane is pending: "
+                    + pendingChunks.size() + " chunk(s) are encoded only by withAbsoluteFrames,"
+                    + " after the send");
+        }
     }
 
     /**
@@ -135,13 +204,13 @@ public final class DownTickComposition {
      */
     public DownTickComposition withWireSnapFrames(List<byte[]> wireSnapFrames) {
         Objects.requireNonNull(wireSnapFrames, "wireSnapFrames");
-        if (wireSnapFrames.size() != rawSnapFrames.size()) {
+        if (wireSnapFrames.size() != rawCount()) {
             throw new IllegalArgumentException("wire SNAP lane must carry exactly one payload"
-                    + " per raw AWSS frame: raw=" + rawSnapFrames.size()
+                    + " per raw AWSS frame: raw=" + rawCount()
                     + " wire=" + wireSnapFrames.size());
         }
         return new DownTickComposition(gpeeFrames, edspFrames, diveFrames, rawSnapFrames,
-                wireSnapFrames);
+                wireSnapFrames, pendingChunks);
     }
 
     /**
@@ -162,7 +231,7 @@ public final class DownTickComposition {
             Objects.requireNonNull(frame, "laneFrames element");
         }
         return new DownTickComposition(gpeeFrames, edspFrames, diveFrames, rawSnapFrames,
-                laneFrames);
+                laneFrames, pendingChunks);
     }
 
     /**
@@ -176,7 +245,7 @@ public final class DownTickComposition {
      */
     public DownTickComposition withWireSnapSubset(List<byte[]> keptFrames) {
         Objects.requireNonNull(keptFrames, "keptFrames");
-        if (keptFrames.size() > snapFrames.size()) {
+        if (keptFrames.size() > snapFrames().size()) {
             throw new IllegalArgumentException("guarded wire SNAP lane cannot grow: have "
                     + snapFrames.size() + " frame(s), got " + keptFrames.size());
         }
@@ -184,7 +253,7 @@ public final class DownTickComposition {
             Objects.requireNonNull(frame, "keptFrames element");
         }
         return new DownTickComposition(gpeeFrames, edspFrames, diveFrames, rawSnapFrames,
-                keptFrames);
+                keptFrames, pendingChunks);
     }
 
     /** {@code GPEE} frames in event order, one encoded frame per element (CTRL lane). */
@@ -206,20 +275,28 @@ public final class DownTickComposition {
     /**
      * SNAP-lane WIRE payloads, one per {@link SnapshotChunker} chunk — what a serve loop fans
      * to sessions. Identical to {@link #rawSnapFrames()} (the same arrays) unless
-     * {@link #withWireSnapFrames} applied the L1 transport wrap.
+     * {@link #withWireSnapFrames} applied the L1 transport wrap. Throws while no wire lane
+     * is staged (a {@link #composeCtrl} result not yet given one).
      */
     public List<byte[]> snapFrames() {
+        if (snapFrames == null) {
+            throw new IllegalStateException("no wire SNAP lane staged on this composition");
+        }
         return snapFrames;
     }
 
-    /** RAW {@code AWSS} frame(s) — the codec truth the {@code .ccwr} record concatenates. */
+    /** RAW {@code AWSS} frame(s) — the codec truth the {@code .ccwr} record concatenates.
+     * Throws while the raw lane is pending (see {@link #withAbsoluteFrames}). */
     public List<byte[]> rawSnapFrames() {
+        requireRawEncoded("rawSnapFrames");
         return rawSnapFrames;
     }
 
     /** The tick's RAW frame set concatenated in wire order — the ONE {@code KIND_DOWN} record
-     * body (unchanged by the L1 wire wrap; see {@link #withWireSnapFrames}). */
+     * body (unchanged by the L1 wire wrap; see {@link #withWireSnapFrames}). Throws while the
+     * raw lane is pending: a record without its AWSS frames would be a different record. */
     public byte[] composedDownRecord() {
+        requireRawEncoded("composedDownRecord");
         int total = 0;
         for (byte[] frame : gpeeFrames) {
             total += frame.length;

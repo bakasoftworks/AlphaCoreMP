@@ -13,6 +13,7 @@ import static cc.starsector.server.runtime.PilotIntentDatagramServer.OBSERVER_BO
 import static cc.starsector.server.runtime.PilotIntentDatagramServer.OBSERVER_VERB_BOUNCE;
 import static cc.starsector.server.runtime.PilotIntentDatagramServer.nowMillis;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -181,6 +182,301 @@ final class PidsChatVerbs {
                     + PeerText.quote(OperatorCommandFile.digestOfKey(result.unbanKey())));
         }
         return result.replyLines();
+    }
+
+    /**
+     * The admin text-mute verbs ({@code /chatmute}, {@code /chatmute #n}, {@code /chatmute <name>},
+     * {@code /chatunmute [page]}, {@code /chatunmute #n}) in the {@link #adminBan} shape: snapshot the
+     * live sessions with their mute keys under the lock, let {@link AdminChatMuteCommand} resolve (pure,
+     * outside the lock), then apply its one deposit under a second lock take. A mute ADDS an entry (the
+     * set re-checks duplicate / cap / no key, so a mute set in between answers its own constant); a lift
+     * removes the entry by key pair. The deposit happens HERE, never through the serve loop's command
+     * drain: the set lives in memory under the door lock and nothing is written to disk. Receipts name a seat or an observer slot
+     * plus counts, never a player's name; the log rows carry no text, no name and no key value. The
+     * notices (the target when a mute lands; every live session a lift actually freed) go out AFTER the
+     * lock, the kick-notice posture (the core send takes its own locks). Nobody else is told anything: a
+     * public line would hand a troll a trophy. Reader thread, the session's admin bit already checked.
+     *
+     */
+    private List<String> adminChatMute(PeerSession by, int bySeatId, ChatCommands.Parsed parsed) {
+        List<AdminChatMuteCommand.Target> live = new ArrayList<AdminChatMuteCommand.Target>();
+        InetAddress requester = by.peer == null ? null : by.peer.getAddress();
+        List<ChatMuteSet.Entry> snapshot;
+        long now;
+        synchronized (door.lock) {
+            for (PeerSession s : door.sessionsById.values()) {
+                if (s.isLiveLocked() && s.seatId >= 0) {
+                    live.add(new AdminChatMuteCommand.Target(s.sessionId, s.seatId, s.admin(), s.observer,
+                            chatLineName(s), chatMuteIdKeyOrNull(s), chatMuteSrcKeyOrNull(s, requester),
+                            s.chatBucketRefillMillis));
+                }
+            }
+            snapshot = door.chatMutes.snapshotNewestFirst();
+            now = nowMillis();
+        }
+        List<ChatMuteSet.Entry> pin = by.chatMutePin;
+        AdminChatMuteCommand.Result result = AdminChatMuteCommand.handle(parsed, by.sessionId, live, snapshot,
+                pin, by.chatMuteMenuPin, now);
+        if (result.menuPin() != null) {
+            by.chatMuteMenuPin = result.menuPin();
+        }
+        if (result.pin() != null) {
+            by.chatMutePin = result.pin();
+        }
+        AdminChatMuteCommand.Target t = result.muteTarget();
+        ChatMuteSet.Entry lifting = result.liftEntry();
+        if (t == null && lifting == null) {
+            return result.replyLines();
+        }
+        String reply;
+        String row = null;
+        PeerSession mutedLive = null;
+        List<PeerSession> freed = new ArrayList<PeerSession>();
+        synchronized (door.lock) {
+            if (t != null) {
+                ChatMuteSet.Verdict verdict = door.chatMutes.add(new ChatMuteSet.Entry(t.idKeyOrNull(),
+                        t.srcKeyOrNull(), ChatMuteSet.Origin.CHAT, AdminChatMuteCommand.entryLabel(t), now));
+                reply = switch (verdict) {
+                    case ADDED -> AdminChatMuteCommand.muteReceipt(t.seatId(), t.observer(),
+                            AdminChatMuteCommand.observerSlot(by.sessionId, live, t.sessionId()),
+                            t.idKeyOrNull() != null, t.srcKeyOrNull() != null,
+                            othersOnAddressLocked(t.srcKeyOrNull(), t.sessionId()));
+                    case ALREADY_MUTED -> AdminChatMuteCommand.ALREADY_MUTED;
+                    case CAP_FULL -> AdminChatMuteCommand.CAP_FULL;
+                    case NO_KEY -> AdminChatMuteCommand.NO_KEY;
+                };
+                if (verdict == ChatMuteSet.Verdict.ADDED) {
+                    PeerSession target = door.sessionsById.get(t.sessionId());
+                    mutedLive = target != null && target.isLiveLocked() ? target : null;
+                    row = "admin_chat_mute by_seat=" + bySeatId + " by_session=" + by.sessionId
+                            + " target_seat=" + t.seatId() + " target_session=" + t.sessionId()
+                            + " observer=" + t.observer() + " keys=" + keysToken(t.idKeyOrNull(), t.srcKeyOrNull())
+                            + " entries=" + door.chatMutes.size();
+                }
+            } else if (!door.chatMutes.lift(lifting)) {
+                reply = AdminChatMuteCommand.NO_SUCH_MUTE; // lifted from another surface since the snapshot
+            } else {
+                ChatMuteSet.Entry stillVia = freedByLiftLocked(List.of(lifting), freed);
+                int index = pin == null ? 0 : AdminChatMuteCommand.indexOfKeys(pin, lifting) + 1;
+                reply = AdminChatMuteCommand.liftReceipt(index, stillVia, pin);
+                row = "admin_chat_unmute by_seat=" + bySeatId + " by_session=" + by.sessionId
+                        + " keys=" + keysToken(lifting.idKeyOrNull(), lifting.srcKeyOrNull())
+                        + " entries=" + door.chatMutes.size() + " freed=" + freed.size()
+                        + " still=" + (stillVia != null);
+            }
+        }
+        if (mutedLive != null) {
+            door.sendCtrlToSession(mutedLive, ChatFrameCodec.encodeDown(0, "server", AdminChatMuteCommand.MUTED_NOTICE));
+        }
+        for (PeerSession s : freed) {
+            door.sendCtrlToSession(s, ChatFrameCodec.encodeDown(0, "server", AdminChatMuteCommand.LIFTED_NOTICE));
+        }
+        if (row != null) {
+            System.out.println("pilot-datagram-server " + row);
+        }
+        return List.of(reply);
+    }
+
+    /**
+     * Lock held, AFTER the lift: every live non-admin session one of {@code lifted} covered, sorted by whether any
+     * stored entry still covers it — none = freed (added to {@code freedOut}; those alone get the lifted notice),
+     * else it stays muted and the first such session's newest covering entry is returned ({@code null} = every
+     * covered session was freed; the chat receipt's "still muted via"). Judged per SESSION because a covered
+     * player's OTHER key may sit in another entry (a shared address). No entry is excepted: the set refuses an entry
+     * whose key is already covered, so once {@code lifted} is out of the set no stored entry shares its keys.
+     * WHY one helper: the chat lift and the console lift must free exactly the same players.
+     *
+     */
+    private ChatMuteSet.Entry freedByLiftLocked(List<ChatMuteSet.Entry> lifted, List<PeerSession> freedOut) {
+        ChatMuteSet.Entry stillVia = null;
+        for (PeerSession s : door.sessionsById.values()) {
+            if (!s.isLiveLocked() || s.seatId < 0 || s.admin()) {
+                continue;
+            }
+            String id = chatMuteIdKeyOrNull(s);
+            String src = chatMuteSrcKeyOrNull(s, null);
+            boolean covered = false;
+            for (ChatMuteSet.Entry e : lifted) {
+                covered |= e.matches(id, src);
+            }
+            if (covered) {
+                List<ChatMuteSet.Entry> covering = door.chatMutes.coveringExcept(id, src, null);
+                if (covering.isEmpty()) {
+                    freedOut.add(s);
+                } else if (stillVia == null) {
+                    stillVia = covering.get(0);
+                }
+            }
+        }
+        return stillVia;
+    }
+
+    /**
+     * The house verbs' outcome, every field a bounded token or a count (the serve row prints them all):
+     * {@code status} = {@code ok} | {@code already_muted} | {@code cap_full} | {@code no_key} | {@code not_muted}
+     * | {@code no_live_session} | {@code target_changed} | {@code target_admin}; {@code keys} = which of the
+     * occupant's two mute keys exist ({@code id+src} | {@code id} | {@code src} | {@code none}, never a value);
+     * {@code entries} = the mute list's size after the verb (0 to {@link ChatMuteSet#CAP}); {@code lifted} = the
+     * entries an unmute removed (0 for a mute); {@code freed} = the live sessions that removal left unmuted.
+     *
+     */
+    record OperatorChatMuteOutcome(String status, String keys, int entries, int lifted, int freed) {
+    }
+
+    /**
+     * The operator's {@code chat-mute <seat> [<cidkey>]} / {@code chat-unmute <seat> [<cidkey>]} (the house file,
+     * the ops console's press, a replay): the seat's LIVE occupant under the kick / ban expected-occupant law — no
+     * live session = {@code no_live_session}; a non-empty {@code expectedCidKeyOrEmpty} that is not the occupant's
+     * own cid key (or an occupant with no client id) = {@code target_changed}, never compared on a replay door,
+     * whose occupants carry the door's own client ids and whose reel carries the key's digest (as
+     * {@link PilotIntentDatagramServer#kickSeatSession} and {@code banSession} skip it); an admin occupant =
+     * {@code target_admin} (admins are never muted). A mute stores ONE console entry on the occupant's two keys,
+     * derived exactly as the chat verb derives them with no requester address (the console has none); an unmute
+     * lifts EVERY entry either key matches (a chat mute and a console mute alike). Find, compare, mutate and the
+     * freed judgement ride ONE door-lock take, so the seat cannot change hands mid-verb; the notices (the target
+     * on a stored mute, each freed session on a lift) go out AFTER the lock, the kick-notice posture (the core
+     * send takes its own locks). Nobody else is told anything. Serve (sim) thread, once per operator command.
+     *
+     */
+    OperatorChatMuteOutcome operatorChatMute(int seatId, String expectedCidKeyOrEmpty, boolean mute) {
+        String expectedKey = expectedCidKeyOrEmpty == null ? "" : expectedCidKeyOrEmpty;
+        PeerSession mutedLive = null;
+        List<PeerSession> freed = new ArrayList<PeerSession>();
+        String status;
+        String keys = keysToken(null, null);
+        int lifted = 0;
+        int entries;
+        synchronized (door.lock) {
+            PeerSession target = null;
+            for (PeerSession s : door.sessionsById.values()) {
+                if (s.isLiveLocked() && s.seatId() == seatId) {
+                    target = s;
+                    break;
+                }
+            }
+            if (target == null) {
+                status = "no_live_session";
+            } else if (!door.isReplay() && !expectedKey.isEmpty() && (target.clientId == null
+                    || !expectedKey.equals(BanSet.cidKey(target.clientId)))) {
+                status = "target_changed";
+            } else if (target.admin()) {
+                status = "target_admin";
+            } else {
+                AdminChatMuteCommand.Target t = new AdminChatMuteCommand.Target(target.sessionId, target.seatId,
+                        target.admin(), target.observer, chatLineName(target), chatMuteIdKeyOrNull(target),
+                        chatMuteSrcKeyOrNull(target, null), target.chatBucketRefillMillis);
+                keys = keysToken(t.idKeyOrNull(), t.srcKeyOrNull());
+                if (mute) {
+                    ChatMuteSet.Verdict verdict = door.chatMutes.add(new ChatMuteSet.Entry(t.idKeyOrNull(),
+                            t.srcKeyOrNull(), ChatMuteSet.Origin.CONSOLE, AdminChatMuteCommand.entryLabel(t),
+                            nowMillis()));
+                    status = switch (verdict) {
+                        case ADDED -> "ok";
+                        case ALREADY_MUTED -> "already_muted";
+                        case CAP_FULL -> "cap_full";
+                        case NO_KEY -> "no_key";
+                    };
+                    mutedLive = verdict == ChatMuteSet.Verdict.ADDED ? target : null;
+                } else {
+                    List<ChatMuteSet.Entry> gone = door.chatMutes.liftMatching(t.idKeyOrNull(), t.srcKeyOrNull());
+                    lifted = gone.size();
+                    status = lifted == 0 ? "not_muted" : "ok";
+                    freedByLiftLocked(gone, freed);
+                }
+            }
+            entries = door.chatMutes.size();
+        }
+        if (mutedLive != null) {
+            door.sendCtrlToSession(mutedLive, ChatFrameCodec.encodeDown(0, "server", AdminChatMuteCommand.MUTED_NOTICE));
+        }
+        for (PeerSession s : freed) {
+            door.sendCtrlToSession(s, ChatFrameCodec.encodeDown(0, "server", AdminChatMuteCommand.LIFTED_NOTICE));
+        }
+        return new OperatorChatMuteOutcome(status, keys, entries, lifted, freed.size());
+    }
+
+    /**
+     * The name a player's chat lines carry: the session's own announced seat name, else the
+     * {@code seat-N} fallback. ONE expression for the chat relay, the join line and the mute list, so a
+     * {@code /chatmute <name>} match key is exactly the name the room saw on that player's lines.
+     *
+     */
+    static String chatLineName(PeerSession s) {
+        SeatNameFrameCodec.SeatNameAnnounce announce = s.seatNameAnnounce;
+        return announce != null && !announce.name().isEmpty() ? announce.name() : ("seat-" + s.seatId);
+    }
+
+    /**
+     * A session's text-mute ID key ({@code null} = none). A token-door PILOT keys on its seat handle
+     * (the door's custom-author key {@code seat#N}: one token = one seat for the serve, so rotating the
+     * client id never sheds the mute). Everyone else keys on the digest of a NON-BLANK client id only: a
+     * blank id digests to a value every key-less session would share. Never the session-table key (on a
+     * token door that is the raw seat token) and never an observer's seat handle (every observer is
+     * seat 0, so all would share it). Final fields only, so the drop site and the mute list agree.
+     *
+     */
+    String chatMuteIdKeyOrNull(PeerSession s) {
+        boolean tokenDoor = door.passwordLedger == null && door.seatAuthority != null;
+        if (tokenDoor && !s.observer && s.seatId >= 1) {
+            return door.customAuthorKey(s);
+        }
+        return s.clientId == null || s.clientId.isBlank() ? null : s.cidAuthorDigest;
+    }
+
+    /**
+     * A session's text-mute ADDRESS key ({@code null} = none): the source hold's own derivation, so the
+     * existing source-hold policy knob, its loopback exemption and its self-address guard govern mutes
+     * exactly as they govern bans (no knob of its own). {@code requesterOrNull} = the muting admin's
+     * address when a mute is being SET (an admin never mutes their own address); {@code null} when a
+     * sender is being TESTED.
+     *
+     */
+    String chatMuteSrcKeyOrNull(PeerSession s, InetAddress requesterOrNull) {
+        return door.sourceHold.wantedSrcOrNull(true, s.observer, s.peer == null ? null : s.peer.getAddress(),
+                requesterOrNull);
+    }
+
+    /**
+     * Lock held: is this sender's text muted? Admins never are. One {@code isEmpty()} when nobody is
+     * muted (every serve with no mute), so the per-line cost stays nil until a host uses the verb.
+     *
+     */
+    boolean chatMutedLocked(PeerSession s) {
+        return !s.admin() && !door.chatMutes.isEmpty()
+                && door.chatMutes.matches(chatMuteIdKeyOrNull(s), chatMuteSrcKeyOrNull(s, null));
+    }
+
+    /** {@link #chatMutedLocked} for a caller that does not hold the door lock (takes it): the join line
+     *  and the build-share announce, so a muted player's written names never reach the room.
+     * */
+    boolean chatMuted(PeerSession s) {
+        synchronized (door.lock) {
+            return chatMutedLocked(s);
+        }
+    }
+
+    /** Lock held: the OTHER live non-admin sessions a mute on {@code srcKeyOrNull} silences along with
+     *  its target (a household or one shared address) — the receipt's collateral count; 0 for no key.
+     * */
+    private int othersOnAddressLocked(String srcKeyOrNull, long targetSessionId) {
+        if (srcKeyOrNull == null) {
+            return 0;
+        }
+        int n = 0;
+        for (PeerSession s : door.sessionsById.values()) {
+            if (s.isLiveLocked() && s.seatId >= 0 && !s.admin() && s.sessionId != targetSessionId
+                    && srcKeyOrNull.equals(chatMuteSrcKeyOrNull(s, null))) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** Which keys an entry holds, for the log rows (the kind only, never a key value).
+     * */
+    private static String keysToken(String idKeyOrNull, String srcKeyOrNull) {
+        return idKeyOrNull != null && srcKeyOrNull != null ? "id+src"
+                : idKeyOrNull != null ? "id" : srcKeyOrNull != null ? "src" : "none";
     }
 
     /**
@@ -362,6 +658,7 @@ final class PidsChatVerbs {
         ChatFrameCodec.ChatUp chat = ChatFrameCodec.decodeUp(payload);
         int seatId;
         String name;
+        boolean muted;
         synchronized (door.lock) {
             if (!holdsSeatLocked(session)) {
                 door.counters.chatStaleSessionDropped++;
@@ -395,9 +692,10 @@ final class PidsChatVerbs {
             }
             session.chatTokens -= 1.0;
             seatId = session.seatId;
-            SeatNameFrameCodec.SeatNameAnnounce announce = session.seatNameAnnounce;
-            name = announce != null && !announce.name().isEmpty()
-                    ? announce.name() : ("seat-" + session.seatId);
+            name = chatLineName(session);
+            // The text-mute test sits AFTER the token debit, so the bucket stays
+            // the only rate law and the private notice below costs one paid token each (no amplifier).
+            muted = chatMutedLocked(session);
         }
         String text = chat.text();
         if (text.startsWith("/")) {
@@ -416,6 +714,18 @@ final class PidsChatVerbs {
             }
             System.out.println("pilot-datagram-server chat_led_command seat=" + seatId
                     + " session=" + session.sessionId);
+            return;
+        }
+        if (muted) {
+            // A muted sender's plain line reaches nobody, and every slash
+            // command above still ran (a mute stops text reaching others, never control of the player's own
+            // game). The sender alone is told, once per dropped line, so it is never a shadow mute; counted, no
+            // row per line (the rate-drop posture). The notice goes out after the lock (the core send's order).
+            synchronized (door.lock) {
+                door.counters.chatMutedDropped++;
+            }
+            door.sendCtrlToSession(session,
+                    ChatFrameCodec.encodeDown(seatId, "server", AdminChatMuteCommand.DROPPED_NOTICE));
             return;
         }
         door.fans.fanChat(seatId, name, text);
@@ -460,7 +770,11 @@ final class PidsChatVerbs {
         List<String> customPickReply = null;
         Auth13Inputs auth13 = null;
         ChatCommands.Kind parsedKind = parsed.kind();
-        if (session.observer && OBSERVER_BOUNCED_VERBS.contains(parsedKind)) {
+        if (parsedKind == ChatCommands.Kind.UNMUTE) {
+            // /unmute answers EVERY session, before any gate, with the one pointer
+            // that names the text verb (admins) and the voice verb (when this serve relays voice; the /help flag).
+            replyLines = List.of(ChatCommands.unmutePointer(session.admin(), door.voice != null));
+        } else if (session.observer && OBSERVER_BOUNCED_VERBS.contains(parsedKind)) {
             // Seat verbs act on the sender's seat/hull — an observer has
             // neither (seat 0 would reach the seat machine as an unarmed id). Bounce, count.
             door.readerCounters.observerCtrlDrops++;
@@ -494,6 +808,12 @@ final class PidsChatVerbs {
             }
             replyLines = VoiceMuteCommand.handle(parsed, session.sessionId, seatId, door.voice,
                     ownNameBySeat::get, observerSessions::contains, listingSink);
+            // An admin who just muted a player's VOICE for themselves may have meant the text mute, which is
+            // a different verb: the pointer rides a successful mute reply only — a seat
+            // OR an observer target; no other VoiceMuteCommand line starts with "muted ".
+            if (session.admin() && !replyLines.isEmpty() && replyLines.get(0).startsWith("muted ")) {
+                replyLines = List.of(replyLines.get(0), "/chatmute stops their text chat for everyone");
+            }
         } else if (parsedKind == ChatCommands.Kind.WAVE_LIST) {
             // Bare /wave = the category MENU
             // — a KIND_WAVE picker listing over the fixed set (the
@@ -673,6 +993,17 @@ final class PidsChatVerbs {
             // exactly like /kick (the SESSION bit, never wire text).
             // + the two no-arg menus (BAN_LIST / UNBAN_LIST ride the LSTD sink).
             replyLines = session.admin() ? adminBan(session, seatId, parsed, listingSink)
+                    : List.of(ChatCommands.ADMIN_ONLY);
+        } else if (parsedKind == ChatCommands.Kind.CHATMUTE_LIST
+                || parsedKind == ChatCommands.Kind.CHATMUTE_INDEX
+                || parsedKind == ChatCommands.Kind.CHATMUTE_NAME
+                || parsedKind == ChatCommands.Kind.CHATMUTE_USAGE
+                || parsedKind == ChatCommands.Kind.CHATUNMUTE_LIST
+                || parsedKind == ChatCommands.Kind.CHATUNMUTE_PAGE
+                || parsedKind == ChatCommands.Kind.CHATUNMUTE_INDEX) {
+            // The text-mute verbs, admin-gated like /kick (the SESSION bit,
+            // never wire text); answered HERE because the set and the mute keys are door-owned.
+            replyLines = session.admin() ? adminChatMute(session, seatId, parsed)
                     : List.of(ChatCommands.ADMIN_ONLY);
         } else if (parsedKind == ChatCommands.Kind.SWITCHTEAMS_LIST
                 || parsedKind == ChatCommands.Kind.SWITCHTEAMS_INSTANT

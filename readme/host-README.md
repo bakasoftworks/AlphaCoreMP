@@ -56,7 +56,7 @@ For Windows; on Linux, first do the steps under [Linux](#linux-x86-64), then sta
 4. In "Before start", set the "Match password" players type to join (required: 8 to 64 letters, digits or hyphens, starting with a letter or digit, not a common password). "Admin password" is optional (12 to 64 characters, not the match password): it unlocks the admin commands in game; the host on this computer needs none. Leave "Match shape" (the game mode) and the rest as they are.
 5. Press "Start server" ("SERVER" group, bottom bar). The headline at the top reads STARTING, with a count of seconds, while the engine loads (often about a minute). The first time, Windows may ask whether to allow "OpenJDK Platform binary": click "Allow access". LISTENING: the server is ready for players. REFUSED or FAILED: the line under it says why.
 6. Press "Copy join brick" (end of "Network"): it copies the connect code, `<address>:<port>:<match password>`, checked against the running server's port, and shows it for 45 seconds. It refuses, saying why (and calling "Players connect to" "Advertise"), while `<public IP>` is not replaced, the port is not the running server's or no server runs.
-7. Send each player the kit zip from the `kits` folder and, privately, the code: anyone who has it can join. The kit's `README.md` tells players (who need Starsector 0.98a-RC8 too) how to join; they press "Play" when you say GO. Each player who joins shows as a row on "Players". One player with a ship may join per internet address unless you raise "Seats per address" (see [Kicking and banning players](#kicking-and-banning-players)).
+7. Send each player the kit zip from the `kits` folder and, privately, the code: anyone who has it can join. The kit's `README.md` tells players (who need Starsector 0.98a-RC8 too) how to join; they press "Play" when you say GO. Each player who joins shows as a row on "Players". One player with a ship may join per internet address unless you raise "Seats per address" (see [Kicking, muting and banning players](#kicking-muting-and-banning-players)).
 8. When you are done, press "End match" ("MATCH" group) and confirm. Players cannot connect? See [Troubleshooting](#troubleshooting).
 
 ## Stopping the server
@@ -142,9 +142,11 @@ On another PC: set an "Admin password" (before Start), then type it into the "ad
 
 To delete the saved admin password, tick "Remove the admin password" and press "Start server".
 
-## Kicking and banning players
+## Kicking, muting and banning players
 
 - On "Players", pick a seat row, open "Seat actions", press "Kick selected", "Ban player" (the player key, each player's own id, AND the address they connect from) or "Ban source" (the address only: everyone behind it) and confirm. To ban an address or range, type it into "Ban address or range" and press "Ban address".
+- "Mute chat" (same place) stops the picked seat's player's text chat: nobody sees their lines, they keep playing and their commands still work. It lasts until "Unmute chat" or the server stops, and follows the player across re-joins (a fresh client id from a new address escapes it: then use "Ban player"). The player is told once when muted and once when unmuted; nobody else is told. Voice chat is separate: every player mutes voices for themselves with `/mute`.
+- An admin in the game's chat has the same mute: `/chatmute` lists the players by number, `/chatmute #<n>` (or `/chatmute <name>`) mutes one; `/chatunmute` lists the mutes, `/chatunmute #<n>` lifts one. Spectators (no seat) can be muted from the chat only. At most 32 mutes are held at once; a 33rd is refused until one is lifted.
 - The ops GUI lists the first 64 bans ("N more not listed"): `unban cid <key>` (or `unban src <key>`) in the command file still lifts any ban - every ban is in `cc-server.bans` (see [Commands](#commands)). A pasted log or a shared bans file hands nobody a player key (both hold only its fingerprint), but the bans file holds banned addresses and seat names.
 - An address of this computer itself (`127.x.x.x` or `::1`, a "Join from this PC" seat) is never kept in the bans file: `ban-ip` refuses it, and a `ban-src` on such a seat lasts until the server stops.
 - One player with a ship may join per internet address (a home behind one router is one; spectators and this computer's own address do not count); a second is turned away. "Seats per address" ("Advanced", before Start; `moderation.maxSeatsPerSource`): 0 to 255, 0 = no limit. Players behind one tunnel or gateway count as one unless its address is in `moderation.sourceCapExempt`.
@@ -257,10 +259,12 @@ These work with or without an ops GUI. While the server runs, put commands into 
 
 - `kick <seat>`: disconnect that seat's player
 - `switch-team <seat> instant|respawn`: move that seat's player to the other team, at once or at their next respawn
+- `chat-mute <seat>`: stop that seat's player's text chat until `chat-unmute` or the server stops (see [Kicking, muting and banning players](#kicking-muting-and-banning-players)); the ops GUI adds the player's key so a seat that changed hands is left alone
+- `chat-unmute <seat>`: lift every text chat mute on that seat's player
 
 ### Bans
 
-See also [Kicking and banning players](#kicking-and-banning-players).
+See also [Kicking, muting and banning players](#kicking-muting-and-banning-players).
 
 - `ban <seat>`: ban that seat's player: their player key AND the address they connect from (after they left: the seat's last player and address); the address part follows the setting `moderation.chatSourceHold` (shipped: `match`)
 - `ban-src <seat>`: ban the network address that seat's player connects from (everyone behind that address)
@@ -390,7 +394,7 @@ Everything below is inside this folder.
 ### Players cannot connect
 
 - After a Start with "Fill from ProtonVPN" the ops GUI tests the forwarded address once ("Reachability"); "Check from the internet" (beside "Players connect to") repeats it in any mode. No answer in ProtonVPN mode: check that port forwarding is on in ProtonVPN, press "Fill from ProtonVPN", then "End match" and "Start server" again; allow Java through the firewall if Windows asked. With a router port forward, no answer proves little (many home routers cannot loop a packet back in): ask a player to try.
-- Behind carrier-grade NAT (see [What you need](#what-you-need)) a router port forward cannot work. An old kit is turned away: hand out the kit from the `kits` folder. "seats-per-address limit is reached": see [Kicking and banning players](#kicking-and-banning-players).
+- Behind carrier-grade NAT (see [What you need](#what-you-need)) a router port forward cannot work. An old kit is turned away: hand out the kit from the `kits` folder. "seats-per-address limit is reached": see [Kicking, muting and banning players](#kicking-muting-and-banning-players).
 
 ### The headline reads
 

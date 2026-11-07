@@ -23,6 +23,12 @@ import java.util.List;
  * ({@code #btn-ban-ip}, {@code verb.banIp}, page-only: the Swing window has no twin) above the list, its help
  * entry {@code tip-ban-ip}; the press sends {@code ban-ip} and the server mints the confirm.
  *
+ * <p>Seat actions gains Mute chat ({@code #btn-chat-mute},
+ * {@code verb.chatMute}) and Unmute chat ({@code #btn-chat-unmute}, {@code verb.chatUnmute}) right after Kick
+ * selected, with help entries {@code tip-chat-mute} / {@code tip-chat-unmute}: a moderation step short of a ban
+ * that silences a seat's text chat while it keeps playing. One served page carries them in both modes, so a
+ * package host and the repository console moderate chat the same way.
+ *
  * <p>The read-outs, captions, hints and dialogs carry their
  * checklist id too (one element each; a runtime text variant such as {@code status.headline.stale} rides
  * the element of its family, never an element of its own). The load group gains the rates / phases /
@@ -324,6 +330,8 @@ final class OpsConsolePageHtml {
 <details class="more">
 <summary>Seat actions &#9662;</summary>
 <button type="button" id="btn-kick" data-cc="verb.kickSelected" aria-describedby="pick-why">Kick selected</button>
+<button type="button" id="btn-chat-mute" data-cc="verb.chatMute" aria-describedby="pick-why tip-chat-mute">Mute chat</button>
+<button type="button" id="btn-chat-unmute" data-cc="verb.chatUnmute" aria-describedby="pick-why tip-chat-unmute">Unmute chat</button>
 <button type="button" id="btn-ban-player" data-cc="verb.banPlayer" aria-describedby="pick-why tip-ban-player">Ban player</button>
 <button type="button" id="btn-ban-source" data-cc="verb.banSource" aria-describedby="pick-why tip-ban-source">Ban source</button>
 <button type="button" id="btn-unban-player" data-cc="verb.unbanPlayer" aria-describedby="tip-unban-player">Unban player</button>
@@ -808,6 +816,8 @@ final class OpsConsolePageHtml {
 <dt>auto on / auto off</dt><dd id="tip-auto">send the sim-speed auto governor on or off; the server reports no governor state, so the bar shows what was last sent</dd>
 <dt>accept customs</dt><dd id="tip-customs-accept">turns custom submissions on or off; the box follows the server's status, and the summary beside it is the server's own count</dd>
 <dt>Kick selected</dt><dd>disconnects the picked seat's player</dd>
+<dt>Mute chat</dt><dd id="tip-chat-mute">stops the picked seat's text chat reaching anyone; they keep playing and their commands still work; lasts until an admin lifts it or the server stops, and follows the player across re-joins (a fresh client id from a new address escapes it - then use Ban player)</dd>
+<dt>Unmute chat</dt><dd id="tip-chat-unmute">lifts every text chat mute on the picked seat's player</dd>
 <dt>Ban player</dt><dd id="tip-ban-player">bans the picked seat's player: kicked now, and both their client id and the address they connected from are refused at the door on every later join (the address part follows moderation.chatSourceHold in cc-server.properties, on as shipped; everyone behind a shared address is refused with them); the ban list beside the server config (cc-server.bans) keeps it across server starts</dd>
 <dt>Ban source</dt><dd id="tip-ban-source">bans the picked seat's source address - every client behind it (CGNAT / shared LAN) is kicked and refused too</dd>
 <dt>Ban address</dt><dd id="tip-ban-ip">bans a typed address or a whole range: 1.2.3.4, 1.2.3.0/24 (/8 to /31), or for IPv6 a key copied from the Bans list or a provider range like 2a0b:f4c0::/32 - everyone connecting from it is kicked now and refused at the door; the ban list beside the server config (cc-server.bans) keeps it across server starts; lift it with that row's Unban</dd>

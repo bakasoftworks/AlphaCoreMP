@@ -101,6 +101,7 @@ public final class SideTotalsCapture {
             objectiveGetType = objective.getMethod("getType");
             managerGetMaxStrength = manager.getMethod("getMaxStrength");
             managerGetCurrStrength = manager.getMethod("getCurrStrength");
+            OpenHandles.openAll(this); // the per-tick totals skip checkAccess
         }
     }
 

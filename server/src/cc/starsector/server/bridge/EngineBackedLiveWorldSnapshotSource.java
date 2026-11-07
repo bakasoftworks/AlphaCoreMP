@@ -130,8 +130,10 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
             "cc.server.perSideRoundEnd", "CC_SERVER_PER_SIDE_ROUND_END", "server.perSideRoundEnd", false);
     // Default-OFF instrument: name the flux read-instant window. The flux
     // blip [observed ×3] = the flux fold saw PRE-fire flux while the same-tick post-capture walk
-    // saw POST-fire, with no server-side statement between that mutates the engine — the ENGINE
-    // moved the value between two same-tick read instants. This probe re-reads the SAME ships'
+    // saw POST-fire. Static RE later ruled out the engine moving the value between two same-tick reads:
+    // getCurrFlux is a bare field read whose every writer runs inside the synchronous ship advance, and no
+    // combat thread runs beside it, so such a disagreement means an advance ran between the
+    // two reads. This probe re-reads the SAME ships'
     // live currFlux through the SAME binding path at two capture-internal instants (p1 =
     // immediately after foldFluxTier, p2 = capture return) and logs a row when either disagrees
     // with the folded wire value — splitting the fold→walk gap into fold→p1 / p1→p2 / p2→walk
@@ -835,6 +837,115 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
     }
 
     /**
+     * The raw weapon-mount views the LAST capture's mount fold read, stamped with that capture's
+     * simTick. The serve loop's discharge detector, birth shadow fold and
+     * truth merge take this list for the SAME tick instead of a second reflective walk of every
+     * ship's mounts: no engine step runs between a capture and those consumers, so a re-read
+     * could only return the same values at pure sim-thread cost. Unmodifiable: every same-tick
+     * consumer shares it. Null whenever the binding's mount read failed soft — the same null the
+     * read itself returned.
+     */
+    private List<WeaponMountView> capturedMountViews;
+    private long capturedMountViewsTick = Long.MIN_VALUE;
+    private long mountViewRereads;
+    private boolean mountViewRereadLogged;
+
+    /** This capture's mount views when {@code tick} is the last captured simTick; else a fresh
+     *  binding read (counted, one loud line) = the pre-sharing behavior, so a caller off the
+     *  capture's tick never receives another tick's mounts. Null whenever the binding's mount
+     *  read fails soft — the same null the read itself returns. */
+    public List<WeaponMountView> weaponMountViewsOfTick(long tick) {
+        if (tick == capturedMountViewsTick) {
+            return capturedMountViews;
+        }
+        mountViewRereads++;
+        if (!mountViewRereadLogged) {
+            mountViewRereadLogged = true;
+            System.out.println("snapshot-source mount_views_reread tick=" + tick
+                    + " captured_tick=" + capturedMountViewsTick);
+        }
+        return binding.weaponMountStatesOrNull();
+    }
+
+    /** Fallback re-reads served by {@link #weaponMountViewsOfTick} (0 on the serve path). */
+    public long mountViewRereads() {
+        return mountViewRereads;
+    }
+
+    /**
+     * The raw flux and ship-system views the LAST capture's flux and system folds read, each stamped with
+     * that capture's simTick, for the serve's same-tick edge detector (vent windows, system edges), which
+     * used to re-read both through the binding right after the capture. Same contract as the mount views
+     * above: a take on the stamped tick gets the capture's own list (unmodifiable, shared), any other tick
+     * gets a fresh counted read, and a read that failed soft is stamped as its own null.
+     *
+     * <p>Why the capture's list equals a re-read: the flux getter is a bare field read, the
+     * system getters return fields of the system and of its charge and ammo trackers or arithmetic over
+     * them, and the serve runs no engine step and no system or flux command between the capture and the
+     * detector. This moves nothing off the sim thread; it removes one duplicated
+     * reflective walk per tier per tick.
+     *
+     *
+     */
+    private static final class CapturedViews<V> {
+        private final String rereadRow;
+        private List<V> views;
+        private long tick = Long.MIN_VALUE;
+        private long rereads;
+        private boolean rereadLogged;
+
+        CapturedViews(String rereadRow) {
+            this.rereadRow = rereadRow;
+        }
+
+        /** Stamped BEFORE the fold's null / empty early return, so a same-tick taker sees exactly what a
+         *  second read would have returned (null and empty included). */
+        void stamp(List<V> read, long simTick) {
+            views = read == null ? null : java.util.Collections.unmodifiableList(read);
+            tick = simTick;
+        }
+
+        /** True when {@code want} is the stamped tick; else counts the miss (one loud line, the first). */
+        boolean hitOrCountMiss(long want) {
+            if (want == tick) {
+                return true;
+            }
+            rereads++;
+            if (!rereadLogged) {
+                rereadLogged = true;
+                System.out.println("snapshot-source " + rereadRow + " tick=" + want + " captured_tick=" + tick);
+            }
+            return false;
+        }
+    }
+
+    private final CapturedViews<ShipFluxView> capturedFluxViews = new CapturedViews<>("flux_views_reread");
+    private final CapturedViews<ShipSystemView> capturedSystemViews = new CapturedViews<>("system_views_reread");
+
+    /** This capture's flux views when {@code tick} is the last captured simTick; else a fresh counted
+     *  binding read. Null whenever the binding's flux read fails soft. */
+    public List<ShipFluxView> fluxViewsOfTick(long tick) {
+        return capturedFluxViews.hitOrCountMiss(tick) ? capturedFluxViews.views : binding.shipFluxStatesOrNull();
+    }
+
+    /** This capture's ship-system views when {@code tick} is the last captured simTick; else a fresh
+     *  counted binding read. Null whenever the binding's system read fails soft. */
+    public List<ShipSystemView> systemViewsOfTick(long tick) {
+        return capturedSystemViews.hitOrCountMiss(tick)
+                ? capturedSystemViews.views : binding.shipSystemStatesOrNull();
+    }
+
+    /** Fallback re-reads served by {@link #fluxViewsOfTick} (0 on the serve path). */
+    public long fluxViewRereads() {
+        return capturedFluxViews.rereads;
+    }
+
+    /** Fallback re-reads served by {@link #systemViewsOfTick} (0 on the serve path). */
+    public long systemViewRereads() {
+        return capturedSystemViews.rereads;
+    }
+
+    /**
      * Capture-only half of {@link #publishNextTick()}: read the
      * per-ship views off the live binding and assemble one frame WITHOUT stepping the
      * engine. For a caller that drives the engine itself (the fleet-bench loop steps
@@ -1065,6 +1176,7 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
     private AuthoritativeWorldSnapshot foldSystemStateTier(
             AuthoritativeWorldSnapshot snapshot, Map<Long, Long> entityIdByPositionShipId) {
         List<ShipSystemView> systemViews = binding.shipSystemStatesOrNull();
+        capturedSystemViews.stamp(systemViews, simTick);
         if (systemViews == null || systemViews.isEmpty()) {
             return snapshot;
         }
@@ -1234,6 +1346,7 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
             AuthoritativeWorldSnapshot snapshot, Map<Long, Long> entityIdByPositionShipId,
             List<ShipPhaseCloakView> cloakViews) {
         List<ShipFluxView> fluxViews = binding.shipFluxStatesOrNull();
+        capturedFluxViews.stamp(fluxViews, simTick);
         if (fluxViews == null || fluxViews.isEmpty()) {
             return snapshot;
         }
@@ -1293,6 +1406,10 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
     private AuthoritativeWorldSnapshot foldWeaponMountTier(
             AuthoritativeWorldSnapshot snapshot, Map<Long, Long> entityIdByPositionShipId) {
         List<WeaponMountView> mountViews = binding.weaponMountStatesOrNull();
+        // Stamped BEFORE the null / empty early return so a same-tick taker sees exactly what
+        // a second read would have returned (null and empty included).
+        capturedMountViews = mountViews == null ? null : java.util.Collections.unmodifiableList(mountViews);
+        capturedMountViewsTick = simTick;
         if (mountViews == null || mountViews.isEmpty()) {
             return snapshot;
         }

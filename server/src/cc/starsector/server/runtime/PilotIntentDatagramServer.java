@@ -280,6 +280,9 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
     public static final int ADMIN_BAN_CAP = 16;
     /** The source hold + the ONE budget (A2/A3; dies with the door). */
     final DoorSourceHold sourceHold;
+    /** The text-chat mutes — in memory only, guarded by {@link #lock}, dying
+     *  with the door (a mute lasts until lifted or the server stops); the verbs and the drop live in {@link PidsChatVerbs}. */
+    final ChatMuteSet chatMutes = new ChatMuteSet();
     /** The per-address LIVE-SEAT allowance, bound to this box's addresses at open ({@link SourceSeatCap#boundTo});
      *  read under {@link #lock} at the password door's join branch only. */
     final SourceSeatCap sourceSeatCap;
@@ -618,6 +621,11 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         /** The {@code /kick} twin of
          * {@link #banMenuPin} (the last {@code /kick} menu; same thread + lifetime law). */
         java.util.Map<Long, Long> kickMenuPin;
+        /** The last {@code /chatmute} list served to this session (its rows in
+         * order, which {@code /chatmute #n} resolves against) and its {@code /chatunmute} numbering. The
+         * {@link #banMenuPin} law: READER THREAD ONLY, dies with the session, NOT copied on takeover. */
+        java.util.List<AdminChatMuteCommand.Target> chatMuteMenuPin;
+        java.util.List<ChatMuteSet.Entry> chatMutePin;
 
         /** The mid-game admin grant (lock held), from one of two sites: the door's /auth branch, after
          * the constant-time compare against the armed admin secret passed, and the
@@ -2020,6 +2028,50 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         }
     }
 
+    /** The serve's emission window: its sim thread + whether the DOWN emission worker holds a tick. */
+    private record EmitWindowProbe(Thread sim, java.util.function.BooleanSupplier workerBusy) {
+    }
+
+    /** Null until the serve installs it (a door without a serve loop never counts). */
+    private volatile EmitWindowProbe emitWindowProbe;
+    /** Sim-thread ctrl sends + reel rows made while the worker was busy; an AtomicLong so any
+     * thread may read it (only the sim thread ever increments it). */
+    private final AtomicLong emitWindowViolations = new AtomicLong();
+
+    /**
+     * A runtime witness of the serve's emission window law: from a tick's hand-off to the sim's
+     * next drain the DOWN emission worker owns the down sends, so a ctrl frame or a reel row the
+     * SIM thread issues in that span could reorder against the worker's DOWN (a peer or the reel
+     * would see the frames in a different order than an on-thread emission produced). Each such
+     * call counts; one line per door names the first. The worker's own sends (another thread) and
+     * the sim's inline emissions (the worker idle) never count. Must stay 0.
+     *
+     *
+     */
+    public void setEmitWindowProbe(Thread sim, java.util.function.BooleanSupplier workerBusy) {
+        emitWindowProbe = new EmitWindowProbe(Objects.requireNonNull(sim, "sim"),
+                Objects.requireNonNull(workerBusy, "workerBusy"));
+    }
+
+    /** {@link #setEmitWindowProbe}'s count, cumulative over the door's life. */
+    public long emitWindowViolations() {
+        return emitWindowViolations.get();
+    }
+
+    /** One volatile read + one thread compare per call; the busy read only on the sim thread. */
+    private boolean emitWindowBreached() {
+        EmitWindowProbe p = emitWindowProbe;
+        return p != null && Thread.currentThread() == p.sim() && p.workerBusy().getAsBoolean();
+    }
+
+    /** Counts one breach; the door's first prints its frame kind + code (a magic or a row kind). */
+    private void countEmitWindowViolation(String frameKind, int code) {
+        if (emitWindowViolations.getAndIncrement() == 0L) {
+            System.out.println("npeer-serve emit_window_violation frame=" + frameKind + " code=0x"
+                    + Integer.toHexString(code) + " (the first; emit_window_violations= counts every one)");
+        }
+    }
+
     /**
      * The serve loop's applied-input rows ({@link MatchRecordRows})
      * into the SAME reel, explicit stamp, the same null-safe sink read as {@link #recordTickDown}. Only a
@@ -2036,6 +2088,9 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         }
         if (kind == MatchRecordRows.KIND_END) {
             throw new IllegalArgumentException("recordRow kind " + kind + " not a serve row kind (the END trailer is the sink's own)");
+        }
+        if (emitWindowBreached()) {
+            countEmitWindowViolation("row", kind);
         }
         WireRecordSink s = sink;
         if (s != null) {
@@ -2960,9 +3015,9 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         if (!joinAnnounce || session.observer || session.joinSuppressed) {
             return; // An observer is not a joiner (no "seat-0 joined"); nor a live reconnect
         }
-        SeatNameFrameCodec.SeatNameAnnounce announce = session.seatNameAnnounce;
-        String name = announce != null && !announce.name().isEmpty()
-                ? announce.name() : ("seat-" + session.seatId);
+        // A text-muted joiner is announced by seat, never by the name it wrote,
+        // or every re-join would carry its text to the room (no lock is held here; the test takes the door's).
+        String name = chatVerbs.chatMuted(session) ? "seat-" + session.seatId : PidsChatVerbs.chatLineName(session);
         fanServerChat(session.seatId, name + " joined");
     }
 
@@ -4976,7 +5031,9 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
                     + " session=" + sessionId + " id=" + PeerText.quote(id));
             return List.of(stockReply);
         }
-        boolean silent = kind == ChatCommands.Kind.SHARE_SET_SILENT;
+        // A text-muted sharer shares silently — the announce fans the build name
+        // the player wrote; a silent share also leaves the once-per-match announce unspent.
+        boolean silent = kind == ChatCommands.Kind.SHARE_SET_SILENT || chatVerbs.chatMuted(session);
         SubmittedVariantLedger.ShareResult r = ledger.share(id, sessionId, silent);
         System.out.println("pilot-datagram-server peer_build share seat=" + seatId
                 + " session=" + sessionId + " id=" + PeerText.quote(id)
@@ -5475,6 +5532,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
 
     /** CHTU sends dropped at an empty per-session token bucket (the policy drop). */
     public long chatRateDropped() { synchronized (lock) { return counters.chatRateDropped; } }
+    public long chatMutedDropped() { synchronized (lock) { return counters.chatMutedDropped; } }
 
     /** CHTU sends dropped for an unbound-seat sender (null-authority smoke door only —
      * CHTD requires a real seat id, so there is nothing truthful to stamp). */
@@ -5759,6 +5817,9 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
      * {@code lock} (the core send must not run under it — lock-order rule, class doc).
      */
     private void ctrlSpoolOrFail(PeerSession session, byte[] frame) {
+        if (emitWindowBreached()) { // before the replay choke: the order law holds there too
+            countEmitWindowViolation("ctrl", payloadMagic(frame));
+        }
         if (session.replay) {
             // The CTRL choke for a replayed session — no frame enters its
             // reliability window or this spool, so with no peer ever acking, the window never fills and the

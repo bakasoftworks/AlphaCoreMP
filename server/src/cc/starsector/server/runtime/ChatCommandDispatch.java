@@ -336,8 +336,17 @@ public final class ChatCommandDispatch {
             case USAGE, UNKNOWN -> {
                 return List.of(parsed.reply());
             }
-            default -> throw new IllegalStateException(
+            case NOT_COMMAND -> throw new IllegalStateException(
                     "non-command text reached dispatch: " + parsed.kind());
+            default -> {
+                // A parsed command this switch has no case for
+                // answers one plain refusal and the session lives. A throw here escaped to the
+                // reader's fault belt, which disconnected the typing player over a chat line. Non-
+                // command text keeps the throw above: the door hands dispatch only slash lines, so
+                // reaching it is a caller bug. The row carries the enum name only, never the text.
+                System.out.println("chat-command chat_dispatch_unrouted kind=" + parsed.kind().name());
+                return List.of(ChatCommands.UNROUTED_REPLY);
+            }
         }
     }
 

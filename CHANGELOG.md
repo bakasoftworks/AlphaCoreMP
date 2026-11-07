@@ -2,6 +2,13 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.6.4 - 2026-11-07
+
+- Hosts: a player's text chat can now be muted. On "Players", pick the seat and press "Mute chat" under "Seat actions" ("Unmute chat" lifts it). In the game's chat an admin types `/chatmute` for a numbered list, then `/chatmute #<n>` (or `/chatmute <name>`); `/chatunmute` lists the mutes and `/chatunmute #<n>` lifts one. A muted player keeps playing and their commands still work; nobody sees their lines; the mute follows them across re-joins and lasts until it is lifted or the server stops. Command-file twins: `chat-mute <seat>` and `chat-unmute <seat>`. See the README, "Kicking, muting and banning players".
+- `/mute` (voice, for yourself only) now answers "muted seat N's voice for you (Name)" so it is not mistaken for the text mute, and `/unmute` points to the right verb instead of toggling the voice mute.
+- The server does less work per tick on its simulation thread: the frame send to players runs on its own worker, and several per-tick reads of the game's objects were trimmed. Play is unchanged.
+- The joiner kit must be updated to 0.6.4: the version number is part of the kit's content check, so an older kit is refused at the door. No other change to the client mod.
+
 ## 0.6.3 - 2026-11-06
 
 - Hosts: each round line in the server log now reports late pacer wake-ups (`sleep_late_frames=` and `sleep_late_max_ms=`), so a host whose machine hands the server a coarse timer can see it in the log. The server's behaviour is unchanged.

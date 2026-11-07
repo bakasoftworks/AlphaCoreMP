@@ -362,8 +362,9 @@ public final class DownEmissionComposer implements AutoCloseable {
      * chunker's K=1 identity when it fits), then encode every frame ONCE in wire order —
      * peer-independent bytes a serve loop fans/records as-is. With {@code cc.net.snapDeflate}
      * ON, each SNAP wire payload is additionally CAWZ-wrapped HERE, once above the fan
-     * (raw-fallback keeps incompressible frames unchanged) — the composition's
-     * raw frames and {@code composedDownRecord()} sink truth are untouched.
+     * (raw-fallback keeps incompressible frames unchanged) — and only when the
+     * absolute lane is the wire lane (a successful delta tick below replaces it whole) — the
+     * composition's raw frames and {@code composedDownRecord()} sink truth are untouched.
      *
      * <p>With the AWSD delta lane effective (knob AND armed), the SNAP wire lane is then
      * REPLACED per tick: one ship-empty AWSS frame (non-ship carriage + per-tick AWSS
@@ -380,8 +381,30 @@ public final class DownEmissionComposer implements AutoCloseable {
                 List.<cc.starsector.server.protocol.PhaseDiveEvent>of());
     }
 
-    /** The dive-carrying variant — see {@link DownTickComposition}. */
+    /** The dive-carrying variant — see {@link DownTickComposition}. Exactly
+     * {@link #composeWire} then {@link #completeRecord}: the one-shot form every non-fanning
+     * caller keeps, byte-identical to the staged pair. */
     public DownTickComposition compose(
+            AuthoritativeWorldSnapshot snapshot,
+            List<cc.starsector.server.protocol.GameplayEdgeEvent> events,
+            List<EntityDespawnEvent> despawns,
+            List<cc.starsector.server.protocol.PhaseDiveEvent> dives)
+            throws IOException {
+        return completeRecord(composeWire(snapshot, events, despawns, dives));
+    }
+
+    /**
+     * SEND-FIRST stage one: everything a peer receives this tick, and nothing more — the ctrl
+     * frames and the wire SNAP lane (the delta lane when it succeeds; else the absolute lane,
+     * whose raw frames are then encoded here because they ARE the wire). The chunker runs HERE,
+     * first, so every chunker invariant throw still lands before any send; every composer
+     * state change and wire-byte meter of the tick is committed here too. On a delta-success
+     * tick the raw absolute lane stays PENDING: only the DOWN record needs it, so
+     * {@link #completeRecord} encodes it after the fan (the send no longer waits
+     * for record-only bytes).
+     *
+     */
+    public DownTickComposition composeWire(
             AuthoritativeWorldSnapshot snapshot,
             List<cc.starsector.server.protocol.GameplayEdgeEvent> events,
             List<EntityDespawnEvent> despawns,
@@ -390,20 +413,45 @@ public final class DownEmissionComposer implements AutoCloseable {
         List<AuthoritativeWorldSnapshot> chunks =
                 SnapshotChunker.chunkForEmission(
                         snapshot, snapPayloadCap, snapChunking, snapFragmentation);
-        DownTickComposition comp = DownTickComposition.compose(chunks, events, despawns, dives);
-        if (snapDeflate) {
-            List<byte[]> wire = new ArrayList<>(comp.rawSnapFrames().size());
-            for (byte[] raw : comp.rawSnapFrames()) {
-                wire.add(SnapDeflateCodec.wrapOrRaw(snapDeflater, raw));
-            }
-            comp = comp.withWireSnapFrames(wire);
-        }
-        if (snapDelta) {
-            comp = composeAwsdLaneOrFallBack(snapshot, comp);
-        }
+        DownTickComposition comp = DownTickComposition.composeCtrl(chunks, events, despawns, dives);
+        // The absolute lane is CAWZ-wrapped only when it IS the wire lane. A delta
+        // tick that succeeds replaces the whole lane, so wrapping it first was a full deflate of
+        // bytes nobody sent, every tick, on the sim thread; the fallback wraps in the
+        // same tick, so nothing is delayed. wrapOrRaw resets the deflater per call:
+        // the fallback bytes never depend on the wrap order.
+        comp = snapDelta ? composeAwsdLaneOrFallBack(snapshot, comp)
+                : wrapAbsoluteLane(comp.withAbsoluteFrames());
         DownTickComposition out = guardSnapOverCap(comp, snapshot.simTick());
         meterWireLanes(out);
         return out;
+    }
+
+    /**
+     * SEND-FIRST stage two: the raw absolute frames of an already-staged tick encoded from the
+     * chunks {@link #composeWire} minted — the DOWN record's only missing part. No composer
+     * state is read or written, so it may run after the fan; a tick whose raw lane is already
+     * encoded (fallback, delta-off) returns unchanged.
+     *
+     */
+    public DownTickComposition completeRecord(DownTickComposition wire) throws IOException {
+        return wire.withAbsoluteFrames();
+    }
+
+    /**
+     * The absolute (AWSS) lane as the wire lane: each raw chunk CAWZ-wrapped once when
+     * {@code cc.net.snapDeflate} is on, else the composition unchanged. Called only where the
+     * absolute lane is what the peers receive — the delta-less serve and the delta fallback —
+     * never for a tick whose lane the AWSD composition replaces whole.
+     */
+    private DownTickComposition wrapAbsoluteLane(DownTickComposition comp) {
+        if (!snapDeflate) {
+            return comp;
+        }
+        List<byte[]> wire = new ArrayList<>(comp.rawSnapFrames().size());
+        for (byte[] raw : comp.rawSnapFrames()) {
+            wire.add(SnapDeflateCodec.wrapOrRaw(snapDeflater, raw));
+        }
+        return comp.withWireSnapFrames(wire);
     }
 
     /**
@@ -413,8 +461,8 @@ public final class DownEmissionComposer implements AutoCloseable {
      * {@code bytes_sent=}: the ladder's +17 KB/s per-peer step at N≥2 could not be
      * named from the meters, and the {@code .ccwr} sink records the RAW absolute lane, never
      * the AWSD replacement ({@code composedDownRecord()}), so the wire split was unmeasured.
-     * Runs ON the sim thread ({@code PilotServeSession} calls {@code compose} per tick, which
-     * calls this): a few long adds per tick, no I/O — cost trivial, UNMEASURED.
+     * Runs ON the sim thread ({@code DownTickFan} calls {@code composeWire} per tick, inline in the
+     * serve loop, which calls this): a few long adds per tick, no I/O — cost trivial, UNMEASURED.
      *
      */
     private void meterWireLanes(DownTickComposition out) {
@@ -692,7 +740,7 @@ public final class DownEmissionComposer implements AutoCloseable {
             System.out.println("awsd-fallback tick=" + simTick
                     + " entity=" + (refusedEntity >= 0 ? String.valueOf(refusedEntity) : "-")
                     + " reason=" + refusal.getMessage());
-            return comp;
+            return wrapAbsoluteLane(comp.withAbsoluteFrames());
         }
     }
 
@@ -718,13 +766,23 @@ public final class DownEmissionComposer implements AutoCloseable {
      * the verb grammar already enforces [0.25, 2.0] so a throw here is a wiring bug).
      */
     public void setSimSpeedPermille(int permille) {
+        this.simSpeedPermille = requireSimSpeedPermille(permille);
+    }
+
+    /**
+     * The carrier-range check of {@link #setSimSpeedPermille}, callable without touching a
+     * composer — so a caller that must defer the composer write still refuses a bad value at
+     * the moment it is produced. Returns {@code permille} unchanged.
+     *
+     */
+    public static int requireSimSpeedPermille(int permille) {
         if (permille < AwsdSnapshotCodec.SIM_SPEED_PERMILLE_MIN
                 || permille > AwsdSnapshotCodec.SIM_SPEED_PERMILLE_MAX) {
             throw new IllegalArgumentException("simSpeedPermille outside ["
                     + AwsdSnapshotCodec.SIM_SPEED_PERMILLE_MIN + ", "
                     + AwsdSnapshotCodec.SIM_SPEED_PERMILLE_MAX + "]: " + permille);
         }
-        this.simSpeedPermille = permille;
+        return permille;
     }
 
     /**

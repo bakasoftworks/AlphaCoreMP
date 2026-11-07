@@ -178,6 +178,14 @@ final class OpsConsoleForms {
                 return ServerOpsCore.banSeatLine("ban".equals(verb) ? OperatorCommandFile.Verb.BAN
                         : OperatorCommandFile.Verb.BAN_SRC, row.seatId(), row.cidKey());
             }
+            case "chat-mute":
+            case "chat-unmute": {
+                // The ban arm's shape - the ROW's key binds the expected
+                // occupant, so a mute pressed on a seat that changed hands is refused, never re-aimed.
+                OpsSnapshot.SeatRow row = seatRow(form, snap);
+                return ServerOpsCore.chatMuteSeatLine("chat-mute".equals(verb) ? OperatorCommandFile.Verb.CHAT_MUTE
+                        : OperatorCommandFile.Verb.CHAT_UNMUTE, row.seatId(), row.cidKey());
+            }
             case "custom-allow":
                 return ServerOpsCore.customAllowLine(seatRow(form, snap).seatId());
             case "custom-reject":
@@ -316,6 +324,18 @@ final class OpsConsoleForms {
                 OpsSnapshot.SeatRow row = seatRow(form, snap);
                 return new ConfirmSpec(occupantKey(verb, row), "Ban source",
                         ServerOpsCore.banSrcConfirmText(row.seatId(), row.clientId(), row.endpoint()));
+            }
+            case "chat-mute": {
+                // The mute confirms like Ban player and the unmute like Kick
+                // (a one-line seat question); both bind the occupant key, so a changed seat asks again.
+                OpsSnapshot.SeatRow row = seatRow(form, snap);
+                return new ConfirmSpec(occupantKey(verb, row), "Mute chat",
+                        ServerOpsCore.chatMuteConfirmText(row.seatId(), row.clientId()));
+            }
+            case "chat-unmute": {
+                OpsSnapshot.SeatRow row = seatRow(form, snap);
+                return new ConfirmSpec(occupantKey(verb, row), "Unmute chat",
+                        "Unmute seat " + row.seatId() + " (" + row.clientId() + ")'s text chat?");
             }
             case "ban-ip": {
                 // A typed address names no seat, so the key binds the MINTED

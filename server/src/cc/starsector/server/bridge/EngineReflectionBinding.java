@@ -4,6 +4,8 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -72,10 +74,32 @@ final class EngineReflectionBinding {
         if (shipGetId == null || shipIsAlive == null) {
             return null;
         }
+        List<?> ships;
         try {
             // Roster enumeration — a blank-id fx mint dying into a
             // !alive repo entry must not void the fracture detector's whole read.
-            List<?> ships = ecb.rosterShipList();
+            ships = ecb.rosterShipList();
+        } catch (RuntimeException e) {
+            remnantWalkAborts++;
+            return null;
+        }
+        return remnantSightingsOrNull(ships);
+    }
+
+    /**
+     * The sighting walk over a given ship list: the roster read above hands it the repository's
+     * ships, and a fixture can hand it its own. The area memo's walk brackets live here: the walk
+     * is opened before the first ship and closed only after the last one was read, so an aborted
+     * walk (any null return) leaves the last complete walk's areas serving, and only a complete
+     * walk may evict.
+     */
+    List<cc.starsector.server.runtime.HulkFractureDetector.RemnantSighting>
+            remnantSightingsOrNull(List<?> ships) {
+        if (shipGetId == null || shipIsAlive == null) {
+            return null;
+        }
+        try {
+            areaMemo.beginWalk();
             List<cc.starsector.server.runtime.HulkFractureDetector.RemnantSighting> sightings =
                     new ArrayList<>();
             for (Object ship : ships) {
@@ -102,20 +126,85 @@ final class EngineReflectionBinding {
                 float roX = renderOff == null ? Float.NaN : renderOff[0];
                 float roY = renderOff == null ? Float.NaN : renderOff[1];
                 boolean moduleDetached = remnantModuleDetached(ship);
+                float area = remnantBoundsArea(ship, true);
                 sightings.add(pose == null
                         ? new cc.starsector.server.runtime.HulkFractureDetector.RemnantSighting(
-                                key, ship, remnantBoundsArea(ship),
+                                key, ship, area,
                                 Float.NaN, Float.NaN, Float.NaN, Float.NaN, Float.NaN, Float.NaN,
                                 roX, roY, moduleDetached)
                         : new cc.starsector.server.runtime.HulkFractureDetector.RemnantSighting(
-                                key, ship, remnantBoundsArea(ship),
+                                key, ship, area,
                                 pose[0], pose[1], pose[2], pose[3], pose[4], pose[5],
                                 roX, roY, moduleDetached));
             }
+            areaMemo.endWalk();
             return sightings;
         } catch (ReflectiveOperationException | RuntimeException e) {
+            remnantWalkAborts++;
             return null;
         }
+    }
+
+    // ---- Remnant-walk read caches and their meters. ----
+
+    /**
+     * Every remnant-family reflective read on this binding goes through one handle cache; the
+     * area memo sits on top of it. Both are confined to the thread that drives this binding's
+     * remnant family (the serve's sim thread, which also runs the round-arm warm before frame 0),
+     * so neither is synchronized; they are never shared with another binding.
+     *
+     */
+    private final ReflectiveGetterCache getters = new ReflectiveGetterCache(true);
+    private final RemnantBoundsAreaMemo areaMemo = new RemnantBoundsAreaMemo();
+    private Method shipGetExactBounds; // lazy; a failed resolve is retried on the next read
+    private Method shipGetCollisionRadius; // lazy; a failed resolve is retried on the next read
+    /** Whole sighting walks that threw (a null-returning walk that did not throw is not counted). */
+    private long remnantWalkAborts;
+    /** Area reads that took the collisionRadius² path (bounds missing, unreadable or degenerate). */
+    private long remnantAreaRadiusFallbacks;
+    /** Area reads whose collisionRadius read also failed (the area reads 0). */
+    private long remnantAreaRadiusFailures;
+
+    /**
+     * System property arming the area shadow compare (default off): every area the memo serves
+     * is recomputed beside it through an uncached read of the same bounds object, and any
+     * raw-bit difference is counted. It exists to prove, on real engine data, the memo's premise
+     * that a corpse's original segments are never rewritten in place. Diagnostic only: the
+     * recompute costs what the uncached walk cost, on the same thread.
+     */
+    static final String AREA_SHADOW_PROPERTY = "cc.remnant.areaShadow";
+    private final boolean areaShadow = Boolean.getBoolean(AREA_SHADOW_PROPERTY);
+    private final ReflectiveGetterCache uncachedReads = new ReflectiveGetterCache(false);
+    private long areaShadowCompares;
+    private long areaShadowMismatches;
+    private long areaShadowUnreadable;
+
+    long remnantWalkAborts() {
+        return remnantWalkAborts;
+    }
+
+    long remnantAreaRadiusFallbacks() {
+        return remnantAreaRadiusFallbacks;
+    }
+
+    long remnantAreaRadiusFailures() {
+        return remnantAreaRadiusFailures;
+    }
+
+    long areaShadowCompares() {
+        return areaShadowCompares;
+    }
+
+    long areaShadowMismatches() {
+        return areaShadowMismatches;
+    }
+
+    RemnantBoundsAreaMemo areaMemo() {
+        return areaMemo;
+    }
+
+    int getterHandleCount() {
+        return getters.handleCount();
     }
 
     // ---- Corpse-pose read handles (lazy like the fog handles). ----
@@ -255,7 +344,7 @@ final class EngineReflectionBinding {
                 float[] pose = remnantPoseOrNull(ship);
                 float[] renderOff = remnantRenderOffsetOrNull(ship);
                 boolean detached = remnantModuleDetached(ship);
-                float area = remnantBoundsArea(ship);
+                float area = remnantBoundsArea(ship, false); // warms the handles, never the area memo
                 float[][] rings = hulkRingsOrNull(ship);
                 return "pose=" + (pose != null) + " ro=" + (renderOff != null)
                         + " detached=" + detached + " area=" + (area > 0f)
@@ -323,63 +412,251 @@ final class EngineReflectionBinding {
      * segment endpoints — rotation-independent, so the rank input is stable across drift).
      * Per-piece fail-soft: any unreadable step falls back to collisionRadius² (rank input
      * only — a coarse area mis-ranks at worst, it never nulls the sighting walk).
+     * <p>This wrapper owns the bounds read and hands the memo the bounds object, never the
+     * ship: a split keeps the parent's identity but installs a fresh, smaller bounds object on
+     * it, and the area must be seen to shrink on that same tick. {@code useCache} false (the
+     * round-arm warm) computes through the handle cache without touching the area memo. The
+     * collisionRadius² fallback is never memoized, so a piece whose bounds become readable reads
+     * its real area on the next walk.
      */
-    private float remnantBoundsArea(Object ship) {
+    float remnantBoundsArea(Object ship, boolean useCache) {
         try {
-            Object bounds = shipClass.getMethod("getExactBounds").invoke(ship);
-            Object segments = bounds == null ? null : publicRead(bounds, "getOrigSegments");
-            if (segments instanceof List<?> segs && !segs.isEmpty()) {
-                float minX = Float.POSITIVE_INFINITY;
-                float minY = Float.POSITIVE_INFINITY;
-                float maxX = Float.NEGATIVE_INFINITY;
-                float maxY = Float.NEGATIVE_INFINITY;
-                for (Object seg : segs) {
-                    for (String end : new String[] {"getP1", "getP2"}) {
-                        Object point = seg == null ? null : publicRead(seg, end);
-                        Object x = point == null ? null : publicRead(point, "getX");
-                        Object y = point == null ? null : publicRead(point, "getY");
-                        if (!(x instanceof Number) || !(y instanceof Number)) {
-                            throw new IllegalStateException("segment point unreadable");
-                        }
-                        float px = ((Number) x).floatValue();
-                        float py = ((Number) y).floatValue();
-                        minX = Math.min(minX, px);
-                        minY = Math.min(minY, py);
-                        maxX = Math.max(maxX, px);
-                        maxY = Math.max(maxY, py);
-                    }
+            if (shipGetExactBounds == null) {
+                shipGetExactBounds = shipClass.getMethod("getExactBounds");
+            }
+            Object bounds = shipGetExactBounds.invoke(ship);
+            if (bounds != null) {
+                float area = useCache ? areaMemo.areaOrNaN(bounds, getters)
+                        : RemnantBoundsAreaMemo.computeAreaOrNaN(bounds, getters);
+                if (useCache && areaShadow) {
+                    shadowCompareArea(bounds, area);
                 }
-                float area = (maxX - minX) * (maxY - minY);
-                if (Float.isFinite(area) && area > 0f) {
+                if (!Float.isNaN(area)) {
                     return area;
                 }
             }
         } catch (ReflectiveOperationException | RuntimeException fallThrough) {
-            // fail-soft: the collision-radius fallback below
+            // fail-soft: counted by the collision-radius fallback below
         }
+        remnantAreaRadiusFallbacks++;
         try {
-            Object radius = shipClass.getMethod("getCollisionRadius").invoke(ship);
+            if (shipGetCollisionRadius == null) {
+                shipGetCollisionRadius = shipClass.getMethod("getCollisionRadius");
+            }
+            Object radius = shipGetCollisionRadius.invoke(ship);
             if (radius instanceof Number n && Float.isFinite(n.floatValue())) {
                 return n.floatValue() * n.floatValue();
             }
-        } catch (ReflectiveOperationException | RuntimeException ignored) {
-            // fail-soft: rank input only
+        } catch (ReflectiveOperationException | RuntimeException radiusUnreadable) {
+            remnantAreaRadiusFailures++;
         }
         return 0f;
     }
 
     /**
+     * The diagnostic shadow beside a memo-served area: recompute it uncached (no memo, no handle
+     * cache) on the same bounds object and compare raw bits. Logs a power-of-two cadence summary
+     * (a bounded line count over any run) and the first mismatch once, both as hex bits and
+     * counts only.
+     */
+    private void shadowCompareArea(Object bounds, float served) {
+        float truth;
+        try {
+            truth = RemnantBoundsAreaMemo.computeAreaOrNaN(bounds, uncachedReads);
+        } catch (ReflectiveOperationException | RuntimeException unreadable) {
+            areaShadowUnreadable++;
+            truth = Float.NaN; // what the memo serves for an unreadable compute
+        }
+        areaShadowCompares++;
+        int servedBits = Float.floatToRawIntBits(served);
+        int truthBits = Float.floatToRawIntBits(truth);
+        if (servedBits != truthBits) {
+            areaShadowMismatches++;
+            if (areaShadowMismatches == 1L) {
+                System.out.println("[cc-remnant-area-shadow] first_mismatch served=0x"
+                        + Integer.toHexString(servedBits) + " uncached=0x"
+                        + Integer.toHexString(truthBits) + " compares=" + areaShadowCompares);
+            }
+        }
+        if (Long.bitCount(areaShadowCompares) == 1) {
+            System.out.println("[cc-remnant-area-shadow] compares=" + areaShadowCompares
+                    + " mismatches=" + areaShadowMismatches
+                    + " unreadable=" + areaShadowUnreadable
+                    + " memo_entries=" + areaMemo.size()
+                    + " compute_failures=" + areaMemo.computeFailures()
+                    + " radius_fallbacks=" + remnantAreaRadiusFallbacks);
+        }
+    }
+
+    /**
      * Read a no-arg public method off an engine object whose concrete class may be
      * non-public (bounds/segment/point internals): {@code setAccessible} is legal here —
-     * both JVMs' classpath code shares the unnamed module, so no opens are needed.
+     * both JVMs' classpath code shares the unnamed module, so no opens are needed. Rides the
+     * binding's handle cache, so the lookup and access check are paid once per concrete class.
      */
-    private static Object publicRead(Object target, String method)
+    private Object publicRead(Object target, String method)
             throws ReflectiveOperationException {
-        Method m = target.getClass().getMethod(method);
-        if (!m.canAccess(target)) {
-            m.setAccessible(true);
+        return getters.read(target, method);
+    }
+
+    /**
+     * No-arg getter reads with the {@code Method} handle cached per concrete class and getter
+     * name. The lookup and the access check dominated the remnant walk's cost (every
+     * {@code getMethod} returns a fresh copy and re-walks the class's methods); the invoke
+     * itself is cheap. Keyed on the {@code Class} object, so two classes with the same name never
+     * share a handle. A failed resolve is never stored, so it throws again on the next read, as
+     * the uncached read does. {@code setAccessible} runs once per handle, UNCONDITIONALLY
+     * ({@link OpenHandles}): gated on {@code canAccess} a public handle stayed checked per
+     * invoke. Built with caching off it is the plain uncached read, the shadow
+     * compare's reference. Confined to one thread, like its binding's remnant family.
+     *
+     */
+    static final class ReflectiveGetterCache {
+        private final boolean cacheHandles;
+        private final IdentityHashMap<Class<?>, HashMap<String, Method>> byClass =
+                new IdentityHashMap<>();
+
+        ReflectiveGetterCache(boolean cacheHandles) {
+            this.cacheHandles = cacheHandles;
         }
-        return m.invoke(target);
+
+        Object read(Object target, String name) throws ReflectiveOperationException {
+            if (!cacheHandles) {
+                return OpenHandles.open(target.getClass().getMethod(name)).invoke(target);
+            }
+            Class<?> cls = target.getClass();
+            HashMap<String, Method> methods = byClass.get(cls);
+            if (methods == null) {
+                methods = new HashMap<>();
+                byClass.put(cls, methods);
+            }
+            Method m = methods.get(name);
+            if (m == null) {
+                m = OpenHandles.open(cls.getMethod(name));
+                methods.put(name, m);
+            }
+            return m.invoke(target);
+        }
+
+        /** Cached handles across every class (rows read it: a failed resolve adds none). */
+        int handleCount() {
+            int n = 0;
+            for (HashMap<String, Method> methods : byClass.values()) {
+                n += methods.size();
+            }
+            return n;
+        }
+    }
+
+    /**
+     * Memo of a remnant's bbox area per bounds object. The area is a pure function of the
+     * bounds' local-frame original segments, and the engine never rewrites those in place on a
+     * corpse: a split installs a fresh bounds object on both pieces, while rotation and
+     * translation touch only the transformed list.
+     * So the key is the bounds identity,
+     * never the ship's: the parent keeps its identity across a split, and its area must be seen
+     * to shrink on that tick (the fracture detector's parent tiebreak and rank order read it).
+     * The key and the compute input are the same argument, so a caller cannot key on one object
+     * and walk another. Only successful reads are memoized; a failure recomputes next walk, like
+     * the uncached read, and counts. Two generations: an entry absent from the latest complete
+     * walk is dropped, so the memo never outgrows the remnant set (a piece leaving the
+     * repository, a parent's pre-split bounds, a round's leftovers at the next walk) and never
+     * pins a ship (a bounds object holds no reference to its ship). Identity maps, so no engine
+     * {@code hashCode}/{@code equals} runs.
+     */
+    static final class RemnantBoundsAreaMemo {
+        private static final String[] SEGMENT_ENDS = {"getP1", "getP2"};
+        private IdentityHashMap<Object, Float> previous = new IdentityHashMap<>();
+        private IdentityHashMap<Object, Float> current = new IdentityHashMap<>();
+        private long computeFailures;
+
+        void beginWalk() {
+            current.clear();
+        }
+
+        /**
+         * The area of this bounds object, or NaN when its segments are missing, empty,
+         * unreadable or enclose no positive finite area (the caller's radius fallback). A hit
+         * carries the stored {@code Float} into this walk's generation without allocating.
+         */
+        float areaOrNaN(Object bounds, ReflectiveGetterCache reads) {
+            Float hit = previous.get(bounds);
+            if (hit != null) {
+                current.put(bounds, hit);
+                return hit;
+            }
+            hit = current.get(bounds);
+            if (hit != null) {
+                return hit;
+            }
+            float area;
+            try {
+                area = computeAreaOrNaN(bounds, reads);
+            } catch (ReflectiveOperationException | RuntimeException unreadable) {
+                computeFailures++;
+                return Float.NaN;
+            }
+            if (!Float.isNaN(area)) {
+                current.put(bounds, area);
+            }
+            return area;
+        }
+
+        void endWalk() {
+            IdentityHashMap<Object, Float> swap = previous;
+            previous = current;
+            current = swap;
+            current.clear();
+        }
+
+        /**
+         * The uncached bbox walk over {@code getOrigSegments()}: min/max over every segment's
+         * two endpoints. NaN when the segments are not a non-empty list or the area is not
+         * finite and positive; throws when a segment or point is unreadable.
+         */
+        static float computeAreaOrNaN(Object bounds, ReflectiveGetterCache reads)
+                throws ReflectiveOperationException {
+            Object segments = reads.read(bounds, "getOrigSegments");
+            if (!(segments instanceof List<?> segs) || segs.isEmpty()) {
+                return Float.NaN;
+            }
+            float minX = Float.POSITIVE_INFINITY;
+            float minY = Float.POSITIVE_INFINITY;
+            float maxX = Float.NEGATIVE_INFINITY;
+            float maxY = Float.NEGATIVE_INFINITY;
+            for (Object seg : segs) {
+                for (String end : SEGMENT_ENDS) {
+                    Object point = seg == null ? null : reads.read(seg, end);
+                    Object x = point == null ? null : reads.read(point, "getX");
+                    Object y = point == null ? null : reads.read(point, "getY");
+                    if (!(x instanceof Number) || !(y instanceof Number)) {
+                        throw new IllegalStateException("segment point unreadable");
+                    }
+                    float px = ((Number) x).floatValue();
+                    float py = ((Number) y).floatValue();
+                    minX = Math.min(minX, px);
+                    minY = Math.min(minY, py);
+                    maxX = Math.max(maxX, px);
+                    maxY = Math.max(maxY, py);
+                }
+            }
+            float area = (maxX - minX) * (maxY - minY);
+            return Float.isFinite(area) && area > 0f ? area : Float.NaN;
+        }
+
+        /** True when this bounds object has an entry in either generation. */
+        boolean holds(Object bounds) {
+            return previous.containsKey(bounds) || current.containsKey(bounds);
+        }
+
+        /** Entries the last complete walk left serving. */
+        int size() {
+            return previous.size();
+        }
+
+        long computeFailures() {
+            return computeFailures;
+        }
     }
 
     // ---- ALTERNATING active-tube mirror. ----
@@ -643,10 +920,7 @@ final class EngineReflectionBinding {
         String key = target.getClass().getName() + '#' + method;
         Method m = dwellMethodCache.get(key);
         if (m == null) {
-            m = target.getClass().getMethod(method);
-            if (!m.canAccess(target)) {
-                m.setAccessible(true);
-            }
+            m = OpenHandles.open(target.getClass().getMethod(method)); // unconditional, see OpenHandles
             dwellMethodCache.put(key, m);
         }
         return m.invoke(target);

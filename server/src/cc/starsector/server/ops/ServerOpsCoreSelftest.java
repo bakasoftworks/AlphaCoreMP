@@ -5263,6 +5263,24 @@ public final class ServerOpsCoreSelftest {
         checkThrows(() -> banSeatLine(OperatorCommandFile.Verb.BAN, 0, "6a6f65"), "banSeatLine seat 0 throws");
         checkThrows(() -> banSeatLine(OperatorCommandFile.Verb.KICK, 2, "6a6f65"), "banSeatLine mints ban / ban-src only");
         checkThrows(() -> banSeatLine(OperatorCommandFile.Verb.BAN, 2, "6a6f\nend-match"), "banSeatLine newline key throws");
+        // The chat-mute minter = banSeatLine's shape, occupant-bound only.
+        check("chat-mute 2 6a6f65".equals(chatMuteSeatLine(OperatorCommandFile.Verb.CHAT_MUTE, 2, "6a6f65"))
+                && "chat-unmute 2 6a6f65".equals(chatMuteSeatLine(OperatorCommandFile.Verb.CHAT_UNMUTE, 2, " 6A6F65 ")),
+                "chatMuteSeatLine goldens (flips if the verb word, the seat or the trimmed + lowercased key drifts)");
+        checkThrows(() -> chatMuteSeatLine(OperatorCommandFile.Verb.CHAT_MUTE, 2, ""),
+                "chatMuteSeatLine with no key throws (flips if a GUI mute mints the key-less house line)");
+        checkThrows(() -> chatMuteSeatLine(OperatorCommandFile.Verb.CHAT_UNMUTE, 2, null),
+                "chatMuteSeatLine null key throws (flips if a null key is minted key-less)");
+        checkThrows(() -> chatMuteSeatLine(OperatorCommandFile.Verb.CHAT_MUTE, 0, "6a6f65"),
+                "chatMuteSeatLine seat 0 throws (flips if the seat > 0 law is skipped)");
+        checkThrows(() -> chatMuteSeatLine(OperatorCommandFile.Verb.KICK, 2, "6a6f65"),
+                "chatMuteSeatLine mints chat-mute / chat-unmute only (flips if the verb check is dropped)");
+        checkThrows(() -> chatMuteSeatLine(OperatorCommandFile.Verb.CHAT_MUTE, 2, "6a6f\nend-match"),
+                "chatMuteSeatLine newline key throws (flips if the isCidKey check is dropped)");
+        check(("Mute seat 3 (mnp-d1)'s text chat until the server stops? Nobody sees their lines; they keep playing"
+                + " and their commands still work. A fresh client id from a new address escapes it - then use Ban player.")
+                .equals(chatMuteConfirmText(3, "mnp-d1")),
+                "chatMuteConfirmText golden (flips if the text or the seat / cid fill drifts)");
         // row 5: hostile params never mint a line (the web twins below pin the file).
         checkThrows(() -> banCidLine("6a6f\nend-match"), "banCidLine newline-injected key throws");
         checkThrows(() -> unbanLine("src", "1.2.3.4 x"), "unbanLine src with a trailing token throws");

@@ -126,7 +126,8 @@ public final class PilotServeSession {
     private double[] fortressWaveScale;
     private MatchDescriptor npeerDescriptor;
     private AdhocFoeSpawner adhocFoes;
-    private Map<Long, PilotIntentDatagramServer.PeerSession> liveByIdScratch;
+    /** Owns the session diff's map pair; serveFrame walks deaths and joins only on a tick whose set changed. */
+    private LiveSessionSetObserver<PilotIntentDatagramServer.PeerSession> liveSet;
     private Map<Long, PilotIntentDatagramServer.PeerSession> prevLive;
     private boolean socketLiveness;
     private Set<Integer> flyInDeferredForTransfer;
@@ -403,8 +404,52 @@ public final class PilotServeSession {
     private long sprintWallMaxNanos;
     private long debtNowNanos;
     private int snapFanSkippedTicks;
-    private long fanPassMaxNanos;
-    private long sendSlowestNanos;
+    /** The DOWN fan's round maxima + the last tick's compose/send boundary stamp. */
+    private final DownTickFan.FanMeters fanMeters = new DownTickFan.FanMeters();
+    /** How late each tick's DOWN send lands (the never-add-latency receipt); per round. */
+    private final EmitLagMeter emitLag = new EmitLagMeter();
+    /**
+     * The DOWN emission thread {@code cc-down-emit} (daemon, the sim's MAX priority): it runs
+     * {@link DownTickFan#emit} for every tick that did not start in debt, so the compose, the fan
+     * and the DOWN record leave the sim thread while the engine capture stays on it.
+     *
+     * <p>THE WINDOW LAW. From {@link DownEmissionWorker#handOff} to the next {@link #drainEmitter}
+     * the worker OWNS {@link #downComposer} and its armor-cell book, {@link #fanMeters},
+     * {@link #emitLag}, every live session's send-gap meter, and the door's DOWN sends + DOWN record
+     * of the handed tick; from the drain to the next hand-off the sim owns them all. The sim's
+     * drains sit at the frame top (before any ctrl send, reel row, dead-session or receipt read of
+     * the frame) and at round end (before the round line, the wrap, the next round's mint and the
+     * goodbye fan), so the peers and the reel see today's order. Every sim-thread touch of the
+     * composer or the book outside the emission sits behind a {@code requireIdle} tripwire, and the
+     * door counts any sim-thread ctrl send or reel row made while the worker is busy
+     * ({@code emit_window_violations=}, 0 by construction).
+     *
+     * <p>The worker touches NO engine state: its body reads only the captured {@link TickEmission}
+     * (an immutable value the sim minted) and the emission-owned objects above. Its stdout is
+     * unmetered: the stdout I/O meter charges the sim thread alone and the worker never re-aims it,
+     * so the sim's io_* witness brackets stay truthful.
+     *
+     * <p>Built as the serve's second try-with-resources resource right after the door, so it closes
+     * (finishing a tick in flight, bounded join) BEFORE the door closes; nulled at teardown after
+     * the composer close guard. The barrier keeps the worker's default 50 µs spin before it parks:
+     * the hand-off bench measured on the dev box (wake p99 21 µs, max 479 µs; park round trip p99
+     * 40 µs) puts a typical wake inside the spin and a rare late one onto the park, never a spin
+     * that starves the worker of its core.
+     *
+     *
+     */
+    private DownEmissionWorker<TickEmission> downEmitter;
+    /** The governor's sim-speed permille for the composer, applied at the next drain (the
+     * composer is the worker's after a hand-off); -1 = none pending. */
+    private int deferredComposerPermille = -1;
+    /** Ticks the sim emitted itself this round because they started in debt. */
+    private long emitInlineTicks;
+    /** The longest drain wait this round (the round line's {@code emit_wait_max_us=}). */
+    private long emitRoundWaitMaxNanos;
+    /** When this round's frames began: the busy share's wall. */
+    private long emitRoundStartNanos;
+    /** The worker's cumulative figures + the door's violations at the round's start. */
+    private EmitLagMeter.WorkerFigures emitRoundBase = EmitLagMeter.WorkerFigures.INLINE;
     private long prevFrameNanos;
     private int workFrames;
     private long workNanosTotal;
@@ -587,8 +632,11 @@ public final class PilotServeSession {
         this.moduleVerbsArmed = r.moduleVerbsArmed;
         this.clientConnected = r.clientConnected;
         this.operatorEndMatch = r.operatorEndMatch;
-        this.prevLive = r.prevLive;
-        this.liveByIdScratch = r.liveByIdScratch;
+        this.liveSet = r.liveSet;
+        // prevLive starts as the observer's (empty) held map, so the first
+        // tick diffs against an empty set as before; a boot failure copies back a partial resolver whose
+        // observer may still be null, and no frame is served then.
+        this.prevLive = liveSet == null ? null : liveSet.liveById();
         this.wireSink = r.wireSink;
         this.gpeeLog = r.gpeeLog;
         this.armorCellBook = r.armorCellBook;
@@ -650,10 +698,13 @@ public final class PilotServeSession {
                 // The LunaSettings sheet minted at boot (installServed) is HELD by
                 // this door — the one construction site a live serve walks; without it no probe reply ever carries LUNA.
                 LunaSheetMint.servedOrNull());
+        // The emission worker is the SECOND resource, so it
+        // closes before the door (a tick in flight finishes its sends while the socket is open).
         try (PilotIntentDatagramServer door = replayFeed != null
                 ? PilotIntentDatagramServer.openReplay(authority, descriptorSeatCount, doorParams)
                 : PilotIntentDatagramServer.openMultiPeer(bindHost, bindPort, authority, descriptorSeatCount,
-                        doorParams)) {
+                        doorParams);
+                DownEmissionWorker<TickEmission> emitter = openDownEmitter(door)) {
             // The perimeter liveness
             // assert is the FIRST thing after the door opens — the reader thread is already
             // live, so any later placement admits HELLOs for the announce window and then reaps
@@ -679,11 +730,16 @@ public final class PilotServeSession {
                 lastRoundServed = round;
                 mintRound(door, round);
                 holdRoundStartGate(door, round);
+                markEmitRoundStart(door);
                 for (int frame = 0; frame < config.framesPerSession(); frame++) {
                     if (!serveFrame(door, round, frame)) {
                         break;
                     }
                 }
+                // The round-end barrier, on every loop exit
+                // (a false frame, the frame budget): the round's last DOWN is sent and recorded
+                // before the round line, the wrap's reset fan, the next round's mint or the goodbye.
+                drainEmitter("round_end");
                 if (replayFeed != null) {
                     replayFeed.noteRoundClosed(round, lastSimTick);
                 }
@@ -710,6 +766,84 @@ public final class PilotServeSession {
             teardown();
         }
         return receipt();
+    }
+
+    /**
+     * Builds the DOWN emission worker for this serve (see {@link #downEmitter}), holds it for the
+     * frame loop and installs the door's window probe on this, the sim, thread. The body reads
+     * {@link #downComposer} when it runs, never at build time: the composer is minted later, in
+     * the announce, and every body run follows a hand-off (a volatile publication) made after it.
+     *
+     *
+     */
+    private DownEmissionWorker<TickEmission> openDownEmitter(PilotIntentDatagramServer door) {
+        DownEmissionWorker<TickEmission> w = new DownEmissionWorker<>(DownEmissionWorker.DEFAULT_THREAD_NAME,
+                Thread.MAX_PRIORITY, true, STALL_FRAME_NANOS, DownEmissionWorker.DEFAULT_SPIN_BOUND_NANOS,
+                t -> t.snap().simTick(),
+                (t, pickup) -> DownTickFan.emit(door, downComposer, t, pickup, fanMeters, emitLag));
+        downEmitter = w;
+        door.setEmitWindowProbe(Thread.currentThread(), w::busy);
+        return w;
+    }
+
+    /**
+     * The sim's barrier: waits until the worker has finished the handed tick (its sends, its
+     * DOWN record, its meters), surfaces a latched body fault, then applies a governor permille
+     * deferred while the worker held the composer — so every compose sees the composer states in
+     * today's order (the governor's tick-N value lands before tick N+1's verbs and compose).
+     * Returns the waited nanos (0 on the fast path): the frame's emission wait, inside the work
+     * bracket, so a saturated worker still shows in util, the governor and the overruns.
+     *
+     * <p>
+     *
+     * @param site a fixed code token naming the barrier ({@code frame_top}, {@code round_end}, {@code fault})
+     */
+    private long drainEmitter(String site) throws IOException {
+        long waited = downEmitter.awaitIdle(site);
+        if (waited > emitRoundWaitMaxNanos) {
+            emitRoundWaitMaxNanos = waited;
+        }
+        if (deferredComposerPermille >= 0) {
+            downComposer.setSimSpeedPermille(deferredComposerPermille);
+            deferredComposerPermille = -1;
+        }
+        return waited;
+    }
+
+    /**
+     * A round's frames begin: the worker figures and the door's window violations the round line
+     * reports are deltas from here (the worker's own counters run for the serve), the wall of
+     * the busy share starts, the inline count and the wait max restart. The worker is idle here:
+     * the previous round ended on its round-end drain and no tick is handed before the frames.
+     *
+     *
+     */
+    private void markEmitRoundStart(PilotIntentDatagramServer door) {
+        DownEmissionWorker<TickEmission> w = downEmitter;
+        emitRoundBase = new EmitLagMeter.WorkerFigures(w.threadName(), w.waits(), 0L, w.waitSumNanos(),
+                w.handoffWaits(), w.busyNanosTotal(), 0L, door.emitWindowViolations(), 0L, w.waitParks());
+        emitInlineTicks = 0L;
+        emitRoundWaitMaxNanos = 0L;
+        emitRoundStartNanos = System.nanoTime();
+    }
+
+    /**
+     * This round's emission figures for the round line and the teardown receipt. Read only behind
+     * a drain (the worker's figures are coherent once a barrier returned): the frame-top drain for
+     * the receipt, the round-end drain for the round line. The wait max is the sim's own drains'
+     * (a hand-off's internal drain never waits: the frame-top drain always ran first, which
+     * {@code emit_handoff_waits=0} proves).
+     *
+     *
+     */
+    private EmitLagMeter.WorkerFigures emitWorkerFigures(PilotIntentDatagramServer door) {
+        DownEmissionWorker<TickEmission> w = downEmitter;
+        EmitLagMeter.WorkerFigures base = emitRoundBase;
+        return new EmitLagMeter.WorkerFigures(w.threadName(), w.waits() - base.waits(), emitRoundWaitMaxNanos,
+                w.waitSumNanos() - base.waitSumNanos(), w.handoffWaits() - base.handoffWaits(),
+                w.busyNanosTotal() - base.busyNanos(), System.nanoTime() - emitRoundStartNanos,
+                door.emitWindowViolations() - base.windowViolations(), emitInlineTicks,
+                w.waitParks() - base.waitParks());
     }
 
     /**
@@ -1135,6 +1269,7 @@ public final class PilotServeSession {
         // Stdout I/O accounting for the stall witness — JVM-wide
         // idempotent install, aimed at THIS serve thread; fail-soft null (io_* print 0).
         ioMeter = ServeStdoutIoMeter.installForCurrentThread();
+        fanMeters.ioMeter = ioMeter; // the fan stamps the compose/send boundary's I/O total from it
         // Boot warms: D2-A pure-JVM fracture-lane classload warm +
         // D3(ii) unconditional officer-table load — both BEFORE the first round opens,
         // so no served frame pays the one-time bill (fortress shapes already paid the
@@ -1755,8 +1890,8 @@ public final class PilotServeSession {
         // Ticks whose SNAP fan was withheld by the
         // cc.net.downEveryTicks cadence divisor (CTRL + record stay every-tick).
         snapFanSkippedTicks = 0;
-        fanPassMaxNanos = 0L;   // B5 E1(b): slowest whole per-tick send fan this round
-        sendSlowestNanos = 0L;  // B5 E1(b): slowest single sendTickToSession this round
+        fanMeters.resetRound(); // B5 E1(b): slowest whole per-tick send fan + single send this round
+        emitLag.reset();
         prevFrameNanos = -1L;   // last frame's work+tail, the
                                      // frame_overrun row's attribution term (-1 = none yet)
         workFrames = 0;          // Utilization meter: EVERY served frame
@@ -1825,7 +1960,7 @@ public final class PilotServeSession {
                     pilotStep.abilityEdgeQuarantined(),
                     sleepLateFrames, sleepLateMaxNanos); // tail-appended, resets with overrunFrames
             String warmTailDiscarded = DownLaneSeams.roundCounterTail(warmSummary, frameTargetNanos,
-                    fanPassMaxNanos, sendSlowestNanos, door, pilotStep,
+                    fanMeters.fanPassMaxNanos(), fanMeters.sendSlowestNanos(), door, pilotStep,
                     fireLaneDischargeDetector, downComposer, peerGrade,
                     onFireShadow, onFireTruthMerger, afTargetLane, paladinDetLane,
                     arcHitProbe, gpeeDownEvents,
@@ -2114,6 +2249,11 @@ public final class PilotServeSession {
         // back against the work meter's nanoTime below, the sleep-late discriminator's only input.
         boolean pacerSlept = false;
         long pacerSleptDeadlineNanos = 0L;
+        // The instant this frame is DUE — the pacer's absolute
+        // deadline on a paced non-anchor frame, else the work start (filled in below) — read by the
+        // send-lag meter's phase figure. Arithmetic on the pacer's own values, no clock read.
+        long frameDueNanos = 0L;
+        boolean frameDuePaced = false;
         if (config.paceToWallClock()) {
             if (frame == 0) {
                 pacerAnchorNanos = System.nanoTime();
@@ -2121,6 +2261,8 @@ public final class PilotServeSession {
             } else {
                 long deadlineNanos = pacerAnchorNanos
                         + (long) (frame - pacerAnchorFrame) * pacerIntervalNanos;
+                frameDueNanos = deadlineNanos;
+                frameDuePaced = true;
                 long sleepNanos = deadlineNanos - System.nanoTime();
                 if (sleepNanos > 0L) {
                     try {
@@ -2201,6 +2343,21 @@ public final class PilotServeSession {
                 }
             }
         }
+        // An unpaced or anchor frame is due when its work starts;
+        // a paced frame that did not sleep to its deadline ran in DEBT (the pacer was behind), which
+        // the send-lag meter keeps apart from the frames that had slack.
+        if (!frameDuePaced) {
+            frameDueNanos = frameWorkStartNanos;
+        }
+        boolean frameInDebt = frameDuePaced && !pacerSlept;
+        // The frame-top barrier — the previous tick's DOWN is
+        // sent and recorded before this frame's first ctrl send, reel row, dead-session check or
+        // receipt read. Its wait is the frame's emission cost (the stall row's comp, not pre). The
+        // worker's last-tick figures are coherent only now, so the stall row's wprev_* read them here.
+        long emitWaitNanos = drainEmitter("frame_top");
+        long wprevTick = downEmitter.lastTick();
+        long wprevWakeNanos = downEmitter.lastWakeNanos();
+        long wprevBusyNanos = downEmitter.lastBusyNanos();
         // per-bracket I/O baselines — stdout counter + ccwr
         // sink write+flush total (all threads; the DOWN write is this thread's).
         long witnessIoFrameStart = ServeStdoutIoMeter.nanosOf(ioMeter);
@@ -2235,12 +2392,14 @@ public final class PilotServeSession {
             door.replayStageCommandDeaths(replayFeed.commandDeathsAhead(round, lastSimTick + 1));
         }
         List<PilotIntentDatagramServer.PeerSession> live = door.liveSessions();
-        Map<Long, PilotIntentDatagramServer.PeerSession> liveById = liveByIdScratch;
-        liveById.clear();
-        for (PilotIntentDatagramServer.PeerSession session : live) {
-            liveById.put(session.sessionId(), session);
-        }
-        for (Map.Entry<Long, PilotIntentDatagramServer.PeerSession> prev : prevLive.entrySet()) {
+        // The observer rebuilds liveById only when the live list differs
+        // from last tick's (same session objects in the same order = unchanged, and an unchanged set has no
+        // death or join to find). prevLive still holds last tick's map until the publish after the RAPP drain,
+        // so the death walk here and the join walk below diff against exactly the map they always did; each
+        // is guarded on its own loop line, and on an unchanged tick neither runs.
+        boolean liveSetChanged = liveSet.observe(live);
+        Map<Long, PilotIntentDatagramServer.PeerSession> liveById = liveSet.liveById();
+        if (liveSetChanged) for (Map.Entry<Long, PilotIntentDatagramServer.PeerSession> prev : prevLive.entrySet()) {
             if (!liveById.containsKey(prev.getKey())) {
                 PilotIntentDatagramServer.PeerSession dead = prev.getValue();
                 if (recordRowsArmed) {
@@ -2281,7 +2440,7 @@ public final class PilotServeSession {
         // reasons structurally cannot drift), every 60 s of served frames. The
         // round-close line still supersedes receipts for any round that closes;
         // for the trailing unclosed round, sweeps take the LAST receipt.
-        boolean lastSessionDied = !prevLive.isEmpty() && liveById.isEmpty();
+        boolean lastSessionDied = liveSetChanged && !prevLive.isEmpty() && liveById.isEmpty();
         boolean receiptHeartbeatDue =
                 frame > 0 && frame % ROUND_RECEIPT_HEARTBEAT_FRAMES == 0;
         if (lastSessionDied || receiptHeartbeatDue) {
@@ -2344,8 +2503,8 @@ public final class PilotServeSession {
             System.out.println("npeer-serve round_teardown reason="
                     + (lastSessionDied ? "last_session_dead" : "heartbeat")
                     + " round=" + round + " frame=" + frame
-                    + DownLaneSeams.roundCounterTail(flush, frameTargetNanos, fanPassMaxNanos,
-                            sendSlowestNanos, door, pilotStep,
+                    + DownLaneSeams.roundCounterTail(flush, frameTargetNanos,
+                            fanMeters.fanPassMaxNanos(), fanMeters.sendSlowestNanos(), door, pilotStep,
                             fireLaneDischargeDetector, downComposer, peerGrade,
                             onFireShadow, onFireTruthMerger, afTargetLane,
                             paladinDetLane, arcHitProbe, gpeeDownEvents,
@@ -2365,10 +2524,13 @@ public final class PilotServeSession {
                     + " tenure_spool_ms_max=" + door.readerCounters().tenureSpoolMsMax
                     + " tenure_clears=" + door.readerCounters().tenureClears
                     + " wrap_vacated=" + wrapVacatedTotal // walk-away watches grade wrap_vacated from the receipt too
-                    + " operator_command_faults=" + operatorCommandFaults); // The belt's count, receipt twin
+                    + " operator_command_faults=" + operatorCommandFaults // The belt's count, receipt twin
+                    + " mount_rereads=" + source.mountViewRereads() // Receipt twin
+                    + " flux_rereads=" + source.fluxViewRereads() + " system_rereads=" + source.systemViewRereads() // The capture-view hoist's receipt twin (0 = one flux / system walk per tick)
+                    + emitLag.roundTokens(emitWorkerFigures(door))); // behind the frame-top drain
             printSnapSendRows(round, live); // The receipt's per-session send-gap rows (empty on lastSessionDied)
         }
-        for (PilotIntentDatagramServer.PeerSession session : live) {
+        if (liveSetChanged) for (PilotIntentDatagramServer.PeerSession session : live) {
             if (prevLive.containsKey(session.sessionId())) {
                 continue;
             }
@@ -2432,6 +2594,7 @@ public final class PilotServeSession {
             // damaged cell at full redundancy — shared-artifact bytes, legal
             // under encode-once; idempotent, so N joiners in one tick is fine.
             if (armorCellBook != null) {
+                downEmitter.requireIdle("admit_cells_dirty"); // the book is the emission's between hand-off and drain
                 armorCellBook.markAllDamagedDirty();
             }
             // Mounted-seat MMNT replay BEFORE the RAPP catch-up — wire
@@ -2499,7 +2662,9 @@ public final class PilotServeSession {
         // the serve. O(1) when the index holds only live cursors (row C10).
         rappCatchupPort.bind(door, liveById, round, frame);
         rappCatchup.drainAll(roundRosterAppendFrames, frame, rappCatchupPort, rappCatchupPort);
-        liveByIdScratch = prevLive; // swap: last tick's map is next tick's scratch
+        // Publish this tick's set to the team-pick gate and to next tick's diff (a no-op on an unchanged tick:
+        // the observer swaps its map pair itself, on a changed tick only). Nothing returns between the observe
+        // and here, and an exception ends the serve, so prevLive is the observer's previous map at every observe.
         prevLive = liveById;
         long preSessEndNanos = System.nanoTime();
         // (a2) operator poll (D6 O-0, freeze): throttled consume-on-read house
@@ -3204,6 +3369,8 @@ public final class PilotServeSession {
         // Stamp the tick the advance's confessed births belong to
         // (no-op while the shadow is off).
         FireBirthSink.beginTick(applyTick);
+        // The capture observes armor cells into the emission's book: the sim's window only.
+        downEmitter.requireIdle("capture_cells");
         AuthoritativeWorldSnapshot snap = source.publishNextTick();
         if (snap == null) {
             throw new IOException("npeer snapshot source returned null at round " + round
@@ -3222,6 +3389,7 @@ public final class PilotServeSession {
         }
         // This tick's side-totals ride every AWSD frame from the
         // compose below (v9 trailing block; hold-last upstream, ZERO pre-first).
+        downEmitter.requireIdle("side_totals");
         downComposer.setSideTotals(source.lastSideTotals());
         if (voiceLane != null) {
             voiceLane.onTick(snap); // W12 L2: seat anchors → position slot (no alloc)
@@ -3432,20 +3600,26 @@ public final class PilotServeSession {
         // (its release rides observed discharges — the retired serve() twin's
         // comment, git history).
         List<GameplayEdgeEvent> tickEdges = List.of();
-        // Mounts tier hoisted (same single read) — the shadow fold below
-        // needs to know whether discharge detection actually SAW this tick.
+        // Mounts tier hoisted — the shadow fold below needs to know whether
+        // discharge detection actually SAW this tick.
+        // this is the capture's OWN mount read of this simTick, never a second
+        // walk — nothing steps the engine between the capture and here, so a re-read was
+        // value-identical and pure sim-thread cost; one walk serves the wire tier, this
+        // detector, the shadow fold and the truth merge.
         List<WeaponMountView> mountsTier = null;
         boolean edgeObserveRan = declaredLaneActive || eventLaneOn
                 || pilotStep.fireEdgeLatchEnabled();
         long edgesMountsEnd = detReadersEnd; // Edges sub-stamp: mounts tier read
         if (edgeObserveRan) {
-            mountsTier = binding.weaponMountStatesOrNull();
+            mountsTier = source.weaponMountViewsOfTick(snap.simTick());
             edgesMountsEnd = System.nanoTime();
             tickEdges = fireLaneDischargeDetector.observe(
                     snap.simTick(),
-                    eventLaneOn ? binding.shipFluxStatesOrNull() : null,
+                    // The capture's own flux and system reads of this
+                    // tick, as with the mounts: the values a re-read returns, without a second walk.
+                    eventLaneOn ? source.fluxViewsOfTick(snap.simTick()) : null,
                     mountsTier,
-                    eventLaneOn ? binding.shipSystemStatesOrNull() : null,
+                    eventLaneOn ? source.systemViewsOfTick(snap.simTick()) : null,
                     source.lastEntityIdByPositionShipId(),
                     // same-tick post-step poses — the SYSTEM_JUMP
                     // marker's dest source (consulted only on a jump edge).
@@ -3709,11 +3883,13 @@ public final class PilotServeSession {
         }
         // AWSD anchor evict — UNGATED (the compose arg below
         // stays eventLaneOn-gated for the WIRE; eviction is ground truth every tick).
+        downEmitter.requireIdle("despawn_evict");
         downComposer.onEntityDespawns(tickDespawns);
         // AWSD NACK drain — the reader thread's per-session
         // deposits fold into the composer's pending-keyframe set HERE, before the
         // compose at (h) (a separate drain: the (j) UP take ran after compose until
         // a later change moved it pre-step), so a NACKed entity re-keys THIS tick when present.
+        downEmitter.requireIdle("nack_drain");
         for (PilotIntentDatagramServer.PeerSession session : live) {
             downComposer.requestKeyframes(session.takeAwsdNacksOrEmpty());
         }
@@ -4026,62 +4202,68 @@ public final class PilotServeSession {
         for (cc.starsector.server.protocol.PhaseDiveEvent diveStart : diveStarts) {
             pilotStep.latchRetreatLaneOnDive(diveStart.entityId());
         }
-        DownTickComposition comp = downComposer.compose(snap,
-                eventLaneOn ? downEdges : List.<GameplayEdgeEvent>of(),
-                eventLaneOn ? composedDespawns : List.<EntityDespawnEvent>of(),
-                eventLaneOn ? diveStarts
-                        : List.<cc.starsector.server.protocol.PhaseDiveEvent>of());
-        List<byte[]> ctrlFrames = new ArrayList<>(
-                comp.gpeeFrames().size() + comp.edspFrames().size()
-                        + comp.diveFrames().size() + seatFrames.size());
-        ctrlFrames.addAll(comp.gpeeFrames());
-        ctrlFrames.addAll(comp.edspFrames());
-        ctrlFrames.addAll(comp.diveFrames());
-        ctrlFrames.addAll(seatFrames);
-        gpeeDownEvents += comp.gpeeFrames().size();
-        edspDownEvents += comp.edspFrames().size();
+        // (i) the tick's DOWN emission, packaged once and run
+        // SEND-FIRST by DownTickFan (compose the wire lane, fan the SAME bytes to every live
+        // session, then encode + write the ONE KIND_DOWN record — every tick, zero-session ticks
+        // included). It runs inline on this thread; the counters below stay here, exact because
+        // the composition mints one ctrl frame per event / despawn / seat frame. An off-tick of
+        // the down cadence withholds the SNAP fan only (record-as-composed keeps the every-tick
+        // record contract and every parity walker whole).
+        List<GameplayEdgeEvent> emitEvents =
+                eventLaneOn ? downEdges : List.<GameplayEdgeEvent>of();
+        List<EntityDespawnEvent> emitDespawns =
+                eventLaneOn ? composedDespawns : List.<EntityDespawnEvent>of();
+        List<cc.starsector.server.protocol.PhaseDiveEvent> emitDives = eventLaneOn ? diveStarts
+                : List.<cc.starsector.server.protocol.PhaseDiveEvent>of();
+        gpeeDownEvents += emitEvents.size();
+        edspDownEvents += emitDespawns.size();
         seatDownFrames += seatFrames.size();
-        // (i) fan the SAME bytes per live session, then ONE endpoint-level KIND_DOWN
-        // record — EVERY tick, zero-session ticks included (SEAT frames ride the ctrl
-        // fan but NOT the v1 record contract). B5 E0: the fan
-        // START rotates with the tick, so under egress pressure tail-of-fan loss lands
-        // as jitter shared across all seats instead of a standing join-order penalty;
-        // E1(b) meters the pass (per-round maxes ride the round line below).
-        // Off-ticks withhold the SNAP fan only —
-        // ctrl frames + compose + recordTickDown are untouched (record-as-composed
-        // keeps the v1 every-tick record contract + every parity walker whole).
         boolean snapThinned =
                 downEveryTicks > 1 && snap.simTick() % downEveryTicks != 0L;
         if (snapThinned) {
             snapFanSkippedTicks++;
         }
-        List<byte[]> snapFramesToFan =
-                snapThinned ? List.<byte[]>of() : comp.snapFrames();
-        long witnessComposeEndNanos = System.nanoTime();
-        long witnessIoComposeEnd = ServeStdoutIoMeter.nanosOf(ioMeter);
-        int fanCount = live.size();
-        long fanPassStartNanos = System.nanoTime();
-        int fanStart = fanCount == 0 ? 0 : Math.floorMod(snap.simTick(), fanCount);
-        for (int fi = 0; fi < fanCount; fi++) {
-            PilotIntentDatagramServer.PeerSession session =
-                    live.get((fanStart + fi) % fanCount);
-            long sendStartNanos = System.nanoTime();
-            door.sendTickToSession(session, snap.simTick(), ctrlFrames, snapFramesToFan);
-            long sendNanos = System.nanoTime() - sendStartNanos;
-            if (sendNanos > sendSlowestNanos) {
-                sendSlowestNanos = sendNanos;
-            }
-            // send-gap meter; send end = the two stamps above, NO new clock read.
-            session.snapSendGap.record(sendStartNanos + sendNanos, snap.simTick(),
-                    !snapFramesToFan.isEmpty(), downEveryTicks);
+        // ONE debt predicate decides both the meter's DEBT
+        // class and where the tick is emitted. A tick that starts in debt (the frame did not sleep
+        // to its paced deadline, or the pacer carries debt) is emitted INLINE by this thread —
+        // the same bytes with no wake and no cross-core cost, so an overrun sprint never pays a
+        // wake per frame; any other tick is handed to the worker and this thread runs its tail
+        // while the worker composes, fans and records it.
+        boolean inDebt = frameInDebt || debtNowNanos > 0L;
+        TickEmission emission = new TickEmission(snap, emitEvents, emitDespawns, emitDives,
+                seatFrames, live, snapThinned, downEveryTicks, witnessStepEndNanos, frameDueNanos,
+                inDebt, witnessDetectEndNanos);
+        long witnessComposeEndNanos;
+        long witnessIoComposeEnd;
+        long witnessSendEndNanos;
+        long witnessIoSendEnd;
+        if (inDebt) {
+            DownTickFan.emit(door, downComposer, emission, emission.handoffNanos(), fanMeters,
+                    emitLag);
+            emitInlineTicks++;
+            witnessComposeEndNanos = fanMeters.wireStageEndNanos;
+            witnessIoComposeEnd = fanMeters.ioAtWireStageEnd;
+            witnessSendEndNanos = System.nanoTime();
+            witnessIoSendEnd = ServeStdoutIoMeter.nanosOf(ioMeter);
+        } else {
+            // The fan meters are the worker's until the next drain: the witness never reads
+            // them here. The sim's emission cost this frame ends at the hand-off's own stamp
+            // (comp), and nothing of the send is the sim's (send = 0).
+            downEmitter.handOff(emission);
+            witnessComposeEndNanos = downEmitter.lastHandoffNanos();
+            witnessSendEndNanos = witnessComposeEndNanos;
+            witnessIoComposeEnd = ServeStdoutIoMeter.nanosOf(ioMeter);
+            witnessIoSendEnd = witnessIoComposeEnd;
         }
-        long fanPassNanos = System.nanoTime() - fanPassStartNanos;
-        if (fanCount > 0 && fanPassNanos > fanPassMaxNanos) {
-            fanPassMaxNanos = fanPassNanos;
+        // A fault the worker latched already surfaces here,
+        // before this tick's tail (framesServed / lastSimTick, the heartbeat, the governor and its
+        // pacer re-anchor, the ops write, the stall row, the worst-frames observe), so the serve
+        // ends where the on-thread emission would have. A fault latched after this check surfaces
+        // at the next frame-top or round-end drain, before any later send or reel row: the extra
+        // work is at most this tick's tail. Never true after an inline emission (it throws itself).
+        if (downEmitter.faultPending()) {
+            drainEmitter("fault");
         }
-        door.recordTickDown(snap.simTick(), comp.composedDownRecord());
-        long witnessSendEndNanos = System.nanoTime();
-        long witnessIoSendEnd = ServeStdoutIoMeter.nanosOf(ioMeter);
         // (l) rung-0 heartbeat every 300 ticks.
         if (snap.simTick() % 300L == 0L) {
             System.out.println("npeer-serve tick=" + snap.simTick()
@@ -4148,7 +4330,11 @@ public final class PilotServeSession {
                     simSpeed = autoTarget;
                     simSpeedChanges++;
                     autoSpeedChanges++;
-                    downComposer.setSimSpeedPermille(
+                    // The composer may be the worker's now
+                    // (this runs after the hand-off), so the value waits for the next drain, which
+                    // lands it before the next tick's compose exactly as the direct write did; the
+                    // range check still throws HERE, on the sim, for a bad value.
+                    deferredComposerPermille = DownEmissionComposer.requireSimSpeedPermille(
                             (int) Math.round(simSpeed * 1000.0d));
                     pacerIntervalNanos = (long) (frameTargetNanos / simSpeed);
                     if (config.paceToWallClock() && pacerAnchorNanos != -1L) {
@@ -4181,6 +4367,12 @@ public final class PilotServeSession {
         // (38) frame_overrun attribution feed: the NEXT frame's pacer pairs its
         // overrun with this frame's full serve cost (work + ops tail).
         prevFrameNanos = frameWorkNanos + witnessTailNanos;
+        // The frame-top drain's wait is emission cost, so it
+        // moves from pre (and its pre_sess sub-bracket, where it sits) to comp; the phases still
+        // sum to the frame's work. On a handed-off tick comp = (hand-off − detect end) + the wait.
+        long phasePreNanos = witnessPreEndNanos - frameWorkStartNanos - witnessIntentNanos - emitWaitNanos;
+        long phasePreSessNanos = preSessEndNanos - frameWorkStartNanos - emitWaitNanos;
+        long phaseCompNanos = witnessComposeEndNanos - witnessDetectEndNanos + emitWaitNanos;
         // The loud stall line — per-phase breakdown + dominant phase
         // (the witness; tail is OUTSIDE frameWorkNanos, so it gets
         // its own trigger clause — a disk-stalled ops write must not hide).
@@ -4193,10 +4385,10 @@ public final class PilotServeSession {
         if (frameWorkNanos > STALL_FRAME_NANOS || witnessTailNanos > STALL_FRAME_NANOS) {
             stallFrames++;
             long[] phaseNanos = {
-                    witnessPreEndNanos - frameWorkStartNanos - witnessIntentNanos,
+                    phasePreNanos,
                     witnessStepEndNanos - witnessPreEndNanos,
                     witnessDetectEndNanos - witnessStepEndNanos,
-                    witnessComposeEndNanos - witnessDetectEndNanos,
+                    phaseCompNanos,
                     witnessSendEndNanos - witnessComposeEndNanos,
                     witnessIntentNanos,
                     witnessTailNanos};
@@ -4231,7 +4423,12 @@ public final class PilotServeSession {
                             // at row mint (end of this frame's work+tail) — the
                             // anchor that maps a spike tick onto serve.jfr events.
                             // Stall-row-only cost.
-                            + " adv_cpu=%.2f wall_ms=%d",
+                            + " adv_cpu=%.2f wall_ms=%d"
+                            // Appended fields only: emit_wait= = this frame's
+                            // frame-top drain wait in µs (counted in comp); wprev_* = the emission
+                            // worker's LAST completed tick (-1 = none yet) read behind that drain:
+                            // its tick, hand-off-to-pickup wake and body time.
+                            + " emit_wait=%d wprev_tick=%d wprev_wake_us=%d wprev_busy_us=%d",
                     lastSimTick, round, frame,
                     frameWorkNanos / 1_000_000.0d, phaseNames[dominant],
                     phaseNanos[0] / 1_000_000.0d, phaseNanos[1] / 1_000_000.0d,
@@ -4249,7 +4446,7 @@ public final class PilotServeSession {
                     (door.sinkIoNanosTotal() - witnessCcwrFrameStart) / 1_000_000.0d,
                     stallReason,
                     (preOpEndNanos - preSessEndNanos) / 1_000_000.0d, // (b) runs first, then (a2), then (c)
-                    (preSessEndNanos - frameWorkStartNanos) / 1_000_000.0d,
+                    phasePreSessNanos / 1_000_000.0d,
                     (preSeatEndNanos - preOpEndNanos) / 1_000_000.0d,
                     (witnessPreEndNanos - preSeatEndNanos - witnessIntentNanos) / 1_000_000.0d,
                     source.lastEngineAdvanceNanos() / 1_000_000.0d,
@@ -4257,16 +4454,20 @@ public final class PilotServeSession {
                     source.lastReinjectNanos() / 1_000_000.0d,
                     EngineBackedCombatStepBoundary.advCpuMs(
                             source.lastEngineAdvanceCpuNanos()),
-                    System.currentTimeMillis()));
+                    System.currentTimeMillis(),
+                    EmitLagMeter.ceilMicros(emitWaitNanos),
+                    wprevTick == DownEmissionWorker.UNKNOWN_TICK ? -1L : wprevTick,
+                    EmitLagMeter.ceilMicros(wprevWakeNanos),
+                    EmitLagMeter.ceilMicros(wprevBusyNanos)));
         }
         // Scale-lane row 2: every frame's brackets feed the window (fed AFTER the
         // onFrame compose above, so a window never includes its own write frame).
         if (phaseWindowStats != null) {
             phaseWindowStats.feed(
-                    witnessPreEndNanos - frameWorkStartNanos - witnessIntentNanos,
+                    phasePreNanos,
                     witnessStepEndNanos - witnessPreEndNanos,
                     witnessDetectEndNanos - witnessStepEndNanos,
-                    witnessComposeEndNanos - witnessDetectEndNanos,
+                    phaseCompNanos,
                     witnessSendEndNanos - witnessComposeEndNanos,
                     witnessIntentNanos,
                     witnessTailNanos);
@@ -4274,16 +4475,16 @@ public final class PilotServeSession {
         // (104)(d): every frame feeds the worst-frames ledger (steady-state cost =
         // one compare; rows flush at the round boundary).
         worstFrames.observe(lastSimTick, frame, frameWorkNanos,
-                witnessPreEndNanos - frameWorkStartNanos - witnessIntentNanos,
+                phasePreNanos,
                 witnessStepEndNanos - witnessPreEndNanos,
                 witnessDetectEndNanos - witnessStepEndNanos,
-                witnessComposeEndNanos - witnessDetectEndNanos,
+                phaseCompNanos,
                 witnessSendEndNanos - witnessComposeEndNanos,
                 witnessIntentNanos,
                 witnessTailNanos,
                 source.lastAdvanceNanos(), source.lastCaptureNanos(),
                 preOpEndNanos - preSessEndNanos,
-                preSessEndNanos - frameWorkStartNanos,
+                phasePreSessNanos,
                 preSeatEndNanos - preOpEndNanos,
                 witnessPreEndNanos - preSeatEndNanos - witnessIntentNanos,
                 source.lastEngineAdvanceNanos(), source.lastPostStepNanos(),
@@ -4394,6 +4595,18 @@ public final class PilotServeSession {
             // mutation happens NOW via the door; the file rewrite rides the off-frame sink.
             case BAN, BAN_SRC, BAN_CID, BAN_SESSION, BAN_IP, UNBAN, BANS ->
                     banLane.operatorBan(door, command, round, frame);
+            // The text-chat mute house verbs. The door's chat verbs own the
+            // occupant law, the mute list and the notices; this row carries bounded tokens and counts only (never a
+            // name, a chat line or a key value), the operator_kick row's posture.
+            case CHAT_MUTE, CHAT_UNMUTE -> {
+                boolean mute = command.verb() == OperatorCommandFile.Verb.CHAT_MUTE;
+                PidsChatVerbs.OperatorChatMuteOutcome o = door.chatVerbs.operatorChatMute(command.seatId(),
+                        command.text() == null ? "" : command.text(), mute);
+                System.out.println("npeer-serve operator_chat_" + (mute ? "mute" : "unmute") + " seat="
+                        + command.seatId() + " status=" + o.status() + " keys=" + o.keys() + " entries="
+                        + o.entries() + " lifted=" + o.lifted() + " freed=" + o.freed() + " round=" + round
+                        + " frame=" + frame);
+            }
             case POD_TEST -> {
                 String podReceipt = podScenario.start(command, lastSimTick + 1,
                         door.chatVerbs::sessionHoldsSeat);
@@ -4613,6 +4826,7 @@ public final class PilotServeSession {
                 }
                 simSpeed = command.simSpeed();
                 simSpeedChanges++;
+                downEmitter.requireIdle("speed_verb"); // the verb runs in the sim's window: a direct write
                 downComposer.setSimSpeedPermille(
                         (int) Math.round(simSpeed * 1000.0d));
                 pacerIntervalNanos = (long) (frameTargetNanos / simSpeed);
@@ -4757,8 +4971,9 @@ public final class PilotServeSession {
         System.out.println(adminDebug.godRoundLineAndReset()); // Always printed (a 0-row = silent lane)
         worstFrames.flushRound(round); // (104)(d) rows precede their round line
         System.out.println("npeer-intent-rounds round=" + round
-                + DownLaneSeams.roundCounterTail(summary, frameTargetNanos, fanPassMaxNanos,
-                        sendSlowestNanos, door, pilotStep, fireLaneDischargeDetector,
+                + DownLaneSeams.roundCounterTail(summary, frameTargetNanos,
+                        fanMeters.fanPassMaxNanos(), fanMeters.sendSlowestNanos(), door, pilotStep,
+                        fireLaneDischargeDetector,
                         downComposer, peerGrade, onFireShadow, onFireTruthMerger,
                         afTargetLane, paladinDetLane, arcHitProbe, gpeeDownEvents, gpeeMissileEndIntact,
                         gpeeMissileEndDestroyed, gpeeMissileEndFizzling, gpeeMissileEndShield, gpeeMissileEndNamed,
@@ -4775,7 +4990,12 @@ public final class PilotServeSession {
                 + " tenure_spool_ms_max=" + door.readerCounters().tenureSpoolMsMax
                 + " tenure_clears=" + door.readerCounters().tenureClears
                 + " wrap_vacated=" + wrapVacatedTotal // The r1 skip count, exported
-                + " operator_command_faults=" + operatorCommandFaults); // The belt's count
+                + " operator_command_faults=" + operatorCommandFaults // The belt's count
+                // Mount re-reads the serve's take fell back to (0 = one mount walk per tick).
+                + " mount_rereads=" + source.mountViewRereads()
+                // Flux / system re-reads the hoisted capture views fell back to (0 = the capture's own lists served the detector).
+                + " flux_rereads=" + source.fluxViewRereads() + " system_rereads=" + source.systemViewRereads()
+                + emitLag.roundTokens(emitWorkerFigures(door))); // behind the round-end drain
         printSnapSendRows(round, door.liveSessions()); // One send-gap row per tabled session
         // Gated measurement lines at N: printed by BoostSystemSampleLane.
         boostSystemLane.printRound(round, summary, sampleBoost, sampleSystem);
@@ -5150,6 +5370,7 @@ public final class PilotServeSession {
         wrapVacatedTotal += authority.resetRoundSeats(deployable);
         // Round wrap drops every AWSD anchor (the reset
         // re-points seat wire ids) — epoch counters persist inside the composer.
+        downEmitter.requireIdle("wrap_clear");
         downComposer.clearBaselines();
         System.out.println("npeer-serve reset_fired after round=" + round
                 + " occupied=" + authority.occupiedSeatIds().size()
@@ -5301,9 +5522,17 @@ public final class PilotServeSession {
         }
         banLane.closeSink();
         hiddenShips.closeSink(); // drains a pending hidden-ships rewrite (at most 2 s), then stops
+        // The emission worker closed (as a resource) before
+        // this; a body still running past its bounded join may hold the composer's deflater, so
+        // the composer is released only once the worker thread is known to have exited.
         if (downComposer != null) {
-            downComposer.close(); // one deflater per serve — end() owed
+            if (downEmitter == null || downEmitter.joined()) {
+                downComposer.close(); // one deflater per serve — end() owed
+            } else {
+                System.out.println("npeer-serve emit_worker_unjoined composer_close=skipped");
+            }
         }
+        downEmitter = null;
         if (gpeeLog != null) {
             gpeeLog.close(); // prints npeer-serve gpee_log_closed lines=N
         }

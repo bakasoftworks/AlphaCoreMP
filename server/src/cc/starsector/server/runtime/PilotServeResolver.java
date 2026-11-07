@@ -132,8 +132,7 @@ final class PilotServeResolver {
     boolean moduleVerbsArmed;
     boolean clientConnected;
     boolean operatorEndMatch;
-    Map<Long, PilotIntentDatagramServer.PeerSession> prevLive;
-    Map<Long, PilotIntentDatagramServer.PeerSession> liveByIdScratch;
+    LiveSessionSetObserver<PilotIntentDatagramServer.PeerSession> liveSet;
     WireRecordSink wireSink;
     GameplayEdgeEventWatchSink gpeeLog;
     ArmorCellBook armorCellBook;
@@ -1155,10 +1154,10 @@ final class PilotServeResolver {
         // Hoisted SERVE-level (NOT per-round) so the per-tick baseline burst fires on
         // newly-live sessions only; the round-wrap burst covers boundaries (no duplicate
         // re-baseline of every session at each round's frame 0).
-        prevLive = new HashMap<>();
-        // The per-tick live-by-id map is OWNED and swapped with
-        // prevLive at the end of the session observe — zero per-tick allocation at 32+ seats.
-        liveByIdScratch = new HashMap<>();
+        // The live-by-id map pair is
+        // OWNED by the live-set observer and rebuilt + swapped only on a tick whose live set changed (a
+        // steady set reuses the held map, no rebuild) — zero per-tick allocation at 32+ seats.
+        liveSet = new LiveSessionSetObserver<>(PilotIntentDatagramServer.PeerSession::sessionId);
         // W7 B1b: the last RAPP
         // ROW announced per seat (+ its descriptor id), serve-lifetime — never dropped on
         // vacate/BYE/wrap; absent = no window was ever told anything but the descriptor.

@@ -40,6 +40,11 @@ package cc.starsector.server.ops;
  * + {@code key=} with the trimmed {@code #ban-ip-key} text (an empty box only notes), gated like the Bans list's
  * Unban ({@code gate.cmd}); its echo settles when the status ban count rises by one, and the box empties once the
  * server takes the line unless it was retyped meanwhile.
+ * <p>Mute chat ({@code #btn-chat-mute}) and Unmute chat
+ * ({@code #btn-chat-unmute}) send {@code chat-mute} / {@code chat-unmute} with the pick's seat fields through the
+ * existing {@code V.seatVerb} under {@code gate.seat} (a live server and a picked seat), the Reject / Allow seat
+ * way: no echo predicate, since the status carries no mute count to settle on. The
+ * palette lists the pair right after Kick selected, the bar's own order.
  * <p>{@code renderShips} paints {@code #ships-list} from the status keys
  * {@code shipsBaseIds} / {@code shipsHiddenIds} (a row per shipped id, then any hidden id the shipped list lacks;
  * ids compared ASCII-folded), a hidden row marked {@code ship-hidden} with Show in place of Hide; the heading counts
@@ -296,6 +301,7 @@ final class OpsConsoleJsPlayers {
                 ['btn-start', gate.start], ['btn-watch', gate.start], ['btn-end-round', gate.cmd], ['btn-end-match', gate.cmd],
                 ['btn-kill', gate.kill], ['simspeed', gate.cmd], ['btn-simspeed-set', gate.cmd],
                 ['btn-auto-on', gate.cmd], ['btn-auto-off', gate.cmd], ['btn-kick', gate.seat],
+                ['btn-chat-mute', gate.seat], ['btn-chat-unmute', gate.seat],
                 ['btn-ban-player', gate.seat], ['btn-ban-source', gate.seat],
                 ['btn-unban-player', gate.unbanPlayer], ['btn-ban-ip', gate.cmd],
                 ['btn-reject-seat', gate.seat], ['btn-allow-seat', gate.seat],
@@ -625,6 +631,10 @@ final class OpsConsoleJsPlayers {
               CC.el('btn-auto-on').addEventListener('click', () => V.auto(true));
               CC.el('btn-auto-off').addEventListener('click', () => V.auto(false));
               CC.el('btn-kick').addEventListener('click', V.kick);
+              CC.el('btn-chat-mute').addEventListener('click',
+                () => V.seatVerb('chat-mute', 'btn-chat-mute', gate.seat));
+              CC.el('btn-chat-unmute').addEventListener('click',
+                () => V.seatVerb('chat-unmute', 'btn-chat-unmute', gate.seat));
               CC.el('btn-ban-player').addEventListener('click', () => V.ban('ban', 'btn-ban-player'));
               CC.el('btn-ban-source').addEventListener('click', () => V.ban('ban-src', 'btn-ban-source'));
               CC.el('btn-unban-player').addEventListener('click', V.unbanPlayer);
@@ -827,7 +837,10 @@ final class OpsConsoleJsPlayers {
                   ['End round', V.endRound], ['End match', V.endMatch],
                   ['Kill (fallback)', V.kill], ['Sim-speed: Set', V.simSet],
                   ['Sim-speed: auto on', () => V.auto(true)], ['Sim-speed: auto off', () => V.auto(false)],
-                  ['Kick selected', V.kick], ['Ban player', () => V.ban('ban', 'btn-ban-player')],
+                  ['Kick selected', V.kick],
+                  ['Mute chat', () => V.seatVerb('chat-mute', 'btn-chat-mute', gate.seat)],
+                  ['Unmute chat', () => V.seatVerb('chat-unmute', 'btn-chat-unmute', gate.seat)],
+                  ['Ban player', () => V.ban('ban', 'btn-ban-player')],
                   ['Ban source', () => V.ban('ban-src', 'btn-ban-source')], ['Unban player', V.unbanPlayer],
                   ['Reject seat', () => V.seatVerb('custom-reject', 'btn-reject-seat', gate.seat)],
                   ['Allow seat', () => V.seatVerb('custom-allow', 'btn-allow-seat', gate.seat)],

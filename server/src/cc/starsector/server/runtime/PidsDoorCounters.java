@@ -16,6 +16,7 @@ final class PidsDoorCounters {
     long ownerMarksRateDropped; // MARK inside the per-seat 1 s window
     long chatRelayed; // CHTU sends fanned as CHTD
     long chatRateDropped; // per-session bucket empty — policy drop, session survives
+    long chatMutedDropped; // a text-muted sender's plain line, after its paid token — no row per line; round line chat_muted_drop=
     long chatUnseatedDropped; // unbound-seat sender — null-authority smoke door only
     /** CHTU sends from a stale sender — BYE'd, failed or
      * seat-vacated ({@code PidsChatVerbs#holdsSeatLocked} false) — dropped at the door BEFORE the rate

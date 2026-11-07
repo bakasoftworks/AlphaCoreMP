@@ -464,6 +464,8 @@ final class DownLaneSeams {
                 + " chat_rate_drop=" + door.chatRateDropped()
                 + " chat_unseated_drop=" + door.chatUnseatedDropped()
                 + " chat_stale_drop=" + door.chatStaleSessionDropped()
+                // + a text-muted sender's plain lines (boot-lifetime, >= 0, the same getter; counts only)
+                + " chat_muted_drop=" + door.chatMutedDropped()
                 // The scan-row-1 door meters, boot-lifetime
                 // counts (>= 0) through the same door-lock getters — non-CHTU CTRL / PINT from a BYE'd or failed session,
                 // and PSTE echoes past the first inside the per-session 1 s window (decoded, not printed). Counts only.

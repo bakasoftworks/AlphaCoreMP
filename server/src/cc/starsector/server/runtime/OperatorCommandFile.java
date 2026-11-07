@@ -335,6 +335,15 @@ public final class OperatorCommandFile {
         UNBAN,
         /** {@code bans} — list every ban to the log + a count receipt. */
         BANS,
+        /** {@code chat-mute <seatId> [<cidkey>]} — mute the live seat's TEXT chat: the kick shape ({@code seatId} =
+         * the target, {@code text} = the optional EXPECTED-occupant cid key, "" when absent; a seat that changed
+         * hands answers {@code target_changed}). The mute keys on the occupant's id and address exactly as the chat
+         * verb does and lives in memory until lifted or the server stops. An admin occupant
+         * answers {@code target_admin}: admins are never muted. */
+        CHAT_MUTE,
+        /** {@code chat-unmute <seatId> [<cidkey>]} — lift every text-chat mute that covers the live seat's occupant
+         * (the same occupant law as {@link #CHAT_MUTE}). */
+        CHAT_UNMUTE,
         /** {@code admin-cid <hexkey>} — arm one seat key ({@code text} = the key,
          * {@link BanSet#isCidKey}) into the door's armed set ({@link PilotIntentDatagramServer#armAdminCid},
          * at most {@value PilotIntentDatagramServer#ARMED_ADMIN_CAP} keys): the pilot HELLO presenting that
@@ -944,8 +953,9 @@ public final class OperatorCommandFile {
      * key never reaches a recording), else {@code c.text()}. Idempotent: a replayed arm already carries
      * {@code <redacted>} and records it again, so a resim's CMD rows compare equal to the source's.
      *
-     * <p>Every cid-key TOKEN a kick or ban verb carries records as its {@link #digestOfKey}: the whole text of
-     * {@link Verb#KICK}, {@link Verb#BAN} and {@link Verb#BAN_SRC} (one key, or "" for a key-less house line), the
+     * <p>Every cid-key TOKEN a kick, ban or chat-mute verb carries records as its {@link #digestOfKey}: the whole text
+     * of {@link Verb#KICK}, {@link Verb#BAN}, {@link Verb#BAN_SRC}, {@link Verb#CHAT_MUTE} and
+     * {@link Verb#CHAT_UNMUTE} (one key, or "" for a key-less house line), the
      * leading key of {@link Verb#BAN_CID} ({@code <key>[ term=<tok>]}), and the second token of
      * {@link Verb#BAN_SESSION} ({@code <sid>[ <key>][ term=<tok>]}) and of a cid {@link Verb#UNBAN}
      * ({@code cid <key>}; {@code src <key>} is an address key, recorded verbatim). Every other token and every
@@ -954,17 +964,19 @@ public final class OperatorCommandFile {
      * the author key on the reel's VSUB rows, so one player reads as ONE id across both row kinds. The digest is
      * itself no cid key ({@code h} and {@code :} are off the key alphabet), so a replayed command records it
      * again unchanged and the idempotence above holds. A ban-cid and a cid unban already carry the digest live (the
-     * bans file's key form), so their recording equals the command; a kick or ban expected-occupant key stays the
-     * raw hex its door compares, and a re-simulation admits the digested row ({@code ReplayFeed}). Runs once per
-     * operator command, never per frame; its SHA-256 is normally warm by then (every admitted session builds
-     * its author digest).
+     * bans file's key form), so their recording equals the command; a kick, ban or chat-mute expected-occupant key
+     * stays the raw hex its door compares, and a re-simulation admits the digested row ({@code ReplayFeed}). Runs
+     * once per operator command, never per frame; its SHA-256 is normally warm by then (every admitted session
+     * builds its author digest).
      *
+     * <p>A chat-mute or chat-unmute key is the same expected-occupant key as a kick's (the target's own id), so a
+     * reel never carries it raw either.
      */
     public static String recordedText(Command c) {
         String t = c.text();
         return switch (c.verb()) {
             case ADMIN_CID -> REDACTED;
-            case KICK, BAN, BAN_SRC, BAN_CID -> digestTokenAt(t, 0);
+            case KICK, BAN, BAN_SRC, BAN_CID, CHAT_MUTE, CHAT_UNMUTE -> digestTokenAt(t, 0);
             case BAN_SESSION -> digestTokenAt(t, 1);
             case BAN_IP -> t; // an address key names no player id: recorded verbatim
             case UNBAN -> t.startsWith(BanSet.kindToken(BanSet.Kind.CID) + " ") ? digestTokenAt(t, 1) : t;
@@ -1114,6 +1126,23 @@ public final class OperatorCommandFile {
                     if (seat > 0) {
                         return new Command(verb.equals("ban") ? Verb.BAN : Verb.BAN_SRC, seat, 0f, false,
                                 expectedKey);
+                    }
+                }
+                return null;
+            }
+            case "chat-mute":
+            case "chat-unmute": {
+                // The ban idiom above, verbatim in shape — exactly one seat
+                // id > 0 + an optional EXPECTED-occupant cid key (ASCII-folded, BanSet.isCidKey — else the line is
+                // REJECTED); text = the key, "" when absent (house file: whoever holds the seat at frame time).
+                // The door's chat verbs compare it under their lock (PidsChatVerbs.operatorChatMute).
+                String expectedKey = parts.length == 3 ? parts[2].toLowerCase(Locale.ROOT) : "";
+                if ((parts.length == 2 || (parts.length == 3 && BanSet.isCidKey(expectedKey)))
+                        && parts[1].matches("[0-9]{1,9}")) {
+                    int seat = Integer.parseInt(parts[1]);
+                    if (seat > 0) {
+                        return new Command(verb.equals("chat-mute") ? Verb.CHAT_MUTE : Verb.CHAT_UNMUTE, seat, 0f,
+                                false, expectedKey);
                     }
                 }
                 return null;

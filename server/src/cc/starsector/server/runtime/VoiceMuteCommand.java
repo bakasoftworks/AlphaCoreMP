@@ -156,8 +156,10 @@ public final class VoiceMuteCommand {
         if (now == VoiceRelay.MuteToggle.REFUSED) {
             return List.of(NO_SUCH_PLAYER);
         }
+        // The reply says WHAT was muted (the player's voice) and FOR WHOM (the caller only): the text mute
+        // (/chatmute) is a different verb, and hosts confused the two.
         return List.of((now == VoiceRelay.MuteToggle.MUTED ? "muted seat " : "unmuted seat ") + target.seatId()
-                + " (" + labelOf(target.seatId(), ownName) + ")");
+                + "'s voice for you (" + labelOf(target.seatId(), ownName) + ")");
     }
 
     /** {@code /mute #<handle>} — the listener's
@@ -190,8 +192,11 @@ public final class VoiceMuteCommand {
         if (now == VoiceRelay.MuteToggle.REFUSED) {
             return List.of(NO_SUCH_PLAYER);
         }
+        // The same WHAT + FOR WHOM wording as the seat reply above (the text-mute confusion):
+        // an observer has no name slot, so the constant label stands alone.
         return List.of((now == VoiceRelay.MuteToggle.MUTED ? "muted " : "unmuted ")
-                + ListingEmitter.observerLabel((int) (handle - AdminBanCommand.OBSERVER_HANDLE_BASE)));
+                + ListingEmitter.observerLabel((int) (handle - AdminBanCommand.OBSERVER_HANDLE_BASE))
+                + "'s voice for you");
     }
 
     /** The seat's live session's own name made emission-safe, or {@code seat N}. */

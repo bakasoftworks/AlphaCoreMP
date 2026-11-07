@@ -443,9 +443,10 @@ public final class ReplayFeed implements Closeable {
 
     /**
      * A row whose cid-key token the serve recorded as its digest ({@link OperatorCommandFile#recordedText}): the
-     * live grammar refuses it ({@code h1:} is off the kick, ban and session-ban key alphabet; the grammar takes a
-     * ban-cid's or cid unban's digest, so of those only a ban retime's arrives here) yet it stands for a live
-     * mint. Lawful iff the verb is one whose key the recording digests (kick, ban, ban-src, ban-cid, a session ban, a cid unban), the
+     * live grammar refuses it ({@code h1:} is off the kick, ban, chat-mute and session-ban key alphabet; the grammar
+     * takes a ban-cid's or cid unban's digest, so of those only a ban retime's arrives here) yet it stands for a live
+     * mint. Lawful iff the verb is one whose key the recording digests (kick, ban, ban-src, chat-mute, chat-unmute,
+     * ban-cid, a session ban, a cid unban), the
      * token at that verb's key position is a digest ({@link OperatorCommandFile#isKeyDigest}: {@code h1:} then
      * exactly 32 lowercase hex), and the row with that ONE token replaced by the placeholder key
      * {@value #DIGEST_PLACEHOLDER_KEY} passes {@link #mintLawful} — so the seat, speed, flag and every other token
@@ -454,11 +455,14 @@ public final class ReplayFeed implements Closeable {
      * ban key (its occupants carry the door's own client ids), and recording it again yields the same row. WHY: the
      * reel must not carry the target's reversible key, and the host's recording of a kick or ban must still replay.
      *
+     * <p>A chat-mute or chat-unmute row is the kick shape (seat, then the optional expected-occupant key the
+     * recording digests), and a replay door never compares that key either; its recording must replay too.
+     *
      */
     private static boolean digestedKeyRowLawful(OperatorCommandFile.Verb verb, MatchRecordRows.CmdRow c) {
         String t = c.text();
         int at = switch (verb) {
-            case KICK, BAN, BAN_SRC, BAN_CID -> 0;
+            case KICK, BAN, BAN_SRC, BAN_CID, CHAT_MUTE, CHAT_UNMUTE -> 0;
             case BAN_SESSION -> 1;
             case UNBAN -> t.startsWith(BanSet.kindToken(BanSet.Kind.CID) + " ") ? 1 : -1;
             default -> -1;
@@ -476,7 +480,7 @@ public final class ReplayFeed implements Closeable {
      * A key-bearing row whose text the reel writer cut at {@link MatchRecordRows#UTF_MAX_BYTES} bytes: a cid
      * key runs to {@code 2 * BanSet.CID_MAX_BYTES} hex chars, so a long one leaves an odd-length key or a
      * half-written term the live parse refuses. Lawful iff the verb carries a cid key (kick, ban, ban-src,
-     * unban, a session ban, a cid ban), the text is EXACTLY at the cap (every char these grammars mint is one
+     * chat-mute, chat-unmute, unban, a session ban, a cid ban), the text is EXACTLY at the cap (every char these grammars mint is one
      * byte, so the cut lands there and nowhere else), the text is a prefix of that verb's own grammar (its
      * complete leading tokens, then a prefix of the next one), and the seat, speed and flag obey the laws that
      * verb's mints obey. WHY: one long client id must not make the host's recording of its match unreplayable.
@@ -490,7 +494,7 @@ public final class ReplayFeed implements Closeable {
             return false;
         }
         switch (verb) {
-            case KICK, BAN, BAN_SRC: {
+            case KICK, BAN, BAN_SRC, CHAT_MUTE, CHAT_UNMUTE: {
                 // the house grammar's key-less line carries the same seat law as the keyed one
                 List<OperatorCommandFile.Command> keyless = OperatorCommandFile.parse(List.of(houseLine(verb,
                         new MatchRecordRows.CmdRow(c.verbName(), seat, 0f, false, 0L, "")))).commands();
@@ -575,6 +579,8 @@ public final class ReplayFeed implements Closeable {
             case BAN_IP -> "ban-ip " + t;
             case UNBAN -> "unban " + t;
             case BANS -> "bans";
+            case CHAT_MUTE -> "chat-mute " + seat + " " + t;
+            case CHAT_UNMUTE -> "chat-unmute " + seat + " " + t;
             case END_ROUND -> "end-round";
             case END_MATCH -> "end-match";
             case SET_SIM_SPEED -> "set-sim-speed " + Float.toString(c.simSpeed());

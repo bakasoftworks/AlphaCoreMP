@@ -19,6 +19,8 @@ import cc.starsector.server.adapter.ShipProfileView;
 import cc.starsector.server.adapter.ShipSystemView;
 import cc.starsector.server.adapter.WeaponMountView;
 import cc.starsector.server.bridge.FreshSpawnScan.FreshSpawn;
+import cc.starsector.server.bridge.TypedGetter.Role;
+import cc.starsector.server.bridge.TypedGetter.Sig;
 import cc.starsector.server.protocol.NonShipEntitySnapshot;
 import cc.starsector.server.protocol.ShipManeuverCommandSnapshot;
 import cc.starsector.server.runtime.HullSourceLedger;
@@ -227,6 +229,51 @@ public final class EngineCombatBinding {
     private final Method weaponGroupToggleOff;
     private final Object weaponCommandToggleAutofire; // nullable: the autofire toggle unsupported (validated here; the applier holds its own copy) // nullable: the build-time autofire disarm unavailable
     private final Method engineIsInFastTimeAdvance; // nullable: the fast-time gate unavailable => DD1 shim never installs (fail-closed)
+    /**
+     * Typed twins of the capture walks' hot getters (the durability, identity, mount, engine-state
+     * and CR walks, the armor-pool read): each keeps its Method above and, when it converts, a
+     * handle the walk invokes on its exact erased signature (no varargs array, no box, no Number
+     * check). Null exactly when its Method is null, so every gate reads as before; a site whose
+     * conversion or bind-time self-check fails reads through its Method as before. The other call
+     * sites of the same Methods stay on {@code Method.invoke}. {@link #typedGetters} lists all of
+     * them in bind order for the census, the boot warm and the rows.
+     *
+     */
+    private final TypedGetter shipGetHitpointsTyped;
+    private final TypedGetter shipGetHullLevelTyped;
+    private final TypedGetter shipGetArmorGridTyped;
+    private final TypedGetter armorGridGetGridTyped;
+    private final TypedGetter armorGridGetMaxArmorInCellTyped;
+    private final TypedGetter weaponGetIdTyped;
+    private final TypedGetter weaponGetCooldownRemainingTyped;
+    private final TypedGetter weaponGetCooldownTyped;
+    private final TypedGetter weaponIsFiringTyped;
+    private final TypedGetter weaponUsesAmmoTyped;
+    private final TypedGetter weaponIsDisabledTyped;
+    private final TypedGetter weaponIsForceDisabledTyped;
+    private final TypedGetter weaponGetAmmoTyped;
+    private final TypedGetter weaponGetMaxAmmoTyped;
+    private final TypedGetter weaponGetChargeLevelTyped;
+    private final TypedGetter weaponGetCurrAngleTyped;
+    private final TypedGetter weaponGetProjectileSpeedTyped;
+    private final TypedGetter shipGetWeaponGroupForTyped;
+    private final TypedGetter weaponGroupIsAutofiringTyped;
+    private final TypedGetter shipGetHullSpecTyped;
+    private final TypedGetter hullSpecGetHullIdTyped;
+    private final TypedGetter shipGetEngineControllerTyped;
+    private final TypedGetter controllerGetShipEnginesTyped;
+    private final TypedGetter controllerIsFlamingOutTyped;
+    private final TypedGetter controllerIsDisabledTyped;
+    private final TypedGetter engineIsDisabledTyped;
+    private final TypedGetter engineIsPermanentlyDisabledTyped;
+    private final TypedGetter shipGetCurrentCRTyped;
+    private final TypedGetter shipGetTimeDeployedForCRTyped;
+    private final TypedGetter shipGetMutableStatsTyped;
+    private final TypedGetter statsGetPeakCRDurationTyped;
+    private final TypedGetter hullSpecGetNoCRLossTimeTyped;
+    private final TypedGetter statBonusComputeEffectiveTyped;
+    private final TypedGetter shipGetSharedFighterReplacementRateTyped;
+    private final List<TypedGetter> typedGetters;
     final Set<Long> ownedShipIds; // pkg-private: PilotCommandApplier; // server-owned (commandable/pose-writable) repository-order ids
     private final LiveWireShipResolver liveShipResolver; // nullable: fakes/legacy => positional resolve
     // Extraction: non-held-lane reflection families (remnant walk, tube mirror,
@@ -418,6 +465,67 @@ public final class EngineCombatBinding {
                 : Collections.unmodifiableSet(new LinkedHashSet<>(b.ownedShipIds));
         this.liveShipResolver = b.liveShipResolver;
         this.weaponCommandToggleAutofire = b.weaponCommandToggleAutofire;
+        // The typed twins, converted once here (the Methods are
+        // final and already opened); labels on numeric sites are the exact texts their reads always threw.
+        List<TypedGetter> typed = new ArrayList<>(34);
+        this.shipGetHitpointsTyped = TypedGetter.of(b.shipGetHitpoints, "getHitpoints", Sig.FLOAT, Role.SHIP, typed);
+        this.shipGetHullLevelTyped = TypedGetter.of(b.shipGetHullLevel, "getHullLevel", Sig.FLOAT, Role.SHIP, typed);
+        this.shipGetArmorGridTyped = TypedGetter.of(b.shipGetArmorGrid, "getArmorGrid", Sig.OBJECT, Role.SHIP, typed);
+        this.armorGridGetGridTyped = TypedGetter.of(b.armorGridGetGrid, "getGrid", Sig.OBJECT, Role.ARMOR_GRID, typed);
+        this.armorGridGetMaxArmorInCellTyped = TypedGetter.of(b.armorGridGetMaxArmorInCell, "getMaxArmorInCell",
+                Sig.FLOAT, Role.ARMOR_GRID, typed);
+        this.weaponGetIdTyped = TypedGetter.of(b.weaponGetId, "weapon.getId", Sig.OBJECT, Role.WEAPON, typed);
+        this.weaponGetCooldownRemainingTyped = TypedGetter.of(b.weaponGetCooldownRemaining, "getCooldownRemaining",
+                Sig.FLOAT, Role.WEAPON, typed);
+        this.weaponGetCooldownTyped = TypedGetter.of(b.weaponGetCooldown, "getCooldown", Sig.FLOAT, Role.WEAPON, typed);
+        this.weaponIsFiringTyped = TypedGetter.of(b.weaponIsFiring, "weapon.isFiring", Sig.BOOLEAN, Role.WEAPON, typed);
+        this.weaponUsesAmmoTyped = TypedGetter.of(b.weaponUsesAmmo, "weapon.usesAmmo", Sig.BOOLEAN, Role.WEAPON, typed);
+        this.weaponIsDisabledTyped = TypedGetter.of(b.weaponIsDisabled, "weapon.isDisabled", Sig.BOOLEAN,
+                Role.WEAPON, typed);
+        this.weaponIsForceDisabledTyped = TypedGetter.of(b.weaponIsForceDisabled, "weapon.isForceDisabled",
+                Sig.BOOLEAN, Role.WEAPON, typed);
+        this.weaponGetAmmoTyped = TypedGetter.of(b.weaponGetAmmo, "getAmmo", Sig.INT, Role.WEAPON, typed);
+        this.weaponGetMaxAmmoTyped = TypedGetter.of(b.weaponGetMaxAmmo, "getMaxAmmo", Sig.INT, Role.WEAPON, typed);
+        this.weaponGetChargeLevelTyped = TypedGetter.of(b.weaponGetChargeLevel, "getChargeLevel", Sig.FLOAT,
+                Role.WEAPON, typed);
+        this.weaponGetCurrAngleTyped = TypedGetter.of(b.weaponGetCurrAngle, "weapon.getCurrAngle", Sig.FLOAT,
+                Role.WEAPON, typed);
+        this.weaponGetProjectileSpeedTyped = TypedGetter.of(b.weaponGetProjectileSpeed, "weapon.getProjectileSpeed",
+                Sig.FLOAT, Role.WEAPON, typed);
+        this.shipGetWeaponGroupForTyped = TypedGetter.of(b.shipGetWeaponGroupFor, "ship.getWeaponGroupFor",
+                Sig.OBJECT_OF_OBJECT, Role.SHIP, Role.WEAPON, typed);
+        this.weaponGroupIsAutofiringTyped = TypedGetter.of(b.weaponGroupIsAutofiring, "group.isAutofiring",
+                Sig.BOOLEAN, Role.WEAPON_GROUP, typed);
+        this.shipGetHullSpecTyped = TypedGetter.of(b.shipGetHullSpec, "ship.getHullSpec", Sig.OBJECT, Role.SHIP, typed);
+        this.hullSpecGetHullIdTyped = TypedGetter.of(b.hullSpecGetHullId, "hullSpec.getHullId", Sig.OBJECT,
+                Role.HULL_SPEC, typed);
+        this.shipGetEngineControllerTyped = TypedGetter.of(b.shipGetEngineController, "ship.getEngineController",
+                Sig.OBJECT, Role.SHIP, typed);
+        this.controllerGetShipEnginesTyped = TypedGetter.of(b.controllerGetShipEngines, "controller.getShipEngines",
+                Sig.OBJECT, Role.ENGINE_CONTROLLER, typed);
+        this.controllerIsFlamingOutTyped = TypedGetter.of(b.controllerIsFlamingOut, "controller.isFlamingOut",
+                Sig.BOOLEAN, Role.ENGINE_CONTROLLER, typed);
+        this.controllerIsDisabledTyped = TypedGetter.of(b.controllerIsDisabled, "controller.isDisabled",
+                Sig.BOOLEAN, Role.ENGINE_CONTROLLER, typed);
+        this.engineIsDisabledTyped = TypedGetter.of(b.engineIsDisabled, "engine.isDisabled", Sig.BOOLEAN,
+                Role.ENGINE, typed);
+        this.engineIsPermanentlyDisabledTyped = TypedGetter.of(b.engineIsPermanentlyDisabled,
+                "engine.isPermanentlyDisabled", Sig.BOOLEAN, Role.ENGINE, typed);
+        this.shipGetCurrentCRTyped = TypedGetter.of(b.shipGetCurrentCR, "ship.getCurrentCR", Sig.FLOAT, Role.SHIP, typed);
+        this.shipGetTimeDeployedForCRTyped = TypedGetter.of(b.shipGetTimeDeployedForCR,
+                "ship.getTimeDeployedForCRReduction", Sig.FLOAT, Role.SHIP, typed);
+        this.shipGetMutableStatsTyped = TypedGetter.of(b.shipGetMutableStats, "ship.getMutableStats", Sig.OBJECT,
+                Role.SHIP, typed);
+        this.statsGetPeakCRDurationTyped = TypedGetter.of(b.statsGetPeakCRDuration, "stats.getPeakCRDuration",
+                Sig.OBJECT, Role.STATS, typed);
+        this.hullSpecGetNoCRLossTimeTyped = TypedGetter.of(b.hullSpecGetNoCRLossTime, "hullSpec.getNoCRLossTime",
+                Sig.FLOAT, Role.HULL_SPEC, typed);
+        this.statBonusComputeEffectiveTyped = TypedGetter.of(b.statBonusComputeEffective,
+                "peakCRDuration.computeEffective", Sig.FLOAT_OF_FLOAT, Role.STAT_BONUS, typed);
+        this.shipGetSharedFighterReplacementRateTyped = TypedGetter.of(b.shipGetSharedFighterReplacementRate,
+                "ship.getSharedFighterReplacementRate", Sig.FLOAT, Role.SHIP, typed);
+        this.typedGetters = Collections.unmodifiableList(typed);
+        System.out.println(TypedGetter.censusLine(typedGetters));
         validateCommandObject("ACCELERATE", movementCommandAccelerate);
         validateCommandObject("DECELERATE", movementCommandDecelerate);
         validateCommandObject("STRAFE_LEFT", movementCommandStrafeLeft);
@@ -896,7 +1004,7 @@ public final class EngineCombatBinding {
             Method getCurrentCR = shipClass.getMethod("getCurrentCR");
             Method shipGetFleetMember;
             try {
-                shipGetFleetMember = shipClass.getMethod("getFleetMember");
+                shipGetFleetMember = OpenHandles.open(shipClass.getMethod("getFleetMember"));
             } catch (NoSuchMethodException e) {
                 shipGetFleetMember = null;
             }
@@ -904,7 +1012,7 @@ public final class EngineCombatBinding {
             // RETREAT order). Expect false after the faithful crew fix; was true on the bare member.
             Method shipControlsLocked;
             try {
-                shipControlsLocked = shipClass.getMethod("controlsLocked");
+                shipControlsLocked = OpenHandles.open(shipClass.getMethod("controlsLocked"));
             } catch (NoSuchMethodException e) {
                 shipControlsLocked = null;
             }
@@ -1091,8 +1199,12 @@ public final class EngineCombatBinding {
         ClassLoader cl = engine.getClass().getClassLoader();
         String[] classes = { "BallisticProjectile", "PlasmaShot", "Missile",
                 "DamagingExplosion", "CustomCombatEntity", "BeamWeaponRay" };
-        String[] accessors = { "getLocation", "getOwner", "getProjectileSpecId", "getWeapon",
-                "isFromMissile", "getElapsed", "isMirv", "getSource", "getFacing", "isFizzling",
+        // A cached getter is warmed THROUGH its per-class cache, so the per-tick read finds the
+        // very Method resolved here; a bare name (an event-rate read with no cache) still
+        // pre-builds the class reflection data its first lookup would otherwise walk mid-frame.
+        //
+        Object[] accessors = { GET_LOCATION, GET_OWNER, GET_PROJECTILE_SPEC_ID, GET_WEAPON,
+                IS_FROM_MISSILE, GET_ELAPSED, "isMirv", GET_SOURCE, "getFacing", "isFizzling",
                 "getExplosionSpecIfExplosion" };
         long start = System.nanoTime();
         int classesLoaded = 0;
@@ -1104,9 +1216,13 @@ public final class EngineCombatBinding {
                 Class<?> entityClass = Class.forName(
                         "com.fs.starfarer.combat.entities." + simpleName, true, cl);
                 classesLoaded++;
-                for (String accessor : accessors) {
+                for (Object accessor : accessors) {
                     try {
-                        entityClass.getMethod(accessor);
+                        if (accessor instanceof PerClassGetter getter) {
+                            getter.of(entityClass);
+                        } else {
+                            entityClass.getMethod((String) accessor);
+                        }
                         methodsResolved++;
                     } catch (NoSuchMethodException absent) {
                         methodsMissing++;
@@ -1259,11 +1375,11 @@ public final class EngineCombatBinding {
      * {@code null} when the required handles are not bound or any ship read fails.
      */
     public List<ShipDurabilityView> shipDurabilitiesOrNull() {
-        if (shipGetHitpoints == null
-                || shipGetHullLevel == null
-                || shipGetArmorGrid == null
-                || armorGridGetGrid == null
-                || armorGridGetMaxArmorInCell == null) {
+        if (shipGetHitpointsTyped == null
+                || shipGetHullLevelTyped == null
+                || shipGetArmorGridTyped == null
+                || armorGridGetGridTyped == null
+                || armorGridGetMaxArmorInCellTyped == null) {
             return null;
         }
         int shipIdx = -1;
@@ -1279,9 +1395,9 @@ public final class EngineCombatBinding {
                     reportWalkNull("durability", "null ship entry", shipIdx, null, null, null);
                     return null;
                 }
-                float hitpoints = numberAsFloat(shipGetHitpoints.invoke(ship), "getHitpoints");
-                float hullLevel = numberAsFloat(shipGetHullLevel.invoke(ship), "getHullLevel");
-                ArmorGridSnapshot armor = armorGridSnapshot(shipGetArmorGrid.invoke(ship), shipId);
+                float hitpoints = shipGetHitpointsTyped.finiteFloat(ship);
+                float hullLevel = shipGetHullLevelTyped.finiteFloat(ship);
+                ArmorGridSnapshot armor = armorGridSnapshot(shipGetArmorGridTyped.getObject(ship), shipId);
                 if (armor == null) {
                     reportWalkNull("durability", "null armor grid snapshot", shipIdx, ship, null, null);
                     return null;
@@ -1690,12 +1806,12 @@ public final class EngineCombatBinding {
     /** Total armor pool, or NaN — the cheap per-tick read behind {@code armorPre=}/
      *  {@code armordelta} (two reflective calls + an O(cells) sum; no snapshot alloc/hash). */
     private float armorPoolOrNaN(Object ship) {
-        if (shipGetArmorGrid == null || armorGridGetGrid == null) {
+        if (shipGetArmorGridTyped == null || armorGridGetGridTyped == null) {
             return Float.NaN;
         }
         try {
-            Object grid = shipGetArmorGrid.invoke(ship);
-            Object cellsObj = grid == null ? null : armorGridGetGrid.invoke(grid);
+            Object grid = shipGetArmorGridTyped.getObject(ship);
+            Object cellsObj = grid == null ? null : armorGridGetGridTyped.getObject(grid);
             if (!(cellsObj instanceof float[][])) {
                 return Float.NaN;
             }
@@ -1756,7 +1872,7 @@ public final class EngineCombatBinding {
      * durability views which only carry mutable state.
      */
     public List<ShipIdentityView> shipIdentitiesOrNull() {
-        if (shipGetHullSpec == null || hullSpecGetHullId == null) {
+        if (shipGetHullSpecTyped == null || hullSpecGetHullIdTyped == null) {
             return null;
         }
         int shipIdx = -1;
@@ -1772,12 +1888,12 @@ public final class EngineCombatBinding {
                     reportWalkNull("identity", "null ship entry", shipIdx, null, null, null);
                     return null;
                 }
-                Object hullSpec = shipGetHullSpec.invoke(ship);
+                Object hullSpec = shipGetHullSpecTyped.getObject(ship);
                 if (hullSpec == null) {
                     reportWalkNull("identity", "null getHullSpec", shipIdx, ship, null, null);
                     return null;
                 }
-                Object hullId = hullSpecGetHullId.invoke(hullSpec);
+                Object hullId = hullSpecGetHullIdTyped.getObject(hullSpec);
                 if (!(hullId instanceof String)) {
                     reportWalkNull("identity", "non-string getHullId ("
                             + (hullId == null ? "null" : hullId.getClass().getName()) + ")",
@@ -1995,15 +2111,15 @@ public final class EngineCombatBinding {
      */
     public List<WeaponMountView> weaponMountStatesOrNull() {
         if (shipGetAllWeapons == null
-                || weaponGetId == null
-                || weaponGetCooldownRemaining == null
-                || weaponGetCooldown == null
-                || weaponIsFiring == null
-                || weaponUsesAmmo == null
-                || weaponGetAmmo == null
-                || weaponGetMaxAmmo == null
-                || weaponIsDisabled == null
-                || weaponGetChargeLevel == null) {
+                || weaponGetIdTyped == null
+                || weaponGetCooldownRemainingTyped == null
+                || weaponGetCooldownTyped == null
+                || weaponIsFiringTyped == null
+                || weaponUsesAmmoTyped == null
+                || weaponGetAmmoTyped == null
+                || weaponGetMaxAmmoTyped == null
+                || weaponIsDisabledTyped == null
+                || weaponGetChargeLevelTyped == null) {
             return null;
         }
         try {
@@ -2059,42 +2175,32 @@ public final class EngineCombatBinding {
                     if (weapon == null) {
                         return null;
                     }
-                    Object idValue = weaponGetId.invoke(weapon);
+                    Object idValue = weaponGetIdTyped.getObject(weapon);
                     if (!(idValue instanceof String)) {
                         return null;
                     }
-                    float cooldownRemaining =
-                            numberAsFloat(weaponGetCooldownRemaining.invoke(weapon), "getCooldownRemaining");
-                    float cooldown = numberAsFloat(weaponGetCooldown.invoke(weapon), "getCooldown");
-                    Boolean firing = asBoolean(weaponIsFiring.invoke(weapon));
-                    Boolean usesAmmo = asBoolean(weaponUsesAmmo.invoke(weapon));
-                    Boolean disabled = asBoolean(weaponIsDisabled.invoke(weapon));
-                    if (firing == null || usesAmmo == null || disabled == null) {
-                        return null;
-                    }
-                    if (disabled.booleanValue() && weaponIsForceDisabled != null) {
+                    float cooldownRemaining = weaponGetCooldownRemainingTyped.finiteFloat(weapon);
+                    float cooldown = weaponGetCooldownTyped.finiteFloat(weapon);
+                    boolean firing = weaponIsFiringTyped.getBoolean(weapon);
+                    boolean usesAmmo = weaponUsesAmmoTyped.getBoolean(weapon);
+                    boolean disabled = weaponIsDisabledTyped.getBoolean(weapon);
+                    if (disabled && weaponIsForceDisabledTyped != null && weaponIsForceDisabledTyped.isTrue(weapon)) {
                         // un-fold the script force-disable (see the field's javadoc)
-                        Boolean forced = asBoolean(weaponIsForceDisabled.invoke(weapon));
-                        if (Boolean.TRUE.equals(forced)) {
-                            disabled = Boolean.FALSE;
-                        }
+                        disabled = false;
                     }
-                    int ammo = numberAsInt(weaponGetAmmo.invoke(weapon), "getAmmo");
-                    int maxAmmo = numberAsInt(weaponGetMaxAmmo.invoke(weapon), "getMaxAmmo");
-                    float chargeLevel = numberAsFloat(weaponGetChargeLevel.invoke(weapon), "getChargeLevel");
+                    int ammo = weaponGetAmmoTyped.getInt(weapon);
+                    int maxAmmo = weaponGetMaxAmmoTyped.getInt(weapon);
+                    float chargeLevel = weaponGetChargeLevelTyped.finiteFloat(weapon);
                     // Optional additive read (aimFacingDeg —
                     // every non-missile discharge + the missile fallback, a
                     // missile carries its fresh spawn's facing via LaunchFacingLaw):
                     // unbound or failing degrades this one scalar to NaN, never the tier.
                     float currAngleDeg = Float.NaN;
-                    if (weaponGetCurrAngle != null) {
+                    if (weaponGetCurrAngleTyped != null) {
                         try {
-                            Object angleValue = weaponGetCurrAngle.invoke(weapon);
-                            if (angleValue instanceof Number) {
-                                float angle = ((Number) angleValue).floatValue();
-                                if (Float.isFinite(angle)) {
-                                    currAngleDeg = angle;
-                                }
+                            float angle = weaponGetCurrAngleTyped.getFloat(weapon);
+                            if (Float.isFinite(angle)) {
+                                currAngleDeg = angle;
                             }
                         } catch (ReflectiveOperationException | RuntimeException ignored) {
                             // currAngle stays NaN; the mount state itself still crosses.
@@ -2104,14 +2210,11 @@ public final class EngineCombatBinding {
                     // stat-modified muzzle speed — WeaponAPI.getProjectileSpeed(), the exact
                     // value the engine's ballistic spawn composes with the shooter velocity.
                     float projectileSpeed = Float.NaN;
-                    if (weaponGetProjectileSpeed != null) {
+                    if (weaponGetProjectileSpeedTyped != null) {
                         try {
-                            Object speedValue = weaponGetProjectileSpeed.invoke(weapon);
-                            if (speedValue instanceof Number) {
-                                float speed = ((Number) speedValue).floatValue();
-                                if (Float.isFinite(speed)) {
-                                    projectileSpeed = speed;
-                                }
+                            float speed = weaponGetProjectileSpeedTyped.getFloat(weapon);
+                            if (Float.isFinite(speed)) {
+                                projectileSpeed = speed;
                             }
                         } catch (ReflectiveOperationException | RuntimeException ignored) {
                             // projectileSpeed stays NaN; the mount state itself still crosses.
@@ -2123,12 +2226,11 @@ public final class EngineCombatBinding {
                     // degrades this one boolean to false, never the tier.
                     boolean autofire = false;
                     boolean selected = false;
-                    if (shipGetWeaponGroupFor != null && weaponGroupIsAutofiring != null) {
+                    if (shipGetWeaponGroupForTyped != null && weaponGroupIsAutofiringTyped != null) {
                         try {
-                            Object group = shipGetWeaponGroupFor.invoke(ship, weapon);
+                            Object group = shipGetWeaponGroupForTyped.getObject(ship, weapon);
                             if (group != null) {
-                                Boolean groupOn = asBoolean(weaponGroupIsAutofiring.invoke(group));
-                                autofire = groupOn != null && groupOn.booleanValue();
+                                autofire = weaponGroupIsAutofiringTyped.isTrue(group);
                                 // same-list handles — identity compare vs the
                                 // per-ship hoisted selected-group read above.
                                 selected = selectedGroup != null && group.equals(selectedGroup);
@@ -2488,13 +2590,13 @@ public final class EngineCombatBinding {
      * hulls simply read huge finite peaks).
      */
     public List<ShipCrView> shipCrStatesOrNull() {
-        if (shipGetCurrentCR == null
-                || shipGetTimeDeployedForCR == null
-                || shipGetMutableStats == null
-                || statsGetPeakCRDuration == null
-                || statBonusComputeEffective == null
-                || shipGetHullSpec == null
-                || hullSpecGetNoCRLossTime == null) {
+        if (shipGetCurrentCRTyped == null
+                || shipGetTimeDeployedForCRTyped == null
+                || shipGetMutableStatsTyped == null
+                || statsGetPeakCRDurationTyped == null
+                || statBonusComputeEffectiveTyped == null
+                || shipGetHullSpecTyped == null
+                || hullSpecGetNoCRLossTimeTyped == null) {
             return null;
         }
         try {
@@ -2505,30 +2607,25 @@ public final class EngineCombatBinding {
                 if (ship == null) {
                     return null;
                 }
-                float cr = numberAsFloat(shipGetCurrentCR.invoke(ship), "ship.getCurrentCR");
-                float timeDeployed = numberAsFloat(
-                        shipGetTimeDeployedForCR.invoke(ship), "ship.getTimeDeployedForCRReduction");
-                Object stats = shipGetMutableStats.invoke(ship);
-                Object spec = shipGetHullSpec.invoke(ship);
+                float cr = shipGetCurrentCRTyped.finiteFloat(ship);
+                float timeDeployed = shipGetTimeDeployedForCRTyped.finiteFloat(ship);
+                Object stats = shipGetMutableStatsTyped.getObject(ship);
+                Object spec = shipGetHullSpecTyped.getObject(ship);
                 if (stats == null || spec == null) {
                     return null;
                 }
-                Object peakStat = statsGetPeakCRDuration.invoke(stats);
+                Object peakStat = statsGetPeakCRDurationTyped.getObject(stats);
                 if (peakStat == null) {
                     return null;
                 }
-                float noCrLossTime = numberAsFloat(
-                        hullSpecGetNoCRLossTime.invoke(spec), "hullSpec.getNoCRLossTime");
-                float peak = numberAsFloat(
-                        statBonusComputeEffective.invoke(peakStat, noCrLossTime),
-                        "peakCRDuration.computeEffective");
+                float noCrLossTime = hullSpecGetNoCRLossTimeTyped.finiteFloat(spec);
+                float peak = statBonusComputeEffectiveTyped.finiteFloat(peakStat, noCrLossTime);
                 int fighterPct = ShipCrView.NO_FIGHTER_REPLACEMENT_PCT;
-                if (shipGetSharedFighterReplacementRate != null) {
+                if (shipGetSharedFighterReplacementRateTyped != null) {
                     // The vanilla fighter panel's own arithmetic
                     // ((int)(rate * 100), truncation) so the served
                     // rate line prints what the local engine would have printed.
-                    float rate = numberAsFloat(shipGetSharedFighterReplacementRate.invoke(ship),
-                            "ship.getSharedFighterReplacementRate");
+                    float rate = shipGetSharedFighterReplacementRateTyped.finiteFloat(ship);
                     if (Float.isFinite(rate)) {
                         fighterPct = Math.max(0, Math.min(100, (int) (rate * 100f)));
                     }
@@ -2739,15 +2836,15 @@ public final class EngineCombatBinding {
                     return null;
                 }
                 Class<?> beamClass = beam.getClass();
-                Object to = beamClass.getMethod("getTo").invoke(beam);
+                Object to = GET_TO.of(beamClass).invoke(beam, NO_ARGS);
                 float[] impact = readXY(to);
                 if (impact == null) {
                     return null;
                 }
                 int owner = -1;
-                Object source = beamClass.getMethod("getSource").invoke(beam);
+                Object source = GET_SOURCE.of(beamClass).invoke(beam, NO_ARGS);
                 if (source != null) {
-                    Object ownerValue = source.getClass().getMethod("getOwner").invoke(source);
+                    Object ownerValue = GET_OWNER.of(source.getClass()).invoke(source, NO_ARGS);
                     if (ownerValue instanceof Number) {
                         owner = ((Number) ownerValue).intValue();
                     }
@@ -2808,7 +2905,7 @@ public final class EngineCombatBinding {
                             }
                         }
                         Object weapon = positionShipId == null
-                                ? null : beamClass.getMethod("getWeapon").invoke(beam);
+                                ? null : GET_WEAPON.of(beamClass).invoke(beam, NO_ARGS);
                         if (weapon != null) {
                             List<?> weapons = weaponsBySourceShip.get(source);
                             if (weapons == null) {
@@ -2872,12 +2969,12 @@ public final class EngineCombatBinding {
      */
     private static String firingWeaponContentKey(Object entity, Class<?> entityClass) {
         try {
-            Object weapon = entityClass.getMethod("getWeapon").invoke(entity);
+            Object weapon = GET_WEAPON.of(entityClass).invoke(entity, NO_ARGS);
             if (weapon == null) {
                 noteContentKeyMiss("null_weapon entity=" + entityClass.getName());
                 return "";
             }
-            Object weaponId = weapon.getClass().getMethod("getId").invoke(weapon);
+            Object weaponId = GET_ID.of(weapon.getClass()).invoke(weapon, NO_ARGS);
             String key = (weaponId instanceof String) ? ((String) weaponId).trim() : "";
             if (key.isEmpty()) {
                 noteContentKeyMiss("blank_id weapon=" + weapon.getClass().getName());
@@ -3158,8 +3255,8 @@ public final class EngineCombatBinding {
         try {
             Class<?> missileApi = Class.forName("com.fs.starfarer.api.combat.MissileAPI",
                     false, entityClass.getClassLoader());
-            missileGetFacing = missileApi.getMethod("getFacing");
-            missileIsFizzling = missileApi.getMethod("isFizzling");
+            missileGetFacing = OpenHandles.open(missileApi.getMethod("getFacing"));
+            missileIsFizzling = OpenHandles.open(missileApi.getMethod("isFizzling"));
         } catch (ReflectiveOperationException | RuntimeException e) {
             missileGetFacing = null;
             missileIsFizzling = null;
@@ -3176,8 +3273,8 @@ public final class EngineCombatBinding {
         if (!missileArmedResolveTried) {
             missileArmedResolveTried = true;
             try {
-                missileIsArmed = Class.forName("com.fs.starfarer.api.combat.MissileAPI",
-                        false, entityClass.getClassLoader()).getMethod("isArmed");
+                missileIsArmed = OpenHandles.open(Class.forName("com.fs.starfarer.api.combat.MissileAPI",
+                        false, entityClass.getClassLoader()).getMethod("isArmed"));
             } catch (ReflectiveOperationException | RuntimeException e) {
                 missileIsArmed = null;
                 System.out.println("engine-combat-binding missile-armed resolve FAILED (one-shot; every"
@@ -3242,8 +3339,8 @@ public final class EngineCombatBinding {
                 Class<?> controllerApi = Class.forName(
                         "com.fs.starfarer.api.combat.ShipEngineControllerAPI",
                         false, entityClass.getClassLoader());
-                moteIsAccelerating = controllerApi.getMethod("isAccelerating");
-                moteGetEngineController = getController;
+                moteIsAccelerating = OpenHandles.open(controllerApi.getMethod("isAccelerating"));
+                moteGetEngineController = OpenHandles.open(getController);
             } catch (ReflectiveOperationException | RuntimeException e) {
                 moteGetEngineController = null;
                 moteIsAccelerating = null;
@@ -3390,13 +3487,13 @@ public final class EngineCombatBinding {
                     continue;
                 }
                 Class<?> entityClass = entity.getClass();
-                float[] loc = readXY(entityClass.getMethod("getLocation").invoke(entity));
+                float[] loc = readXY(GET_LOCATION.of(entityClass).invoke(entity, NO_ARGS));
                 if (loc == null) {
                     return null;
                 }
-                Object ownerValue = entityClass.getMethod("getOwner").invoke(entity);
+                Object ownerValue = GET_OWNER.of(entityClass).invoke(entity, NO_ARGS);
                 int owner = (ownerValue instanceof Number) ? ((Number) ownerValue).intValue() : -1;
-                Object specId = entityClass.getMethod("getProjectileSpecId").invoke(entity);
+                Object specId = GET_PROJECTILE_SPEC_ID.of(entityClass).invoke(entity, NO_ARGS);
                 String key = (specId instanceof String) ? ((String) specId).trim() : "";
                 if (key.isEmpty()) {
                     // The live lane's
@@ -3416,10 +3513,10 @@ public final class EngineCombatBinding {
                     // to the client's absence-grace retire).
                     try {
                         Object fromMissile =
-                                entityClass.getMethod("isFromMissile").invoke(entity);
+                                IS_FROM_MISSILE.of(entityClass).invoke(entity, NO_ARGS);
                         if (fromMissile instanceof Boolean && ((Boolean) fromMissile)) {
                             Object elapsed =
-                                    entityClass.getMethod("getElapsed").invoke(entity);
+                                    GET_ELAPSED.of(entityClass).invoke(entity, NO_ARGS);
                             if (elapsed instanceof Number
                                     && ((Number) elapsed).floatValue() <= 0f) {
                                 if (mirvChildBirths == null) {
@@ -3446,7 +3543,7 @@ public final class EngineCombatBinding {
                         if (!seenDamagingExplosions.contains(entity)) {
                             try {
                                 long sourceWireId = 0L;
-                                Object source = entityClass.getMethod("getSource").invoke(entity);
+                                Object source = GET_SOURCE.of(entityClass).invoke(entity, NO_ARGS);
                                 if (source != null) {
                                     if (positionShipIds == null) {
                                         positionShipIds = positionShipIdByEngineShip();
@@ -3466,7 +3563,7 @@ public final class EngineCombatBinding {
                                     // the mount slot never lies.
                                     int mountIndex = -1;
                                     Object weapon =
-                                            entityClass.getMethod("getWeapon").invoke(entity);
+                                            GET_WEAPON.of(entityClass).invoke(entity, NO_ARGS);
                                     if (weapon != null) {
                                         List<?> weapons = weaponsBySourceShip.get(source);
                                         if (weapons == null) {
@@ -3523,7 +3620,7 @@ public final class EngineCombatBinding {
                 long sourcePositionShipId = 0L;
                 int sourceMountIndex = -1;
                 try {
-                    Object source = entityClass.getMethod("getSource").invoke(entity);
+                    Object source = GET_SOURCE.of(entityClass).invoke(entity, NO_ARGS);
                     if (source != null) {
                         if (positionShipIds == null) {
                             positionShipIds = positionShipIdByEngineShip();
@@ -3532,7 +3629,7 @@ public final class EngineCombatBinding {
                         Long positionShipId =
                                 positionShipIds == null ? null : positionShipIds.get(source);
                         Object weapon = positionShipId == null
-                                ? null : entityClass.getMethod("getWeapon").invoke(entity);
+                                ? null : GET_WEAPON.of(entityClass).invoke(entity, NO_ARGS);
                         if (weapon != null) {
                             List<?> weapons = weaponsBySourceShip.get(source);
                             if (weapons == null) {
@@ -4089,9 +4186,9 @@ public final class EngineCombatBinding {
      * {@code shipId} matches the motion/durability/flux views read in the same tick.
      */
     public List<ShipEngineStateView> shipEngineStatesOrNull() {
-        if (shipGetEngineController == null || controllerGetShipEngines == null
-                || controllerIsFlamingOut == null || controllerIsDisabled == null
-                || engineIsDisabled == null || engineIsPermanentlyDisabled == null) {
+        if (shipGetEngineControllerTyped == null || controllerGetShipEnginesTyped == null
+                || controllerIsFlamingOutTyped == null || controllerIsDisabledTyped == null
+                || engineIsDisabledTyped == null || engineIsPermanentlyDisabledTyped == null) {
             return null;
         }
         try {
@@ -4102,11 +4199,11 @@ public final class EngineCombatBinding {
                 if (ship == null) {
                     return null;
                 }
-                Object controller = shipGetEngineController.invoke(ship);
+                Object controller = shipGetEngineControllerTyped.getObject(ship);
                 if (controller == null) {
                     return null;
                 }
-                Object enginesValue = controllerGetShipEngines.invoke(controller);
+                Object enginesValue = controllerGetShipEnginesTyped.getObject(controller);
                 if (!(enginesValue instanceof List)) {
                     return null;
                 }
@@ -4119,27 +4216,19 @@ public final class EngineCombatBinding {
                     if (engine == null) {
                         return null;
                     }
-                    Object disabledValue = engineIsDisabled.invoke(engine);
-                    Object permValue = engineIsPermanentlyDisabled.invoke(engine);
-                    if (!(disabledValue instanceof Boolean) || !(permValue instanceof Boolean)) {
-                        return null;
-                    }
-                    if ((Boolean) disabledValue) {
+                    boolean engineDisabled = engineIsDisabledTyped.getBoolean(engine);
+                    boolean enginePermDisabled = engineIsPermanentlyDisabledTyped.getBoolean(engine);
+                    if (engineDisabled) {
                         disabledMask |= 1 << i;
                     }
-                    if ((Boolean) permValue) {
+                    if (enginePermDisabled) {
                         permDisabledMask |= 1 << i;
                     }
                 }
-                Object flamingOutValue = controllerIsFlamingOut.invoke(controller);
-                Object flamedOutValue = controllerIsDisabled.invoke(controller);
-                if (!(flamingOutValue instanceof Boolean) || !(flamedOutValue instanceof Boolean)) {
-                    return null;
-                }
+                boolean flamingOut = controllerIsFlamingOutTyped.getBoolean(controller);
+                boolean flamedOut = controllerIsDisabledTyped.getBoolean(controller);
                 // 0/1/2 = ShipEngineStateSnapshot CONTROLLER_ACTIVE/FLAMING_OUT/FLAMED_OUT
-                int controllerState = (Boolean) flamingOutValue
-                        ? 1
-                        : ((Boolean) flamedOutValue ? 2 : 0);
+                int controllerState = flamingOut ? 1 : (flamedOut ? 2 : 0);
                 states.add(new EngineBackedShipEngineStateView(
                         shipId++, disabledMask, permDisabledMask, controllerState));
             }
@@ -4264,8 +4353,8 @@ public final class EngineCombatBinding {
                 if (isFlaring.getReturnType() != boolean.class) {
                     throw new NoSuchMethodException(GLOW_IS_FLARING_OBF + " is not boolean()");
                 }
-                flareGetEngineGlow = getGlow;
-                flareIsFlaring = isFlaring;
+                flareGetEngineGlow = OpenHandles.open(getGlow);
+                flareIsFlaring = OpenHandles.open(isFlaring);
             }
         } catch (ReflectiveOperationException | RuntimeException e) {
             flareUnresolvable = true;
@@ -5706,14 +5795,37 @@ public final class EngineCombatBinding {
         return (List<?>) value;
     }
 
+    /**
+     * The per-tick point-entity getters and the vector x/y pair, resolved once per receiver class:
+     * these sites no longer call {@code getMethod} / {@code getField} per element, so they stop
+     * paying the hierarchy walk, a fresh copy's slow access check, and the reflection-data
+     * rebuilds those lookups triggered. Never handed to another class: every invoke and
+     * {@code getFloat} stays in this one, so each Method's one-caller access cache stays hot.
+     *
+     */
+    private static final PerClassGetter GET_LOCATION = new PerClassGetter("getLocation");
+    private static final PerClassGetter GET_OWNER = new PerClassGetter("getOwner");
+    private static final PerClassGetter GET_PROJECTILE_SPEC_ID = new PerClassGetter("getProjectileSpecId");
+    private static final PerClassGetter IS_FROM_MISSILE = new PerClassGetter("isFromMissile");
+    private static final PerClassGetter GET_ELAPSED = new PerClassGetter("getElapsed");
+    private static final PerClassGetter GET_SOURCE = new PerClassGetter("getSource");
+    private static final PerClassGetter GET_WEAPON = new PerClassGetter("getWeapon");
+    private static final PerClassGetter GET_TO = new PerClassGetter("getTo");
+    private static final PerClassGetter GET_ID = new PerClassGetter("getId");
+    private static final PerClassGetter.XyFields XY_FIELDS = new PerClassGetter.XyFields();
+
+    /**
+     * A vector's public float x/y pair, or null for a null vector or a non-finite component. A
+     * vector class lacking a field throws {@link NoSuchFieldException} naming the first missing
+     * one (x before y); the pair comes from {@link #XY_FIELDS}, one resolution per class.
+     */
     static float[] readXY(Object vector) throws ReflectiveOperationException {
         if (vector == null) {
             return null;
         }
-        Field fx = vector.getClass().getField("x");
-        Field fy = vector.getClass().getField("y");
-        float x = fx.getFloat(vector);
-        float y = fy.getFloat(vector);
+        Field[] xy = XY_FIELDS.of(vector.getClass());
+        float x = xy[0].getFloat(vector);
+        float y = xy[1].getFloat(vector);
         if (!Float.isFinite(x) || !Float.isFinite(y)) {
             return null;
         }
@@ -5825,7 +5937,7 @@ public final class EngineCombatBinding {
         if (armorGrid == null) {
             return null;
         }
-        Object rawGrid = armorGridGetGrid.invoke(armorGrid);
+        Object rawGrid = armorGridGetGridTyped.getObject(armorGrid);
         if (!(rawGrid instanceof float[][])) {
             return null;
         }
@@ -5854,8 +5966,7 @@ public final class EngineCombatBinding {
         // armorLevel = total / (cellCount × maxInCell) — the engine-exact
         // pool fraction (every cell mints at getMaxArmorInCell()). A cell-less or
         // zero-max grid reads 0 (no pool to be a fraction of), never a division fault.
-        float maxInCell = numberAsFloat(
-                armorGridGetMaxArmorInCell.invoke(armorGrid), "getMaxArmorInCell");
+        float maxInCell = armorGridGetMaxArmorInCellTyped.finiteFloat(armorGrid);
         float level = (cellCount > 0 && maxInCell > 0f)
                 ? total / (cellCount * maxInCell)
                 : 0f;
@@ -5873,15 +5984,82 @@ public final class EngineCombatBinding {
      *  miss). Polled detector = post-hit only, so armorPre is unavailable. Fail-soft (never throws). */
     private String armorPoolFields(Object ship) {
         try {
-            Object armorGrid = shipGetArmorGrid.invoke(ship);
+            Object armorGrid = shipGetArmorGridTyped.getObject(ship);
             ArmorGridSnapshot armor = armorGridSnapshot(armorGrid, 0L);
             if (armor == null) return "";
-            float maxInCell = numberAsFloat(armorGridGetMaxArmorInCell.invoke(armorGrid), "getMaxArmorInCell");
+            float maxInCell = armorGridGetMaxArmorInCellTyped.finiteFloat(armorGrid);
             return " armorPost=" + Math.round(armor.total)
                     + " armorMax=" + Math.round((double) armor.cellCount * (double) maxInCell);
         } catch (ReflectiveOperationException | RuntimeException e) {
             return "";
         }
+    }
+
+    /**
+     * The boot warm of the typed getters: every converted one runs {@link TypedGetter#CUSTOMIZE_CALLS}
+     * times on a live receiver of its role, so the call-site linkage and the handle customization
+     * are paid before any served tick. Returns {@code customized=<n> miss=<m>}; never throws.
+     *
+     */
+    public String warmTypedGetters() {
+        return TypedGetter.warm(typedGetters, warmReceivers(), TypedGetter.CUSTOMIZE_CALLS);
+    }
+
+    /**
+     * One live receiver per typed-getter role, taken from the roster through plain read-only getters
+     * (never a walk: the durability walk retains armor cells); a role the roster cannot fill stays
+     * null and its getters count as warm misses. The weapon group comes from the first weapon that
+     * has one.
+     *
+     */
+    Object[] warmReceivers() {
+        Object[] r = new Object[Role.values().length];
+        List<?> ships;
+        try {
+            ships = rosterShipList();
+        } catch (RuntimeException unreadable) {
+            return r; // every role empty: each converted getter counts one miss
+        }
+        for (Object ship : ships) {
+            if (ship == null) {
+                continue;
+            }
+            TypedGetter.offer(r, Role.SHIP, ship);
+            TypedGetter.offer(r, Role.ARMOR_GRID, TypedGetter.readOrNull(shipGetArmorGridTyped, ship, null));
+            TypedGetter.offer(r, Role.HULL_SPEC, TypedGetter.readOrNull(shipGetHullSpecTyped, ship, null));
+            Object controller = TypedGetter.readOrNull(shipGetEngineControllerTyped, ship, null);
+            TypedGetter.offer(r, Role.ENGINE_CONTROLLER, controller);
+            TypedGetter.offer(r, Role.ENGINE, TypedGetter.firstNonNull(
+                    TypedGetter.readOrNull(controllerGetShipEnginesTyped, controller, null)));
+            Object stats = TypedGetter.readOrNull(shipGetMutableStatsTyped, ship, null);
+            TypedGetter.offer(r, Role.STATS, stats);
+            TypedGetter.offer(r, Role.STAT_BONUS, TypedGetter.readOrNull(statsGetPeakCRDurationTyped, stats, null));
+            Object weapons = null;
+            try {
+                weapons = shipGetAllWeapons == null ? null : shipGetAllWeapons.invoke(ship);
+            } catch (ReflectiveOperationException | RuntimeException unreadable) {
+                // no weapon roles from this ship; a later ship may fill them, else they count as misses
+            }
+            if (weapons instanceof List<?> list) {
+                for (Object weapon : list) {
+                    TypedGetter.offer(r, Role.WEAPON, weapon);
+                    Object group = TypedGetter.readOrNull(shipGetWeaponGroupForTyped, ship, weapon);
+                    TypedGetter.offer(r, Role.WEAPON_GROUP, group);
+                    if (group != null) {
+                        break;
+                    }
+                }
+            }
+            if (TypedGetter.allFilled(r)) {
+                break;
+            }
+        }
+        return r;
+    }
+
+    /** The typed-getter sites in bind order (null = unbound), for the rows. */
+    List<TypedGetter> typedGetterCensus() {
+        return typedGetters;
     }
 
     static float numberAsFloat(Object value, String label) {
@@ -7007,6 +7185,7 @@ public final class EngineCombatBinding {
         public Builder fogBound(boolean v) { this.fogBound = v; return this; }
 
         public EngineCombatBinding build() {
+            OpenHandles.openAll(this); // every pre-resolved handle skips checkAccess
             return new EngineCombatBinding(this);
         }
     }
