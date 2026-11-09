@@ -36,6 +36,68 @@ final class EdgeEventLane {
         this.plugin = plugin;
     }
 
+    /**
+     * The per-round EDSP intake meters of
+     * {@link #onDespawnEvent}, every read and write under the {@code plugin.despawnReasonByEntity}
+     * lock (net-thread intake; render-thread round reset and meter flush). Held here rather than on
+     * the plugin, whose class size is bounded.
+     * Zeroed together by {@link #resetDespawnIntakeForRound}.
+     */
+    private int despawnIntakeThisRound;
+    private int despawnDroppedAtCap;
+    private int despawnLogLines;
+    private int despawnLogCapped;
+    /** Per-round cap on the per-event {@code predict despawn consumed} rows (the
+     *  {@code MF_STREAK_LOG_MAX} idiom): the last row within it carries the cap marker, later
+     *  events only count into {@link #despawnLogCapped()}. */
+    static final int DESPAWN_LOG_MAX = 4096;
+
+    /** Non-own EDSP events dropped this round at the intake cap. */
+    int despawnDroppedAtCap() {
+        synchronized (plugin.despawnReasonByEntity) {
+            return despawnDroppedAtCap;
+        }
+    }
+
+    /** Non-own EDSP events admitted this round (≤ {@link RosterAppendLane#MAX_ROUND_ENTITIES}). */
+    int despawnIntakeThisRound() {
+        synchronized (plugin.despawnReasonByEntity) {
+            return despawnIntakeThisRound;
+        }
+    }
+
+    /** Consumed-despawn rows suppressed this round past {@link #DESPAWN_LOG_MAX}. */
+    int despawnLogCapped() {
+        synchronized (plugin.despawnReasonByEntity) {
+            return despawnLogCapped;
+        }
+    }
+
+    /**
+     * The round reset of the EDSP intake meters
+     * (render thread, from the plugin's match-reset finish beside the reason-map clear). A round
+     * that dropped or suppressed anything closes with ONE row carrying its totals, so a reset
+     * landing between two meter flushes never erases them.
+     */
+    void resetDespawnIntakeForRound() {
+        int intake;
+        int dropped;
+        int capped;
+        synchronized (plugin.despawnReasonByEntity) {
+            intake = despawnIntakeThisRound;
+            dropped = despawnDroppedAtCap;
+            capped = despawnLogCapped;
+            despawnIntakeThisRound = 0;
+            despawnDroppedAtCap = 0;
+            despawnLogLines = 0;
+            despawnLogCapped = 0;
+        }
+        if (dropped > 0 || capped > 0) {
+            PilotWatchLog.info("predict despawn intake round close: intake=" + intake
+                    + " dropped_at_cap=" + dropped + " log_capped=" + capped);
+        }
+    }
+
 
     /** net-thread side of the eventReplay intake — queue one decoded GPEE event. */
     void enqueueEdgeEvent(ClientGameplayEdgeEvent event) {
@@ -50,15 +112,50 @@ final class EdgeEventLane {
      * this lane carries the REASON (DESTROYED vs DEPARTED) the client must never infer: kill and
      * roster-drop are same-frame, so the wire hull is always stale (step-0 GOTCHA; server
      * authority). The server writes the EDSP ahead of its tick's AWSS, so the volatile reason is
-     * published BEFORE the render thread can see the drop-frame snapshot. Despawns are rare
-     * (≤ roster size per round) — every one is logged.
+     * published BEFORE the render thread can see the drop-frame snapshot. The intake is BOUNDED,
+     * never assumed rare: the decoder checks only schema, bit mask and reason enum, never the id,
+     * so a server streaming a fresh id per frame would grow four round-local per-id holders (the
+     * fracture death-tick map, the reason map, the corpseless set, the results-roster ledger) for
+     * the whole round. A round therefore admits at most {@link RosterAppendLane#MAX_ROUND_ENTITIES}
+     * NON-own events (the roster's own per-round entity bound, reused); past it an event touches no
+     * holder and is not counted consumed, and the round's first drop logs ONE error row plus the
+     * one-shot announce. The own event bypasses that cap (two scalars, no growth), so a flood can
+     * never eat the own reason. The per-event row is capped separately at {@link #DESPAWN_LOG_MAX}
+     * a round, own rows included; both counts ride the replay meter line.
+     *
+     *
      */
     void onDespawnEvent(cc.starsector.client.net.ClientEntityDespawn despawn) {
+        boolean own = plugin.session != null && despawn.entityId() == plugin.session.shipId();
+        // The round's non-own intake cap, checked
+        // BEFORE every counter and holder, so a dropped event is neither consumed nor stored; the
+        // first drop's rows are written outside the lock.
+        if (!own) {
+            int dropped = 0;
+            synchronized (plugin.despawnReasonByEntity) {
+                if (despawnIntakeThisRound >= RosterAppendLane.MAX_ROUND_ENTITIES) {
+                    dropped = ++despawnDroppedAtCap;
+                } else {
+                    despawnIntakeThisRound++;
+                }
+            }
+            if (dropped > 0) {
+                if (dropped == 1) {
+                    String detail = "intake cap (" + RosterAppendLane.MAX_ROUND_ENTITIES
+                            + " non-own despawn events this round) reached: dropped entity="
+                            + despawn.entityId() + " tick=" + despawn.simTick() + " reason="
+                            + despawn.reason() + " (not stored, not consumed; later drops this round"
+                            + " are counted silently)";
+                    PilotWatchLog.error("predict despawn " + detail, null);
+                    FallbackAnnounce.announceOnce("edsp-intake-cap", detail);
+                }
+                return;
+            }
+        }
         plugin.despawnConsumed++;
         // Every consumed despawn feeds the fracture mint's death-tick source
         // (net-thread put; render-thread remove-take in mintFractureFamily, same lock).
         plugin.fractures.noteDespawnTick(despawn.entityId(), despawn.simTick());
-        boolean own = plugin.session != null && despawn.entityId() == plugin.session.shipId();
         if (own) {
             plugin.ownDespawnReason = despawn.reason();
             plugin.ownDespawnTick = despawn.simTick();
@@ -80,10 +177,23 @@ final class EdgeEventLane {
             }
             plugin.matchOverLane.noteDespawn(despawn); // results-roster ledger feed
         }
-        PilotWatchLog.info("predict despawn consumed: entity=" + despawn.entityId()
-                + " tick=" + despawn.simTick() + " reason=" + despawn.reason()
-                + " corpseless=" + despawn.corpseless()
-                + (own ? " (OWN)" : ""));
+        // The per-round row cap counts own rows too,
+        // since the own event bypasses the intake cap and an own-id flood must not flood the log.
+        int logLine = 0;
+        synchronized (plugin.despawnReasonByEntity) {
+            if (despawnLogLines < DESPAWN_LOG_MAX) {
+                logLine = ++despawnLogLines;
+            } else {
+                despawnLogCapped++;
+            }
+        }
+        if (logLine > 0) {
+            PilotWatchLog.info("predict despawn consumed: entity=" + despawn.entityId()
+                    + " tick=" + despawn.simTick() + " reason=" + despawn.reason()
+                    + " corpseless=" + despawn.corpseless()
+                    + (own ? " (OWN)" : "")
+                    + (logLine == DESPAWN_LOG_MAX ? " [log cap reached; counters continue]" : ""));
+        }
     }
 
     /**
@@ -840,6 +950,10 @@ final class EdgeEventLane {
                 // despawn consumer — expected 0 here); resets counted plugin-side since the
                 // 3-consumer receive took over the session-internal count.
                 + " predict_event_rebase_despawn_consumed=" + plugin.despawnConsumed
+                // this round's non-own events dropped
+                // at the intake cap + consumed rows suppressed by the per-round row cap.
+                + " predict_event_rebase_despawn_dropped_at_cap=" + despawnDroppedAtCap()
+                + " predict_event_rebase_despawn_log_capped=" + despawnLogCapped()
                 + " predict_event_rebase_despawn_ignored="
                 + (plugin.session != null ? plugin.session.despawnFramesIgnored() : 0)
                 + " predict_event_rebase_match_reset_ignored=" + plugin.matchResetsIgnored

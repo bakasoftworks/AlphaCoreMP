@@ -550,6 +550,7 @@ final class RosterAppendLane {
             spawnFailures.remove(re);
             synchronized (plugin.despawnReasonByEntity) {
                 plugin.despawnReasonByEntity.remove(key);
+                plugin.despawnCorpselessByEntity.remove(key);
             }
             plugin.foeFacing.release(re.entityId);
             plugin.lastShieldFacingU8.remove(key);

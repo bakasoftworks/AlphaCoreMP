@@ -129,6 +129,12 @@ public final class PilotServeSession {
     /** Owns the session diff's map pair; serveFrame walks deaths and joins only on a tick whose set changed. */
     private LiveSessionSetObserver<PilotIntentDatagramServer.PeerSession> liveSet;
     private Map<Long, PilotIntentDatagramServer.PeerSession> prevLive;
+    /** The values that cross between the {@code serveFrame*} phase methods, each under its local's own name: the
+     *  meter stamps ({@code fw}, primitives) and this tick's detection lists ({@code det}, cleared after the compose
+     *  and at teardown). One pair per serve session, so the frame allocates nothing for them.
+     * */
+    private final ServeFrameWitness fw = new ServeFrameWitness();
+    private final ServeTickDetections det = new ServeTickDetections();
     private boolean socketLiveness;
     private Set<Integer> flyInDeferredForTransfer;
     /** The due seats whose skip by {@link #flyInHolderObserved} was already logged (one line per wait). */
@@ -2215,9 +2221,19 @@ public final class PilotServeSession {
      * work bookkeeping, auto-speed, ops feed, stall row, frame-exit checks, frame pacing.
      * Returns {@code false} where the loop body said {@code break} (operator end-match, operator
      * end-round, linger-done / non-linger match over) — the frame loop in {@link #serve} breaks
-     * on it; {@code true} = next frame. The interrupt {@code throw}s propagate unchanged. Every
-     * per-frame local stays local ({@code snap}/{@code tickEdges} included); the counters and
-     * latches the round close reads were promoted at leg 4.
+     * on it; {@code true} = next frame. The interrupt {@code throw}s propagate unchanged. The
+     * counters and latches the round close reads were promoted at leg 4.
+     *
+     * <p>The body runs as the private {@code serveFrame*} family, one method per meter bracket,
+     * each called once below in run order ({@link #serveFrameRoundReceipt} is called from
+     * {@link #serveFrameSessions}); every statement and clock read keeps its order. WHY: as one
+     * method the frame was past HotSpot's 8,000-byte huge-method limit, so it was never JIT-compiled
+     * and ran interpreted for the whole serve; each phase now compiles on its own. The four frame
+     * values {@code live}, {@code liveById}, {@code applyTick} and {@code snap} live here and pass
+     * as arguments ({@code liveById} is {@link #prevLive}, the map the session diff publishes); every
+     * other value a later phase reads crosses in {@link #fw} (meter stamps) or {@link #det} (this
+     * tick's detection lists, cleared right after the compose) under its local's own name, written
+     * once at the end of the phase that makes it.
      */
     private boolean serveFrame(PilotIntentDatagramServer door, int round, int frame) throws IOException {
         // A re-simulation serves only the frames its reel holds — the
@@ -2242,6 +2258,33 @@ public final class PilotServeSession {
                 System.out.println("rng_interval_restart round=" + round + " timers=" + timers);
             }
         }
+        serveFramePace(door, round, frame);
+        List<PilotIntentDatagramServer.PeerSession> live = serveFrameSessions(door, round, frame);
+        Map<Long, PilotIntentDatagramServer.PeerSession> liveById = prevLive; // the set the session diff just published
+        serveFrameOperator(door, round, frame);
+        serveFrameSeat(door, round, liveById);
+        serveFrameWave(door, round);
+        // The (j)+(k) UP take + declaration drain run PRE-STEP (label
+        // kept) — a deposit that lands in the frame's sleep applies at THIS tick (R+1), no longer the next.
+        long applyTick = lastSimTick + 1; // the tick this frame's step serves: meter age + FireBirthSink
+        serveFrameIntent(door, round, frame, live, applyTick);
+        AuthoritativeWorldSnapshot snap = serveFrameStep(round, frame, applyTick);
+        serveFrameDetGrowth(door, round, snap);
+        serveFrameDetReaders(frame, snap);
+        serveFrameDetEdges(round, snap);
+        serveFrameDetDespawn(round, snap);
+        serveFrameDetSeat(door, round, live, snap);
+        serveFrameDetFans(door, round, snap);
+        serveFrameCompose(door, round, live, snap);
+        det.clear(); // no engine-keyed detection list outlives the frame
+        serveFrameBookkeep(round, frame, live, snap);
+        serveFrameTail(door, round, frame, live);
+        return serveFrameEnd(door, round, frame);
+    }
+
+    /** The pre bracket's frame top: the wall-clock pacer, the work-start stamp and the frame-top emission drain.
+     * */
+    private void serveFramePace(PilotIntentDatagramServer door, int round, int frame) throws IOException {
         // (a) pacer: absolute deadlines anchored at round frame 0 (the anchor
         // frame skips the sleep/overrun arithmetic, else a phantom frame-0 overrun;
         // there is no first-exchange to anchor on — joins are mid-round-normal at N).
@@ -2362,6 +2405,22 @@ public final class PilotServeSession {
         // sink write+flush total (all threads; the DOWN write is this thread's).
         long witnessIoFrameStart = ServeStdoutIoMeter.nanosOf(ioMeter);
         long witnessCcwrFrameStart = door.sinkIoNanosTotal();
+        fw.frameDueNanos = frameDueNanos;
+        fw.frameWorkStartNanos = frameWorkStartNanos;
+        fw.frameInDebt = frameInDebt;
+        fw.emitWaitNanos = emitWaitNanos;
+        fw.wprevTick = wprevTick;
+        fw.wprevWakeNanos = wprevWakeNanos;
+        fw.wprevBusyNanos = wprevBusyNanos;
+        fw.witnessIoFrameStart = witnessIoFrameStart;
+        fw.witnessCcwrFrameStart = witnessCcwrFrameStart;
+    }
+
+    /** The pre_sess bracket: the transfer journal, the session diff (deaths, joins and their admit), the roster
+     *  catch-up drain and the set's publish to {@link #prevLive}; returns the tick's live sessions.
+     * */
+    private List<PilotIntentDatagramServer.PeerSession> serveFrameSessions(PilotIntentDatagramServer door, int round,
+            int frame) throws IOException {
         // The command-transfer input journal, at the tick top BEFORE the
         // tick's first sim-thread arbiter touch (the operator poll's verbs, a join's in-flight replay, the
         // transfer lane's pump all run below). A re-simulation first re-applies the frame's recorded TRANSFER
@@ -2443,93 +2502,7 @@ public final class PilotServeSession {
         boolean lastSessionDied = liveSetChanged && !prevLive.isEmpty() && liveById.isEmpty();
         boolean receiptHeartbeatDue =
                 frame > 0 && frame % ROUND_RECEIPT_HEARTBEAT_FRAMES == 0;
-        if (lastSessionDied || receiptHeartbeatDue) {
-            long teardownDebtNanos = 0L;
-            if (config.paceToWallClock() && pacerAnchorNanos != -1L) {
-                teardownDebtNanos = Math.max(0L, System.nanoTime()
-                        - (pacerAnchorNanos
-                                + (long) (framesServed - pacerAnchorFrame)
-                                        * pacerIntervalNanos));
-            }
-            PilotRoundSummary flush = new PilotRoundSummary(
-                    round, framesServed, matchOver,
-                    pilotStep.framesApplied(), pilotStep.movementCommandsIssued(),
-                    pilotStep.facingPins(), pilotStep.aimPins(),
-                    pilotStep.systemActivations(), pilotStep.ventsIssued(),
-                    pilotStep.firesIssued(),
-                    pilotStep.declarationsReceived(), pilotStep.declarationsServed(),
-                    pilotStep.declarationsExpired(),
-                    overrunFrames, overrunMaxNanos,
-                    workFrames, workNanosTotal, workMaxNanos,
-                    pilotStep.retreatsIssued(), pilotStep.targetApplies(),
-                    pilotStep.edgeRecovered(), pilotStep.edgeExpired(),
-                    pilotStep.edgeSwitchDisarmed(), pilotStep.shieldHolds(),
-                    pilotStep.edgeClampDropped(), pilotStep.systemCancelPresses(),
-                    pilotStep.tubeOrdinalConformed(),
-                    sprintEpisodes, sprintRunMaxFrames, sprintWallMaxNanos,
-                    teardownDebtNanos, snapFanSkippedTicks,
-                    pilotStep.cloakToggles(), pilotStep.ventRePresses(),
-                    pilotStep.retreatReasserts(), pilotStep.retreatRearmSkips(),
-                    pilotStep.declPressesIssued(), pilotStep.declPressWaitTicks(),
-                    pilotStep.declAdoptServes(), pilotStep.declAdoptRejects(),
-                    pilotStep.declAdoptRejectReasons(),
-                    cc.starsector.server.runtime.AdoptServeRegistry.roundCaptureMisses(),
-                    pilotStep.declAdoptBatched(),
-                    pilotStep.retreatEdgeQuarantined(),
-                    // CUMULATIVE like its family neighbour
-                    // adopt_serves — the reset-on-read roundWrites() under-read the grader's MAX
-                    cc.starsector.server.bridge.WeaponChargeupPreAdvance.writes(),
-                    pilotStep.declarationsServedByCredit(), //
-                    // Credit ledger
-                    pilotStep.sumApplyStates(PilotApplyState::continuationCreditsMinted),
-                    pilotStep.sumApplyStates(PilotApplyState::continuationCreditsExpiredUnspent),
-                    pilotStep.sumApplyStates(PilotApplyState::continuationCreditsCapped),
-                    pilotStep.sumApplyStates(PilotApplyState::creditFenceRefusals),
-                    pilotStep.sumApplyStates(PilotApplyState::dischargeUnmatchedNonburst),
-                    pilotStep.sumApplyStates(PilotApplyState::lastShotCreditsMinted), // credits minted on a burst's last shot
-                    pilotStep.sumApplyStates(PilotApplyState::edgeExpiredGated), //
-                    pilotStep.sumApplyStates(PilotApplyState::cloakDiveFreezeTicks), //
-                    pilotStep.sumApplyStates(PilotApplyState::retreatDiveFreezeTicks), // bit-9 apply ticks frozen by a dive
-                    pilotStep.sumApplyStates(PilotApplyState::declLockWaitTicks), //
-                    pilotStep.fireLockReadErrors(), // fire-lock reads that threw
-                    pilotStep.pilotMarkWrites(), // pilot-mark meters
-                    pilotStep.pilotMarkClears(),
-                    pilotStep.abilityEdgeQuarantined(),
-                    sleepLateFrames, sleepLateMaxNanos); // tail-appended, resets with overrunFrames
-            worstFrames.flushRound(round); // (104)(d): a truncated round confesses
-            // Cause note AFTER the flush — flushRound resets per-tick causes,
-            // so a note before it can never reach its own frame's observe().
-            worstFrames.note(lastSimTick + 1, "round_receipt");
-            System.out.println("npeer-serve round_teardown reason="
-                    + (lastSessionDied ? "last_session_dead" : "heartbeat")
-                    + " round=" + round + " frame=" + frame
-                    + DownLaneSeams.roundCounterTail(flush, frameTargetNanos,
-                            fanMeters.fanPassMaxNanos(), fanMeters.sendSlowestNanos(), door, pilotStep,
-                            fireLaneDischargeDetector, downComposer, peerGrade,
-                            onFireShadow, onFireTruthMerger, afTargetLane,
-                            paladinDetLane, arcHitProbe, gpeeDownEvents,
-                            gpeeMissileEndIntact, gpeeMissileEndDestroyed,
-                            gpeeMissileEndFizzling, gpeeMissileEndShield, gpeeMissileEndNamed,
-                            edspDownEvents, seatDownFrames, authority.seatRecordsCoalesced(), hkfrDownEvents,
-                            hkpsDownEvents, hkcgDownEvents, hkcgSkipEvents,
-                            source.hulkPoseImpulseTriggers(),
-                            source.hulkPoseBurstEmits(),
-                            source.hulkObserveNsMax(), source.hulkObserveNsAvg(),
-                            stallFrames, simSpeedChanges, autoSpeedChanges,
-                            aimFanLane, stagedRefusedUnmounted, intentTakeAge)
-                    + rappCatchup.roundTokens(roundRosterAppendFrames) //
-                    // The receipt shares the round line's tail —
-                    // walk-away watches grade from THIS row, so the tenure meters ride here too.
-                    + " tenure_applied=" + door.readerCounters().tenureApplied
-                    + " tenure_spool_ms_max=" + door.readerCounters().tenureSpoolMsMax
-                    + " tenure_clears=" + door.readerCounters().tenureClears
-                    + " wrap_vacated=" + wrapVacatedTotal // walk-away watches grade wrap_vacated from the receipt too
-                    + " operator_command_faults=" + operatorCommandFaults // The belt's count, receipt twin
-                    + " mount_rereads=" + source.mountViewRereads() // Receipt twin
-                    + " flux_rereads=" + source.fluxViewRereads() + " system_rereads=" + source.systemViewRereads() // The capture-view hoist's receipt twin (0 = one flux / system walk per tick)
-                    + emitLag.roundTokens(emitWorkerFigures(door))); // behind the frame-top drain
-            printSnapSendRows(round, live); // The receipt's per-session send-gap rows (empty on lastSessionDied)
-        }
+        serveFrameRoundReceipt(door, round, frame, live, lastSessionDied, receiptHeartbeatDue);
         if (liveSetChanged) for (PilotIntentDatagramServer.PeerSession session : live) {
             if (prevLive.containsKey(session.sessionId())) {
                 continue;
@@ -2667,6 +2640,107 @@ public final class PilotServeSession {
         // and here, and an exception ends the serve, so prevLive is the observer's previous map at every observe.
         prevLive = liveById;
         long preSessEndNanos = System.nanoTime();
+        fw.preSessEndNanos = preSessEndNanos;
+        return live;
+    }
+
+    /** Inside pre_sess: the round receipt line when the last session died or the receipt heartbeat is due; a cold
+     *  branch, kept out of the hot session diff's own body. */
+    private void serveFrameRoundReceipt(PilotIntentDatagramServer door, int round, int frame,
+            List<PilotIntentDatagramServer.PeerSession> live, boolean lastSessionDied,
+            boolean receiptHeartbeatDue) throws IOException {
+        if (lastSessionDied || receiptHeartbeatDue) {
+            long teardownDebtNanos = 0L;
+            if (config.paceToWallClock() && pacerAnchorNanos != -1L) {
+                teardownDebtNanos = Math.max(0L, System.nanoTime()
+                        - (pacerAnchorNanos
+                                + (long) (framesServed - pacerAnchorFrame)
+                                        * pacerIntervalNanos));
+            }
+            PilotRoundSummary flush = new PilotRoundSummary(
+                    round, framesServed, matchOver,
+                    pilotStep.framesApplied(), pilotStep.movementCommandsIssued(),
+                    pilotStep.facingPins(), pilotStep.aimPins(),
+                    pilotStep.systemActivations(), pilotStep.ventsIssued(),
+                    pilotStep.firesIssued(),
+                    pilotStep.declarationsReceived(), pilotStep.declarationsServed(),
+                    pilotStep.declarationsExpired(),
+                    overrunFrames, overrunMaxNanos,
+                    workFrames, workNanosTotal, workMaxNanos,
+                    pilotStep.retreatsIssued(), pilotStep.targetApplies(),
+                    pilotStep.edgeRecovered(), pilotStep.edgeExpired(),
+                    pilotStep.edgeSwitchDisarmed(), pilotStep.shieldHolds(),
+                    pilotStep.edgeClampDropped(), pilotStep.systemCancelPresses(),
+                    pilotStep.tubeOrdinalConformed(),
+                    sprintEpisodes, sprintRunMaxFrames, sprintWallMaxNanos,
+                    teardownDebtNanos, snapFanSkippedTicks,
+                    pilotStep.cloakToggles(), pilotStep.ventRePresses(),
+                    pilotStep.retreatReasserts(), pilotStep.retreatRearmSkips(),
+                    pilotStep.declPressesIssued(), pilotStep.declPressWaitTicks(),
+                    pilotStep.declAdoptServes(), pilotStep.declAdoptRejects(),
+                    pilotStep.declAdoptRejectReasons(),
+                    cc.starsector.server.runtime.AdoptServeRegistry.roundCaptureMisses(),
+                    pilotStep.declAdoptBatched(),
+                    pilotStep.retreatEdgeQuarantined(),
+                    // CUMULATIVE like its family neighbour
+                    // adopt_serves — the reset-on-read roundWrites() under-read the grader's MAX
+                    cc.starsector.server.bridge.WeaponChargeupPreAdvance.writes(),
+                    pilotStep.declarationsServedByCredit(), //
+                    // Credit ledger
+                    pilotStep.sumApplyStates(PilotApplyState::continuationCreditsMinted),
+                    pilotStep.sumApplyStates(PilotApplyState::continuationCreditsExpiredUnspent),
+                    pilotStep.sumApplyStates(PilotApplyState::continuationCreditsCapped),
+                    pilotStep.sumApplyStates(PilotApplyState::creditFenceRefusals),
+                    pilotStep.sumApplyStates(PilotApplyState::dischargeUnmatchedNonburst),
+                    pilotStep.sumApplyStates(PilotApplyState::lastShotCreditsMinted), // credits minted on a burst's last shot
+                    pilotStep.sumApplyStates(PilotApplyState::edgeExpiredGated), //
+                    pilotStep.sumApplyStates(PilotApplyState::cloakDiveFreezeTicks), //
+                    pilotStep.sumApplyStates(PilotApplyState::retreatDiveFreezeTicks), // bit-9 apply ticks frozen by a dive
+                    pilotStep.sumApplyStates(PilotApplyState::declLockWaitTicks), //
+                    pilotStep.fireLockReadErrors(), // fire-lock reads that threw
+                    pilotStep.pilotMarkWrites(), // pilot-mark meters
+                    pilotStep.pilotMarkClears(),
+                    pilotStep.abilityEdgeQuarantined(),
+                    sleepLateFrames, sleepLateMaxNanos); // tail-appended, resets with overrunFrames
+            worstFrames.flushRound(round); // (104)(d): a truncated round confesses
+            // Cause note AFTER the flush — flushRound resets per-tick causes,
+            // so a note before it can never reach its own frame's observe().
+            worstFrames.note(lastSimTick + 1, "round_receipt");
+            System.out.println("npeer-serve round_teardown reason="
+                    + (lastSessionDied ? "last_session_dead" : "heartbeat")
+                    + " round=" + round + " frame=" + frame
+                    + DownLaneSeams.roundCounterTail(flush, frameTargetNanos,
+                            fanMeters.fanPassMaxNanos(), fanMeters.sendSlowestNanos(), door, pilotStep,
+                            fireLaneDischargeDetector, downComposer, peerGrade,
+                            onFireShadow, onFireTruthMerger, afTargetLane,
+                            paladinDetLane, arcHitProbe, gpeeDownEvents,
+                            gpeeMissileEndIntact, gpeeMissileEndDestroyed,
+                            gpeeMissileEndFizzling, gpeeMissileEndShield, gpeeMissileEndNamed,
+                            edspDownEvents, seatDownFrames, authority.seatRecordsCoalesced(), hkfrDownEvents,
+                            hkpsDownEvents, hkcgDownEvents, hkcgSkipEvents,
+                            source.hulkPoseImpulseTriggers(),
+                            source.hulkPoseBurstEmits(),
+                            source.hulkObserveNsMax(), source.hulkObserveNsAvg(),
+                            stallFrames, simSpeedChanges, autoSpeedChanges,
+                            aimFanLane, stagedRefusedUnmounted, intentTakeAge)
+                    + rappCatchup.roundTokens(roundRosterAppendFrames) //
+                    // The receipt shares the round line's tail —
+                    // walk-away watches grade from THIS row, so the tenure meters ride here too.
+                    + " tenure_applied=" + door.readerCounters().tenureApplied
+                    + " tenure_spool_ms_max=" + door.readerCounters().tenureSpoolMsMax
+                    + " tenure_clears=" + door.readerCounters().tenureClears
+                    + " wrap_vacated=" + wrapVacatedTotal // walk-away watches grade wrap_vacated from the receipt too
+                    + " operator_command_faults=" + operatorCommandFaults // The belt's count, receipt twin
+                    + " mount_rereads=" + source.mountViewRereads() // Receipt twin
+                    + " flux_rereads=" + source.fluxViewRereads() + " system_rereads=" + source.systemViewRereads() // The capture-view hoist's receipt twin (0 = one flux / system walk per tick)
+                    + emitLag.roundTokens(emitWorkerFigures(door))); // behind the frame-top drain
+            printSnapSendRows(round, live); // The receipt's per-session send-gap rows (empty on lastSessionDied)
+        }
+    }
+
+    /** The pre_op bracket: the operator poll and its verbs behind the fault belt, polled after the session diff so a
+     *  team pick lands before its seat's fly-in. */
+    private void serveFrameOperator(PilotIntentDatagramServer door, int round, int frame) throws IOException {
         // (a2) operator poll (D6 O-0, freeze): throttled consume-on-read house
         // verbs, polled AFTER (b): observe-then-poll, so a team pick lands before its seat's first (c) fly-in.
         // kick fires NOW — after (b) diffed the live set, so the death folds
@@ -2773,6 +2847,13 @@ public final class PilotServeSession {
         // sess|op|seat|wave (each column = its own block); the remainder confesses out-of-lane time (safepoint/
         // scheduler). Same residency class as the seven existing witness stamps.
         long preOpEndNanos = System.nanoTime();
+        fw.preOpEndNanos = preOpEndNanos;
+    }
+
+    /** The pre_seat bracket: the transfer pump, then every due seat's fly-in before this tick's advance.
+     * */
+    private void serveFrameSeat(PilotIntentDatagramServer door, int round,
+            Map<Long, PilotIntentDatagramServer.PeerSession> liveById) throws IOException {
         // (c) seat drain: fly in every due seat BEFORE this tick's advance so the
         // deployed ship exists at publish. Due = occupied ∧ combat-ready (
         // the latch lands at (j) below on the seat's first taken intent, so a
@@ -2967,6 +3048,12 @@ public final class PilotServeSession {
             }
         }
         long preSeatEndNanos = System.nanoTime();
+        fw.preSeatEndNanos = preSeatEndNanos;
+    }
+
+    /** The pre_wave bracket: the wave, probe and adhoc drains and the asteroid pre-advance; the intent-start stamp
+     *  closes it. */
+    private void serveFrameWave(PilotIntentDatagramServer door, int round) throws IOException {
         // (c2) wave drain: spawn every due scheduled wave row
         // BEFORE this tick's advance so the hulls ride the engine's pending-add
         // queue into it and exist at publish — the seat-drain twin.
@@ -3248,9 +3335,12 @@ public final class PilotServeSession {
             }
         }
         asteroidLane.preAdvance(lastSimTick + 1, WireKnobState.get(WireKnob.ASTEROIDS)); // Sweep + retarget BEFORE the advance
-        // The (j)+(k) UP take + declaration drain run PRE-STEP (label
-        // kept) — a deposit that lands in the frame's sleep applies at THIS tick (R+1), no longer the next.
-        long applyTick = lastSimTick + 1; // the tick this frame's step serves: meter age + FireBirthSink
+    }
+
+    /** The intent bracket: the UP intent take and the declaration drain, then the stamps that close the pre bracket.
+     * */
+    private void serveFrameIntent(PilotIntentDatagramServer door, int round, int frame,
+            List<PilotIntentDatagramServer.PeerSession> live, long applyTick) throws IOException {
         long witnessIntentStartNanos = System.nanoTime();
         long witnessIoIntentStart = ServeStdoutIoMeter.nanosOf(ioMeter);
         // (j)+(k) UP: latest-wins intent take (NEVER stage(null) — it clears every
@@ -3365,6 +3455,15 @@ public final class PilotServeSession {
         // STALL_FRAME_NANOS (the work-frame-stall class).
         long witnessPreEndNanos = System.nanoTime();
         long witnessIoPreEnd = ServeStdoutIoMeter.nanosOf(ioMeter);
+        fw.witnessIntentNanos = witnessIntentNanos;
+        fw.witnessIoIntentNanos = witnessIoIntentNanos;
+        fw.witnessPreEndNanos = witnessPreEndNanos;
+        fw.witnessIoPreEnd = witnessIoPreEnd;
+    }
+
+    /** The step bracket: the engine advance and the capture; returns the tick's snapshot.
+     * */
+    private AuthoritativeWorldSnapshot serveFrameStep(int round, int frame, long applyTick) throws IOException {
         // (d) step (applies the previously-staged intents) THEN capture.
         // Stamp the tick the advance's confessed births belong to
         // (no-op while the shadow is off).
@@ -3396,6 +3495,15 @@ public final class PilotServeSession {
         }
         long witnessStepEndNanos = System.nanoTime();
         long witnessIoStepEnd = ServeStdoutIoMeter.nanosOf(ioMeter);
+        fw.witnessStepEndNanos = witnessStepEndNanos;
+        fw.witnessIoStepEnd = witnessIoStepEnd;
+        return snap;
+    }
+
+    /** The det_growth bracket: the engine-born growth drain and its roster-append fan.
+     * */
+    private void serveFrameDetGrowth(PilotIntentDatagramServer door, int round,
+            AuthoritativeWorldSnapshot snap) throws IOException {
         // (d2) growth drain: edges the seam captured during THIS tick's
         // advance. Capture already first-sight-interned every alive spawn inside
         // publishNextTick, so networkIdFor returns the SAME wire id;
@@ -3544,6 +3652,12 @@ public final class PilotServeSession {
             }
         }
         long detGrowthEnd = System.nanoTime(); // Det sub-bracket: growth drain + RAPP fan
+        fw.detGrowthEnd = detGrowthEnd;
+    }
+
+    /** The det_readers bracket: the parity walk, the crit probe drain, the hull-drop read and the samplers.
+     * */
+    private void serveFrameDetReaders(int frame, AuthoritativeWorldSnapshot snap) throws IOException {
         // Server-side parity-audit walk on the freshly-captured tick (
         // the retired serve() lane's twin site): the engine is at exactly the
         // post-step state snap
@@ -3592,6 +3706,14 @@ public final class PilotServeSession {
             afGateSampler.sample(snap.simTick());
         }
         long detReadersEnd = System.nanoTime(); // Parity walk + hull-drop read + samplers
+        det.critEdges = critEdges;
+        fw.detReadersEnd = detReadersEnd;
+    }
+
+    /** The det_edges bracket: the discharge detector, the birth drain, the truth merge and the edge log.
+     * */
+    private void serveFrameDetEdges(int round, AuthoritativeWorldSnapshot snap) throws IOException {
+        long detReadersEnd = fw.detReadersEnd;
         // (e) detectors: GPEE observe exactly as the retired serve() lane did (same
         // tier args + gating + the B4(3)-w fix-(1) position→network re-key
         // — its site's comment = git history); EDSP observes EVERY tick — T3 consumes
@@ -3698,6 +3820,22 @@ public final class PilotServeSession {
             gpeeLog.appendTick(round, effectiveEdges, onFireTruthMerger);
         }
         long detEdgesEnd = System.nanoTime(); // Discharge detector + birth drain + truth merge + gpee log
+        det.tickEdges = tickEdges;
+        fw.edgesMountsEnd = edgesMountsEnd;
+        fw.edgesObserveEnd = edgesObserveEnd;
+        det.tickPositionShipIds = tickPositionShipIds;
+        det.tickBirths = tickBirths;
+        fw.edgesBirthsEnd = edgesBirthsEnd;
+        det.effectiveEdges = effectiveEdges;
+        fw.edgesMergeEnd = edgesMergeEnd;
+        fw.detEdgesEnd = detEdgesEnd;
+    }
+
+    /** The det_despawn bracket: the canister, escort and dive probes, the split, afTarget and paladin observes and
+     *  despawn triage. */
+    private void serveFrameDetDespawn(int round, AuthoritativeWorldSnapshot snap) throws IOException {
+        List<GameplayEdgeEvent> tickEdges = det.tickEdges;
+        Map<Object, Long> tickPositionShipIds = det.tickPositionShipIds;
         // Measure riders off the SAME tick's raw surfaces
         // (RAW tickEdges, pre-merge — the (v) question is the DETECTOR's blindness).
         // The canister probe's cloak edge-detector needs the full
@@ -3856,6 +3994,21 @@ public final class PilotServeSession {
             }
         }
         long detDespawnEnd = System.nanoTime(); // Canister/escort/dive probes + split/afTarget/paladin/despawn observes
+        det.arcHitEdges = arcHitEdges;
+        det.splitEdges = splitEdges;
+        det.missileEndEdges = missileEndEdges;
+        det.afTargetEdges = afTargetEdges;
+        det.paladinDetEdges = paladinDetEdges;
+        det.tickDespawns = tickDespawns;
+        fw.detDespawnEnd = detDespawnEnd;
+    }
+
+    /** The det_seat bracket: the reclassifier fold, evictions and drains, the declaration dispatch (its list crosses
+     *  as {@code det.dispatchedEdges}) and seat-mount loss. */
+    private void serveFrameDetSeat(PilotIntentDatagramServer door, int round,
+            List<PilotIntentDatagramServer.PeerSession> live, AuthoritativeWorldSnapshot snap) throws IOException {
+        List<GameplayEdgeEvent> effectiveEdges = det.effectiveEdges;
+        List<EntityDespawnEvent> tickDespawns = det.tickDespawns;
         // growth-id despawns HOLD ≤2 ticks for seam truth (fighter
         // max hull sits under the detector's 800 DESTROYED threshold — absence alone
         // would mint an HE death for every dock). The RAW list keeps feeding the
@@ -4050,6 +4203,15 @@ public final class PilotServeSession {
             }
         }
         long detSeatEnd = System.nanoTime(); // Reclassifier fold + evict + drains + edge dispatch + seat-mount loss
+        det.composedDespawns = composedDespawns;
+        fw.detSeatEnd = detSeatEnd;
+        det.dispatchedEdges = effectiveEdges;
+    }
+
+    /** The det_fans bracket: the hulk-cut geometry and hulk fans, then this tick's seat delta frames; its stamp
+     *  closes the det bracket. */
+    private void serveFrameDetFans(PilotIntentDatagramServer door, int round,
+            AuthoritativeWorldSnapshot snap) throws IOException {
         // (f1b) drain hulk-cut-geometry records into the HKCG ctrl
         // fan BEFORE the (f2) HKFR loop — drain-loop order alone puts a cut's 4
         // geometry records ahead of its paired PIECE_ADDED edge on the strict
@@ -4168,6 +4330,37 @@ public final class PilotServeSession {
         // (g) this tick's SEAT delta frames (single-writer stamp inside the authority).
         List<byte[]> seatFrames = encodeSeatEvents(authority.drainSeatEvents(snap.simTick()));
         long witnessDetectEndNanos = System.nanoTime();
+        det.seatFrames = seatFrames;
+        fw.witnessDetectEndNanos = witnessDetectEndNanos;
+    }
+
+    /** The comp and send brackets: the det-split stall attribution, then the compose once above the fan and the send.
+     * */
+    private void serveFrameCompose(PilotIntentDatagramServer door, int round,
+            List<PilotIntentDatagramServer.PeerSession> live, AuthoritativeWorldSnapshot snap) throws IOException {
+        long frameDueNanos = fw.frameDueNanos;
+        boolean frameInDebt = fw.frameInDebt;
+        long witnessStepEndNanos = fw.witnessStepEndNanos;
+        long detGrowthEnd = fw.detGrowthEnd;
+        List<GameplayEdgeEvent> critEdges = det.critEdges;
+        long detReadersEnd = fw.detReadersEnd;
+        long edgesMountsEnd = fw.edgesMountsEnd;
+        long edgesObserveEnd = fw.edgesObserveEnd;
+        List<FireBirthSink.FireBirth> tickBirths = det.tickBirths;
+        long edgesBirthsEnd = fw.edgesBirthsEnd;
+        List<GameplayEdgeEvent> effectiveEdges = det.dispatchedEdges;
+        long edgesMergeEnd = fw.edgesMergeEnd;
+        long detEdgesEnd = fw.detEdgesEnd;
+        List<GameplayEdgeEvent> arcHitEdges = det.arcHitEdges;
+        List<GameplayEdgeEvent> splitEdges = det.splitEdges;
+        List<GameplayEdgeEvent> missileEndEdges = det.missileEndEdges;
+        List<GameplayEdgeEvent> afTargetEdges = det.afTargetEdges;
+        List<GameplayEdgeEvent> paladinDetEdges = det.paladinDetEdges;
+        long detDespawnEnd = fw.detDespawnEnd;
+        List<EntityDespawnEvent> composedDespawns = det.composedDespawns;
+        long detSeatEnd = fw.detSeatEnd;
+        List<byte[]> seatFrames = det.seatFrames;
+        long witnessDetectEndNanos = fw.witnessDetectEndNanos;
         // The det bracket was ONE monolithic timer over ~26 sub-steps, so
         // 7/12 of one run's >100 ms stalls read causes=- and the rest named a coincidental fan.
         // Six fixed stamps (the minimum coherent split; ~0.2 µs/tick) name the burner on stall ticks.
@@ -4264,6 +4457,18 @@ public final class PilotServeSession {
         if (downEmitter.faultPending()) {
             drainEmitter("fault");
         }
+        fw.witnessIoDetectEnd = witnessIoDetectEnd;
+        fw.witnessComposeEndNanos = witnessComposeEndNanos;
+        fw.witnessIoComposeEnd = witnessIoComposeEnd;
+        fw.witnessSendEndNanos = witnessSendEndNanos;
+        fw.witnessIoSendEnd = witnessIoSendEnd;
+    }
+
+    /** After the send: the heartbeat line, the work bookkeeping, the round-end latches and the auto-speed law.
+     * */
+    private void serveFrameBookkeep(int round, int frame, List<PilotIntentDatagramServer.PeerSession> live,
+            AuthoritativeWorldSnapshot snap) throws IOException {
+        long frameWorkStartNanos = fw.frameWorkStartNanos;
         // (l) rung-0 heartbeat every 300 ticks.
         if (snap.simTick() % 300L == 0L) {
             System.out.println("npeer-serve tick=" + snap.simTick()
@@ -4352,6 +4557,36 @@ public final class PilotServeSession {
                 }
             }
         }
+        fw.frameWorkNanos = frameWorkNanos;
+    }
+
+    /** The tail bracket: the ops feed, then the stall row and phase windows built from the frame's stamps.
+     * */
+    private void serveFrameTail(PilotIntentDatagramServer door, int round, int frame,
+            List<PilotIntentDatagramServer.PeerSession> live) throws IOException {
+        long frameWorkStartNanos = fw.frameWorkStartNanos;
+        long emitWaitNanos = fw.emitWaitNanos;
+        long wprevTick = fw.wprevTick;
+        long wprevWakeNanos = fw.wprevWakeNanos;
+        long wprevBusyNanos = fw.wprevBusyNanos;
+        long witnessIoFrameStart = fw.witnessIoFrameStart;
+        long witnessCcwrFrameStart = fw.witnessCcwrFrameStart;
+        long preSessEndNanos = fw.preSessEndNanos;
+        long preOpEndNanos = fw.preOpEndNanos;
+        long preSeatEndNanos = fw.preSeatEndNanos;
+        long witnessIntentNanos = fw.witnessIntentNanos;
+        long witnessIoIntentNanos = fw.witnessIoIntentNanos;
+        long witnessPreEndNanos = fw.witnessPreEndNanos;
+        long witnessIoPreEnd = fw.witnessIoPreEnd;
+        long witnessStepEndNanos = fw.witnessStepEndNanos;
+        long witnessIoStepEnd = fw.witnessIoStepEnd;
+        long witnessDetectEndNanos = fw.witnessDetectEndNanos;
+        long witnessIoDetectEnd = fw.witnessIoDetectEnd;
+        long witnessComposeEndNanos = fw.witnessComposeEndNanos;
+        long witnessIoComposeEnd = fw.witnessIoComposeEnd;
+        long witnessSendEndNanos = fw.witnessSendEndNanos;
+        long witnessIoSendEnd = fw.witnessIoSendEnd;
+        long frameWorkNanos = fw.frameWorkNanos;
         // per-frame ops feed: throttles internally (1s); the seat-row
         // supplier only runs on an actual write.
         long witnessTailNanos = 0L;
@@ -4489,6 +4724,11 @@ public final class PilotServeSession {
                 witnessPreEndNanos - preSeatEndNanos - witnessIntentNanos,
                 source.lastEngineAdvanceNanos(), source.lastPostStepNanos(),
                 source.lastReinjectNanos(), source.lastEngineAdvanceCpuNanos());
+    }
+
+    /** The frame exit: false where the frame loop ends (operator end, match over), else the legacy unpaced sleep and
+     *  true. */
+    private boolean serveFrameEnd(PilotIntentDatagramServer door, int round, int frame) throws IOException {
         if (operatorEndMatch) {
             return false;
         }
@@ -5502,6 +5742,7 @@ public final class PilotServeSession {
      * {@link #serve()} on EVERY exit (normal, early return, throw) in this order.
      */
     private void teardown() {
+        det.clear(); // a frame that threw before its compose left this tick's engine-keyed lists in det
         // Act 1b: the null guard is for the boot-throw path only — the resolver's
         // "engineBornGrowth=true but no growthSeam hook" IAE fires right after the flag is set,
         // and the flag now reaches here through the partial copy-back; on the success path the

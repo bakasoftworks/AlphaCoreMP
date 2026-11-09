@@ -55,6 +55,14 @@ public final class PackageUpdateCheck {
     static final int EXIT_ERROR = 1;
     static final int EXIT_REFUSED = 2;
     static final String REFUSED_PREFIX = "update refused: ";
+    /**
+     * The one command-line flag: the update goes BACK to an older package on purpose (a host rolling back a version
+     * that misbehaves). WHY a flag and not a default: an older zip dropped onto a newer folder is far more often a
+     * stale download than an intent, so the check refuses it unless the host says so; nothing in the extract-over or
+     * the next start's manifest diff depends on the direction ("what if there is some huge
+     * issue and people need to revert").
+     */
+    static final String ALLOW_OLDER_FLAG = "--allow-older";
     /** The Windows package's java: its presence is the platform of a folder and of a zip. */
     static final String WINDOWS_JAVA = "jre/bin/java.exe";
     /** The stamp prefix a folder built from source carries ({@code PackageFolderWriter}'s SOURCE meta). */
@@ -165,6 +173,7 @@ public final class PackageUpdateCheck {
     public static void main(String[] args) {
         Path pkg = null;
         Path zip = null;
+        boolean allowOlder = false;
         boolean usage = false;
         try {
             for (int i = 0; i < args.length && !usage; i++) {
@@ -172,6 +181,8 @@ public final class PackageUpdateCheck {
                     pkg = Path.of(args[++i]);
                 } else if ("--zip".equals(args[i]) && i + 1 < args.length && zip == null) {
                     zip = Path.of(args[++i]);
+                } else if (ALLOW_OLDER_FLAG.equals(args[i]) && !allowOlder) {
+                    allowOlder = true;
                 } else {
                     usage = true;
                 }
@@ -182,10 +193,11 @@ public final class PackageUpdateCheck {
         }
         int code;
         if (usage || pkg == null || zip == null) {
-            System.out.println("usage: PackageUpdateCheck --pkg <the installed server folder> --zip <the new server package zip>");
+            System.out.println("usage: PackageUpdateCheck --pkg <the installed server folder> --zip <the new server package zip> ["
+                    + ALLOW_OLDER_FLAG + "]");
             code = EXIT_ERROR;
         } else {
-            code = check(pkg, zip, System.out);
+            code = check(pkg, zip, allowOlder, System.out);
         }
         System.out.flush();
         System.exit(code);
@@ -199,8 +211,16 @@ public final class PackageUpdateCheck {
      *
      */
     public static int check(Path pkg, Path zip, PrintStream out) {
+        return check(pkg, zip, false, out);
+    }
+
+    /**
+     * {@link #check(Path, Path, PrintStream)} with {@code allowOlder} = the {@value #ALLOW_OLDER_FLAG} flag: an older
+     * zip then proceeds with a "going back:" preview instead of the R-U5 refusal; every other refusal is unchanged.
+     */
+    public static int check(Path pkg, Path zip, boolean allowOlder, PrintStream out) {
         try {
-            out.println(verdict(pkg.toAbsolutePath().normalize(), zip.toAbsolutePath().normalize(), out));
+            out.println(verdict(pkg.toAbsolutePath().normalize(), zip.toAbsolutePath().normalize(), allowOlder, out));
             return EXIT_PROCEED;
         } catch (Refused refused) {
             out.println(REFUSED_PREFIX + refused.getMessage());
@@ -218,7 +238,7 @@ public final class PackageUpdateCheck {
      *
      *
      */
-    private static String verdict(Path root, Path zip, PrintStream out) throws Refused, IOException {
+    private static String verdict(Path root, Path zip, boolean allowOlder, PrintStream out) throws Refused, IOException {
         boolean windowsFolder = Files.isRegularFile(root.resolve(WINDOWS_JAVA));
         String ext = windowsFolder ? ".bat" : ".sh";
         // The folder must be a downloaded package: the packer's MANIFEST.txt with a release stamp
@@ -247,7 +267,7 @@ public final class PackageUpdateCheck {
             throw new Refused(notPackage);
         }
         try (base) {
-            return verdictOpened(root, zip, base, installed, oldStamp, windowsFolder, ext, notPackage, out);
+            return verdictOpened(root, zip, base, installed, oldStamp, windowsFolder, ext, notPackage, allowOlder, out);
         }
     }
 
@@ -258,7 +278,7 @@ public final class PackageUpdateCheck {
      *
      */
     private static String verdictOpened(Path root, Path zip, PackageBaseZip base, PackageManifest installed,
-            String oldStamp, boolean windowsFolder, String ext, String notPackage, PrintStream out)
+            String oldStamp, boolean windowsFolder, String ext, String notPackage, boolean allowOlder, PrintStream out)
             throws Refused, IOException {
         PackageManifest next = base.manifest();
         Set<String> files = new HashSet<>(base.names());
@@ -310,9 +330,12 @@ public final class PackageUpdateCheck {
         if (newStamp == null || !KitPackRules.STAMP.matcher(newStamp).matches()) {
             throw new Refused(notPackage);
         }
-        if (newStamp.compareTo(oldStamp) < 0) {
+        // ... unless the host asks for the rollback by name (ALLOW_OLDER_FLAG): the extract-over and the next
+        // start's manifest diff run the same way in both directions, so only the INTENT is checked here
+        boolean goingBack = newStamp.compareTo(oldStamp) < 0;
+        if (goingBack && !allowOlder) {
             throw new Refused("the zip (" + newStamp + ") is older than the installed package (" + oldStamp
-                    + ") - no downgrade");
+                    + ") - no downgrade without " + ALLOW_OLDER_FLAG);
         }
         refuseWhenBusy(root, ext, out);
         // The extract never writes through a link: every target and each parent up to the folder
@@ -347,8 +370,14 @@ public final class PackageUpdateCheck {
                 remove++;
             }
         }
-        return "update: " + oldStamp + " -> " + newStamp + ": " + replace + " files to replace, " + add
-                + " to add, " + remove + " to remove";
+        String counts = oldStamp + " -> " + newStamp + ": " + replace + " files to replace, " + add + " to add, "
+                + remove + " to remove";
+        // the rollback preview names what players and the host will feel: the kit of that version (the next start says
+        // which), and every fix made after it gone until the host updates again, so a rollback is read as a stopgap
+        // and never as a resting place.
+        return goingBack ? "going back: " + counts + " - players need the kit that version shipped (the next start names it);"
+                + " every fix made after that version is undone until you update again"
+                : "update: " + counts;
     }
 
     /**

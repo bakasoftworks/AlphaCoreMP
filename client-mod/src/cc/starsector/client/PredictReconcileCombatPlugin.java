@@ -7106,6 +7106,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             despawnReasonByEntity.clear(); // Remote reasons are round-local too
             despawnCorpselessByEntity.clear();
         }
+        edgeEvents.resetDespawnIntakeForRound();
         recallFx.resetRound(engine); // mid-animation bodies die with the round
         phaseDive.resetRound(engine); // mid-dive bodies die with the round
         constructionFx.resetRound(engine); // mid-reveal hulls + pending pairs die with the round

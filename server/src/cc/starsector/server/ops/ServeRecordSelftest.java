@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
 import cc.starsector.server.ops.ServeRecord.Mode;
 
 /**
- * {@link ServeRecord}'s rows: the {@code record} / {@code record.maxMiB} row grammar, the five lines against MINT's
+ * {@link ServeRecord}'s rows: the {@code record} / {@code record.maxMiB} row grammar, the six lines against MINT's
  * {@code $OwnerBoxRules} outputs, the insertion point, {@code record=off}'s identity, the never-0 cap, the
  * already-set refusal and the text law. Pure (no file, socket or clock); milliseconds.
  *
@@ -25,8 +25,16 @@ final class ServeRecordSelftest {
 
     private static final String MAIN = "cc.starsector.server.runtime.PilotIntentCombatServerMain";
 
-    /** A 6-line fixture: 4 options + the main class + 1 argument. */
-    private static final List<String> T6 = List.of("-Xms1g", "-Xmx4g", "-Dfile.encoding=UTF-8", "-XX:+UseShenandoahGC",
+    /** The diagnostic unlock every serve template carries early; a diagnostic flag before it refuses to boot. */
+    private static final String UNLOCK = "-XX:+UnlockDiagnosticVMOptions";
+
+    /**
+     * A 6-line fixture: 4 options + the main class + 1 argument. One option is {@link #UNLOCK}, as in every minted
+     * template, so the order row can see it precede the served DebugNonSafepoints line.
+     *
+     *
+     */
+    private static final List<String> T6 = List.of("-Xms1g", "-Xmx4g", UNLOCK, "-XX:+UseShenandoahGC",
             MAIN, "--pace-wall-clock");
 
     @FunctionalInterface
@@ -126,9 +134,11 @@ final class ServeRecordSelftest {
     }
 
     /**
-     * A LITERAL copy of MINT's five {@code $OwnerBoxRules} outputs ({@code <n>} =
+     * A LITERAL copy of MINT's six {@code $OwnerBoxRules} outputs ({@code <n>} =
      * the cap): a MINT rule change does not flip this row by itself, it flips the mint script's own {@code ownerbox-record-rows}
      * pin, and both copies re-pin together.
+     *
+     * <p>The sixth line, {@code -XX:+DebugNonSafepoints}, closes both sets.
      */
     private static void linesEqualMint(String r) {
         List<String> mint = List.of(
@@ -136,14 +146,15 @@ final class ServeRecordSelftest {
                 "-Dcc.net.sinkMaxMiB=4096",
                 "-Xlog:gc*,safepoint:file=${RUN}/gc.log:time,uptime",
                 "-XX:FlightRecorderOptions=repository=${RUN}/jfr-repo",
-                "-Dcc.jfr.blocks=${RUN}/serve-blocks.jfr");
+                "-Dcc.jfr.blocks=${RUN}/serve-blocks.jfr",
+                "-XX:+DebugNonSafepoints");
         List<String> full = ServeRecord.lines(Mode.FULL, 4096);
-        check(r, full.equals(mint), "FULL differs from MINT's five owner-mode lines (byte or order; re-pin with MINT): " + full);
+        check(r, full.equals(mint), "FULL differs from MINT's six owner-mode lines (byte or order; re-pin with MINT): " + full);
         check(r, ServeRecord.lines(Mode.FULL, 1777).get(1).equals("-Dcc.net.sinkMaxMiB=1777"),
                 "FULL's sinkMaxMiB is not the cap passed in: " + ServeRecord.lines(Mode.FULL, 1777));
         List<String> diag = ServeRecord.lines(Mode.DIAG, 4096);
-        check(r, diag.equals(mint.subList(2, 5)), "DIAG is not exactly MINT's gc + JFR lines 3-5 (a wire line leaked "
-                + "into diag, or a timing line dropped): " + diag);
+        check(r, diag.equals(mint.subList(2, 6)), "DIAG is not exactly MINT's gc + JFR lines 3-6 (a wire line leaked "
+                + "into diag, or a timing line such as DebugNonSafepoints dropped): " + diag);
         check(r, ServeRecord.lines(Mode.OFF, 4096).isEmpty(), "OFF emits a line: record=off would change the argv");
         List<String> sub = ArgvTemplate.substitute(ServeRecord.lines(Mode.FULL, 2048), Map.of("RUN", "/srv/run/flight-1"));
         check(r, sub.get(0).equals("-Dcc.net.sinkPath=/srv/run/flight-1/wire.ccwr")
@@ -152,7 +163,12 @@ final class ServeRecordSelftest {
                 "${RUN} does not resolve to the flight dir through ArgvTemplate.substitute: " + sub);
     }
 
-    /** The lines land after the JVM options and before the main class; the main class's arguments stay last. */
+    /**
+     * The lines land after the JVM options and before the main class; the main class's arguments stay last. The
+     * template's early diagnostic unlock stays BEFORE the served DebugNonSafepoints line (the JVM refuses the reverse).
+     *
+     * <p>The six-line FULL indices and the unlock order.
+     */
     private static void insertBeforeMain(String r) {
         List<String> diag = accepted(r, () -> ServeRecord.withLines(T6, Mode.DIAG, 4096), "the 6-line fixture is refused");
         List<String> want = new ArrayList<>(T6.subList(0, 4));
@@ -161,25 +177,32 @@ final class ServeRecordSelftest {
         check(r, diag.equals(want), "DIAG did not land between the 4 options and the main class, arg last: " + diag);
         List<String> mutable = new ArrayList<>(T6);
         List<String> full = accepted(r, () -> ServeRecord.withLines(mutable, Mode.FULL, 2048), "the 6-line fixture is refused");
-        check(r, full.size() == 11 && full.subList(4, 9).equals(ServeRecord.lines(Mode.FULL, 2048))
-                && full.get(9).equals(MAIN) && full.get(10).equals("--pace-wall-clock"),
-                "FULL did not land as 5 lines before the main class with the arg last: " + full);
+        check(r, full.size() == 12 && full.subList(4, 10).equals(ServeRecord.lines(Mode.FULL, 2048))
+                && full.get(10).equals(MAIN) && full.get(11).equals("--pace-wall-clock"),
+                "FULL did not land as 6 lines before the main class with the arg last: " + full);
         check(r, mutable.equals(T6), "withLines modified the caller's template list: " + mutable);
+        for (List<String> served : List.of(diag, full)) {
+            int unlock = served.indexOf(UNLOCK);
+            int dbg = served.indexOf(ServeRecord.LINE_JFR_DEBUG_NONSAFEPOINTS);
+            check(r, unlock >= 0 && unlock < dbg && dbg < served.indexOf(MAIN), "the served argv lost the order unlock < "
+                    + "-XX:+DebugNonSafepoints < main class (the line was dropped, or inserted ahead of the template's "
+                    + "options: a diagnostic flag before its unlock refuses to boot): " + served);
+        }
         List<String> real = List.of("${JAVA}", "-Xms${HEAP_MIN}", "-cp", "${PKG}/classes${SEP}${GAME}/starfarer_obf.jar",
                 "--add-opens", "java.base/java.lang=ALL-UNNAMED", "-XX:ErrorFile=${RUN}/lives/hs_err_pid%p.log", MAIN,
                 "--client-wait-ms", "5000");
         check(r, ServeRecord.mainClassIndex(real) == 7, "the main class of a minted template is not line 8 (the ${JAVA} "
                 + "row, the -cp value or the --add-opens value was taken for it): " + ServeRecord.mainClassIndex(real));
         List<String> rd = accepted(r, () -> ServeRecord.withLines(real, Mode.DIAG, 1), "the minted fixture is refused");
-        check(r, rd.subList(0, 7).equals(real.subList(0, 7)) && rd.subList(7, 10).equals(ServeRecord.lines(Mode.DIAG, 1))
-                && rd.subList(10, 13).equals(real.subList(7, 10)),
+        check(r, rd.subList(0, 7).equals(real.subList(0, 7)) && rd.subList(7, 11).equals(ServeRecord.lines(Mode.DIAG, 1))
+                && rd.subList(11, 14).equals(real.subList(7, 10)),
                 "DIAG did not land just before the main class of a minted template (after the crash-file line): " + rd);
         check(r, ServeRecord.mainClassIndex(List.of("${JAVA}", "-Xmx1g", "-jar", "x.jar", "a")) == 2
                 && ServeRecord.mainClassIndex(List.of("${JAVA}", "-m", "mod/Main")) == 1,
                 "a -jar / -m main selector is not the insertion point (the lines would split it from its value)");
         List<String> none = accepted(r, () -> ServeRecord.withLines(List.of("${JAVA}", "-Xmx1g"), Mode.DIAG, 1),
                 "an options-only template is refused");
-        check(r, none.size() == 5 && none.subList(2, 5).equals(ServeRecord.lines(Mode.DIAG, 1)),
+        check(r, none.size() == 6 && none.subList(2, 6).equals(ServeRecord.lines(Mode.DIAG, 1)),
                 "an options-only template did not get the lines appended last (the no-main-class rule): " + none);
     }
 
@@ -214,7 +237,11 @@ final class ServeRecordSelftest {
         }
     }
 
-    /** A template already setting a record key refuses, naming the key and never the template's value. */
+    /**
+     * A template already setting a record key refuses, naming the key and never the template's value.
+     *
+     * <p>Both DebugNonSafepoints spellings refuse, the longer flag does not.
+     */
     private static void templateDupRefused(String r) {
         List<String> t = List.of("${JAVA}", "-Xmx1g", "-Dcc.jfr.blocks=x", MAIN, "a");
         String m = refused(r, () -> ServeRecord.withLines(t, Mode.DIAG, 4096), "a template already setting "
@@ -230,6 +257,8 @@ final class ServeRecordSelftest {
             {"-Xlog:gc:file=" + secret, "-Xlog"},
             {"-XX:FlightRecorderOptions=repository=" + secret, "-XX:FlightRecorderOptions"},
             {"-Dcc.jfr.blocks=" + secret, "cc.jfr.blocks"},
+            {"-XX:+DebugNonSafepoints", "DebugNonSafepoints"},
+            {"-XX:-DebugNonSafepoints", "DebugNonSafepoints"},
         };
         for (Mode mode : List.of(Mode.DIAG, Mode.FULL)) {
             for (String[] p : planted) {
@@ -241,10 +270,11 @@ final class ServeRecordSelftest {
             }
         }
         List<String> near = List.of("${JAVA}", "-Dcc.jfr.blocksX=1", "-Dcc.net.sinkPathology=1",
-                "-XX:FlightRecorderOptionsX", "-Xlogger", MAIN, "-Dcc.jfr.blocks=after-main");
+                "-XX:FlightRecorderOptionsX", "-Xlogger", "-XX:+DebugNonSafepointsX", MAIN, "-Dcc.jfr.blocks=after-main");
         List<String> nearOut = accepted(r, () -> ServeRecord.withLines(near, Mode.FULL, 2048), "a near-miss key (another "
-                + "property sharing a prefix) or a main-class argument after the main class was refused as already set");
-        check(r, nearOut.size() == near.size() + 5, "the near-miss template did not get the 5 FULL lines: " + nearOut);
+                + "property or flag sharing a prefix, e.g. -XX:+DebugNonSafepointsX: the boolean key went prefix-match) or "
+                + "a main-class argument after the main class was refused as already set");
+        check(r, nearOut.size() == near.size() + 6, "the near-miss template did not get the 6 FULL lines: " + nearOut);
         String named = refused(r, () -> ServeRecord.withLines(t, Mode.FULL, 2048, "/pkg/serve.argv"),
                 "the template-naming overload accepted an already-set key");
         check(r, named.equals("the launch template /pkg/serve.argv already sets cc.jfr.blocks: delete that line, or set record=off"),

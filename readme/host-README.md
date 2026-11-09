@@ -23,7 +23,7 @@ This folder runs an AlphaCoreMP server: it hosts multiplayer matches for players
 ## Contents
 
 - Getting started: [What you need](#what-you-need), [Your first match](#your-first-match), [Stopping the server](#stopping-the-server), [Hosting again later](#hosting-again-later), [The players' kit and the connect code](#the-players-kit-and-the-connect-code), [Updating to a newer package](#updating-to-a-newer-package)
-- Reference: [The ops GUI](#the-ops-gui), [Playing as the host](#playing-as-the-host), [Kicking and banning players](#kicking-and-banning-players), [Changing the match](#changing-the-match), [Mods](#mods), [Custom ships](#custom-ships), [The host's ship list](#the-hosts-ship-list), [Test matches (Launch debug WATCH)](#test-matches-launch-debug-watch), [When a player reports a problem](#when-a-player-reports-a-problem), [Running without the ops GUI (serve.bat and stop.bat)](#running-without-the-ops-gui-servebat-and-stopbat), [Commands](#commands), [Windows Firewall and antivirus](#windows-firewall-and-antivirus), [Linux (x86-64)](#linux-x86-64), [What the server writes](#what-the-server-writes)
+- Reference: [The ops GUI](#the-ops-gui), [Playing as the host](#playing-as-the-host), [Kicking, muting and banning players](#kicking-muting-and-banning-players), [Changing the match](#changing-the-match), [Mods](#mods), [Custom ships](#custom-ships), [The host's ship list](#the-hosts-ship-list), [Test matches (Launch debug WATCH)](#test-matches-launch-debug-watch), [When a player reports a problem](#when-a-player-reports-a-problem), [Running without the ops GUI (serve.bat and stop.bat)](#running-without-the-ops-gui-servebat-and-stopbat), [Commands](#commands), [Windows Firewall and antivirus](#windows-firewall-and-antivirus), [Linux (x86-64)](#linux-x86-64), [What the server writes](#what-the-server-writes)
 - When something goes wrong: [Troubleshooting](#troubleshooting), [Exit codes](#exit-codes), [Why a start was refused](#why-a-start-was-refused), [Why an update was refused](#why-an-update-was-refused)
 - [Licenses](#licenses)
 
@@ -454,7 +454,7 @@ Each refusal is also written as `reason=<name>` into the file `run\flight-<date>
 
 `update.bat` (`sh update.sh` on Linux) changes nothing when it refuses; its one "update refused:" line says why:
 
-- the zip is older than this folder: an update never goes back to an older version; download the newest zip
+- the zip is older than this folder: an update does not go back to an older version by itself. To go back on purpose (to a version that worked for you), run `update.bat <that zip> --allow-older` (Linux: `sh update.sh <that zip> --allow-older`); players then need that version's kit from its `kits` folder, and the next start names it. That older version also lacks every fix made after it, so update forward again as soon as a version with the fix is out
 - the zip is for the other system (a Linux zip on Windows, or a Windows zip on Linux): download the zip for this computer
 - a server or the ops GUI is running from this folder: stop the server and close the ops GUI's window, then run it again
 - an update to another version was interrupted: run `update.bat` again with the zip that update was given (the line names its version)

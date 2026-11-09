@@ -128,6 +128,36 @@ public final class EngineCombatBinding {
     private final Method shieldIsOn; // nullable: shield read optional
     private final Method shieldGetFacing; // nullable: shield-facing read optional (unbound -> facing 0)
     private final Method shipGetAllWeapons; // nullable: weapon-mount view unavailable
+    // The engine's own weapon-list source, read without the per-call copy.
+    // Ship.getAllWeapons() allocates a fresh ArrayList and filters the ship's module list by `instanceof WeaponAPI`
+    // on EVERY call; a sim-thread profile of a live fight put 68 samples (2.6 %) in that getter + its Arrays.copyOf
+    // growth, up to three calls per ship per tick (mounts, projectiles, beams). The public Ship.getModules()
+    // returns the SAME list uncopied; shipWeaponsOrNull filters it into the ship's own reusable list ONCE per
+    // engine step — same elements, same order, so every mount ordinal the wire carries is unchanged.
+    // Unresolved ⇒ the getAllWeapons path, exactly as before.
+    private final Method shipGetModules; // nullable: Ship.getModules unresolved ⇒ getAllWeapons per call
+    private final Class<?> weaponApiClass; // nullable with shipGetModules: the getAllWeapons filter type
+    private final IdentityHashMap<Object, ShipWeaponsMemo> shipWeaponsMemo = new IdentityHashMap<>();
+    private long shipWeaponsStep; // bumped by every invokeAdvanceInner / invokeAdvanceOuter: an older-step memo refills
+    private long shipWeaponsSweptStep;
+    /**
+     * The thread that ran the last engine step: the roster memo and the position map below are filled and served
+     * only on it (any other thread reads uncached), and a step on a different thread drops both, so neither is
+     * ever served from state another thread wrote.
+     */
+    private Thread stepThread;
+    /** The repository list's elements at the last roster fill, in order: the identity guard compares against it. */
+    private final ArrayList<Object> rosterSource = new ArrayList<>();
+    /** The kept roster of the last fill (non-roster mints removed), refilled in place: no list per walk. */
+    private final ArrayList<Object> rosterKept = new ArrayList<>();
+    /** The engine step the roster memo was filled at; MIN = no valid memo (set first by every fill). */
+    private long rosterStep = Long.MIN_VALUE;
+    /** Moves only when the kept roster's content changes: the position map is keyed to it, not to the step. */
+    private long rosterGen;
+    /** The ship to roster-ordinal map built for {@link #positionMapGen}; null is a valid cached null-slot answer. */
+    private Map<Object, Long> positionMap;
+    /** The roster generation {@link #positionMap} was built at; -1 = none. */
+    private long positionMapGen = -1L;
     // BASE-spec fire-class reads (nullable as ONE tier: any null ⇒ the production resolver
     // answers class H, fail-safe): WeaponAPI.getSpec / WeaponSpecAPI.isBeam+getWeaponId /
     // ProjectileWeaponSpecAPI getRefireDelay+getBurstSize+getBurstDelay + the
@@ -374,6 +404,24 @@ public final class EngineCombatBinding {
         this.shieldIsOn = b.shieldIsOn;
         this.shieldGetFacing = b.shieldGetFacing;
         this.shipGetAllWeapons = b.shipGetAllWeapons;
+        Method getModules = null;
+        Class<?> weaponApi = null;
+        if (b.shipGetAllWeapons != null) { // the modules route only ever stands in for a bound getAllWeapons
+            try {
+                getModules = OpenHandles.open(shipClass.getMethod("getModules"));
+                weaponApi = Class.forName("com.fs.starfarer.api.combat.WeaponAPI", false, shipClass.getClassLoader());
+            } catch (ReflectiveOperationException | RuntimeException unresolved) {
+                getModules = null;
+                weaponApi = null;
+                System.out.println("engine-combat-binding weapons_source=getAllWeapons (Ship.getModules unresolved: "
+                        + unresolved.getClass().getName() + ": " + unresolved.getMessage() + ")");
+            }
+        }
+        this.shipGetModules = getModules;
+        this.weaponApiClass = weaponApi;
+        if (getModules != null) {
+            System.out.println("engine-combat-binding weapons_source=modules"); // the rig's presence receipt
+        }
         this.weaponGetSpec = b.weaponGetSpec;
         this.weaponSpecIsBeam = b.weaponSpecIsBeam;
         this.weaponSpecGetWeaponId = b.weaponSpecGetWeaponId;
@@ -593,6 +641,11 @@ public final class EngineCombatBinding {
         if (!Float.isFinite(effectiveAmount)) {
             throw new IllegalArgumentException("effectiveAmount must be finite; got " + effectiveAmount);
         }
+        shipWeaponsStep++; // every memoized ship weapon list predates this step from here on
+        noteStepThread();
+        if (shipWeaponsStep - shipWeaponsSweptStep >= SHIP_WEAPONS_SWEEP_STEPS) {
+            sweepShipWeaponsMemo();
+        }
         if (!PilotShipWindow.threadBound()) { // the step thread is the one thread the player-ship window answers on
             PilotShipWindow.bindSimThread(Thread.currentThread());
         }
@@ -669,6 +722,11 @@ public final class EngineCombatBinding {
         }
         if (!Float.isFinite(fixedAmount)) {
             throw new IllegalArgumentException("fixedAmount must be finite; got " + fixedAmount);
+        }
+        shipWeaponsStep++; // the second step path bumps the weapons memo too
+        noteStepThread();
+        if (shipWeaponsStep - shipWeaponsSweptStep >= SHIP_WEAPONS_SWEEP_STEPS) {
+            sweepShipWeaponsMemo();
         }
         try {
             advanceOuter.invoke(engine, fixedAmount, stepAmountArg);
@@ -2136,11 +2194,10 @@ public final class EngineCombatBinding {
                 if (ship == null) {
                     return null;
                 }
-                Object weaponsObj = shipGetAllWeapons.invoke(ship);
-                if (!(weaponsObj instanceof List<?>)) {
+                List<?> weapons = shipWeaponsOrNull(ship);
+                if (weapons == null) {
                     return null;
                 }
-                List<?> weapons = (List<?>) weaponsObj;
                 // Optional additive GPEE-v2 read (flightBearingDeg composition):
                 // the shooter's velocity at this same post-step instant, read once per ship and
                 // stamped onto each of its mount views. Unbound/failing degrades the pair to NaN,
@@ -2281,17 +2338,35 @@ public final class EngineCombatBinding {
      * from which the capture's {@code lastEntityIdByPositionShipId} map reaches the wire id.
      * {@code null} (fail-soft) when the roster read fails — same discipline as the view tiers;
      * the caller counts affected births {@code unresolved}, never guesses.
+     *
+     * <p>On the step thread with the id handle bound, the map is rebuilt only when the kept roster's
+     * content changes ({@link #rosterGen}); otherwise every caller of the tick gets the same map. Each
+     * rebuild is a FRESH map (a cleared and refilled one would keep its grown table, so its iteration
+     * order after the roster shrinks would differ from a fresh map's, and consumers emit in that order).
+     * The returned map is READ-ONLY by contract. The roster read runs first on every call, so a failing
+     * read still answers null and a failure is never cached. With no id handle the roster never moves its
+     * generation, so that binding rebuilds on every call.
+     *
      */
     public Map<Object, Long> positionShipIdByEngineShip() {
         try {
             List<?> ships = rosterShipList();
+            boolean cacheable = shipGetId != null && Thread.currentThread() == stepThread;
+            if (cacheable && positionMapGen == rosterGen) {
+                return positionMap;
+            }
             IdentityHashMap<Object, Long> byShip = new IdentityHashMap<>();
             long shipId = 1L;
             for (Object ship : ships) {
                 if (ship == null) {
-                    return null;
+                    byShip = null;
+                    break;
                 }
                 byShip.put(ship, shipId++);
+            }
+            if (cacheable) {
+                positionMap = byShip;
+                positionMapGen = rosterGen;
             }
             return byShip;
         } catch (RuntimeException e) {
@@ -2909,9 +2984,10 @@ public final class EngineCombatBinding {
                         if (weapon != null) {
                             List<?> weapons = weaponsBySourceShip.get(source);
                             if (weapons == null) {
-                                Object weaponsObj = shipGetAllWeapons.invoke(source);
-                                weapons = (weaponsObj instanceof List<?>)
-                                        ? (List<?>) weaponsObj : List.of();
+                                weapons = shipWeaponsOrNull(source);
+                                if (weapons == null) {
+                                    weapons = List.of();
+                                }
                                 weaponsBySourceShip.put(source, weapons);
                             }
                             for (int i = 0; i < weapons.size(); i++) {
@@ -3567,9 +3643,10 @@ public final class EngineCombatBinding {
                                     if (weapon != null) {
                                         List<?> weapons = weaponsBySourceShip.get(source);
                                         if (weapons == null) {
-                                            Object weaponsObj = shipGetAllWeapons.invoke(source);
-                                            weapons = (weaponsObj instanceof List<?>)
-                                                    ? (List<?>) weaponsObj : List.of();
+                                            weapons = shipWeaponsOrNull(source);
+                                            if (weapons == null) {
+                                                weapons = List.of();
+                                            }
                                             weaponsBySourceShip.put(source, weapons);
                                         }
                                         for (int i = 0; i < weapons.size(); i++) {
@@ -3633,9 +3710,10 @@ public final class EngineCombatBinding {
                         if (weapon != null) {
                             List<?> weapons = weaponsBySourceShip.get(source);
                             if (weapons == null) {
-                                Object weaponsObj = shipGetAllWeapons.invoke(source);
-                                weapons = (weaponsObj instanceof List<?>)
-                                        ? (List<?>) weaponsObj : List.of();
+                                weapons = shipWeaponsOrNull(source);
+                                if (weapons == null) {
+                                    weapons = List.of();
+                                }
                                 weaponsBySourceShip.put(source, weapons);
                             }
                             for (int i = 0; i < weapons.size(); i++) {
@@ -4692,12 +4770,37 @@ public final class EngineCombatBinding {
      * and the in-walk guards + {@code reportWalkNull} receipts remain the floor. An
      * unbound id handle returns the raw list unchanged — no classification is possible,
      * and the id-reading walks already fail closed on their own.
+     *
+     * <p>Memoized on the step thread: the classification (one id read per entry) runs once per
+     * engine step, and again whenever the repository list's elements differ, by identity and
+     * order, from the last fill's. Spawns and removals land between steps with no step bump, and
+     * a ship's id never changes after construction, so the same elements in the same order are the
+     * same roster. The repository read itself runs on EVERY call, so a failing read throws every
+     * time. The result is READ-ONLY by contract: the live repository list when nothing is excluded,
+     * else this binding's own kept list, refilled in place by a later fill, so callers iterate it
+     * and never mutate it or hold it past the walk. Other threads, and every call before the first
+     * step, get the uncached classification.
      */
     List<?> rosterShipList() {
         List<?> ships = shipList();
         if (shipGetId == null) {
             return ships;
         }
+        if (Thread.currentThread() != stepThread) {
+            return rosterUncached(ships);
+        }
+        if (rosterStep != shipWeaponsStep || !sameElements(ships, rosterSource)) {
+            fillRoster(ships);
+        }
+        return rosterKept.size() == ships.size() ? ships : rosterKept;
+    }
+
+    /**
+     * The uncached roster classification, for every thread but the step thread: copy-on-first-exclusion
+     * of the raw list, the same law and the same kept-on-failure rule as {@link #fillRoster}.
+     *
+     */
+    private List<?> rosterUncached(List<?> ships) {
         List<Object> roster = null; // copy-on-first-exclusion: no blank-id entry, no alloc
         for (int i = 0; i < ships.size(); i++) {
             Object ship = ships.get(i);
@@ -4718,6 +4821,88 @@ public final class EngineCombatBinding {
             }
         }
         return roster == null ? ships : roster;
+    }
+
+    /**
+     * Refills the roster memo from {@code ships} in place: one id read per entry (a failing read KEEPS the
+     * entry, as the uncached walk does; the owning walk's own guard surfaces it). The generation moves before
+     * the first write to the kept list, and only when its content changes, so the position map survives a
+     * refill that finds the same roster and a throw mid-fill can never leave new content under the old
+     * generation.
+     */
+    private void fillRoster(List<?> ships) {
+        rosterStep = Long.MIN_VALUE; // a throw below leaves the memo invalid, never half-valid
+        rosterSource.clear();
+        boolean changed = false;
+        int kept = 0;
+        for (int i = 0; i < ships.size(); i++) {
+            Object ship = ships.get(i);
+            rosterSource.add(ship);
+            boolean excluded = false;
+            if (ship != null) {
+                try {
+                    excluded = EngineBornGrowthSeam.isNonRosterMintId(shipGetId.invoke(ship, NO_ARGS));
+                } catch (ReflectiveOperationException | RuntimeException keptOnFailure) {
+                    // keep the entry: the owning walk's guard + receipt surface the failure
+                }
+            }
+            if (excluded) {
+                continue;
+            }
+            boolean append = kept == rosterKept.size();
+            if (append || rosterKept.get(kept) != ship) {
+                if (!changed) {
+                    changed = true;
+                    rosterGen++;
+                }
+                if (append) {
+                    rosterKept.add(ship);
+                } else {
+                    rosterKept.set(kept, ship);
+                }
+            }
+            kept++;
+        }
+        if (rosterKept.size() > kept) {
+            if (!changed) {
+                rosterGen++;
+            }
+            while (rosterKept.size() > kept) {
+                rosterKept.remove(rosterKept.size() - 1); // tail removal: no sublist view, no copy
+            }
+        }
+        rosterStep = shipWeaponsStep;
+    }
+
+    /**
+     * The roster memo's guard: the same size and the same element at every index, by identity. A ship's
+     * classification depends only on the ship object, so this is exact.
+     */
+    private static boolean sameElements(List<?> ships, ArrayList<Object> source) {
+        int size = ships.size();
+        if (size != source.size()) {
+            return false;
+        }
+        for (int i = 0; i < size; i++) {
+            if (ships.get(i) != source.get(i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Records the thread running this engine step; a step on a different thread than the last drops the
+     * roster memo and the position map, so neither is ever served from state another thread filled.
+     *
+     */
+    private void noteStepThread() {
+        Thread current = Thread.currentThread();
+        if (current != stepThread) {
+            stepThread = current;
+            rosterStep = Long.MIN_VALUE;
+            positionMapGen = -1L;
+        }
     }
 
     private Object movementCommandFor(ShipCommandSink.Movement intent) {
@@ -5775,6 +5960,68 @@ public final class EngineCombatBinding {
             throw new IllegalArgumentException("movement command " + label
                     + " is not compatible with ShipAPI.giveCommand first parameter");
         }
+    }
+
+    /** One ship's weapons in {@code getAllWeapons()} order, refilled from {@code Ship.getModules()} once per engine step. */
+    private static final class ShipWeaponsMemo {
+        final ArrayList<Object> weapons = new ArrayList<>();
+        long step = Long.MIN_VALUE;
+    }
+
+    /**
+     * Memo entries no read touched for this many engine steps are dropped (ships gone from the fight; ≈ 20 s at the
+     * 60 Hz step). The sweep itself runs every this-many steps with a cutoff this-many steps back, so an untouched
+     * entry lives at most 2 × 1,200 steps.
+     */
+    private static final int SHIP_WEAPONS_SWEEP_STEPS = 1200;
+
+    /**
+     * The ship's weapons exactly as {@code ShipAPI.getAllWeapons()} would list them — same elements, same order
+     * (a mount ordinal on the wire is a position in this list) — without the engine's per-call copy:
+     * {@code Ship.getModules()} is filtered by {@code WeaponAPI.isInstance} into the ship's own reusable list
+     * once per engine step, so the same step's later reads (mounts, then projectiles, then beams) return the
+     * filled list. SIM THREAD ONLY, like every capture read. The list is READ-ONLY by contract and valid for
+     * reads AFTER the step: the step counter bumps at the top of {@link #invokeAdvanceInner} / {@link
+     * #invokeAdvanceOuter}, before the engine advances, so a fill under step N holds the post-step-N weapons until
+     * the next step bumps the counter (the memo then refills it in place; no consumer holds it past its tick).
+     * Null = the read failed soft (a non-List return) — the same null the getAllWeapons path gave; a failed
+     * fill never serves a later read. Falls back to getAllWeapons when getModules is unresolved or the entity
+     * is not an engine Ship.
+     */
+    private List<?> shipWeaponsOrNull(Object ship) throws ReflectiveOperationException {
+        if (shipGetModules == null || !shipClass.isInstance(ship)) {
+            Object weaponsObj = shipGetAllWeapons.invoke(ship, NO_ARGS);
+            return weaponsObj instanceof List<?> ? (List<?>) weaponsObj : null;
+        }
+        ShipWeaponsMemo memo = shipWeaponsMemo.get(ship);
+        if (memo == null) {
+            memo = new ShipWeaponsMemo();
+            shipWeaponsMemo.put(ship, memo);
+        }
+        if (memo.step != shipWeaponsStep) {
+            memo.weapons.clear();
+            Object modulesObj = shipGetModules.invoke(ship, NO_ARGS); // the shared empty array: no Object[0] per fill
+            if (!(modulesObj instanceof List<?>)) {
+                memo.step = Long.MIN_VALUE;
+                return null;
+            }
+            List<?> modules = (List<?>) modulesObj;
+            for (int i = 0, n = modules.size(); i < n; i++) {
+                Object module = modules.get(i);
+                if (weaponApiClass.isInstance(module)) {
+                    memo.weapons.add(module);
+                }
+            }
+            memo.step = shipWeaponsStep;
+        }
+        return memo.weapons;
+    }
+
+    /** Drops memo entries no read touched for {@link #SHIP_WEAPONS_SWEEP_STEPS} steps (dead or retreated ships). */
+    private void sweepShipWeaponsMemo() {
+        shipWeaponsSweptStep = shipWeaponsStep;
+        long cutoff = shipWeaponsStep - SHIP_WEAPONS_SWEEP_STEPS;
+        shipWeaponsMemo.values().removeIf(memo -> memo.step < cutoff);
     }
 
     Object invoke(Method m, Object target, String label, Object... args) {

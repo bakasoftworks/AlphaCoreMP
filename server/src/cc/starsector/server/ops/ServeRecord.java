@@ -32,7 +32,12 @@ public final class ServeRecord {
     public enum Mode {
         /** No line: {@link #withLines} hands the template back untouched (argv byte-identical to a launch with no row). */
         OFF,
-        /** The gc + safepoint log, the JFR repository and the serve-block JFR dump: timing evidence, no player bytes. */
+        /**
+         * The gc + safepoint log, the JFR repository, the serve-block JFR dump and the non-safepoint debug info flag:
+         * timing evidence, no player bytes.
+         *
+         * <p>The debug info flag joins the set.
+         */
         DIAG,
         /** DIAG plus the wire record {@code wire.ccwr} (the seats' intents and declarations: chat and names), capped. */
         FULL;
@@ -59,8 +64,8 @@ public final class ServeRecord {
     public static final int DISK_HEADROOM_MIB = 1024;
 
     /**
-     * The five record lines, byte-equal to the {@code $OwnerBoxRules} outputs (that list's order: sinkPath, sinkMaxMiB,
-     * gc, FlightRecorderOptions, jfr.blocks), {@code ${RUN}} left UNSUBSTITUTED.
+     * The six record lines, byte-equal to the {@code $OwnerBoxRules} outputs (that list's order: sinkPath, sinkMaxMiB,
+     * gc, FlightRecorderOptions, jfr.blocks, DebugNonSafepoints), {@code ${RUN}} left UNSUBSTITUTED.
      */
     public static final String LINE_SINK_PATH = "-Dcc.net.sinkPath=${RUN}/wire.ccwr";
     public static final String SINK_MAX_MIB_PREFIX = "-Dcc.net.sinkMaxMiB=";
@@ -69,9 +74,22 @@ public final class ServeRecord {
     public static final String LINE_JFR_BLOCKS = "-Dcc.jfr.blocks=${RUN}/serve-blocks.jfr";
 
     /**
-     * The five keys a template must not already set, in the record lines' order: {line prefix, the separator that
+     * Makes a JFR execution sample land on the real compiled line rather than the nearest safepoint. A diagnostic flag:
+     * the JVM boots it only AFTER {@code -XX:+UnlockDiagnosticVMOptions}, which every serve template already carries
+     * early (its {@code -XX:-BytecodeVerificationLocal} needs it too), and {@link #withLines} inserts the record lines
+     * just before the main class, so the unlock precedes this line by construction (no conditional emit, no extra
+     * refusal).
+     *
+     *
+     */
+    public static final String LINE_JFR_DEBUG_NONSAFEPOINTS = "-XX:+DebugNonSafepoints";
+
+    /**
+     * The six keys a template must not already set, in the record lines' order: {line prefix, the separator that
      * follows it, the name the refusal says}. A line equal to the prefix, or the prefix + separator + anything, sets it;
-     * {@code -Dcc.jfr.blocksX=1} (another property) does not.
+     * {@code -Dcc.jfr.blocksX=1} (another property) does not. A {@code null} separator marks a boolean {@code -XX}
+     * flag: only the exact {@code -XX:+name} or {@code -XX:-name} line sets it, never a prefix
+     * ({@code -XX:+DebugNonSafepointsX} would be another flag).
      */
     private static final String[][] KEYS = {
         {"-Dcc.net.sinkPath", "=", "cc.net.sinkPath"},
@@ -79,6 +97,7 @@ public final class ServeRecord {
         {"-Xlog", ":", "-Xlog"},
         {"-XX:FlightRecorderOptions", "=", "-XX:FlightRecorderOptions"},
         {"-Dcc.jfr.blocks", "=", "cc.jfr.blocks"},
+        {"DebugNonSafepoints", null, "DebugNonSafepoints"},
     };
 
     /**
@@ -143,9 +162,11 @@ public final class ServeRecord {
 
     /**
      * The record lines for {@code mode}, {@code ${RUN}} unsubstituted, in {@code $OwnerBoxRules} order: OFF = none;
-     * DIAG = gc, FlightRecorderOptions, jfr.blocks; FULL = sinkPath, {@code sinkMaxMiB=<capMiB>}, then DIAG's three.
-     * Only FULL reads {@code capMiB}, and refuses one outside {@value #CAP_MIN_MIB}..{@value #CAP_MAX_MIB} (never a
-     * 0 = unbounded sink). Immutable.
+     * DIAG = gc, FlightRecorderOptions, jfr.blocks, DebugNonSafepoints; FULL = sinkPath, {@code sinkMaxMiB=<capMiB>},
+     * then DIAG's four. Only FULL reads {@code capMiB}, and refuses one outside {@value #CAP_MIN_MIB}..{@value
+     * #CAP_MAX_MIB} (never a 0 = unbounded sink). Immutable.
+     *
+     * <p>DebugNonSafepoints closes both sets.
      */
     public static List<String> lines(Mode mode, int capMiB) {
         Objects.requireNonNull(mode, "mode");
@@ -153,12 +174,13 @@ public final class ServeRecord {
             return List.of();
         }
         if (mode == Mode.DIAG) {
-            return List.of(LINE_GC_LOG, LINE_JFR_REPO, LINE_JFR_BLOCKS);
+            return List.of(LINE_GC_LOG, LINE_JFR_REPO, LINE_JFR_BLOCKS, LINE_JFR_DEBUG_NONSAFEPOINTS);
         }
         if (capMiB < CAP_MIN_MIB || capMiB > CAP_MAX_MIB) {
             throw new IllegalArgumentException(capText(Integer.toString(capMiB)));
         }
-        return List.of(LINE_SINK_PATH, SINK_MAX_MIB_PREFIX + capMiB, LINE_GC_LOG, LINE_JFR_REPO, LINE_JFR_BLOCKS);
+        return List.of(LINE_SINK_PATH, SINK_MAX_MIB_PREFIX + capMiB, LINE_GC_LOG, LINE_JFR_REPO, LINE_JFR_BLOCKS,
+                LINE_JFR_DEBUG_NONSAFEPOINTS);
     }
 
     /** {@link #withLines(List, Mode, int, Object)} naming the package's own template file in its refusal. */
@@ -170,7 +192,7 @@ public final class ServeRecord {
      * The template lines with {@link #lines} inserted immediately before the main class ({@link #mainClassIndex}),
      * after every JVM option; the input list is never modified. OFF returns {@code templateLines} ITSELF (no check,
      * no copy: {@code record=off} = today's argv). DIAG / FULL first refuse a template that already sets any of the
-     * five keys before its main class, naming the first such key and never its value (the refusal names
+     * six keys before its main class, naming the first such key and never its value (the refusal names
      * {@code template}, the caller's template path). Returns an unmodifiable list.
      */
     public static List<String> withLines(List<String> templateLines, Mode mode, int capMiB, Object template) {
@@ -213,11 +235,18 @@ public final class ServeRecord {
         return lines.size();
     }
 
-    /** The refusal name of the record key {@code line} sets, or {@code null} when it sets none. */
+    /**
+     * The refusal name of the record key {@code line} sets, or {@code null} when it sets none.
+     *
+     * <p>A null-separator row is a boolean flag, matched exactly in both
+     * spellings, so a template's own +/- line never doubles or contradicts the served one.
+     */
     private static String keySetBy(String line) {
         String l = line.trim();
         for (String[] k : KEYS) {
-            if (l.equals(k[0]) || l.startsWith(k[0] + k[1])) {
+            boolean sets = k[1] == null ? l.equals("-XX:+" + k[0]) || l.equals("-XX:-" + k[0])
+                    : l.equals(k[0]) || l.startsWith(k[0] + k[1]);
+            if (sets) {
                 return k[2];
             }
         }
@@ -234,7 +263,7 @@ public final class ServeRecord {
         return disk(String.valueOf(run), Long.toString(freeMiB), Integer.toString(capMiB));
     }
 
-    /** The template refusal: {@code template} = the template path, {@code key} = one of the five key names. */
+    /** The template refusal: {@code template} = the template path, {@code key} = one of the six key names. */
     public static String templateText(Object template, String key) {
         return "the launch template " + template + " already sets " + key + ": delete that line, or set record=off";
     }

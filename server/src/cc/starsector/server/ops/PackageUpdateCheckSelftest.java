@@ -99,6 +99,7 @@ public final class PackageUpdateCheckSelftest {
         row("puc-outside-program-set", PackageUpdateCheckSelftest::outsideProgramSet);
         row("puc-platform-mismatch", PackageUpdateCheckSelftest::platformMismatch);
         row("puc-older-stamp", PackageUpdateCheckSelftest::olderStamp);
+        row("puc-older-flag-keeps-other-refusals", PackageUpdateCheckSelftest::olderFlagKeepsOtherRefusals);
         row("puc-equal-stamp", PackageUpdateCheckSelftest::equalStamp);
         row("puc-newer-preview", PackageUpdateCheckSelftest::newerPreview);
         row("puc-serve-lock-held", PackageUpdateCheckSelftest::serveLockHeld);
@@ -257,11 +258,61 @@ public final class PackageUpdateCheckSelftest {
     }
 
     private static void olderStamp(Path dir) throws Exception {
-        Path pkg = stage("the installed folder", () -> installed(dir, OLD, program(true)));
-        Path z = stage("an older zip", () -> zip(dir, OLDER, program(true)));
+        LinkedHashMap<String, byte[]> was = program(true);
+        was.put("classes/cc/New.class", ascii("class New"));
+        Path pkg = stage("the installed folder", () -> installed(dir, OLD, was));
+        LinkedHashMap<String, byte[]> older = program(true);
+        older.put("classes/cc/A.class", ascii("class A v0"));
+        Path z = stage("an older zip", () -> zip(dir, OLDER, older));
         expectRefused("an older zip was not refused (flips if the no-downgrade law is dropped or compares the wrong"
                 + " way)", pkg, z, "the zip (" + OLDER + ") is older than the installed package (" + OLD
-                + ") - no downgrade");
+                + ") - no downgrade without " + PackageUpdateCheck.ALLOW_OLDER_FLAG);
+        // the rollback on purpose: the flag turns ONLY this refusal into the going-back preview
+        Map<String, String> before = stage("the folder snapshot", () -> snapshot(pkg));
+        Result back = check(pkg, z, true);
+        String line = "going back: " + OLD + " -> " + OLDER + ": 1 files to replace, 0 to add, 1 to remove"
+                + " - players need the kit that version shipped (the next start names it);"
+                + " every fix made after that version is undone until you update again";
+        require(back.code() == PackageUpdateCheck.EXIT_PROCEED && back.last().equals(line) && verdicts(back) == 1,
+                "an older zip with " + PackageUpdateCheck.ALLOW_OLDER_FLAG + " did not proceed with the going-back preview"
+                        + " 1 replaced, 0 added, 1 removed (flips if the flag is ignored, the preview counts the wrong"
+                        + " rows, or the rollback line loses its kit sentence or its undone-fixes clause) - want exit " + PackageUpdateCheck.EXIT_PROCEED
+                        + " and the one LAST line '" + line + "', got " + back);
+        Map<String, String> after = stage("the folder snapshot after", () -> snapshot(pkg));
+        require(after.equals(before), "the rollback check changed the folder (flips if the flag's path writes a marker"
+                + " or any file): before " + before.keySet() + " after " + after.keySet());
+    }
+
+    /**
+     * The rollback flag lifts the downgrade refusal ONLY: an older zip of the other platform is still refused with the
+     * platform sentence (a check that runs BEFORE the downgrade one), and an older zip while a server holds
+     * run/serve.lock is still refused with the busy sentence (a check that runs AFTER it, so the flag must not end the
+     * checks early). WHY: a host rolling back is often mid-incident, a server still up or the wrong download at hand,
+     * and the flag must never turn either into an extract over the folder.
+     *
+     *
+     */
+    private static void olderFlagKeepsOtherRefusals(Path dir) throws Exception {
+        Path pkg = stage("the installed folder", () -> installed(dir, OLD, program(true)));
+        Path run = stage("run/", () -> Files.createDirectories(pkg.resolve(ServeLauncher.RUN_DIR)));
+        Path linuxOlder = stage("an older Linux zip", () -> zip(dir, OLDER, program(false)));
+        expectRefused("an older Linux zip over a Windows folder with " + PackageUpdateCheck.ALLOW_OLDER_FLAG
+                + " was not refused with the platform sentence (flips if the flag skips the platform law, or the"
+                + " downgrade test moves ahead of it and the flag then proceeds)", pkg, linuxOlder, true,
+                "this zip is the Linux package (this folder is the Windows one)");
+        Path older = stage("an older zip", () -> zip(dir, OLDER, program(true)));
+        // the control: the same pair proceeds with the flag while nothing holds the lock, so the refusal below is the lock's
+        Result free = check(pkg, older, true);
+        require(free.code() == PackageUpdateCheck.EXIT_PROCEED && free.last().startsWith("going back: " + OLD + " -> "
+                + OLDER + ": ") && verdicts(free) == 1, "the busy half's control did not proceed with the going-back"
+                + " preview before the lock was taken (flips if the flag stops lifting the downgrade refusal, or the probe"
+                + " reads an unheld lock as held) - got " + free);
+        FileChannel held = hold(run.resolve(ServeLauncher.LOCK_FILE));
+        expectRefused("an older zip with " + PackageUpdateCheck.ALLOW_OLDER_FLAG + " while run/serve.lock is held was"
+                + " not refused with the busy sentence (flips if the flag returns before the busy law, so a rollback"
+                + " would extract under a running server)", pkg, older, true,
+                "the server is running: stop it (stop.bat) first");
+        release(held);
     }
 
     private static void equalStamp(Path dir) throws Exception {
@@ -1079,10 +1130,15 @@ public final class PackageUpdateCheckSelftest {
     }
 
     private static Result check(Path pkg, Path zip) {
+        return check(pkg, zip, false);
+    }
+
+    /** The check with the {@code --allow-older} flag's value, its lines captured (never a child JVM). */
+    private static Result check(Path pkg, Path zip, boolean allowOlder) {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         int code;
         try (PrintStream out = new PrintStream(bytes, true, StandardCharsets.UTF_8)) {
-            code = PackageUpdateCheck.check(pkg, zip, out);
+            code = PackageUpdateCheck.check(pkg, zip, allowOlder, out);
         }
         String text = bytes.toString(StandardCharsets.UTF_8);
         return new Result(code, text.isEmpty() ? List.of() : List.of(text.split("\r?\n")));
@@ -1091,11 +1147,22 @@ public final class PackageUpdateCheckSelftest {
     /** A verdict line (a refusal, the preview, the equal-stamp line, the error line): the check prints exactly one, LAST. */
     private static long verdicts(Result r) {
         return r.lines().stream().filter(l -> l.startsWith(PackageUpdateCheck.REFUSED_PREFIX) || l.startsWith("update: ")
-                || l.startsWith("already installed (") || l.startsWith("update check failed (")).count();
+                || l.startsWith("going back: ") || l.startsWith("already installed (")
+                || l.startsWith("update check failed (")).count();
     }
 
     private static void expectRefused(String regression, Path pkg, Path zip, String sentence) {
-        Result r = check(pkg, zip);
+        expectRefused(regression, pkg, zip, false, sentence);
+    }
+
+    /**
+     * {@link #expectRefused(String, Path, Path, String)} with the {@code --allow-older} flag's value: WHY a twin, the
+     * flag must lift one refusal only, so a row proves another refusal still stands with it given.
+     *
+     *
+     */
+    private static void expectRefused(String regression, Path pkg, Path zip, boolean allowOlder, String sentence) {
+        Result r = check(pkg, zip, allowOlder);
         require(r.code() == PackageUpdateCheck.EXIT_REFUSED && r.last().equals(PackageUpdateCheck.REFUSED_PREFIX + sentence)
                 && verdicts(r) == 1, regression + " - want exit " + PackageUpdateCheck.EXIT_REFUSED + " and the one LAST line '"
                 + PackageUpdateCheck.REFUSED_PREFIX + PackageManifest.mask(sentence) + "', got " + r);

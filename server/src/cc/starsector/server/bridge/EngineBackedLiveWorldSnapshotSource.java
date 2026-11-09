@@ -979,28 +979,38 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
             }
             built = buildSnapshot(motions, durabilities);
         }
-        AuthoritativeWorldSnapshot snapshot = built.snapshot();
+        // Every tier above the ships fills ONE
+        // capture-local builder started from the ship-tier snapshot, so the snapshot constructor's
+        // per-tier checks run once per capture instead of once per tier (two constructions per
+        // capture: the ship tier's and the build below). The builder never outlives this capture:
+        // a fold that returns early leaves its tier List.of(), never a previous tick's tier. A
+        // ship-tier fault still throws while building the ship tier above, before any non-ship
+        // read; an upper tier that fails its check throws from the build below with the
+        // constructor's own text, and that build stays ahead of the flux probe and the tick
+        // increment.
+        AuthoritativeWorldSnapshot.Builder frame = built.snapshot().toBuilder();
         lastEntityIdByPositionShipId = built.entityIdByPositionShipId();
         List<NonShipEntitySnapshot> nonShipEntities =
                 readNonShipEntities(built.entityIdByPositionShipId());
         if (!nonShipEntities.isEmpty()) {
-            snapshot = AuthoritativeWorldSnapshot.withNonShipEntities(snapshot, nonShipEntities);
+            frame.nonShipEntities(nonShipEntities); // as read, unsorted (as withNonShipEntities)
         }
         // ONE phase-cloak read serves both the flux fold's FLAG_PHASED
         // cross-ref and the v10 phase-cloak tier fold below, so the per-frame collision
         // bit and the cloak state record are the same read instant's truth.
         List<ShipPhaseCloakView> cloakViews = binding.shipPhaseCloakStatesOrNull();
-        snapshot = foldFluxTier(snapshot, built.entityIdByPositionShipId(), cloakViews);
+        foldFluxTier(frame, built.entityIdByPositionShipId(), cloakViews);
         List<ShipFluxView> fluxAfterFold = fluxReadInstantProbe ? binding.shipFluxStatesOrNull() : null;
         long fluxAfterFoldNanos = fluxReadInstantProbe ? System.nanoTime() : 0L;
-        snapshot = foldWeaponMountTier(snapshot, built.entityIdByPositionShipId());
-        snapshot = foldAllegianceTier(snapshot, built.entityIdByPositionShipId());
-        snapshot = foldEngineStateTier(snapshot, built.entityIdByPositionShipId());
-        snapshot = foldManeuverCommandTier(snapshot, built.entityIdByPositionShipId());
-        snapshot = foldSystemStateTier(snapshot, built.entityIdByPositionShipId());
-        snapshot = foldPhaseCloakTier(snapshot, built.entityIdByPositionShipId(), cloakViews);
-        snapshot = foldCrTier(snapshot, built.entityIdByPositionShipId());
-        snapshot = foldContentDictionaryTier(snapshot);
+        foldWeaponMountTier(frame, built.entityIdByPositionShipId());
+        foldAllegianceTier(frame, built.entityIdByPositionShipId());
+        foldEngineStateTier(frame, built.entityIdByPositionShipId());
+        foldManeuverCommandTier(frame, built.entityIdByPositionShipId());
+        foldSystemStateTier(frame, built.entityIdByPositionShipId());
+        foldPhaseCloakTier(frame, built.entityIdByPositionShipId(), cloakViews);
+        foldCrTier(frame, built.entityIdByPositionShipId());
+        foldContentDictionaryTier(frame);
+        AuthoritativeWorldSnapshot snapshot = frame.build();
         if (fluxReadInstantProbe) {
             probeFluxReadInstant(snapshot, built.entityIdByPositionShipId(),
                     fluxAfterFold, fluxAfterFoldNanos);
@@ -1079,8 +1089,47 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
     }
 
     /**
+     * Flux tier order: ascending {@code entityId}, the strict key the snapshot constructor
+     * checks for this tier and the key {@code withFluxStates} sorts by. Like every tier order
+     * below, the fold sorts its own list in place, and a key that drifts from the
+     * constructor's check throws at the build rather than reordering the wire.
+     *
+     */
+    private static final Comparator<ShipFluxSnapshot> FLUX_ORDER =
+            (a, b) -> Long.compare(a.entityId(), b.entityId());
+    /** Weapon-mount tier order: ascending {@code (entityId, mountIndex)}, as {@code withWeaponMounts}. */
+    private static final Comparator<ShipWeaponMountSnapshot> WEAPON_MOUNT_ORDER = (a, b) -> {
+        int byEntity = Long.compare(a.entityId(), b.entityId());
+        return byEntity != 0 ? byEntity : Integer.compare(a.mountIndex(), b.mountIndex());
+    };
+    /** Allegiance tier order: ascending {@code entityId}, as {@code withAllegiances}. */
+    private static final Comparator<ShipAllegianceSnapshot> ALLEGIANCE_ORDER =
+            (a, b) -> Long.compare(a.entityId(), b.entityId());
+    /**
+     * Engine-state tier order: ascending {@code entityId}, the strict key the snapshot
+     * constructor checks for this tier and the key {@code withEngineStates} sorts by. The
+     * builder-filling folds sort their own lists in place with these keys; a key that drifts
+     * from the constructor's check throws at the build rather than reordering the wire.
+     *
+     */
+    private static final Comparator<ShipEngineStateSnapshot> ENGINE_STATE_ORDER =
+            (a, b) -> Long.compare(a.entityId(), b.entityId());
+    /** Maneuver-command tier order: ascending {@code entityId}, as {@code withManeuverCommands}. */
+    private static final Comparator<ShipManeuverCommandSnapshot> MANEUVER_COMMAND_ORDER =
+            (a, b) -> Long.compare(a.entityId(), b.entityId());
+    /** System-state tier order: ascending {@code entityId}, as {@code withSystemStates}. */
+    private static final Comparator<ShipSystemStateSnapshot> SYSTEM_STATE_ORDER =
+            (a, b) -> Long.compare(a.entityId(), b.entityId());
+    /** Phase-cloak tier order: ascending {@code entityId}, as {@code withPhaseCloakStates}. */
+    private static final Comparator<ShipPhaseCloakStateSnapshot> PHASE_CLOAK_ORDER =
+            (a, b) -> Long.compare(a.entityId(), b.entityId());
+    /** CR tier order: ascending {@code entityId}, as {@code withCrStates}. */
+    private static final Comparator<ShipCrSnapshot> CR_ORDER =
+            (a, b) -> Long.compare(a.entityId(), b.entityId());
+
+    /**
      * Fold the per-ship engine-disabled/flameout tier (schema v6) onto
-     * {@code snapshot}, fail-soft, after the allegiance tier. The bridge's
+     * {@code frame}, fail-soft, after the allegiance tier. The bridge's
      * {@link EngineCombatBinding#shipEngineStatesOrNull()} returns one
      * {@link ShipEngineStateView} per installed ship (per-engine disabled/perm-disabled
      * bitmasks off the public {@code getShipEngines()} surface plus the controller's
@@ -1094,11 +1143,11 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
      * {@code disable(perm)}/{@code repair()} mechanism to its local foe instead of
      * diverging on locally-derived flameout (the WATCH desync).
      */
-    private AuthoritativeWorldSnapshot foldEngineStateTier(
-            AuthoritativeWorldSnapshot snapshot, Map<Long, Long> entityIdByPositionShipId) {
+    private void foldEngineStateTier(
+            AuthoritativeWorldSnapshot.Builder frame, Map<Long, Long> entityIdByPositionShipId) {
         List<ShipEngineStateView> engineViews = binding.shipEngineStatesOrNull();
         if (engineViews == null || engineViews.isEmpty()) {
-            return snapshot;
+            return;
         }
         List<ShipEngineStateSnapshot> engineStates = new ArrayList<>(engineViews.size());
         for (ShipEngineStateView engineView : engineViews) {
@@ -1112,13 +1161,14 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
             engineStates.add(ShipEngineStateSnapshot.fromView(engineView, entityId));
         }
         if (engineStates.isEmpty()) {
-            return snapshot;
+            return;
         }
-        return AuthoritativeWorldSnapshot.withEngineStates(snapshot, engineStates);
+        engineStates.sort(ENGINE_STATE_ORDER);
+        frame.engineStates(engineStates);
     }
 
     /**
-     * Fold the per-ship maneuver-command tier (schema v7) onto {@code snapshot},
+     * Fold the per-ship maneuver-command tier (schema v7) onto {@code frame},
      * fail-soft, after the engine-state tier. The bridge's
      * {@link EngineCombatBinding#shipManeuverCommandsOrNull()} returns one
      * {@link ShipManeuverCommandView} per installed ship (the 7 engine-controller maneuver
@@ -1133,11 +1183,11 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
      * controller drives thrust-plume/glow/contrail (and engine audio) presentation instead
      * of idling on a pose-snapped replica.
      */
-    private AuthoritativeWorldSnapshot foldManeuverCommandTier(
-            AuthoritativeWorldSnapshot snapshot, Map<Long, Long> entityIdByPositionShipId) {
+    private void foldManeuverCommandTier(
+            AuthoritativeWorldSnapshot.Builder frame, Map<Long, Long> entityIdByPositionShipId) {
         List<ShipManeuverCommandView> maneuverViews = binding.shipManeuverCommandsOrNull();
         if (maneuverViews == null || maneuverViews.isEmpty()) {
-            return snapshot;
+            return;
         }
         List<ShipManeuverCommandSnapshot> maneuverCommands = new ArrayList<>(maneuverViews.size());
         for (ShipManeuverCommandView maneuverView : maneuverViews) {
@@ -1151,14 +1201,15 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
             maneuverCommands.add(ShipManeuverCommandSnapshot.fromView(maneuverView, entityId));
         }
         if (maneuverCommands.isEmpty()) {
-            return snapshot;
+            return;
         }
-        return AuthoritativeWorldSnapshot.withManeuverCommands(snapshot, maneuverCommands);
+        maneuverCommands.sort(MANEUVER_COMMAND_ORDER);
+        frame.maneuverCommands(maneuverCommands);
     }
 
     /**
      * Fold the per-ship primary ship-system tier (schema v8) onto
-     * {@code snapshot}, fail-soft, after the maneuver-command tier. The bridge's
+     * {@code frame}, fail-soft, after the maneuver-command tier. The bridge's
      * {@link EngineCombatBinding#shipSystemStatesOrNull()} returns one
      * {@link ShipSystemView} per installed ship that owns a primary system (the
      * public {@code getSystem()} surface), each tagged with its owning ship's within-tick
@@ -1173,12 +1224,12 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
      * engine's own faithful {@code forceState} path instead of idling a
      * system whose activation edge it never saw.
      */
-    private AuthoritativeWorldSnapshot foldSystemStateTier(
-            AuthoritativeWorldSnapshot snapshot, Map<Long, Long> entityIdByPositionShipId) {
+    private void foldSystemStateTier(
+            AuthoritativeWorldSnapshot.Builder frame, Map<Long, Long> entityIdByPositionShipId) {
         List<ShipSystemView> systemViews = binding.shipSystemStatesOrNull();
         capturedSystemViews.stamp(systemViews, simTick);
         if (systemViews == null || systemViews.isEmpty()) {
-            return snapshot;
+            return;
         }
         List<ShipSystemStateSnapshot> systemStates = new ArrayList<>(systemViews.size());
         for (ShipSystemView systemView : systemViews) {
@@ -1192,13 +1243,14 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
             systemStates.add(ShipSystemStateSnapshot.fromView(systemView, entityId));
         }
         if (systemStates.isEmpty()) {
-            return snapshot;
+            return;
         }
-        return AuthoritativeWorldSnapshot.withSystemStates(snapshot, systemStates);
+        systemStates.sort(SYSTEM_STATE_ORDER);
+        frame.systemStates(systemStates);
     }
 
     /**
-     * Fold the per-ship phase-cloak tier (schema v10) onto {@code snapshot},
+     * Fold the per-ship phase-cloak tier (schema v10) onto {@code frame},
      * fail-soft, after the system-state tier. {@code cloakViews} is the SAME
      * {@link EngineCombatBinding#shipPhaseCloakStatesOrNull()} read the flux fold's
      * {@code FLAG_PHASED} cross-ref consumed (one entry per cloak-bearing ship off the
@@ -1214,11 +1266,11 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
      * what lets a predictive client seed a mid-window replica cloak through the engine's
      * own faithful {@code forceState} path (D-M2-4's seed half).
      */
-    private AuthoritativeWorldSnapshot foldPhaseCloakTier(
-            AuthoritativeWorldSnapshot snapshot, Map<Long, Long> entityIdByPositionShipId,
+    private void foldPhaseCloakTier(
+            AuthoritativeWorldSnapshot.Builder frame, Map<Long, Long> entityIdByPositionShipId,
             List<ShipPhaseCloakView> cloakViews) {
         if (cloakViews == null || cloakViews.isEmpty()) {
-            return snapshot;
+            return;
         }
         List<ShipPhaseCloakStateSnapshot> phaseCloakStates = new ArrayList<>(cloakViews.size());
         for (ShipPhaseCloakView cloakView : cloakViews) {
@@ -1232,14 +1284,15 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
             phaseCloakStates.add(ShipPhaseCloakStateSnapshot.fromView(cloakView, entityId));
         }
         if (phaseCloakStates.isEmpty()) {
-            return snapshot;
+            return;
         }
-        return AuthoritativeWorldSnapshot.withPhaseCloakStates(snapshot, phaseCloakStates);
+        phaseCloakStates.sort(PHASE_CLOAK_ORDER);
+        frame.phaseCloakStates(phaseCloakStates);
     }
 
     /**
      * Fold the per-ship COMBAT-READINESS tier (schema v14) onto
-     * {@code snapshot}, fail-soft, after the phase-cloak tier. The bridge's
+     * {@code frame}, fail-soft, after the phase-cloak tier. The bridge's
      * {@link EngineCombatBinding#shipCrStatesOrNull()} enrolls EVERY ship (the flux-fold
      * ship set — CR is universal, not slot-gated like the cloak); each view is keyed to
      * its ship's network {@code entityId} via {@code entityIdByPositionShipId}, and a
@@ -1248,11 +1301,11 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
      * lower folds). A null read (binding without the CR handles) or an empty result
      * leaves the frame at its prior schema.
      */
-    private AuthoritativeWorldSnapshot foldCrTier(
-            AuthoritativeWorldSnapshot snapshot, Map<Long, Long> entityIdByPositionShipId) {
+    private void foldCrTier(
+            AuthoritativeWorldSnapshot.Builder frame, Map<Long, Long> entityIdByPositionShipId) {
         List<ShipCrView> crViews = binding.shipCrStatesOrNull();
         if (crViews == null || crViews.isEmpty()) {
-            return snapshot;
+            return;
         }
         List<ShipCrSnapshot> crStates = new ArrayList<>(crViews.size());
         for (ShipCrView crView : crViews) {
@@ -1266,13 +1319,14 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
             crStates.add(ShipCrSnapshot.fromView(crView, entityId));
         }
         if (crStates.isEmpty()) {
-            return snapshot;
+            return;
         }
-        return AuthoritativeWorldSnapshot.withCrStates(snapshot, crStates);
+        crStates.sort(CR_ORDER);
+        frame.crStates(crStates);
     }
 
     /**
-     * Fold the content-dictionary tier (schema v15) onto {@code snapshot},
+     * Fold the content-dictionary tier (schema v15) onto {@code frame},
      * after the CR tier: up to {@link #DICT_ENTRIES_PER_FRAME} {@code (contentId, key)}
      * entries from {@link #contentRegistry} so a client can resolve the per-record
      * {@code contentId} ints into version-independent spec keys. Selection: ids minted
@@ -1284,14 +1338,13 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
      * (content-neutral source) or an empty catalog leaves the frame at its prior
      * schema; the tier is frame-global (no entity keying).
      */
-    private AuthoritativeWorldSnapshot foldContentDictionaryTier(
-            AuthoritativeWorldSnapshot snapshot) {
+    private void foldContentDictionaryTier(AuthoritativeWorldSnapshot.Builder frame) {
         if (contentRegistry == null) {
-            return snapshot;
+            return;
         }
         int size = contentRegistry.size();
         if (size == 0) {
-            return snapshot;
+            return;
         }
         List<ContentDictionaryEntry> entries = new ArrayList<>(DICT_ENTRIES_PER_FRAME);
         for (int id = size; id > dictHighWater && entries.size() < DICT_ENTRIES_PER_FRAME;
@@ -1316,9 +1369,9 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
             }
         }
         if (entries.isEmpty()) {
-            return snapshot;
+            return;
         }
-        return snapshot.toBuilder().contentDictionary(entries).build();
+        frame.contentDictionary(entries); // frame-global, insertion order kept: not entity-keyed
     }
 
     private static boolean carriesContentId(List<ContentDictionaryEntry> entries, int id) {
@@ -1331,7 +1384,7 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
     }
 
     /**
-     * Fold the per-ship flux/shield tier (schema v3) onto {@code snapshot},
+     * Fold the per-ship flux/shield tier (schema v3) onto {@code frame},
      * fail-soft. The bridge's {@link EngineCombatBinding#shipFluxStatesOrNull()} is
      * read with the same within-tick repository {@code shipId} the motion/durability
      * views used; each flux view is keyed to its ship's network {@code entityId} via
@@ -1342,13 +1395,13 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
      * leaves the frame at v1/v2: this is the live-publish grounding of the
      * real-engine flux read, not a hard requirement.
      */
-    private AuthoritativeWorldSnapshot foldFluxTier(
-            AuthoritativeWorldSnapshot snapshot, Map<Long, Long> entityIdByPositionShipId,
+    private void foldFluxTier(
+            AuthoritativeWorldSnapshot.Builder frame, Map<Long, Long> entityIdByPositionShipId,
             List<ShipPhaseCloakView> cloakViews) {
         List<ShipFluxView> fluxViews = binding.shipFluxStatesOrNull();
         capturedFluxViews.stamp(fluxViews, simTick);
         if (fluxViews == null || fluxViews.isEmpty()) {
-            return snapshot;
+            return;
         }
         // The FLAG_PHASED bit is the engine's per-frame collision truth
         // (ShipAPI.isPhased()), cross-referenced from the SAME tick's cloak views by the
@@ -1382,14 +1435,15 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
                     driveLock != null && driveLock.test(entityId)));
         }
         if (fluxStates.isEmpty()) {
-            return snapshot;
+            return;
         }
-        return AuthoritativeWorldSnapshot.withFluxStates(snapshot, fluxStates);
+        fluxStates.sort(FLUX_ORDER);
+        frame.fluxStates(fluxStates);
     }
 
     /**
      * Fold the per-mount weapon-readiness tier (schema v4) onto
-     * {@code snapshot}, fail-soft, after the flux tier. The bridge's
+     * {@code frame}, fail-soft, after the flux tier. The bridge's
      * {@link EngineCombatBinding#weaponMountStatesOrNull()} returns a flat list across
      * the roster, each {@link WeaponMountView} tagged with its owning ship's within-tick
      * repository {@code shipId} (the same id the motion/durability/flux reads used) and a
@@ -1403,15 +1457,15 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
      * its prior schema: this is the live-publish grounding of the
      * real-engine weapon-mount read, not a hard requirement.
      */
-    private AuthoritativeWorldSnapshot foldWeaponMountTier(
-            AuthoritativeWorldSnapshot snapshot, Map<Long, Long> entityIdByPositionShipId) {
+    private void foldWeaponMountTier(
+            AuthoritativeWorldSnapshot.Builder frame, Map<Long, Long> entityIdByPositionShipId) {
         List<WeaponMountView> mountViews = binding.weaponMountStatesOrNull();
         // Stamped BEFORE the null / empty early return so a same-tick taker sees exactly what
         // a second read would have returned (null and empty included).
         capturedMountViews = mountViews == null ? null : java.util.Collections.unmodifiableList(mountViews);
         capturedMountViewsTick = simTick;
         if (mountViews == null || mountViews.isEmpty()) {
-            return snapshot;
+            return;
         }
         List<ShipWeaponMountSnapshot> mounts = new ArrayList<>(mountViews.size());
         for (WeaponMountView mountView : mountViews) {
@@ -1430,14 +1484,15 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
             mounts.add(ShipWeaponMountSnapshot.fromView(mountView, entityId, weaponContentId));
         }
         if (mounts.isEmpty()) {
-            return snapshot;
+            return;
         }
-        return AuthoritativeWorldSnapshot.withWeaponMounts(snapshot, mounts);
+        mounts.sort(WEAPON_MOUNT_ORDER);
+        frame.weaponMounts(mounts);
     }
 
     /**
      * Fold the per-ship combat-side allegiance tier (schema v5) onto
-     * {@code snapshot}, fail-soft, after the weapon-mount tier. The bridge's
+     * {@code frame}, fail-soft, after the weapon-mount tier. The bridge's
      * {@link EngineCombatBinding#shipAllegiancesOrNull()} returns one
      * {@link ShipAllegianceView} per installed ship (its {@code owner()} is the combat
      * {@code FleetSide} ordinal), each tagged with its owning ship's within-tick repository
@@ -1450,11 +1505,11 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
      * the real-engine allegiance read, not a hard requirement. This is what
      * lets a client render friend vs foe.
      */
-    private AuthoritativeWorldSnapshot foldAllegianceTier(
-            AuthoritativeWorldSnapshot snapshot, Map<Long, Long> entityIdByPositionShipId) {
+    private void foldAllegianceTier(
+            AuthoritativeWorldSnapshot.Builder frame, Map<Long, Long> entityIdByPositionShipId) {
         List<ShipAllegianceView> allegianceViews = binding.shipAllegiancesOrNull();
         if (allegianceViews == null || allegianceViews.isEmpty()) {
-            return snapshot;
+            return;
         }
         List<ShipAllegianceSnapshot> allegianceStates = new ArrayList<>(allegianceViews.size());
         for (ShipAllegianceView allegianceView : allegianceViews) {
@@ -1468,9 +1523,10 @@ public final class EngineBackedLiveWorldSnapshotSource implements LiveWorldSnaps
             allegianceStates.add(ShipAllegianceSnapshot.fromView(allegianceView, entityId));
         }
         if (allegianceStates.isEmpty()) {
-            return snapshot;
+            return;
         }
-        return AuthoritativeWorldSnapshot.withAllegiances(snapshot, allegianceStates);
+        allegianceStates.sort(ALLEGIANCE_ORDER);
+        frame.allegianceStates(allegianceStates);
     }
 
     /**

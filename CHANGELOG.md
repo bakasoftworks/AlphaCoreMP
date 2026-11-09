@@ -2,6 +2,14 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.6.5 - 2026-11-09
+
+- Hosts: an update can now go back to an older server version on purpose. `update.bat <that zip> --allow-older` (Linux: `sh update.sh <that zip> --allow-older`) prints a "going back: <old> -> <new>: N files to replace, ..." preview and applies the zip; without the flag an older zip is still refused, and the refusal now names the flag. Players then need that version's kit from its `kits` folder (the next start names it), and the older version lacks every fix made after it, so update forward again as soon as a version with the fix is out. The updater now refuses any second argument other than `--allow-older`. See the README, "Why an update was refused".
+- The client mod bounds the ship-removal events it accepts from a server: a round takes at most 65,536 such events about other ships (your own ship's event is never dropped), so a misbehaving server can no longer grow the client's memory for the whole round. Past the cap, the first dropped event is written once to the client's log and the rest are counted; the per-event log rows are capped as well. A normal round should come nowhere near the cap. A leftover entry is also cleared now for a ship that was destroyed before the client ever saw it.
+- The server's simulation thread does less work per tick: the frame sent to players is built from one snapshot per capture instead of several, roster and position lookups are cached, and each ship's weapons are read once per step. Play is unchanged; a test round on a build with these changes ran as smoothly as the same round on 0.6.4.
+- Hosts: a server started with the `record=diag` or `record=full` setting now also runs with the JVM flag `-XX:+DebugNonSafepoints`, so the profile it records attributes time more precisely. Nothing else about recording changes.
+- The joiner kit must be updated to 0.6.5: the version number is part of the kit's content check, so an older kit is refused at the door.
+
 ## 0.6.4 - 2026-11-07
 
 - Hosts: a player's text chat can now be muted. On "Players", pick the seat and press "Mute chat" under "Seat actions" ("Unmute chat" lifts it). In the game's chat an admin types `/chatmute` for a numbered list, then `/chatmute #<n>` (or `/chatmute <name>`); `/chatunmute` lists the mutes and `/chatunmute #<n>` lifts one. A muted player keeps playing and their commands still work; nobody sees their lines; the mute follows them across re-joins and lasts until it is lifted or the server stops. Command-file twins: `chat-mute <seat>` and `chat-unmute <seat>`. See the README, "Kicking, muting and banning players".
