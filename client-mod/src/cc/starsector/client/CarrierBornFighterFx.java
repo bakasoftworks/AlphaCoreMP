@@ -2,6 +2,7 @@ package cc.starsector.client;
 
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.characters.PersonAPI;
+import com.fs.starfarer.api.combat.CombatEngineAPI;
 import com.fs.starfarer.api.combat.CombatFleetManagerAPI;
 import com.fs.starfarer.api.combat.DeployedFleetMemberAPI;
 import com.fs.starfarer.api.combat.FighterWingAPI;
@@ -223,13 +224,17 @@ public final class CarrierBornFighterFx {
      *  it too — that exit nulls the body outside the sweep): the body leaves the latch, the pending list and
      *  its wing's member list (the dead body itself keeps {@code getWing()} — vanilla), and a dead LEADER hands
      *  the lead to a live member (never {@code null}). Runs dead-latched too: the removal is cleanup, and a member left behind is a dead leader
-     *  for the round. */
+     *  for the round.
+     *  A reaped CARRIER body also drops its replica-wing row
+     *  ({@link #wingsByCarrier}) — a dead body launches no new fighter, and the wings its fighters already
+     *  hold stay theirs (they ride {@code attached}, keyed by the fighter). */
     void onRemoteReaped(PredictReconcileCombatPlugin.RemoteEntity re) {
         if (!APPLY) {
             return;
         }
         if (re.ship != null) {
             carrierBorn.remove(re.ship);
+            wingsByCarrier.remove(re.ship);
             if (applied.remove(re.ship) != null) {
                 reaped++;
             }
@@ -270,6 +275,20 @@ public final class CarrierBornFighterFx {
             }
         }
         pending.remove(re);
+    }
+
+    /**
+     * The sweep law for {@link #wingsByCarrier}: a carrier body
+     * the engine no longer holds in play ({@link CombatEngineAPI#isEntityInPlay} false: neither live nor a
+     * pending add) drops its wing row, covering any carrier body that leaves play without passing the reap
+     * relay. Render thread, on the projectile-set sweep cadence; runs dead-latched too (cleanup). The
+     * wings themselves stay with the fighters already holding them.
+     */
+    void sweepGone(CombatEngineAPI engine) {
+        if (engine == null || wingsByCarrier.isEmpty()) {
+            return;
+        }
+        wingsByCarrier.keySet().removeIf(carrier -> !engine.isEntityInPlay(carrier));
     }
 
     /** {@code true} for a body the wire tagged as bay-born (class javadoc). */

@@ -68,20 +68,31 @@ public final class AdminChatMuteCommand {
     public static final int PIN_MAX = 4 * ChatMuteSet.CAP;
     /** Shown seats and observer slots clamp here ({@code 999+}); counts clamp at {@link #COUNT_SHOWN_MAX}. */
     static final int SLOT_SHOWN_MAX = 999;
+    /** r4: the observer ORDINAL clamp. A long public serve mints past 999, so the seat clamp
+     *  is too tight; 9,999 is the widest the receipt law allows — {@link #muteReceipt}'s widest shape
+     *  ({@code address only … (99+ more on that address)}) is 106 chars + {@code observer 9999+} = exactly
+     *  {@link ChatFrameCodec#TEXT_MAX_CHARS}; one more digit breaks the chat line law. */
+    static final int ORDINAL_SHOWN_MAX = 9_999;
     static final int COUNT_SHOWN_MAX = 99;
     static final int AGE_DAYS_MAX = 999;
 
     /**
-     * One live session as the door snapshots it under its lock. {@code observer} = the
-     * {@code /ban} menu's observer-row condition (the session's own OBSERVER flag with no hull), so
-     * "observer N" here and there is the same session when {@code live} arrives in the same order.
-     * {@code name} = the name that player's chat lines carry ({@code null} = ""), the {@code <name>}
-     * match key. The keys are the mute keys the door derives ({@link ChatMuteSet}; blank = null).
-     * {@code lastSendMillis} = the door's per-session chat stamp on its own clock (0 = never sent).
+     * One live session as the door snapshots it under its lock. {@code observer} = the session's own
+     * OBSERVER flag; {@code observerOrdinal} = its door-minted ordinal, r4 — the
+     * ONE "observer N" the /ban, /mute and /chatmute menus all show, minted at admission, never a
+     * position in this list; class law {@code observer == (observerOrdinal > 0)}, both fields from ONE
+     * {@code PeerSession}, no wire input reaches this ctor. {@code name} = the name that player's chat
+     * lines carry ({@code null} = ""), the {@code <name>} match key. The keys are the mute keys the door
+     * derives ({@link ChatMuteSet}; blank = null). {@code lastSendMillis} = the door's per-session chat
+     * stamp on its own clock (0 = never sent).
      */
-    public record Target(long sessionId, int seatId, boolean admin, boolean observer, String name,
-            String idKeyOrNull, String srcKeyOrNull, long lastSendMillis) {
+    public record Target(long sessionId, int seatId, boolean admin, boolean observer, int observerOrdinal,
+            String name, String idKeyOrNull, String srcKeyOrNull, long lastSendMillis) {
         public Target {
+            if (observer != (observerOrdinal > 0)) {
+                throw new IllegalArgumentException("Target: observer=" + observer + " with observerOrdinal="
+                        + observerOrdinal + " (an observer is born with its ordinal, a pilot has none)");
+            }
             name = name == null ? "" : name;
             idKeyOrNull = ChatMuteSet.blankToNull(idKeyOrNull);
             srcKeyOrNull = ChatMuteSet.blankToNull(srcKeyOrNull);
@@ -178,7 +189,6 @@ public final class AdminChatMuteCommand {
      *  {@link AdminBanCommand#PAGE_ROWS} rows + a "+N more" line naming the name form. */
     private static Result list(long selfSessionId, List<Target> live, List<ChatMuteSet.Entry> snapshot,
             long nowMillis) {
-        Map<Long, Integer> slots = observerSlots(selfSessionId, live);
         List<Target> candidates = new ArrayList<Target>(live.size());
         for (Target t : live) {
             if (t.sessionId() != selfSessionId && !t.admin()) {
@@ -201,8 +211,7 @@ public final class AdminChatMuteCommand {
         lines.add(LIST_HEADER);
         for (int i = 0; i < shown; i++) {
             Target t = candidates.get(i);
-            Integer slot = slots.get(t.sessionId());
-            lines.add(listRow(i + 1, t, slot == null ? 0 : slot, covered(t, snapshot), nowMillis));
+            lines.add(listRow(i + 1, t, covered(t, snapshot), nowMillis));
         }
         if (shown < candidates.size()) {
             lines.add("+" + (candidates.size() - shown) + " more - /chatmute <name> reaches them");
@@ -309,16 +318,17 @@ public final class AdminChatMuteCommand {
     }
 
     /**
-     * The admin's receipt after the mute applied. Names the seat (or the observer slot of the
-     * caller's list; 0 = unknown) and which keys hold it, never the player's name; an id-only mute
-     * carries the ban verb's caveat (a fresh id escapes it), an address-only one its twin.
-     * {@code moreOnAddress} = the caller's count of OTHER sessions or mutes sharing that address
-     * (shown only when an address key holds it; clamped at 99+). Worst case 119 chars.
+     * The admin's receipt after the mute applied. Names the seat (or the observer's door ordinal, r4
+     * — the same "observer N" its row showed; 0 = unknown) and which keys hold it, never the
+     * player's name; an id-only mute carries the ban verb's caveat (a fresh id escapes it), an
+     * address-only one its twin. {@code moreOnAddress} = the caller's count of OTHER sessions or mutes
+     * sharing that address (shown only when an address key holds it; clamped at 99+). Worst case 120
+     * chars = {@link ChatFrameCodec#TEXT_MAX_CHARS} exactly ({@link #ORDINAL_SHOWN_MAX}).
      */
-    public static String muteReceipt(int seatId, boolean observer, int observerSlot, boolean idKey, boolean srcKey,
+    public static String muteReceipt(int seatId, boolean observer, int observerOrdinal, boolean idKey, boolean srcKey,
             int moreOnAddress) {
-        String who = observer ? (observerSlot > 0 ? "observer " + shown(observerSlot, SLOT_SHOWN_MAX) : "an observer")
-                : "seat " + shown(seatId, SLOT_SHOWN_MAX);
+        String who = observer ? (observerOrdinal > 0 ? "observer " + shown(observerOrdinal, ORDINAL_SHOWN_MAX)
+                : "an observer") : "seat " + shown(seatId, SLOT_SHOWN_MAX);
         String keys = idKey && srcKey ? "id and address"
                 : idKey ? "id only - a fresh id escapes it"
                 : srcKey ? "address only - a new address escapes" : "no key";
@@ -361,28 +371,11 @@ public final class AdminChatMuteCommand {
         return safe == null ? who : who + " " + safe;
     }
 
-    /** The observer slot {@code sessionId} gets in this caller's lists (the {@code /ban} menu rule:
-     *  observers that are neither the caller nor an admin, in the door's order, from 1); 0 = none. */
-    public static int observerSlot(long selfSessionId, List<Target> live, long sessionId) {
-        Integer slot = observerSlots(selfSessionId, live).get(sessionId);
-        return slot == null ? 0 : slot;
-    }
-
-    private static Map<Long, Integer> observerSlots(long selfSessionId, List<Target> live) {
-        Map<Long, Integer> slots = new HashMap<Long, Integer>();
-        int slot = 0;
-        for (Target t : live) {
-            if (t.observer() && !t.admin() && t.sessionId() != selfSessionId) {
-                slots.put(t.sessionId(), ++slot);
-            }
-        }
-        return slots;
-    }
-
-    /** {@code #n seat 3 Bob - sent 4s ago (muted)} / {@code #n observer 1 - no chat yet}. Worst
-     *  case 66 chars (a 24-char name, slot 999+, age 999d). */
-    static String listRow(int n, Target t, int observerSlot, boolean muted, long nowMillis) {
-        String who = t.observer() ? "observer " + shown(observerSlot, SLOT_SHOWN_MAX)
+    /** {@code #n seat 3 Bob - sent 4s ago (muted)} / {@code #n observer 1 - no chat yet} (the observer's DOOR
+     *  ordinal, r4 — rows may skip numbers: an admin observer or the caller holds one too). Worst
+     *  case 67 chars (a 24-char name, ordinal 9999+, age 999d). */
+    static String listRow(int n, Target t, boolean muted, long nowMillis) {
+        String who = t.observer() ? "observer " + shown(t.observerOrdinal(), ORDINAL_SHOWN_MAX)
                 : "seat " + shown(t.seatId(), SLOT_SHOWN_MAX);
         String safe = t.name().isEmpty() ? null : VoiceMuteCommand.safeLabel(t.name());
         return "#" + n + " " + who + (safe == null ? "" : " " + safe) + " - "

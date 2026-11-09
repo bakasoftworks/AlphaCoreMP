@@ -248,13 +248,14 @@ public final class ReelLoopbackDoor {
         instance = door;
         opt.log.accept("reel door: LISTENING " + socket.getLocalSocketAddress() + " reel=" + opt.ccwrPath
                 + " created=" + feed.createdMillis + " tickRate=" + door.tickRate
+                + " tickRateMeta=" + metaToken(feed.meta.getOrDefault("knob.tickRate", "(none)"), 16)
                 + " speed=" + opt.speed + " flags=0x" + Integer.toHexString(opt.matchFlags
                         | HandshakeCodec.WELCOME_FLAG_SEAT_OBSERVER)
                 + (opt.dropShipId >= 0L ? " CONTROL drop ship=" + opt.dropShipId + " ticks="
                         + opt.dropFromTick + ".." + opt.dropToTick : "")
                 + " hs13=open"
-                + " meta descriptor.id=" + feed.meta.getOrDefault("descriptor.id", "(none)")
-                + " git.head=" + feed.meta.getOrDefault("git.head", "?"));
+                + " meta descriptor.id=" + metaToken(feed.meta.getOrDefault("descriptor.id", "(none)"), 64)
+                + " git.head=" + metaToken(feed.meta.getOrDefault("git.head", "?"), 64));
         return door;
     }
 
@@ -679,6 +680,16 @@ public final class ReelLoopbackDoor {
             b.append(c >= 0x20 && c < 0x7F ? c : '?');
         }
         return b.toString();
+    }
+
+    /**
+     * A reel meta value bound for the LISTENING row. The reel file
+     * is read from disk, so its meta is untrusted text: {@link #printable} folds it to capped printable
+     * ASCII, then every ' ' and '=' becomes '_' so the value stays ONE token after its own key and can
+     * never plant a separate {@code key=value} token on the row.
+     */
+    private static String metaToken(String s, int max) {
+        return printable(s, max).replace(' ', '_').replace('=', '_');
     }
 
     private static void sleepQuiet(long millis) {

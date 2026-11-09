@@ -97,8 +97,14 @@ final class DroneStrikeFxLane {
     /** Conversion wire id → the drone's CARRIER (RAPP-resolved only, never the apex
      *  proximity fallback), kept from PAIR until the impact end takes it: the conversion missile is
      *  sourceless on the wire, so this is the only honest {@code applyDamage} source (the engine's
-     *  floaty rule shows numbers for the player's own carrier). Bounded by live conversions. */
+     *  floaty rule shows numbers for the player's own carrier). Bounded by live conversions on a
+     *  lawful serve, and by {@link #keepCarrier}'s occupancy cap on any serve. */
     private final java.util.Map<Long, ShipAPI> carrierByWireId = new java.util.HashMap<Long, ShipAPI>();
+    /** Conversions refused at the {@link #keepCarrier}
+     *  occupancy cap — cumulative (the meter token) and this round (the first-refusal row and the
+     *  round-close total; zeroed by {@link #resetForMatchReset}). */
+    private int carrierCapRefused;
+    private int carrierCapRefusedRound;
 
     private int paired;     // predict_missile_droneconv_paired
     private int noPair;     // predict_missile_droneconv_nopair
@@ -141,7 +147,7 @@ final class DroneStrikeFxLane {
             ShipAPI apex = carrierOf(drone);
             String anchorKind = apex != null ? "carrier" : "apex";
             if (apex != null) {
-                carrierByWireId.put(t.wireId, apex); // The impact end's applyDamage source
+                keepCarrier(t.wireId, apex); // The impact end's applyDamage source
             }
             if (apex == null) {
                 apex = nearest(drone.getLocation(), APEX_HULL_ID, ARC_SOURCE_RANGE, false);
@@ -229,7 +235,40 @@ final class DroneStrikeFxLane {
             fx.done = true;
         }
         active.clear();
+        // The round's cap total, written only when the
+        // cap refused something, then the per-round count re-arms with the emptied map.
+        if (carrierCapRefusedRound > 0) {
+            PilotWatchLog.info("predict missile droneconv carrier cap round close: refused="
+                    + carrierCapRefusedRound + " held=" + carrierByWireId.size()
+                    + " refused_total=" + carrierCapRefused);
+        }
+        carrierCapRefusedRound = 0;
         carrierByWireId.clear();
+    }
+
+    /**
+     * The one writer of {@link #carrierByWireId}, under an
+     * OCCUPANCY cap of {@link RosterAppendLane#MAX_ROUND_ENTITIES} held entries (the roster's own
+     * per-round entity bound, reused). The map holds one entry per conversion from its pair to its
+     * impact end, so a lawful serve holds a handful; a hostile serve that pairs conversions which
+     * never end would grow it for the whole round. At the cap a NEW id is refused (not stored,
+     * counted; its impact end then reads no carrier, as for an untagged drone) and nothing held is
+     * evicted; a held id is re-pointed in place (no growth), and a take frees its slot. The round's
+     * first refusal writes ONE error row. {@code wireId}: the conversion's wire id, a signed long
+     * the map treats as an opaque key. Render thread.
+     */
+    void keepCarrier(long wireId, ShipAPI carrier) {
+        if (carrierByWireId.size() >= RosterAppendLane.MAX_ROUND_ENTITIES
+                && !carrierByWireId.containsKey(wireId)) {
+            carrierCapRefused++;
+            if (++carrierCapRefusedRound == 1) {
+                PilotWatchLog.error("predict missile droneconv carrier cap ("
+                        + RosterAppendLane.MAX_ROUND_ENTITIES + " held conversions) reached: refused wire="
+                        + wireId + " (not stored; later refusals this round are counted silently)", null);
+            }
+            return;
+        }
+        carrierByWireId.put(wireId, carrier);
     }
 
     /** The conversion's carrier body at its impact end (one take per wire id; null when
@@ -246,7 +285,8 @@ final class DroneStrikeFxLane {
                 + " predict_missile_droneconv_arc=" + arcs
                 + " predict_missile_droneconv_arc_skipped=" + arcSkipped
                 + " predict_missile_droneconv_end=" + ended
-                + " predict_missile_droneconv_local_gone=" + localGoneConv;
+                + " predict_missile_droneconv_local_gone=" + localGoneConv
+                + " predict_missile_droneconv_carrier_cap_refused=" + carrierCapRefused;
     }
 
     private static boolean parseOnOff(String raw) {

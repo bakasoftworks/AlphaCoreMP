@@ -209,7 +209,11 @@ final class ClientLaunchKnobs {
             cc.starsector.server.match.MatchDescriptor desc = MatchMissionBuilder.cachedDescriptor();
             String reelId = door.meta("descriptor.id");
             if (desc != null && reelId != null && !reelId.equals(desc.matchId())) {
-                throw new IllegalStateException("reel descriptor.id=" + reelId + " != loaded descriptor "
+                // The reel id is untrusted file text and this message is
+                // logged by the catch below (its stack trace included), so it is bounded HERE; the comparison
+                // above keeps the raw value, as a folded id reads "-" when absent and could match on 64 chars alone.
+                throw new IllegalStateException("reel descriptor.id=" + FallbackAnnounce.sanitize(reelId, 64)
+                        + " != loaded descriptor "
                         + desc.matchId() + " (feed the reel's own descriptor file via cc.match.descriptor)");
             }
             return new String[] {"127.0.0.1", Integer.toString(door.port())};

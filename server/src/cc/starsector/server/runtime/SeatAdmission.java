@@ -25,7 +25,8 @@ import java.io.IOException;
  *       <b>arbiter seed</b> (token → bound ship) — by claiming the seat in the ledger.</li>
  * </ul>
  *
- * <p>Fail-closed: a blank, unminted, or already-seated token throws {@link SeatAdmissionRejected}
+ * <p>Fail-closed: a blank, unminted, or already-seated token, or a blank client id
+ * ({@code client_id_required}, refused before the claim), throws {@link SeatAdmissionRejected}
  * (an {@link IOException}, so it flows into the runner's existing accept-loop failure handling that
  * closes the sockets) carrying a minted machine reason. Only a freshly-SEATED token returns an
  * identity. Stateless except for the claim it makes on the passed authority (the ledger owns that
@@ -45,8 +46,10 @@ public final class SeatAdmission {
     /**
      * Resolve {@code seatToken} against {@code authority} into the token-bound authority identity
      * for {@code clientId}, claiming the seat in the ledger. Throws {@link SeatAdmissionRejected}
-     * with a minted reason if the token is blank ({@code seat_token_required}), unminted
-     * ({@code seat_token_unknown}), or already holds a live seat ({@code seat_already_occupied}).
+     * with a minted reason if the token is blank ({@code seat_token_required}), the client id is
+     * blank ({@code client_id_required}; checked after the token and before the claim, so the
+     * refusal takes no seat), the token is unminted ({@code seat_token_unknown}), or it already
+     * holds a live seat ({@code seat_already_occupied}).
      */
     public static ClientAuthorityIdentity authorize(
             MatchSeatAuthority authority, String clientId, String seatToken) throws SeatAdmissionRejected {
@@ -67,6 +70,11 @@ public final class SeatAdmission {
         }
         if (seatToken == null || seatToken.isBlank()) {
             throw new SeatAdmissionRejected(DoorRejectReasons.SEAT_TOKEN_REQUIRED, clientId);
+        }
+        // The identity minted below refuses a blank client id; checked
+        // BEFORE the claim, so a refusal never strands the seat this call would have taken.
+        if (clientId == null || clientId.isBlank()) {
+            throw new SeatAdmissionRejected(DoorRejectReasons.CLIENT_ID_REQUIRED, clientId);
         }
         MatchSeatAuthority.Seating seating = authority.claim(seatToken, armTenureGate);
         if (!seating.seated()) {

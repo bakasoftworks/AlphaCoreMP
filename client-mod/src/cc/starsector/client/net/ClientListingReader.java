@@ -155,7 +155,7 @@ public final class ClientListingReader {
      * {@code ListingFrameCodec.MARK_MODSET_REQUIRED}. */
     public static final int MARK_MODSET_REQUIRED = 26;
     /** The KIND_MODSET OPTIONAL mark (a presentation-only mod the joiner MAY run;
-     * never folded). Mirrors {@code ListingFrameCodec.MARK_MODSET_OPTIONAL}. */
+     * folded when run, the door admits any subset). Mirrors {@code ListingFrameCodec.MARK_MODSET_OPTIONAL}. */
     public static final int MARK_MODSET_OPTIONAL = 27;
     /** The /spawnfoe / /spawnfriend row toggled to OFFICER (the client's Left/Right
      * flips 18⇄28 / 23⇄29 in place; Enter pastes the trailing {@code officer} keyword). Mirror

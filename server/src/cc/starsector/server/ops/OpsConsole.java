@@ -3267,8 +3267,9 @@ public final class OpsConsole {
      *
      * <p>{@code posixOrNull} = the Linux host's facts the WATCH arm
      * captured ({@link #posixHostOrNull} over the route's read): set = the Linux form
-     * ({@link OpsJoinSelf#scrubSettingsSecret(OpsJoinSelf.Effects, OpsJoinSelf.PosixHost)}: the ONE file the press
-     * wrote there, rewritten owner-only); null = the Windows form over LOCALAPPDATA / APPDATA / USERPROFILE,
+     * ({@link OpsJoinSelf#scrubSettingsSecret(OpsJoinSelf.Effects, OpsJoinSelf.PosixHost)}: the files the press
+     * wrote there - the default and, on a two-window WATCH, {@code join-settings-2.properties} - rewritten
+     * owner-only); null = the Windows form over LOCALAPPDATA / APPDATA / USERPROFILE,
      * unchanged. This method never reads {@code os.name}.
      */
     private void scrubJoinSettings(OpsJoinSelf.PosixHost posixOrNull) {
@@ -3905,8 +3906,9 @@ public final class OpsConsole {
             synchronized (ServerOpsLaunch.PROPS_LOCK) {
                 String raw = Files.isRegularFile(propsFile) ? Files.readString(propsFile, StandardCharsets.UTF_8) : "";
                 List<String> fresh = raw.isEmpty() ? List.of() : raw.lines().toList();
-                ModsEdit edit = excludeRow != null ? ModsEdit.NONE : modsEdit(op, form, roots.modsBase(), fresh,
-                        roots.mode() == OpsRoots.Mode.PACKAGE ? roots.pkg().resolve(PackageModSync.MODS_DIR) : null);
+                ModsEdit edit = excludeRow != null ? ModsEdit.NONE : withOptionalCap(modsEdit(op, form, roots.modsBase(),
+                        fresh, roots.mode() == OpsRoots.Mode.PACKAGE ? roots.pkg().resolve(PackageModSync.MODS_DIR) : null),
+                        fresh);
                 List<String> want = fresh;
                 if (edit.refusal() != null) {
                     body = OpsConsoleForms.errorJson("Mods", edit.refusal());
@@ -3978,6 +3980,27 @@ public final class OpsConsole {
         want = OpsMatchRows.withModsEnabledRow(want, edit.enabled());
         want = OpsMatchRows.withModsOptionalRow(want, edit.optional());
         return OpsMatchRows.withModsOffOptionalRow(want, edit.offOptional());
+    }
+
+    /**
+     * The optional-set CAP law at the Mods tab's own write. An edit whose composed
+     * {@code mods.optional} row holds more than {@code ModSet.MAX_OPTIONAL} ids becomes a refusal BEFORE the file
+     * changes ({@link OpsMatchRows#modsOptionalCapRefusalOrNull}, the one sentence every writer of that row
+     * shares), so the host learns at the tick - the page's error line - rather than at the next Start or package
+     * launch, which refuse the same row ({@code ServerOpsLaunch}, {@code PackageModSync.plan}). Pure; a refused or
+     * non-writing edit, or one leaving the optional row untouched, passes through as itself.
+     *
+     * <p>{@code standingLines} = the properties as read before the edit - an edit that
+     * composes no MORE optional ids than the standing row holds passes even over the cap (every op recomposes the
+     * whole row, so without this a row already over the cap trapped the host: every untick was refused).
+     */
+    static ModsEdit withOptionalCap(ModsEdit edit, List<String> standingLines) {
+        if (edit.refusal() != null || !edit.writes() || edit.optional() == null) {
+            return edit;
+        }
+        String cap = OpsMatchRows.modsOptionalCapRefusalOrNull(edit.optional(),
+                OpsMatchRows.modsOptionalRowValue(standingLines));
+        return cap == null ? edit : ModsEdit.refused(cap);
     }
 
     /**

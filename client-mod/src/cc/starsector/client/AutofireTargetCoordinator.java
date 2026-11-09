@@ -53,6 +53,16 @@ final class AutofireTargetCoordinator {
     int applies;      // predict_event_rebase_autofire_target_applies (pick-SET transitions accepted)
     int skipUnknown;  // ..._skip_unknown (unresolvable targetWireId — local pick kept)
     int staleExpired; // ..._stale_expired (keepalive silence / clock anomaly — reverted to local)
+    /**
+     * -- the mount DOMAIN check at intake: an ordinal outside the own body's
+     * {@code getAllWeapons()} list ({@link FireLaneCoordinator#ownMountDomain}) names no mount and is refused +
+     * counted, so {@link #pickByMount} holds at most one pick per own mount; with no own body every pick is refused +
+     * counted (the ~60-tick keepalive re-offers). The first out-of-domain refusal writes one INFO row; both counts
+     * ride the discharge-reconcile meter line ({@code autofire_mount_refused}, {@code autofire_mount_null_own_refused}).
+     */
+    int mountRefused;
+    int mountNullOwnRefused;
+    private boolean mountRefusedLogged;
 
     /** Per-ship-identity mount-ordinal cache (fresh hulls are fresh objects; dropped with the picks). */
     private ShipAPI ordinalShip;
@@ -81,6 +91,16 @@ final class AutofireTargetCoordinator {
             pickByMount.remove(Integer.valueOf(mount));
             return;
         }
+        // The mount DOMAIN check, before the resolve and the put.
+        int domain = FireLaneCoordinator.ownMountDomain(plugin.ownShip);
+        if (domain < 0) {
+            mountNullOwnRefused++; // no own body to check the ordinal against; the keepalive re-offers
+            return;
+        }
+        if (mount < 0 || mount >= domain) {
+            refuseMount(mount, domain);
+            return;
+        }
         PredictReconcileCombatPlugin.RemoteEntity re =
                 plugin.remoteEntities.get(Long.valueOf(id));
         if (re == null || re.ship == null) {
@@ -97,6 +117,19 @@ final class AutofireTargetCoordinator {
         }
         pick.targetWireId = id;
         pick.lastSeenTick = event.simTick();
+    }
+
+    /**
+     * -- an out-of-domain ordinal: counted, no pick held; the first one
+     * writes one INFO row (a hull swap whose pick lands a frame before the fresh own body can show it lawfully).
+     */
+    private void refuseMount(int mount, int domain) {
+        mountRefused++;
+        if (!mountRefusedLogged) {
+            mountRefusedLogged = true;
+            PilotWatchLog.info("predict autofire-target mount refused: mount=" + mount + " own_weapons=" + domain
+                    + " (no pick held; later refusals are counted on the discharge-reconcile line)");
+        }
     }
 
     /**

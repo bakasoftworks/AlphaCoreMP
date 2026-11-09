@@ -195,6 +195,16 @@ public final class ServeLauncher {
     static final String ROW_RECORD = "record";
     static final String ROW_RECORD_MAX_MIB = "record.maxMiB";
     /**
+     * The flight retention row ({@link ServeRetention#parseKeep}): blank / absent = the newest
+     * {@value ServeRetention#KEEP_DEFAULT} flight folders are kept, {@code 0} = all are kept, else
+     * {@value ServeRetention#KEEP_MIN}..{@value ServeRetention#KEEP_MAX}; anything else refuses {@link #R_ROW_PARSE}
+     * before any delete. Parsed in BOTH modes (one grammar), but only a PACKED start sweeps: owner mode never deletes a
+     * flight folder, whatever the row says. The sweep runs after every pre-launch check passed and the new flight exists ({@link #sweepOldFlights}).
+     *
+     *
+     */
+    static final String ROW_KEEP_FLIGHTS = "run.keepFlights";
+    /**
      * {@code timer.optOut=off} skips the per-start timer opt-out
      * exactly as {@code -D}{@value TimerOptOut#KNOB_PROPERTY}{@code =off} on this JVM does ({@link TimerOptOut#knobOff}'s
      * grammar: {@code off}, trimmed, any case; anything else = on): the property OR the row = off
@@ -600,6 +610,9 @@ public final class ServeLauncher {
         }
         seedLunaSettings(pkg, flight, out); // before life 1 boots: a one-way seed, the flight's own writes stay here
         Path pointer = run.resolve(POINTER_FILE);
+        // the flight the pointer named BEFORE this start: retention never removes it (a backward clock step makes the
+        // name order lie); missing / unreadable = "" (bounded read, the line is a flight name)
+        String pointedBefore = LaneFollow.readHead(pointer, 256).lines().findFirst().orElse("").trim();
         try {
             Files.deleteIfExists(pointer);
             Files.write(pointer, (flight.getFileName() + "\n").getBytes(StandardCharsets.US_ASCII));
@@ -639,6 +652,11 @@ public final class ServeLauncher {
             say(out, REFUSED_PREFIX + refusal.sentence());
             return refusal.exit();
         }
+        // Flight retention runs HERE only - after every pre-launch check passed (a
+        // refused start deletes nothing) and after this start's flight exists; no refusal follows. Its receipt row
+        // rides the supervisor, right after supervisor_pid= (the receipt's first row stays first).
+        String retentionRow = c.keepFlights > 0
+                ? sweepOldFlights(run, flight.getFileName().toString(), pointedBefore, c.keepFlights, out) : null;
 
         writeLines(flight.resolve(SERVER_CMD_FILE), c.argv, out);
         writeLines(flight.resolve(LAUNCH_FILE), List.of(
@@ -669,6 +687,9 @@ public final class ServeLauncher {
                 box.getOrDefault(ROW_BIND_HOST, "").trim(), c.bindPortFromBox ? String.valueOf(c.bindPort) : "", windows, pkg);
         ServeSupervisor supervisor = new ServeSupervisor(flight, stopFile, receipt, c.workDir, c.argv, env,
                 MAX_RELAUNCHES, RELAUNCH_DELAY_MS, out, c.bindPort, timerApplier(box));
+        if (retentionRow != null) {
+            supervisor.rowAfterPid(retentionRow);
+        }
         Thread hook = new Thread(supervisor::requestStop, "serve-launcher-stop");
         Runtime.getRuntime().addShutdownHook(hook);
         try {
@@ -716,6 +737,9 @@ public final class ServeLauncher {
         /** The replicas row as read, {@code on|off}, for {@code launch.txt}
          * ({@link #pilotReplicasStamp}); null = the rows were never reached. */
         String pilotReplicas;
+        /** The {@link #ROW_KEEP_FLIGHTS} count this start sweeps to, 2..10000;
+         * 0 = no sweep (owner mode, the row's 0, or the rows were never reached). */
+        int keepFlights;
     }
 
     /**
@@ -1025,6 +1049,13 @@ public final class ServeLauncher {
         }
         String packStamp = c.manifest.meta.get(OpsRoots.PACK_STAMP);
         boolean packed = packStamp != null && !packStamp.isBlank();
+        // The retention row parses in BOTH modes; only a packed start sweeps
+        try {
+            int keep = ServeRetention.parseKeep(box.get(ROW_KEEP_FLIGHTS));
+            c.keepFlights = packed ? keep : ServeRetention.KEEP_ALL;
+        } catch (IllegalArgumentException bad) {
+            return rowRefusal(ROW_KEEP_FLIGHTS, bad.getMessage());
+        }
         String mismatch = checkedAgainstManifest(pkg, c.manifest, out);
         if (mismatch != null) {
             // A PACKED server names the update script as the remedy - a
@@ -1398,6 +1429,28 @@ public final class ServeLauncher {
     public static String configRowProblemOrNull(Properties props) {
         Refusal r = checkRows(props, Map.of());
         return r == null ? null : r.sentence();
+    }
+
+    /**
+     * The packed start's flight retention ({@link ServeRetention#sweep}) over {@code run}: its host lines to the
+     * console, and its receipt row returned for the supervisor (null = no row: {@code run} could not be listed, so
+     * nothing was deleted, said once as a warning). Never throws: a start is never refused after the sweep.
+     *
+     *
+     */
+    static String sweepOldFlights(Path run, String newFlight, String pointedBefore, int keep, PrintStream out) {
+        ServeRetention.Result r;
+        try {
+            r = ServeRetention.sweep(run, newFlight, pointedBefore, keep);
+        } catch (IOException | RuntimeException unlisted) {
+            say(out, "serve-launcher warning: old flight folders in " + run + " were not checked ("
+                    + unlisted.getClass().getSimpleName() + "); none were removed");
+            return null;
+        }
+        for (String line : r.consoleLines(run, keep)) {
+            say(out, line);
+        }
+        return r.receiptRow();
     }
 
     private static Refusal rowRefusal(String key, String message) {

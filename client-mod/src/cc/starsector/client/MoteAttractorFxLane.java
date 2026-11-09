@@ -133,7 +133,13 @@ final class MoteAttractorFxLane {
         }
     }
 
+    /** Presses in flight, at most ONE per activator body ({@link #present} refuses a second). */
     private final ArrayList<Press> live = new ArrayList<Press>();
+    /** Presses refused because their activator already
+     *  had one live — cumulative (the meter token) and this round (the first-refusal row and the
+     *  round-close total; zeroed by {@link #resetRound}). */
+    private int pressRefusedLive;
+    private int pressRefusedLiveRound;
 
     private int presents;
     private int locked;
@@ -172,6 +178,20 @@ final class MoteAttractorFxLane {
                         + " hf=" + hf + " (mode=meter, nothing spawned)");
                 return;
             }
+            // ONE live press per activator, as vanilla runs
+            // one system activation at a time (charge-up, active, charge-down, then cooldown), so the
+            // live list is bounded by the ships in play. A second ON edge for a ship whose press is
+            // still live is refused and counted (the live press keeps running, nothing is evicted);
+            // the round's first refusal writes ONE error row, counts only.
+            if (hasLivePress(activator)) {
+                pressRefusedLive++;
+                if (++pressRefusedLiveRound == 1) {
+                    PilotWatchLog.error("predict threat mote-attractor: press refused, its activator already"
+                            + " has a live press (live=" + live.size() + "; later refusals this round are"
+                            + " counted silently)", null);
+                }
+                return;
+            }
             float chargeUp = 0f;
             float chargeDown = 0f;
             ShipSystemAPI sys = activator.getSystem();
@@ -180,8 +200,8 @@ final class MoteAttractorFxLane {
                 chargeDown = Math.max(0f, sys.getChargeDownDur());
             }
             Press p = new Press(activator, lockOrNull, new Vector2f(x, y), chargeUp, chargeDown, hf);
-            live.add(p);
             engine.addPlugin(p);
+            live.add(p); // only once the engine runs it: a press that never advances would refuse its ship all round
             CcReplicaEffectGate.replicaFrame(TAG);
             log("PRESS " + ident(activator) + " -> "
                     + (lockOrNull != null ? ident(lockOrNull) : ("point " + (int) x + "," + (int) y))
@@ -231,6 +251,17 @@ final class MoteAttractorFxLane {
         CcReplicaEffectGate.visualMinted(TAG);
     }
 
+    /** Whether {@code activator} (by body identity) already
+     *  has a press in flight; a linear scan of a list bounded by the ships in play. */
+    private boolean hasLivePress(ShipAPI activator) {
+        for (Press p : live) {
+            if (p.activator == activator) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void retire(CombatEngineAPI engine, Press p) {
         live.remove(p);
         try {
@@ -251,6 +282,13 @@ final class MoteAttractorFxLane {
                 }
             }
         }
+        // The round's refusal total, written only when a
+        // press was refused, then the per-round count re-arms with the emptied list.
+        if (pressRefusedLiveRound > 0) {
+            PilotWatchLog.info("predict threat mote-attractor round close: press_refused_live="
+                    + pressRefusedLiveRound + " live=" + live.size() + " refused_total=" + pressRefusedLive);
+        }
+        pressRefusedLiveRound = 0;
         live.clear();
     }
 
@@ -265,6 +303,7 @@ final class MoteAttractorFxLane {
                 + " predict_mote_no_slot=" + noSlot
                 + " predict_mote_meter_candidates=" + meterCandidates
                 + " predict_mote_live=" + live.size()
+                + " predict_mote_press_refused_live=" + pressRefusedLive
                 + " predict_mote_throws=" + throwsSeen;
     }
 

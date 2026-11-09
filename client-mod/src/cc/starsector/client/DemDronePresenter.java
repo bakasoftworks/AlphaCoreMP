@@ -195,8 +195,14 @@ final class DemDronePresenter {
     private final Map<String, Float> ranges = new HashMap<String, Float>();
     /** fired-latch: WIRE ids whose payload burn already ran its vanilla
      *  {@code firingTime} — they never present a DEM beam again this round. Keyed on the
-     *  wire id (not the body) so it survives a puppet re-adopt, which mints a NEW body. */
+     *  wire id (not the body) so it survives a puppet re-adopt, which mints a NEW body. Written
+     *  only by {@link #latchFired}, under its occupancy cap. */
     private final Set<Long> firedWireIds = new HashSet<Long>();
+    /** Latches refused at the {@link #latchFired}
+     *  occupancy cap — cumulative (the meter token) and this round (the first-refusal row and the
+     *  round-close total; zeroed by {@link #resetForMatchReset}). */
+    private int firedCapRefused;
+    private int firedCapRefusedRound;
 
     // === Cumulative counters (survive rounds — the missile-lane discipline) ===
     private int beamsSeen;      // predict_dem_beams_seen (sourceless records considered)
@@ -618,7 +624,7 @@ final class DemDronePresenter {
                         latchId = e.wireId;
                     }
                     if (latchId >= 0L) {
-                        firedWireIds.add(latchId);
+                        latchFired(latchId);
                     } else {
                         capUnkeyed++; // unlinked puppet: cap holds, but no re-mint latch
                     }
@@ -750,12 +756,38 @@ final class DemDronePresenter {
     void resetForMatchReset() {
         PilotWatchLog.info("predict dem-lane match-reset totals: entries=" + entries.size()
                 + " matched=" + matchedRecords + " unmatched=" + unmatched
-                + " minted=" + dronesMinted + " ended=" + trackEnded);
+                + " minted=" + dronesMinted + " ended=" + trackEnded
+                + " fired_latched=" + firedWireIds.size() + " fired_cap_refused=" + firedCapRefusedRound);
         for (Entry e : entries.values()) {
             retire(e);
         }
         entries.clear();
         firedWireIds.clear(); // wire ids are per-round; a new round re-arms every child
+        firedCapRefusedRound = 0;
+    }
+
+    /**
+     * The one writer of {@link #firedWireIds}, under an
+     * OCCUPANCY cap of {@link RosterAppendLane#MAX_ROUND_ENTITIES} latched ids a round (the
+     * roster's own per-round entity bound, reused). One latch per DEM burn that ran its firing
+     * time, so a lawful round holds a few; a hostile serve minting fresh child ids would grow the
+     * set for the whole round. At the cap a NEW id is refused (not latched, counted: that child
+     * may present its beam again this round, a presentation cost only) and nothing latched is
+     * evicted; a latched id re-latches without growth. The round's first refusal writes ONE error
+     * row. {@code latchId}: a wire id, {@code >= 0} at the one caller (an unlinked child's
+     * {@code -1} never reaches here); the set treats it as an opaque key. Render thread.
+     */
+    void latchFired(long latchId) {
+        if (firedWireIds.size() >= RosterAppendLane.MAX_ROUND_ENTITIES && !firedWireIds.contains(latchId)) {
+            firedCapRefused++;
+            if (++firedCapRefusedRound == 1) {
+                PilotWatchLog.error("predict dem fired-latch cap (" + RosterAppendLane.MAX_ROUND_ENTITIES
+                        + " latched ids this round) reached: refused wire=" + latchId
+                        + " (not latched; later refusals this round are counted silently)", null);
+            }
+            return;
+        }
+        firedWireIds.add(latchId);
     }
 
     /** The lane's greppable meter/census line (the shared meter-line discipline); silent at off. */
@@ -785,6 +817,7 @@ final class DemDronePresenter {
                 + " predict_dem_fire_capped=" + fireCapped
                 + " predict_dem_fire_latched=" + fireLatched
                 + " predict_dem_cap_unkeyed=" + capUnkeyed
+                + " predict_dem_fired_cap_refused=" + firedCapRefused
                 + " predict_dem_track_ended=" + trackEnded
                 + " predict_dem_child_gone=" + childGone
                 + " entries=" + entries.size());

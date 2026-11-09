@@ -772,7 +772,11 @@ debrief() {
     # included), the sound self-check verdict.
     m+=("game_java=$(grep_rows "$work/starsector.log" 'Java version:' 1 300)")
     m+=("sound_init=$(grep_rows "$work/starsector.log" 'OpenAL|Fatal:|nalListenerfv|sound initialization|UnsatisfiedLinkError' 6 200)")
-    m+=("sidelog_kit=$(grep_rows "$work/cc-client.log" 'kit launch|sound-retry|sound second chance|engine-map' 6 200)")
+    # Only the mod's own rows - anchored at the row head the sidelog layout writes
+    # ("<ms> [<thread>] LEVEL  <logger> - [CC-PILOT-WATCH] [seat tag] ..."): the load-time kit and sound rows,
+    # and the engine link check (ok = INFO, a failure = WARN). A received seat name or chat line echoed MID-row
+    # never matches, so peer text cannot ride this kit-authored row or push the genuine rows out.
+    m+=("sidelog_kit=$(grep_rows "$work/cc-client.log" '^[0-9]+ \[[^]]*] (INFO +[^ ]+ - \[CC-PILOT-WATCH] (\[(auto|seat[0-9]+)] )?onApplicationLoad: (kit launch|sound second chance)|(INFO|WARN) +[^ ]+ - \[CC-PILOT-WATCH] (\[(auto|seat[0-9]+)] )?engine-map: )' 6 200)")
     if [ -n "$CCSNDLOG" ] && [ -f "$CCSNDLOG" ]; then
         m+=("sound_probe=$(grep_rows "$CCSNDLOG" '^probe RESULT' 3 200)")
         redact_file "$CCSNDLOG" "$work/sound-check.log" 2>/dev/null

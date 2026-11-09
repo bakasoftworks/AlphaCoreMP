@@ -2498,6 +2498,24 @@ public final class PredictReconcileDatagramSession implements PredictSession {
         return freshness.supersededDropped();
     }
 
+    /** SNAP datagrams refused at the per-group occupancy cap
+     * {@link SnapFreshnessBuffer#SNAP_GROUP_MAX_DATAGRAMS} (conflation ON; fresh + future groups; a session
+     * total, 0 = the cap never bit) — the teardown receipt's {@code snap_group_cap_dropped}. */
+    public long snapGroupCapDropped() {
+        return freshness.groupCapDropped();
+    }
+
+    /** The deepest SNAP tick group seen this session (either group) — the unmeasured per-tick datagram peak,
+     * metered so a re-size of the group cap rests on flights; the teardown receipt's {@code snap_group_depth_max}. */
+    public int snapGroupDepthMax() {
+        return freshness.groupDepthMax();
+    }
+
+    /** The SNAP tick-group bytes high-water, receipt {@code snap_group_bytes_max}. */
+    public long snapGroupBytesMax() {
+        return freshness.groupBytesMax();
+    }
+
     /** seq-stale SNAP payloads folded into the fresh tick-group via the stale hook. */
     public long snapStaleFoldQueued() {
         return freshness.staleFoldQueued();

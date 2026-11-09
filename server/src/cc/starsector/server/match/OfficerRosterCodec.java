@@ -367,10 +367,18 @@ public final class OfficerRosterCodec {
                 continue;
             }
             String[] f = line.split("\\|", -1);
+            /*
+             * Every refusal text in this loop carries
+             * bounded tokens only (the line number, a field count or index, a length, a parsed
+             * number): the wire path wraps the message into the roster-append frame's refusal,
+             * so an echoed line or field would carry a hostile host's text into the joiner's log.
+             */
             if ((f.length != 7 && f.length != 8) || !"officer".equals(f[0])) {
                 throw new IllegalArgumentException("officers.txt line " + lineNo
                         + ": expected 7 (or 8 with an aiCoreId) '|' fields starting 'officer',"
-                        + " got " + f.length + " ('" + line + "')");
+                        + " got " + f.length + " fields, leading token "
+                        + ("officer".equals(f[0]) ? "ok" : "not 'officer'")
+                        + ", line " + line.length() + " chars");
             }
             // The optional eighth field decodes from the CLOSED AI-core set only.
             String aiCoreId = "";
@@ -378,7 +386,8 @@ public final class OfficerRosterCodec {
                 aiCoreId = requireToken(f[7], lineNo, "aiCoreId");
                 if (!isAiCoreId(aiCoreId)) {
                     throw new IllegalArgumentException("officers.txt line " + lineNo
-                            + ": aiCoreId '" + aiCoreId + "' is not one of " + AI_CORE_IDS);
+                            + ": aiCoreId (field 8, " + aiCoreId.length() + " chars) is not one of "
+                            + AI_CORE_IDS);
                 }
             }
             String variantId = requireToken(f[1], lineNo, "variantId");
@@ -390,18 +399,21 @@ public final class OfficerRosterCodec {
                 level = Integer.parseInt(f[5].trim());
             } catch (NumberFormatException e) {
                 throw new IllegalArgumentException("officers.txt line " + lineNo
-                        + ": level must be an int, got '" + f[5] + "'");
+                        + ": level (field 6, " + f[5].length() + " chars) must be an int");
             }
             if (level < 1 || level > 10) {
                 throw new IllegalArgumentException("officers.txt line " + lineNo
                         + ": level out of range 1..10: " + level);
             }
             Map<String, Float> skills = new LinkedHashMap<>();
+            int entryNo = 0; // 1-based skill entry within field 7, named by the refusals below
             for (String pair : requireToken(f[6], lineNo, "skills").split(",", -1)) {
+                entryNo++;
                 String[] kv = pair.trim().split("=", -1);
                 if (kv.length != 2) {
                     throw new IllegalArgumentException("officers.txt line " + lineNo
-                            + ": skill entry must be id=level, got '" + pair + "'");
+                            + ": skill entry " + entryNo + " must be id=level, got " + kv.length
+                            + " '='-separated parts (" + pair.length() + " chars)");
                 }
                 String skillId = requireToken(kv[0], lineNo, "skillId");
                 float skillLevel;
@@ -409,21 +421,24 @@ public final class OfficerRosterCodec {
                     skillLevel = Float.parseFloat(kv[1].trim());
                 } catch (NumberFormatException e) {
                     throw new IllegalArgumentException("officers.txt line " + lineNo
-                            + ": skill level must be a number, got '" + kv[1] + "'");
+                            + ": skill entry " + entryNo + " level (" + kv[1].length()
+                            + " chars) must be a number");
                 }
                 if (skillLevel != 1.0f && skillLevel != 2.0f) {
                     throw new IllegalArgumentException("officers.txt line " + lineNo
-                            + ": skill level must be 1 (base) or 2 (elite), got " + kv[1]);
+                            + ": skill entry " + entryNo + " level must be 1 (base) or 2 (elite), got "
+                            + skillLevel);
                 }
                 if (skills.put(skillId, skillLevel) != null) {
                     throw new IllegalArgumentException("officers.txt line " + lineNo
-                            + ": duplicate skill id '" + skillId + "'");
+                            + ": duplicate skill id at entry " + entryNo + " (" + skillId.length()
+                            + " chars)");
                 }
             }
             for (OfficerSpec prior : out) {
                 if (prior.variantId.equals(variantId)) {
                     throw new IllegalArgumentException("officers.txt line " + lineNo
-                            + ": duplicate variant row '" + variantId + "'");
+                            + ": duplicate variant row (variantId " + variantId.length() + " chars)");
                 }
             }
             int firstSpace = shipName.indexOf(' ');

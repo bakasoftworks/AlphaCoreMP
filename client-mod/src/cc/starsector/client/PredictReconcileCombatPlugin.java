@@ -2297,6 +2297,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     // Persists across round resets (contentIds are match-scoped — the server registry lives
     // outside the round loop); cleared at teardownActive with the session. Render-thread only.
     final Map<Integer, String> contentCatalog = new HashMap<>();
+    /** The catalog's per-session entry cap and its only live writer. */
+    final MatchOverLane.ContentCatalogCap contentCatalogCap = new MatchOverLane.ContentCatalogCap();
     /** The once-per-tenure replica-loadout FORK check at the
      *  bind; server weapon ids resolve through {@link #contentCatalog}. */
     private final ReplicaLoadoutCheck replicaLoadout = new ReplicaLoadoutCheck(contentCatalog);
@@ -3969,8 +3971,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             lastFreshSnapshotWallNanos = System.nanoTime();
             if (!snapshot.contentDictionary().isEmpty()) {
                 // Fold this frame's cycling content-dictionary announcements
-                // into the catalog (law + lifecycle at the contentCatalog field doc).
-                contentCatalog.putAll(snapshot.contentDictionary());
+                // into the catalog, capped per session (law + lifecycle at the contentCatalog field doc).
+                contentCatalogCap.admit(contentCatalog, snapshot.contentDictionary());
             }
         }
         boolean staleSnapshot = lastFreshSnapshotWallNanos != Long.MIN_VALUE
@@ -4101,6 +4103,12 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         if (++projSetSweepFrames >= PROJ_SET_SWEEP_FRAMES) {
             projSetSweepFrames = 0;
             sweepProjSets();
+            // The identity-keyed body holders drop every key the
+            // engine no longer holds in play, on this same cadence (render thread; never while paused).
+            compDmgShield.sweepGone(engine);
+            seatHud.sweepGone(engine);
+            fighterHud.fighterFx.sweepGone(engine);
+            fireLanes.sweepGone(engine);
         }
         if (ownShip != null) {
             for (DamagingProjectileAPI p : engine.getProjectiles()) {
@@ -6884,7 +6892,6 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             // round's remoteUnbound would carry the dead round's module rows.
             try {
                 merlonCensus.resetRound(); // Summarize + re-census (fail-silent inside)
-                matchOverLane.resetRound(); // never-re-field defect assert
                 stations.resetRound();
                 mmnt.resetRound(); // Mounted state is round-local too
             } catch (Throwable t) {
@@ -7107,6 +7114,13 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             despawnCorpselessByEntity.clear();
         }
         edgeEvents.resetDespawnIntakeForRound();
+        // The results-roster ledger clears in this tail,
+        // which BOTH reset shapes reach; a clear inside the registry-shape branch alone let the
+        // served 1v1 shape grow it by up to a full intake cap every round, never released. It
+        // runs AFTER the intake re-arm, so an event admitted between the two counts against the
+        // new round and is cleared with the old entries: the ledger never exceeds the new round's
+        // admitted count. The same call runs the never-re-field defect check, in both shapes.
+        matchOverLane.resetRound();
         recallFx.resetRound(engine); // mid-animation bodies die with the round
         phaseDive.resetRound(engine); // mid-dive bodies die with the round
         constructionFx.resetRound(engine); // mid-reveal hulls + pending pairs die with the round
@@ -7160,10 +7174,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         }
         mfLastSampleTick = Long.MIN_VALUE;
         closeOwnEngineStreak(); // Windows do not survive the round either
-        synchronized (edgeEventQueue) {
-            edgeEventQueue.clear();
-        }
-        pendingAheadEvents.clear(); // B2(a): held ahead edges belong to the ended round
+        edgeEvents.resetEdgeQueuesForRound(); // both GPEE holders clear + their refusal meters re-arm
         fireLanes.pendingAuthDischarges.clear();
         fireLanes.pendingLocalDischarges.clear();
         seenOwnProj.clear();
@@ -9402,6 +9413,9 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // zero markers this one row spans the whole run — a live positive control per watch).
         prior.fireLanes.aimRebase.closeAimRebasePhase("teardown", prior.lastSnapshotSimTick);
         prior.fractures.logFractureTotals("teardown");
+        prior.seatHud.logSeatNameCapTotals("teardown"); // the session's last round never reaches finishMatchReset
+        prior.ownSeat.closeOwnRoundTotals("teardown"); // the own re-field churn count's last round
+        prior.xfer.closeBoundMeters("teardown"); // the staged cap / park expiry / fresh-mint refusals' last round
         // The per-entity rings flush beside the hulk adopt ring (marker #0,
         // window on the last snapshot tick — FractureFamilyCoordinator's teardown dumpAdoptRing argument shape); never cleared per round.
         prior.foeState.dumpFluxRings("teardown", 0L, prior.lastSnapshotSimTick);
@@ -9409,6 +9423,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         prior.clockServo.removeClockServo(); // Leave the engine's time-mult stat clean after combat
         // The content catalog dies with the session, NOT at the round
         // boundary (contentIds are match-scoped — applyMatchReset must keep it).
+        prior.contentCatalogCap.teardown(prior.contentCatalog.size()); // the session's cap totals row, then re-armed
         prior.contentCatalog.clear();
         prior.running = false;
         prior.writerRunning = false;
@@ -9440,6 +9455,10 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                         + " stale_old_dropped=" + udp.snapStaleOldDropped()
                         + " old_tick_dropped=" + udp.snapOldTickDropped()
                         + " snap_superseded_dropped=" + udp.snapSupersededDropped() // the catch-up discard count
+                        // SNAP group caps: the per-group occupancy cap's session drops + the depth
+                        // high-water (the PEAK was unmeasured at design time; this row is what the next flight reads).
+                        + " snap_group_cap_dropped=" + udp.snapGroupCapDropped()
+                        + " snap_group_depth_max=" + udp.snapGroupDepthMax() + " snap_group_bytes_max=" + udp.snapGroupBytesMax()
                         + " stale_passthrough=" + udp.snapStalePassthrough()
                         + " passthrough_queued=" + udp.snapStalePassthroughQueued()
                         + " passthrough_dropped=" + udp.snapStalePassthroughDropped());

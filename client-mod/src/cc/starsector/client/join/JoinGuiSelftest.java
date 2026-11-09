@@ -2,6 +2,8 @@ package cc.starsector.client.join;
 
 import java.awt.Component;
 import java.awt.Container;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -18,6 +20,8 @@ import java.util.Set;
 import java.util.TreeMap;
 // CRC32 repairs the canned mark-2 LSTD golden after flipping a mark
 import java.util.zip.CRC32;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
@@ -453,6 +457,7 @@ final class JoinGuiSelftest {
         selftestModStageLazy(tmp);
         selftestModStageDigestOnce(tmp);
         selftestModStageLinks(tmp);
+        selftestModStageOptional(tmp);
         selftestVoiceCore();
         selftestLaunchGates(tmp);
         selftestLunaSidecar(tmp);
@@ -462,8 +467,261 @@ final class JoinGuiSelftest {
         selftestKitDiffersOneCopy();
         selftestTeamPick(tmp);
         selftestTeamSides(tmp);
+        selftestGameVersion(tmp);
         JoinGuiProbeSelftest.run();
         JoinUserDirsSelftest.run(tmp);
+    }
+
+    /**
+     * Rows {@code game-version}: the Launch gate's game-version read ({@link JoinGameVersion} through
+     * {@link JoinLaunchGates#checkGame}) on synthetic engine classes and scratch installs. A match passes; a different
+     * version refuses naming both; every missing, oversized or malformed input reads UNCHECKED with its fixed word —
+     * never a throw (a throw reads as the word {@code fault}), never a refusal.
+     */
+    private static void selftestGameVersion(Path tmp) throws Exception {
+        String row = "game-version";
+        String e = "0.98a-RC8";
+        String modInfo = "{\n  \"id\":\"cc_client\",\n  \"gameVersion\":\"" + e + "\",\n  \"jars\":[]\n}\n";
+        byte[] good = gvClass(e, false, 0x0019, 1);
+        JoinGameVersion.Result r = JoinGameVersion.fromClass(e, good);
+        check(r.kind == JoinGameVersion.Kind.OK && e.equals(r.found) && "match".equals(r.why),
+                row + ": a static versionOnly ConstantValue equal to gameVersion reads OK (flips if the walk misses the"
+                        + " constant or compares the wrong field)");
+        Path kit = gvKit(tmp, "gv-match", modInfo, false, good);
+        List<String> logged = new ArrayList<>();
+        check(JoinLaunchGates.checkGame(kit, logged::add) == null && logged.equals(List.of(
+                "join-gates: game_version expected=0.98a-RC8 found=0.98a-RC8 verdict=OK why=match")),
+                row + ": a matching install passes the gate with one log row (flips if a match refuses, or the row"
+                        + " drops / grows a path)");
+
+        String f = "0.97a-RC11";
+        kit = gvKit(tmp, "gv-mismatch", modInfo, false, gvClass(f, false, 0x0019, 1));
+        logged.clear();
+        JoinLaunchGates.Refusal no = JoinLaunchGates.checkGame(kit, logged::add);
+        check(no != null && "game_version".equals(no.gate) && JoinLaunchGates.TITLE_GAME_VERSION.equals(no.title)
+                && !no.error && no.message.contains("Starsector " + e + ",") && no.message.contains(" is " + f + ".")
+                && no.message.contains("Install Starsector " + e) && !no.message.contains("gv-mismatch"),
+                row + ": a different game version refuses as game_version naming the kit's and the game's versions and"
+                        + " the install to get, no path (flips if a mismatch launches, or the text drops a version)");
+        check(logged.equals(List.of("join-gates: game_version expected=0.98a-RC8 found=0.97a-RC11 verdict=MISMATCH"
+                + " why=differs")), row + ": the refused press logs both versions (flips if the row drops one)");
+
+        String bad = row + ": ";
+        gvUnchecked(bad + "a field with no ConstantValue", gvClass(e, false, 0x0019, 0), "no_constant");
+        gvUnchecked(bad + "a non-static field's ConstantValue (the JVM ignores it)", gvClass(e, false, 0x0011, 1),
+                "no_constant");
+        gvUnchecked(bad + "two ConstantValues on the field", gvClass(e, false, 0x0019, 2), "bad_constant");
+        for (int n = 0; n < good.length - 4; n++) {
+            r = JoinGameVersion.fromClass(e, Arrays.copyOf(good, n));
+            check(r.kind == JoinGameVersion.Kind.UNCHECKED && r.found == null && !"fault".equals(r.why),
+                    row + ": the class cut to " + n + " of " + good.length + " bytes reads UNCHECKED without a throw"
+                            + " (flips if a cut pool or field table throws, or yields a version; got " + r.why + ")");
+        }
+        byte[] wide = gvClass(e, true, 0x0019, 1);
+        r = JoinGameVersion.fromClass(e, wide);
+        check(r.kind == JoinGameVersion.Kind.OK && e.equals(r.found),
+                row + ": a Long ahead of the strings still parses (flips if a Long / Double takes one pool slot)");
+        int fieldAt = wide.length - 4 - 16;
+        gvUnchecked(bad + "an index naming a Long's second slot", gvPatch(wide, fieldAt + 2, 0, 2), "bad_class");
+        byte[] lastLong = {(byte) 0xCA, (byte) 0xFE, (byte) 0xBA, (byte) 0xBE, 0, 0, 0, 61, 0, 2, 5, 0, 0, 0, 0,
+            0, 0, 0, 0};
+        gvUnchecked(bad + "a Long in the pool's last slot", lastLong, "bad_class");
+
+        fieldAt = good.length - 4 - 16;
+        gvUnchecked(bad + "an unknown pool tag", gvPatch(good, 10, 13), "bad_class");
+        gvUnchecked(bad + "a pool count past length / 3, refused before allocation", gvPatch(good, 8, 0xff, 0xff),
+                "bad_class");
+        gvUnchecked(bad + "this_class naming another class", gvPatch(good, fieldAt - 8, good[fieldAt - 6] & 0xff,
+                good[fieldAt - 5] & 0xff), "other_class");
+        gvUnchecked(bad + "an interfaces count past the class", gvPatch(good, fieldAt - 4, 0xff, 0xff), "truncated");
+        gvUnchecked(bad + "a fields count past the class", gvPatch(good, fieldAt - 2, 0xff, 0xff), "truncated");
+        gvUnchecked(bad + "an attribute_length of 2^32 - 1 (unsigned)", gvPatch(good, fieldAt + 10, 0xff, 0xff, 0xff,
+                0xff), "truncated");
+        gvUnchecked(bad + "a ConstantValue of length 3", gvPatch(good, fieldAt + 10, 0, 0, 0, 3), "bad_constant");
+        gvUnchecked(bad + "a ConstantValue naming a Utf8, not a String", gvPatch(good, fieldAt + 14, 0, 8),
+                "bad_class");
+        gvUnchecked(bad + "a found value with a space", gvClass("0.98a RC8", false, 0x0019, 1), "bad_found");
+        gvUnchecked(bad + "an empty found value", gvClass("", false, 0x0019, 1), "bad_found");
+        String max = "a".repeat(JoinGameVersion.TOKEN_MAX);
+        gvUnchecked(bad + "a found value past the token cap", gvClass(max + "a", false, 0x0019, 1), "bad_found");
+        r = JoinGameVersion.fromClass(max, gvClass(max, false, 0x0019, 1));
+        check(r.kind == JoinGameVersion.Kind.OK, row + ": a found value AT the token cap reads (flips if the cap is"
+                + " off by one)");
+
+        Path install = tmp.resolve("gv-root");
+        check(JoinGameVersion.check(gvKit(tmp, "gv-root", "{ \"id\":\"x\" }", false, good), install).why
+                .equals("no_game_version") && JoinLaunchGates.checkGame(install.resolve("mods").resolve("cc-client"),
+                        logged::add) == null,
+                row + ": a mod_info with no gameVersion reads UNCHECKED and the press goes on (flips if an unread"
+                        + " expected refuses or compares)");
+        r = JoinGameVersion.check(gvKit(tmp, "gv-root", "# \"gameVersion\":\"0.95a-RC15\"\n" + modInfo, false,
+                good), install);
+        check(r.kind == JoinGameVersion.Kind.OK, row + ": a # comment line naming another gameVersion is skipped as"
+                + " the game skips it (flips if the comment is read: a false MISMATCH)");
+        for (String lawless : new String[] {"", "0.98a RC8", "0.98a-RC8\\u0000"}) {
+            r = JoinGameVersion.check(gvKit(tmp, "gv-root", modInfo.replace(e, lawless), false, good), install);
+            check("bad_game_version".equals(r.why) && r.kind == JoinGameVersion.Kind.UNCHECKED,
+                    row + ": gameVersion '" + lawless + "' is outside the version charset, UNCHECKED (flips if an"
+                            + " unlawful expected is compared; got " + r.why + ")");
+        }
+        Files.write(install.resolve("mods").resolve("cc-client").resolve("mod_info.json"),
+                new byte[(int) JoinModStage.MOD_INFO_MAX_BYTES + 1]);
+        check("mod_info_size".equals(JoinGameVersion.check(install.resolve("mods").resolve("cc-client"), install).why),
+                row + ": a mod_info past the mods stage's cap is never parsed (flips if the cap drops)");
+        Files.delete(install.resolve("mods").resolve("cc-client").resolve("mod_info.json"));
+        check("no_mod_info".equals(JoinGameVersion.check(install.resolve("mods").resolve("cc-client"), install).why),
+                row + ": no mod_info reads UNCHECKED (flips if a missing file throws or compares)");
+
+        Path flatKit = gvKit(tmp, "gv-flat", modInfo, true, good);
+        r = JoinGameVersion.forKit(flatKit);
+        check(r.kind == JoinGameVersion.Kind.OK, row + ": the flat Linux layout (the engine jar in the game root)"
+                + " reads too (flips if only starsector-core is looked in; got " + r.why + ")");
+        Path bare = gvKit(tmp, "gv-bare", modInfo, false, null);
+        check("jar_missing".equals(JoinGameVersion.forKit(bare).why) && JoinLaunchGates.checkGame(bare, logged::add)
+                == null, row + ": no engine jar in either layout is UNCHECKED and the press goes on (flips if a"
+                        + " missing jar refuses)");
+        Path jar = tmp.resolve("gv-bare").resolve("starsector-core").resolve(JoinGameVersion.JAR);
+        Files.createDirectories(jar.getParent());
+        gvJar(jar, "com/fs/starfarer/Other.class", good);
+        check("no_version_class".equals(JoinGameVersion.forKit(bare).why),
+                row + ": a jar without the Version entry is UNCHECKED (flips if the entry lookup changes)");
+        gvJar(jar, JoinGameVersion.ENTRY, Arrays.copyOf(good, JoinGameVersion.CLASS_MAX_BYTES));
+        check(JoinGameVersion.forKit(bare).kind == JoinGameVersion.Kind.OK,
+                row + ": an entry of exactly 64 KiB is read (flips if the cap is off by one)");
+        gvJar(jar, JoinGameVersion.ENTRY, Arrays.copyOf(good, JoinGameVersion.CLASS_MAX_BYTES + 1));
+        check("class_size".equals(JoinGameVersion.forKit(bare).why),
+                row + ": an entry past 64 KiB is never inflated whole (flips if the cap drops)");
+        Files.write(jar, new byte[] {0x50});
+        check("jar_unreadable".equals(JoinGameVersion.forKit(bare).why),
+                row + ": a 1-byte junk jar is UNCHECKED without a throw (flips if a zip fault escapes)");
+
+        check(JoinGui.runGameVersionCli(new String[] {"--game-version", kit.toString()}) == 1
+                && JoinGui.runGameVersionCli(new String[] {"--game-version", kit.toString(),
+                        tmp.resolve("gv-match").toString()}) == 0
+                && JoinGui.runGameVersionCli(new String[] {"--game-version", "nul\u0000"}) == 2,
+                row + ": the CLI exits 1 on a mismatch, 0 against an explicit matching game root, 2 on an argument"
+                        + " that is no path (flips if the explicit root is ignored or a bad path throws)");
+
+        Path matchKit = tmp.resolve("gv-match").resolve("mods").resolve("cc-client");
+        JoinSettings blank = new JoinSettings("", "", "", "", "", true, "", "");
+        String refusedJson = JoinBrowserUi.forSelftest(kit, blank).launch("127.0.0.1", "7777", "", "pw-1pass", "", true,
+                null);
+        String passedJson = JoinBrowserUi.forSelftest(matchKit, blank).launch("127.0.0.1", "7777", "", "pw-1pass", "",
+                true, null);
+        check(refusedJson.contains("\"ok\":false") && refusedJson.contains("\"gate\":\"game_version\"")
+                && !Files.exists(kit.resolve("selftest-plan.txt")) && !passedJson.contains("game_version"),
+                row + ": the browser Launch (api/launch) refuses a mismatch as game_version with no plan written, and"
+                        + " a matching install reaches the next gate (flips if the browser press skips the gate or runs"
+                        + " it after the hand-off)");
+        JoinLaunchGates.Verdict[] swing = new JoinLaunchGates.Verdict[2];
+        Path[] kits = {kit, matchKit};
+        for (int k = 0; k < kits.length; k++) {
+            ShipListFetcher fetcher = new ShipListFetcher(kits[k], null, new javax.swing.JTextField("127.0.0.1"),
+                    new javax.swing.JTextField("7777"), new javax.swing.JPasswordField(),
+                    new javax.swing.JComboBox<String>(), new javax.swing.JButton("Refresh list"), new JLabel(), false,
+                    null);
+            int at = k;
+            try {
+                javax.swing.SwingUtilities.invokeAndWait(() -> swing[at] = fetcher.launchVerdict("", "", true));
+            } finally {
+                fetcher.stopDebounce();
+            }
+        }
+        check(swing[0].refusal != null && "game_version".equals(swing[0].refusal.gate)
+                && swing[0].refusal.message.contains(f) && swing[1].refusal != null
+                && !"game_version".equals(swing[1].refusal.gate),
+                row + ": the Swing Launch refuses a mismatch as game_version and lets a match reach the next gate"
+                        + " (flips if the Swing press skips the gate)");
+    }
+
+    /** {@code cls} reads UNCHECKED with exactly {@code why} (a parser throw would read {@code fault}). */
+    private static void gvUnchecked(String what, byte[] cls, String why) {
+        JoinGameVersion.Result r = JoinGameVersion.fromClass("0.98a-RC8", cls);
+        check(r.kind == JoinGameVersion.Kind.UNCHECKED && r.found == null && why.equals(r.why),
+                what + " reads UNCHECKED " + why + " (flips if that bound is lost; got " + r.kind + " " + r.why + ")");
+    }
+
+    private static byte[] gvPatch(byte[] cls, int at, int... bytes) {
+        byte[] c = cls.clone();
+        for (int k = 0; k < bytes.length; k++) {
+            c[at + k] = (byte) bytes[k];
+        }
+        return c;
+    }
+
+    /**
+     * A synthetic engine Version class: {@code versionOnly:Ljava/lang/String;} with {@code flags} and
+     * {@code constants} ConstantValue attributes naming {@code value}; {@code longFirst} puts a Long (two pool slots)
+     * ahead of every string. Pool: magic, versions, count at byte 8, first tag at byte 10. The field table sits at
+     * the tail: 8 header bytes, 8 per ConstantValue, then the methods and attributes counts (4 bytes); this_class,
+     * super_class, the interfaces count and the fields count are the four u2 just before the field.
+     */
+    private static byte[] gvClass(String value, boolean longFirst, int flags, int constants) throws IOException {
+        ByteArrayOutputStream bo = new ByteArrayOutputStream();
+        DataOutputStream o = new DataOutputStream(bo);
+        int b = longFirst ? 3 : 1;
+        o.writeInt(0xCAFEBABE);
+        o.writeShort(0);
+        o.writeShort(61);
+        o.writeShort(b + 9);
+        if (longFirst) {
+            o.writeByte(5);
+            o.writeLong(0x0102030405060708L);
+        }
+        String[] utf = {"com/fs/starfarer/Version", null, "java/lang/Object", null, "versionOnly",
+            "Ljava/lang/String;", "ConstantValue", value};
+        for (int k = 0; k < utf.length; k++) {
+            if (utf[k] == null) {
+                o.writeByte(7);
+                o.writeShort(b + k - 1);
+            } else {
+                o.writeByte(1);
+                o.writeUTF(utf[k]);
+            }
+        }
+        o.writeByte(8);
+        o.writeShort(b + 7);
+        o.writeShort(0x0021);
+        o.writeShort(b + 1);
+        o.writeShort(b + 3);
+        o.writeShort(0);
+        o.writeShort(1);
+        o.writeShort(flags);
+        o.writeShort(b + 4);
+        o.writeShort(b + 5);
+        o.writeShort(constants);
+        for (int c = 0; c < constants; c++) {
+            o.writeShort(b + 6);
+            o.writeInt(2);
+            o.writeShort(b + 8);
+        }
+        o.writeShort(0);
+        o.writeShort(0);
+        o.flush();
+        return bo.toByteArray();
+    }
+
+    /** A scratch install {@code tmp/name} with the kit at {@code mods/cc-client}; {@code cls} null = no engine jar. */
+    private static Path gvKit(Path tmp, String name, String modInfo, boolean flat, byte[] cls) throws IOException {
+        Path install = tmp.resolve(name);
+        Path modDir = install.resolve("mods").resolve("cc-client");
+        Files.createDirectories(modDir);
+        Files.write(modDir.resolve("mod_info.json"), modInfo.getBytes(StandardCharsets.UTF_8));
+        if (cls != null) {
+            Path jar = flat ? install.resolve(JoinGameVersion.JAR)
+                    : install.resolve("starsector-core").resolve(JoinGameVersion.JAR);
+            Files.createDirectories(jar.getParent());
+            gvJar(jar, JoinGameVersion.ENTRY, cls);
+        }
+        return modDir;
+    }
+
+    private static void gvJar(Path jar, String entry, byte[] bytes) throws IOException {
+        try (ZipOutputStream z = new ZipOutputStream(Files.newOutputStream(jar))) {
+            z.putNextEntry(new ZipEntry(entry));
+            z.write(bytes);
+            z.closeEntry();
+        }
     }
 
     /**
@@ -832,9 +1090,6 @@ final class JoinGuiSelftest {
         check(optionalOnly.ok && JoinModStage.rowsJson(optionalOnly).contains("\"optional\":true")
                         && JoinModStage.rowsJson(missing).contains("\"optional\":false"),
                 "optional-only publish with nothing local = launchable; rows json carries the flag");
-        check("cc-optional1\nshaderLib\n".equals(cc.starsector.server.runtime.ModSet.optionalIdsText(List.of("shaderLib")))
-                        && cc.starsector.server.runtime.ModSet.parseOptionalIds("cc-optional1\nshaderLib\n").equals(List.of("shaderLib")),
-                "the optional sidecar text the stage writes = what the game parses (ONE recipe)");
         // A published id that opens with the Swing HTML opener
         // stays raw DATA at the head of its MISSING line and of its own Mods-refusal line (the dialog renders it
         // plain: selftestSwingPlainText). Built like the rows above (ModRow direct, no token-law pass): the spaceless

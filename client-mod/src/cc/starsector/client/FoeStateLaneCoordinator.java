@@ -236,6 +236,7 @@ final class FoeStateLaneCoordinator {
                     continue; // un-flagged (same-id re-life) or re-appended under a new object
                 }
                 plugin.remoteEntities.remove(key);
+                plugin.rapp.onReaped(re); // its spawn-failure budget leaves with the entry
                 if (re.ship != null && re.ship == plugin.foeShip) {
                     plugin.foeShip = null; // the respawnRemote idiom: re-anchored by the next side-1 spawn
                 }

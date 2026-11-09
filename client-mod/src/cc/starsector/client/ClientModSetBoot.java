@@ -12,15 +12,22 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The mod-set pin: the client's boot MOD SET — every enabled mod but {@code cc_client}
- * read off the game's own {@link ModManagerAPI} (id, declared version, md5 over the declared jars'
- * bytes via the measured {@code FileReader} byte lane, and md5 over {@code data/**}
- * via the measured {@code java.nio.file.spi} walk lane, {@link ModDataWalk}), digested by the ONE
- * bundled recipe ({@link ModSet}) and installed as
+ * The mod-set pin: the client's boot MOD SET — the FULL enabled set,
+ * every mod but {@code cc_client}, read off the game's own {@link ModManagerAPI} (id, declared version,
+ * md5 over the declared jars' bytes via the measured {@code FileReader} byte lane, and md5 over
+ * {@code data/**} via the measured {@code java.nio.file.spi} walk lane,
+ * {@link ModDataWalk}), digested by the ONE bundled recipe ({@link ModSet}) and installed as
  * the JVM singleton the HELLO print folds ({@code PredictDialPlanner.selfComputeFingerprint}:
- * {@code data = md5(dataMd5|vtab|modset)}). The server mints the same set from the launcher's
- * enabled list ({@code RealEngineModSetFacts}); equal sets fold equal, a differing one is refused
- * at the door ({@code content_fingerprint_mismatch}, door log {@code presented_fold=full}).
+ * {@code data = md5(dataMd5|vtab|modset)}). No enabled mod is dropped from the fold: the server
+ * mints its required set from the launcher's enabled list ({@code RealEngineModSetFacts}) and its
+ * door holds a lawful print for EVERY subset of the optional set it publishes, each minted from the
+ * server's own optional records through the same {@link ModSet} recipe. So an optional mod the join
+ * page staged is admitted, while a mod the server did not publish — or a same-id copy with another
+ * version, jar or data — is refused at the door ({@code content_fingerprint_mismatch}, door log
+ * {@code presented_fold=other}). WHY no client-side exclusion list: any list of ids to drop from the
+ * fold is player-writable, so it could launder an unpublished mod past the door; only the server's
+ * own table decides which subsets are lawful.
+ *
  *
  * <p>Minted right after {@link ClientIdTableBoot} in {@code onApplicationLoad} (the launcher list
  * is complete before any plugin runs), once per process. Also CACHED for the game-free join page
@@ -50,17 +57,6 @@ public final class ClientModSetBoot {
         try {
             ModManagerAPI mods = Global.getSettings().getModManager();
             set = build(mods);
-            // On a KIT boot the join page staged client-OPTIONAL mods (presentation-only,
-            // absent on the server) and wrote their ids beside enabled_mods.json — drop them from the fold
-            // so both sides fold the required set. Honoured ONLY when this boot runs from the kit-owned
-            // root (a stale sidecar can never launder an extra mod past the door on an ordinary boot).
-            List<String> optional = optionalExclusions(mods);
-            if (!optional.isEmpty()) {
-                ModSet folded = set.excluding(optional);
-                PilotWatchLog.info("mod-set: kit boot — optional ids excluded from the fold " + optional
-                        + " (" + (set.size() - folded.size()) + " enabled here, " + ModSet.OPTIONAL_CACHE_COMMON_NAME + ")");
-                set = folded;
-            }
             ModSet.install(set);
         } catch (Throwable fault) {
             lastDetail = "mint FAILED: " + fault;
@@ -84,32 +80,6 @@ public final class ClientModSetBoot {
     /** One line for the boot narration / the vtab-only-fold diagnosis. */
     public static String describe() {
         return lastDetail;
-    }
-
-    /**
-     * The ids the join page staged as OPTIONAL for THIS boot, or empty. A kit boot is
-     * recognised from the engine's own state — {@code cc_client}'s spec path lies under the kit root
-     * ({@link ModSet#KIT_MODS_ROOT_REL}; the launcher lists the root's junctions, never resolving them).
-     * Off a kit boot, or with no sidecar, nothing is excluded. An UNPARSABLE sidecar excludes nothing
-     * (loud ERROR): the full set folds and an enabled optional mod is then refused at the door — the
-     * readable failure, never a silent relaxation.
-     */
-    static List<String> optionalExclusions(ModManagerAPI mods) {
-        try {
-            ModSpecAPI self = mods.getModSpec(ModSet.EXCLUDED_ID);
-            String path = self == null ? null : self.getPath();
-            boolean kitBoot = path != null
-                    && (path.replace('\\', '/') + "/").contains("/" + ModSet.KIT_MODS_ROOT_REL + "/");
-            if (!kitBoot || !Global.getSettings().fileExistsInCommon(ModSet.OPTIONAL_CACHE_COMMON_NAME)) {
-                return new ArrayList<String>();
-            }
-            return ModSet.parseOptionalIds(Global.getSettings().readTextFileFromCommon(ModSet.OPTIONAL_CACHE_COMMON_NAME));
-        } catch (Throwable unusable) {
-            PilotWatchLog.error("mod-set: the optional-mods sidecar (" + ModSet.OPTIONAL_CACHE_COMMON_NAME
-                    + ") is unreadable or not canonical — excluding NOTHING; an enabled optional mod is"
-                    + " refused at the door (re-Launch from the join page)", unusable);
-            return new ArrayList<String>();
-        }
     }
 
     /** The server's enumeration mirrored: every enabled mod but the excluded one, jars in declaration order. */

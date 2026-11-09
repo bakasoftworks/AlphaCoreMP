@@ -1550,6 +1550,16 @@ public final class ServerOpsLaunch {
                 return false;
             }
         }
+        // The optional-set cap (ModSet.MAX_OPTIONAL) - refused HERE,
+        // before any write, against what the file WILL carry; checked on EVERY Start (a null list = the
+        // standing row, which a Mods-tab or hand edit may have put over the cap), so the serve never boots
+        // into its own over-cap refusal and the supervisor never relaunches into it.
+        String cap = modsOptionalCapRefusalOrNull(
+                modsOptional != null ? modsOptional : modsOptionalFieldPrefill(propsNow));
+        if (cap != null) {
+            ui.fail("Start failed", cap);
+            return false;
+        }
         PvpPlan pvp = pvpPlan(propsFile, selDescriptor != null ? selDescriptor : descriptorRowValue(propsNow), pvpWant);
         String pvpRefusal = pvpStartRefusalOrNull(pvp, pvpWant, owner, rowValue(propsNow, WAVE_CLEAR_ROUND_END_KEY));
         if (pvpRefusal != null) {

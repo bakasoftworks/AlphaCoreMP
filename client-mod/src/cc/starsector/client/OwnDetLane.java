@@ -227,6 +227,7 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
     /** Dets whose SOURCE is the own ship — engine-exempt, never applied. */
     private int skippedOwnSource;
     private int pushed;
+    private int coalesced; // hits merged into a same-frame tail entry (appendOrCoalesce)
     private int retired;
     private int expired;
     private int lifeClears;
@@ -386,7 +387,7 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
                 // own-hull mirror at the 1hp floor. pre−post carries the capped truth.
                 appliedHull = Math.max(0f, preHull - own.getHitpoints());
                 if (appliedHull > 0f) {
-                    entries.addLast(new Entry(localFrame, appliedHull));
+                    appendOrCoalesce(appliedHull);
                     outstanding += appliedHull;
                     hullAppliedTotal += appliedHull;
                     pushed++;
@@ -476,6 +477,24 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
         }
         if (outstanding < 0f) {
             outstanding = 0f;
+        }
+    }
+
+    /**
+     * Ledger one applied det hull hit. A hit in the same
+     * {@code localFrame} as the tail entry merges into it, so the ledger holds at most ONE entry per
+     * local frame: with {@link #expire} retiring entries {@link #REPLAY_EXPIRY_FRAMES} frames old,
+     * that bounds it at 120 entries however many dets one frame relays. Merging keeps the FIFO
+     * order and every entry's expiry frame (both hits share it); only the entry counts
+     * ({@code retired}, {@code expired}) read one where two same-frame hits used to read two.
+     */
+    void appendOrCoalesce(float appliedHull) {
+        Entry tail = entries.peekLast();
+        if (tail != null && tail.frame == localFrame) {
+            tail.hull += appliedHull;
+            coalesced++;
+        } else {
+            entries.addLast(new Entry(localFrame, appliedHull));
         }
     }
 
@@ -594,6 +613,7 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
                 + " predict_own_det_max=" + fmt1(maxDetDamage)
                 + " predict_own_det_outstanding=" + fmt1(outstanding)
                 + " predict_own_det_pushed=" + pushed
+                + " predict_own_det_coalesced=" + coalesced
                 + " predict_own_det_retired=" + retired
                 + " predict_own_det_expired=" + expired
                 + " predict_own_det_budget_clamps=" + budgetClamps

@@ -62,11 +62,15 @@ import cc.starsector.server.runtime.ModSet;
 final class JoinModStage {
 
     /** The kit's mods root, under the install root (beside the {@code cc_variants} cache); ONE home =
-     * {@link ModSet#KIT_MODS_ROOT_REL} (the in-game boot recognises a kit boot by it). */
+     * {@link ModSet#KIT_MODS_ROOT_REL}. */
     static final String ROOT_REL = ModSet.KIT_MODS_ROOT_REL;
-    /** The sidecar in the root naming the OPTIONAL mods this launch staged — the game
-     * reads it back ({@link ModSet#OPTIONAL_CACHE_COMMON_NAME}) and drops those ids from its fold. */
-    static final String OPTIONAL_FILE = "optional-mods.txt.data";
+    /** The LEGACY optional-ids sidecar: kits before the
+     * server's lawful-subset table wrote this file into the root and the game read it back to drop those
+     * ids from its fold. Nothing writes or reads it now (the game folds every mod it loads), but a
+     * player's leftover copy is a real item the stage's real-item law would refuse at every Launch, so
+     * {@link #stage} keeps deleting this ONE name (and no other file).
+     * */
+    static final String LEGACY_OPTIONAL_FILE = "optional-mods.txt.data";
     /** Read guard on a {@code mod_info.json} (the largest real one is a few KB). */
     static final long MOD_INFO_MAX_BYTES = 1L << 20;
     /** The launch gate word the SPA keys on. */
@@ -499,19 +503,23 @@ final class JoinModStage {
     }
 
     /**
-     * Stage the root for THIS launch: remove every junction the root holds, link the kit folder
-     * and every OK row's folder, then write {@code enabled_mods.json} = cc_client + the rows'
-     * ids (server order). The json is written LAST: a failure part-way leaves no json, and the bat
-     * then boots the plain {@code ../mods} lane (today's behaviour) — never a half set. Throws
-     * with a player-readable message on any refusal; nothing outside the root is ever touched.
+     * Stage the root for THIS launch: delete the legacy sidecar ({@link #LEGACY_OPTIONAL_FILE}) and
+     * every junction the root holds, link the kit folder and every OK row's folder (required, and
+     * each OPTIONAL row that diffed OK), then write {@code enabled_mods.json} = cc_client + the rows'
+     * ids (server order). The game loads and folds every listed id; the server's door admits any
+     * subset of its published optional set, so no id list rides beside the json. The json is
+     * written LAST: a failure part-way leaves no json, and the bat then boots the plain
+     * {@code ../mods} lane (today's behaviour) — never a half set. Throws with a player-readable
+     * message on any refusal; nothing outside the root is ever touched.
+     *
      */
     static Path stage(Path installRoot, Path modDir, List<Row> rows) throws IOException {
         Path root = root(installRoot);
         Files.createDirectories(root);
         Path json = root.resolve("enabled_mods.json");
-        Path optionalFile = root.resolve(OPTIONAL_FILE);
+        Path legacySidecar = root.resolve(LEGACY_OPTIONAL_FILE);
         Files.deleteIfExists(json);
-        Files.deleteIfExists(optionalFile);
+        Files.deleteIfExists(legacySidecar);
         try (DirectoryStream<Path> ds = Files.newDirectoryStream(root)) {
             for (Path p : ds) {
                 if (isKitLink(p)) {
@@ -523,7 +531,6 @@ final class JoinModStage {
             }
         }
         List<String> ids = new ArrayList<>();
-        List<String> optionalStaged = new ArrayList<>();
         ids.add(ModSet.EXCLUDED_ID);
         Path kitDir = modDir.toAbsolutePath().normalize();
         link(root.resolve(kitDir.getFileName().toString()), kitDir);
@@ -542,14 +549,6 @@ final class JoinModStage {
             }
             link(link, target);
             ids.add(r.id);
-            if (r.optional) {
-                optionalStaged.add(r.id);
-            }
-        }
-        // The sidecar BEFORE the json (json last = the all-or-nothing law): the game boots from
-        // this root, reads the ids and folds its set WITHOUT them (ModSet.OPTIONAL_CACHE_COMMON_NAME).
-        if (!optionalStaged.isEmpty()) {
-            Files.write(optionalFile, ModSet.optionalIdsText(optionalStaged).getBytes(StandardCharsets.UTF_8));
         }
         StringBuilder sb = new StringBuilder("{\"enabledMods\": [");
         for (int i = 0; i < ids.size(); i++) {

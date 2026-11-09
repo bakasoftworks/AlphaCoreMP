@@ -200,8 +200,23 @@ final class FractureFamilyCoordinator {
      * its parent every frame while {@code getStationSlot()!=null}, and the edge can arrive
      * before the local module death (client lag) — the release must keep asserting until the
      * body reads hulk, and must survive any late SABL bind/repair. Entries never leave inside
-     * a round (a handful of station modules at most). */
+     * a round (a handful of station modules at most); the set holds at most
+     * {@link RosterAppendLane#MAX_ROUND_ENTITIES} roots (a fresh root past that is refused) and
+     * clears at the round reset, since wire ids re-intern from 1 each round. */
     private final java.util.HashSet<Long> detachedRoots = new java.util.HashSet<Long>();
+    /** The hostile-host bounds of this class's two
+     * wire-grown holders. {@code detachedRootsCapRefused} counts ROOT_DETACHED edges refused at the
+     * {@link #detachedRoots} occupancy cap; {@code piecesCapRefused} counts PIECE_ADDED edges refused
+     * because the family already holds {@link #FAMILY_PIECES_MAX} pieces. Both are cumulative and
+     * ride {@link #logFractureTotals} (round reset + teardown); the two round counts arm each
+     * round's ONE first-refusal row and re-arm in {@link #resetForMatchReset}. Render thread. */
+    private long detachedRootsCapRefused;
+    private long piecesCapRefused;
+    private int detachedRootsRefusedRound;
+    private int piecesRefusedRound;
+    /** The wire's {@code familyPieceCount} is a u8, so a lawful serve never grows a family past
+     * 255 pieces; an ADD at that width is refused before the cut. */
+    static final int FAMILY_PIECES_MAX = 0xFF;
     /** Meters: kind-4 edges consumed at intake / slot releases actually applied. */
     private long moduleDetachEdges;
     private long moduleDetachApplied;
@@ -719,7 +734,9 @@ final class FractureFamilyCoordinator {
                 + " omega_fadein_wire_end=" + omegaFadeInWireEnd
                 + " omega_fadein_sibling=" + omegaFadeInSibling
                 + " omega_fadein_not_shard=" + omegaFadeInNotShard
-                + " omega_fadein_throws=" + omegaFadeInThrows);
+                + " omega_fadein_throws=" + omegaFadeInThrows
+                + " detached_roots_cap_refused=" + detachedRootsCapRefused
+                + " pieces_cap_refused=" + piecesCapRefused);
         // The adoption-delta histograms ride every totals emit (round wrap +
         // family close-outs) — the fix's re-watch grades on these lines directly.
         PilotWatchLog.info("predict hulk-pose delta-hist: [" + where + "]"
@@ -1681,8 +1698,17 @@ final class FractureFamilyCoordinator {
                 if (record.isRootDetached()) {
                     // family-level latch — membership untouched; never parked as a
                     // family edge (the apply switch reads any non-ADD kind as a REMOVE).
+                    Long rootKey = Long.valueOf(record.rootEntityId());
+                    // The occupancy cap, checked before the
+                    // consume count — a refused edge is neither latched nor counted consumed, and a
+                    // root already held is never refused (re-latching it grows nothing).
+                    if (detachedRoots.size() >= RosterAppendLane.MAX_ROUND_ENTITIES
+                            && !detachedRoots.contains(rootKey)) {
+                        refuseDetachedRootAtCap(record);
+                        continue;
+                    }
                     moduleDetachEdges++;
-                    if (detachedRoots.add(Long.valueOf(record.rootEntityId()))) {
+                    if (detachedRoots.add(rootKey)) {
                         logFracture("ROOT_DETACHED latched rootId=" + record.rootEntityId()
                                 + " deathTick=" + record.deathTick());
                     }
@@ -1894,6 +1920,13 @@ final class FractureFamilyCoordinator {
                 return FRACTURE_APPLY_DROP;
             }
             if (record.isPieceAdded()) {
+                // An ADD past the u8 piece width is refused
+                // BEFORE the cut — no body is split, nothing is tracked — and counted; DROP is the
+                // terminal outcome, so the caller still consumes the ADD's cut ordinal in step.
+                if (family.pieces.size() >= FAMILY_PIECES_MAX) {
+                    refusePieceAtCap(family, record);
+                    return FRACTURE_APPLY_DROP;
+                }
                 ShipAPI largest = null;
                 float largestArea = -1f;
                 for (ShipAPI piece : family.pieces) {
@@ -2433,5 +2466,44 @@ final class FractureFamilyCoordinator {
             cutGeometryIntake.clear(); // Stale geometry must never feed a fresh round
         }
         cutGeometryLatches.clear();
+        // Wire entity ids re-intern from 1 each round, so a
+        // kept root would alias a fresh-round entity; both caps' first-refusal rows re-arm.
+        detachedRoots.clear();
+        detachedRootsRefusedRound = 0;
+        piecesRefusedRound = 0;
+    }
+
+    /** A fresh ROOT_DETACHED root met a full
+     * {@link #detachedRoots} ({@link RosterAppendLane#MAX_ROUND_ENTITIES} roots this round) —
+     * refused (never latched; no held root is evicted), counted; the round's first refusal writes
+     * ONE error row and the one-shot announce, later ones only count. Bounded tokens only (wire
+     * ids as numbers). Render thread. */
+    private void refuseDetachedRootAtCap(cc.starsector.client.net.ClientHulkFractureRecord record) {
+        detachedRootsCapRefused++;
+        if (++detachedRootsRefusedRound != 1) {
+            return;
+        }
+        String detail = "detached-root cap (" + RosterAppendLane.MAX_ROUND_ENTITIES
+                + " roots this round): refused rootId=" + record.rootEntityId() + " deathTick="
+                + record.deathTick() + " (not latched; later refusals this round are counted silently)";
+        PilotWatchLog.error("predict hulk-split " + detail, null);
+        FallbackAnnounce.announceOnce("ffc-detached-root-cap", detail);
+    }
+
+    /** A PIECE_ADDED edge met a family already at
+     * {@link #FAMILY_PIECES_MAX} pieces — refused before the cut, counted; the round's first
+     * refusal writes ONE error row and the one-shot announce, later ones only count. Render
+     * thread. */
+    private void refusePieceAtCap(FractureFamily family,
+            cc.starsector.client.net.ClientHulkFractureRecord record) {
+        piecesCapRefused++;
+        if (++piecesRefusedRound != 1) {
+            return;
+        }
+        String detail = "family piece cap (" + FAMILY_PIECES_MAX + " pieces): refused ADD rootId="
+                + family.rootEntityId + " deathTick=" + record.deathTick() + " wire_pieces="
+                + record.familyPieceCount() + " (not cut; later refusals this round are counted silently)";
+        PilotWatchLog.error("predict hulk-split " + detail, null);
+        FallbackAnnounce.announceOnce("ffc-family-piece-cap", detail);
     }
 }

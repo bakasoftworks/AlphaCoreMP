@@ -4,12 +4,12 @@ import cc.starsector.server.match.ContentFingerprints;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
-import java.util.TreeSet;
 
 /**
  * The mods ladder's rung 1 — the stranger-safe MOD-SET PIN, built on the door's fold
@@ -22,10 +22,12 @@ import java.util.TreeSet;
  * ({@link ContentFingerprints#foldContent}). Equal sets fold equal; a joiner MISSING a served mod,
  * carrying an EXTRA enabled mod, or running a version- or jar-skewed copy presents a different fold
  * and is refused AT THE DOOR ({@code content_fingerprint_mismatch}, the door log naming
- * {@code presented_fold=vtab_only|other} beside {@code server_modset=}). Policy today =
- * required-IDENTICAL sets (the client-optional relaxation for presentation-only mods is an
- * open design question; it would filter this set by a server-published list,
- * the fold recipe unchanged).
+ * {@code presented_fold=vtab_only|other} beside {@code server_modset=}). Policy = the required set
+ * plus ANY subset of the serve's published optional set: the door holds one lawful session print
+ * per subset ({@link #lawfulSubsets}), each folded from the serve's own optional records, so a
+ * joiner may run any of the optional mods or none, while a mod the serve never published, or a
+ * same-id copy with another version, jar or data, folds to a print outside the table. The fold
+ * recipe is unchanged.
  *
  * <p>PURE by construction ({@code java.util} + {@link ContentFingerprints} only — no file, socket or
  * {@code java.nio.file} reference) so the client-mod jar bundles it sandbox-clean under classloader
@@ -58,6 +60,15 @@ public final class ModSet {
     public static final String EXCLUDED_ID = "cc_client";
     /** Sanity cap on the set (a real install enables tens, never hundreds). */
     public static final int MAX_MODS = 256;
+    /**
+     * The cap on the published OPTIONAL set ({@code mods.optional}). WHY: the door's lawful table
+     * holds 2^k session prints ({@link #lawfulSubsets}) - 8 gives 256, worst case about 21 MB of md5
+     * once at boot, while 16 would give 65,536 and up to 5.4 GB. A host can tick a mod optional
+     * without the compatibility review an admitted optional mod gets ({@code OpsModsPanel}), so the
+     * cap also bounds how far a host relaxes the door. Server-local: no joiner reads it, so raising
+     * it needs no kit roll.
+     */
+    public static final int MAX_OPTIONAL = 8;
     public static final int MAX_ID_CHARS = 64;
     public static final int MAX_VERSION_CHARS = 64;
     /** The common-file NAME the game resolves to {@code <saves>/common/<name>.data} (the join page's cache). */
@@ -364,31 +375,45 @@ public final class ModSet {
 
     // ------------------------------------------------------------------ the OPTIONAL set
 
-    /**
+    /*
      * The mods ladder's rung 5, the client-optional lane: the serve PUBLISHES a second class of record —
      * presentation-only mods a joiner MAY run (the {@code mods.optional} row) — but never loads them
      * (GraphicsLib refuses a GL-less JVM at {@code onApplicationLoad}).
-     * They ride the probe as {@code MARK_MODSET_OPTIONAL} rows and are EXCLUDED from the door's fold:
-     * the server folds its required set only, and the in-game client ({@code ClientModSetBoot}) drops
-     * from its own boot set every id the join page staged as optional — the id list the page writes
-     * into the kit-owned mods root ({@link #OPTIONAL_CACHE_COMMON_NAME}, honoured ONLY on a boot from
-     * that root, {@link #KIT_MODS_ROOT_REL}) — so both sides fold the same required set. Prefer
-     * client-side at equal quality: no server compute beyond the mark.
+     * They ride the probe as {@code MARK_MODSET_OPTIONAL} rows, and the door holds the LAWFUL-SUBSET
+     * table ({@link #lawfulSubsets}, built ONCE at {@link #installOptional}): one session print per
+     * subset of the optional records, so a joiner whose enabled set is the required set plus any
+     * subset of these exact records (same version, jars and data) is admitted and nothing else is.
+     * WHY server-side: an id list the joiner reads to drop mods from its own fold trusts
+     * the id (a same-id foreign mod rides through it), while a print in this table binds every
+     * record it folds. Cost = the boot
+     * build plus one set lookup per HELLO. The in-game client folds its FULL enabled set on every
+     * boot ({@code ClientModSetBoot}); the id-list sidecar that once dropped the staged optional ids
+     * from a kit boot's fold was deleted with this table (the ids it named
+     * were never cross-checked, so any extra mod rode through it).
      */
-    public static final String OPTIONAL_FORMAT_PREFIX = "cc-optional1";
-    /** The common-file NAME of the staged-optional-ids sidecar the join page writes into the kit's
-     * mods root and the game reads back ({@code <saves>/common/cc_mods/optional-mods.txt.data}). */
-    public static final String OPTIONAL_CACHE_COMMON_NAME = "cc_mods/optional-mods.txt";
-    /** The kit-owned mods root under the install ({@code JoinModStage.ROOT_REL} = this); a boot whose
-     * {@code cc_client} spec path lies under it is a KIT boot — the only boot the sidecar binds. */
+    /** The kit-owned mods root under the install ({@code JoinModStage.ROOT_REL} = this): where the join
+     * page stages the server's mods; the fold reads nothing from it - a staged mod folds like any other. */
     public static final String KIT_MODS_ROOT_REL = "saves/common/cc_mods";
 
     private static volatile ModSet installedOptional;
+    /** The boot-built lawful-subset table over (installed, installedOptional); null = none installed. */
+    private static volatile Map<String, List<String>> installedLawful;
 
-    /** Install the published optional set (idempotent for an EQUAL set); THROWS when an id is also in
-     * the installed required set — a mod is required or optional, never both. */
+    /**
+     * Install the published optional set (idempotent for an EQUAL set) and, when the required set is
+     * installed, build the door's lawful-subset table ONCE ({@link #installedLawfulSubsetsOrNull}).
+     * THROWS - and the boot caller lets the throw refuse the boot, a set knob is never silently
+     * inert - when the set is over {@link #MAX_OPTIONAL}, when an id is also in the installed
+     * required set (a mod is required or optional, never both), or when required plus optional is
+     * over {@link #MAX_MODS}. Every check runs before anything is installed.
+     *
+     */
     public static void installOptional(ModSet set) {
         Objects.requireNonNull(set, "set");
+        if (set.size() > MAX_OPTIONAL) {
+            throw new IllegalArgumentException("optional mod-set: " + set.size() + " ids - over the MAX_OPTIONAL cap of "
+                    + MAX_OPTIONAL + " (mods.optional)");
+        }
         ModSet required = installed;
         if (required != null) {
             requireDisjoint(required, set);
@@ -398,12 +423,77 @@ public final class ModSet {
             throw new IllegalStateException("optional mod-set already installed with " + current.census()
                     + "; refusing a different set (" + set.census() + ")");
         }
+        Map<String, List<String>> lawful = installedLawful;
+        if (required != null && lawful == null) {
+            lawful = lawfulSubsets(required, set);
+        }
         installedOptional = set;
+        installedLawful = lawful;
     }
 
     /** The installed optional set, or null (no {@code mods.optional} row, rigs, tests). */
     public static ModSet installedOptionalOrNull() {
         return installedOptional;
+    }
+
+    /** The boot-built lawful-subset table ({@link #lawfulSubsets} over the installed required and
+     * optional sets), or null: no {@code mods.optional} row, rigs, tests. Read once per door open. */
+    public static Map<String, List<String>> installedLawfulSubsetsOrNull() {
+        return installedLawful;
+    }
+
+    /**
+     * The door's lawful-subset table: for EVERY subset S of {@code optionalOrNull}, the digest of
+     * {@code of(required + S)} mapped to S's ids (ascending), in mask order - bit i = the i-th record
+     * of the optional set's own sorted order, so mask 0 (S empty) is first and its key is
+     * {@code required.digest()}. WHY: the joiner's print folds the mod set it presents, so a lawful
+     * joiner presents exactly one of these 2^k digests; each is built through {@link #of}'s sorting
+     * from the serve's own optional records - the record recipe the in-game client uses - so an
+     * optional id that sorts between required ids lands where the client puts it. Null or empty optional = the one-entry
+     * table {required digest: no ids}. PURE; THROWS when the sets share an id, when k is over
+     * {@link #MAX_OPTIONAL}, or when required plus optional is over {@link #MAX_MODS} (checked before
+     * any digest).
+     */
+    public static Map<String, List<String>> lawfulSubsets(ModSet required, ModSet optionalOrNull) {
+        Objects.requireNonNull(required, "required");
+        Map<String, List<String>> table = new LinkedHashMap<String, List<String>>();
+        if (optionalOrNull == null || optionalOrNull.size() == 0) {
+            table.put(required.digest(), Collections.<String>emptyList());
+            return Collections.unmodifiableMap(table);
+        }
+        requireDisjoint(required, optionalOrNull);
+        int k = optionalOrNull.size();
+        if (k > MAX_OPTIONAL) {
+            throw new IllegalArgumentException("optional mod-set: " + k + " ids - over the MAX_OPTIONAL cap of "
+                    + MAX_OPTIONAL);
+        }
+        if (required.size() + k > MAX_MODS) {
+            throw new IllegalArgumentException("mod-set: " + required.size() + " required + " + k
+                    + " optional mods - over the " + MAX_MODS + " cap");
+        }
+        List<Record> optional = optionalOrNull.records();
+        for (int mask = 0; mask < (1 << k); mask++) {
+            List<Record> union = new ArrayList<Record>(required.size() + k);
+            union.addAll(required.records());
+            List<String> ids = new ArrayList<String>(Integer.bitCount(mask));
+            for (int i = 0; i < k; i++) {
+                if ((mask & (1 << i)) != 0) {
+                    union.add(optional.get(i));
+                    ids.add(optional.get(i).id());
+                }
+            }
+            String digest = of(union).digest();
+            if (table.put(digest, Collections.unmodifiableList(ids)) != null) {
+                // two distinct subsets with one digest = an md5 collision; never arm a short table
+                throw new IllegalStateException("mod-set: two optional subsets share digest " + digest);
+            }
+        }
+        return Collections.unmodifiableMap(table);
+    }
+
+    /** The lawful table's digests in mask order (mask 0 = {@code required.digest()} first). */
+    public static List<String> lawfulDigests(ModSet required, ModSet optionalOrNull) {
+        return new ArrayList<String>(lawfulSubsets(required, optionalOrNull).keySet());
     }
 
     /** THROWS when the two sets share an id (the required-or-optional law). Pure, for the contract rows. */
@@ -418,58 +508,4 @@ public final class ModSet {
         }
     }
 
-    /** This set WITHOUT the named ids (absent ids are ignored) — the client's fold input on a kit boot. */
-    public ModSet excluding(Collection<String> ids) {
-        Objects.requireNonNull(ids, "ids");
-        List<Record> kept = new ArrayList<Record>(records.size());
-        for (Record r : records) {
-            if (!ids.contains(r.id())) {
-                kept.add(r);
-            }
-        }
-        return kept.size() == records.size() ? this : of(kept);
-    }
-
-    /** The sidecar text: the format line, then one lawful id per line in strictly ascending order,
-     * every line {@code \n}-terminated; {@code cc_client} or an unlawful id THROWS. */
-    public static String optionalIdsText(Collection<String> ids) {
-        Objects.requireNonNull(ids, "ids");
-        TreeSet<String> sorted = new TreeSet<String>();
-        for (String id : ids) {
-            if (id == null || id.isEmpty() || id.length() > MAX_ID_CHARS || !lawfulId(id) || EXCLUDED_ID.equals(id)) {
-                throw new IllegalArgumentException("optional mod-set: unlawful id '" + id + "'");
-            }
-            sorted.add(id);
-        }
-        if (sorted.size() > MAX_MODS) {
-            throw new IllegalArgumentException("optional mod-set: " + sorted.size() + " ids — over the " + MAX_MODS + " cap");
-        }
-        StringBuilder sb = new StringBuilder(OPTIONAL_FORMAT_PREFIX).append('\n');
-        for (String id : sorted) {
-            sb.append(id).append('\n');
-        }
-        return sb.toString();
-    }
-
-    /** Parse the sidecar STRICTLY (re-render must equal the input); null/oversize/unlawful THROWS. */
-    public static List<String> parseOptionalIds(String text) {
-        if (text == null || text.length() > MAX_CACHE_BYTES) {
-            throw new IllegalArgumentException("optional mod-set: text null or over " + MAX_CACHE_BYTES + " chars");
-        }
-        if (!text.startsWith(OPTIONAL_FORMAT_PREFIX + "\n") || !text.endsWith("\n")) {
-            throw new IllegalArgumentException("optional mod-set: not a '" + OPTIONAL_FORMAT_PREFIX
-                    + "' text with a final newline");
-        }
-        List<String> ids = new ArrayList<String>();
-        int lineStart = OPTIONAL_FORMAT_PREFIX.length() + 1;
-        while (lineStart < text.length()) {
-            int lineEnd = text.indexOf('\n', lineStart);
-            ids.add(text.substring(lineStart, lineEnd));
-            lineStart = lineEnd + 1;
-        }
-        if (!optionalIdsText(ids).equals(text)) {
-            throw new IllegalArgumentException("optional mod-set: text is not canonical (re-render differs)");
-        }
-        return ids;
-    }
 }

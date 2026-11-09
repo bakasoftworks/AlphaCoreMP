@@ -82,9 +82,25 @@ final class PaladinDetFxLane {
      *  lane fed, the meters carry the rest. */
     private static final int LOG_MAX = 20;
 
+    /**
+     * At most this many dets are presented per drain pass;
+     * the rest of that pass is refused and counted ({@link #budgetRefused}). Each det costs one
+     * explosion, one core flash and {@code DET_FX_PARTICLE_COUNT} particles, and the wire carries
+     * no per-pass det count, so a hostile serve could otherwise stall the render thread in one
+     * frame. A pass = one advance frame ({@code advFrames}), the frame that runs the edge drain
+     * once. The lawful rate is unmeasured; 64 models at least 10x the headroom a sixteen-Paladin
+     * fleet needs.
+     */
+    static final int DET_PRESENT_PER_DRAIN_MAX = 64;
+
     private final PredictReconcileCombatPlugin plugin;
     private int presented;  // predict_event_rebase_paladin_det_presented (FX spawned)
     private int logLines;
+    /** The drain-pass budget state: the pass key last seen, the dets admitted in it, and the
+     *  cumulative refusals (the first one writes ONE row). */
+    private int budgetPass;
+    private int admittedThisPass;
+    private int budgetRefused;
 
     PaladinDetFxLane(PredictReconcileCombatPlugin plugin) {
         this.plugin = plugin;
@@ -94,7 +110,7 @@ final class PaladinDetFxLane {
      *  entityId is the SOURCE ship's wireId and mountIndex may be −1 (the live NO_MOUNT case);
      *  presentation keys off the det pose floats alone, so neither needs resolving. */
     void present(cc.starsector.client.net.ClientGameplayEdgeEvent event) {
-        if (!PALADIN_DET_FX) {
+        if (!PALADIN_DET_FX || !admitThisPass(event)) {
             return;
         }
         try {
@@ -130,8 +146,37 @@ final class PaladinDetFxLane {
         }
     }
 
+    /**
+     * The drain-pass budget. A new pass key re-arms the
+     * pass count; past {@link #DET_PRESENT_PER_DRAIN_MAX} admitted dets the det is refused (no FX,
+     * counted), and the first refusal of the lane's life writes ONE error row. A det admitted here
+     * counts against the pass even when its FX later throws. Render thread.
+     */
+    private boolean admitThisPass(cc.starsector.client.net.ClientGameplayEdgeEvent event) {
+        int pass = plugin.advFrames;
+        if (pass != budgetPass) {
+            budgetPass = pass;
+            admittedThisPass = 0;
+        }
+        if (admittedThisPass >= DET_PRESENT_PER_DRAIN_MAX) {
+            if (++budgetRefused == 1) {
+                PilotWatchLog.error("predict paladin det-FX: drain budget (" + DET_PRESENT_PER_DRAIN_MAX
+                        + " dets per pass) reached at tick=" + event.simTick() + " (refused, no FX; later"
+                        + " refusals are counted silently)", null);
+            }
+            return false;
+        }
+        admittedThisPass++;
+        return true;
+    }
+
     /** Dets FX-presented — the meter-line liveness token. */
     int presented() {
         return presented;
+    }
+
+    /** Dets refused by the drain-pass budget, cumulative. */
+    int budgetRefused() {
+        return budgetRefused;
     }
 }

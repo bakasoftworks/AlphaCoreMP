@@ -45,6 +45,7 @@ final class JoinUserDirsSelftest {
     static void run(Path tmp) throws IOException {
         ladderRows();
         settingsDirRows();
+        windowNameRows();
         Path root = Files.createDirectories(tmp.resolve("userdirs"));
         saveTwiceRows(root);
         mintTwiceRows(root);
@@ -125,6 +126,41 @@ final class JoinUserDirsSelftest {
         check(expected == null ? actual == null : expected.equals(actual),
                 "userdirs settings-dispatch: Windows keeps the LOCALAPPDATA ladder and only other systems take the XDG"
                         + " one (flips if the OS test is inverted - a Windows window would refuse for want of HOME)");
+    }
+
+    /**
+     * The second window's settings-file name, pure path arithmetic (nothing is read or written): a lawful name = that
+     * file BESIDE the default one; absent or blank = the default file and no refusal; every other value = the default
+     * file AND refused (one log row) - the allow-list is the only admission, so no charset-shaped name gets through.
+     *
+     */
+    private static void windowNameRows() {
+        Path def = Paths.get(KitUserDirs.isWindows() ? "D:\\Lad" : "/lad").resolve(JoinSettings.DIR_NAME)
+                .resolve(JoinSettings.FILE_NAME);
+        for (String lawful : Arrays.asList("join-settings-2.properties", "join-settings-9.properties")) {
+            Path got = JoinSettings.windowPath(def, lawful);
+            check(def.resolveSibling(lawful).equals(got) && def.getParent().equals(got.getParent())
+                    && !JoinSettings.nameRefused(lawful),
+                    "userdirs window-name '" + lawful + "': a lawful name is this window's own file beside the default"
+                            + " one (flips if it is refused or resolved anywhere else - the second window would share"
+                            + " the first window's file again, or lose the shared cid-master folder)");
+        }
+        for (String unnamed : Arrays.asList(null, "", "   ")) {
+            check(def.equals(JoinSettings.windowPath(def, unnamed)) && !JoinSettings.nameRefused(unnamed),
+                    "userdirs window-name-absent " + (unnamed == null ? "(unset)" : "'" + unnamed + "'") + ": no name"
+                            + " = the default file, never refused (flips if a blank value is refused - every ordinary"
+                            + " window would log a refusal - or resolves a sibling)");
+        }
+        String long65 = "join-settings-2" + "x".repeat(39) + ".properties";   // 15 + 39 + 11 = 65 characters
+        for (String bad : Arrays.asList("../x.properties", "a\\b.properties", "a/b.properties", "C:x.properties",
+                "NUL.properties", "voice.properties", "join-settings.properties", "join-settings-2.properties ",
+                "JOIN-SETTINGS-2.PROPERTIES", long65)) {
+            check(def.equals(JoinSettings.windowPath(def, bad)) && JoinSettings.nameRefused(bad),
+                    "userdirs window-name-refused '" + bad + "': not on the allow-list = the default file and one"
+                            + " refusal row (flips if the allow-list loosens to a charset or a trim/case fold - a"
+                            + " Launch save, which rewrites its file whole, could then be aimed at a device name, a"
+                            + " foreign file or a folder outside the settings one)");
+        }
     }
 
     /** Settings save twice: the second save REWRITES the first, whole; the file is 0600 in a 0700 folder. */

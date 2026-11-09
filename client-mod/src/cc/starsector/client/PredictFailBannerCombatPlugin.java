@@ -585,8 +585,10 @@ public class PredictFailBannerCombatPlugin extends BaseEveryFrameCombatPlugin {
                         + reason + ")";
             case "content_fingerprint_required":
             case "content_fingerprint_mismatch":
-                return "CONTENT MISMATCH - your kit or mods differ from the server's: close the game and run join-cc"
-                        + " again; its window says what to fix";
+                // The page re-reads the server's mod list only at Launch, so a stale
+                // "all present" page after a host changed mods.optional is cured by pressing Launch again.
+                return "CONTENT MISMATCH - your kit or mods differ from the server's: close the game, run join-cc"
+                        + " again and press Launch (it re-reads the server's mod list and says what to fix)";
             // Observer posture: the three CLIENT-minted refusals
             // (PredictReconcileDatagramSession.connect's bit gate) + the door's own three.
             case "observer_not_granted":

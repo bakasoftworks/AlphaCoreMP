@@ -288,6 +288,30 @@ final class FireLaneCoordinator {
     // DISCHARGE_MATCH_TOL_TICKS before expiry flushes them.
     final ArrayDeque<PendingAuthDischarge> pendingAuthDischarges = new ArrayDeque<>();
     final ArrayDeque<PendingLocalDischarge> pendingLocalDischarges = new ArrayDeque<>();
+    /**
+     * -- the hostile-serve bounds on {@link #pendingAuthDischarges}. A lawful
+     * entry leaves within the adjudication grace, so the deque holds a handful; a serve whose discharge ticks the
+     * snapshot clock never covers (a frozen clock) would grow it without bound. Two laws: an OCCUPANCY cap of
+     * {@link RosterAppendLane#MAX_ROUND_ENTITIES} (the per-round entity bound, reused; the newest is refused and
+     * counted, an older entry is never evicted) and an AGE law of {@link #HELD_EDGE_AGE_MAX_MILLIS} on the
+     * {@link #ageClock} wall clock. The first refusal and the first age expiry each write one row; the session's
+     * cumulative counts ride the discharge-reconcile meter line.
+     */
+    long pendingAuthCapRefused;  // pending_auth_cap_refused
+    long pendingAuthAgeExpired;  // pending_auth_age_expired
+    private boolean pendingAuthCapLogged;
+    private boolean pendingAuthAgeLogged;
+    /**
+     * -- the ONE held-edge age bound, in WALL ms, here and for the staged
+     * park in {@link CommandTransferLane}: an edge held this long without its precondition is dropped and counted, so
+     * a stalled or hostile host cannot park it forever. Not frames (600 passes are 1.1 s at 540 fps) and not snapshot
+     * ticks (intake only sees ticks coverage has reached, which the grace adjudicates first, so a tick age never
+     * fires, least of all on a frozen clock). 10x the longest lawful hold: the 2,000 ms staged module park, the 2 s
+     * snapshot stale boundary; 20x the adjudication grace (at most 1 s).
+     */
+    static final long HELD_EDGE_AGE_MAX_MILLIS = 20_000L;
+    /** The age law's monotonic ms clock (nanoTime-based; any sign); package-private and settable so a row drives it. */
+    java.util.function.LongSupplier ageClock = () -> System.nanoTime() / 1_000_000L;
     /** pair-class: latest wire FLAG_AUTOFIRE per own mount ordinal (bits 0-63; ≥64 uncached). */
     long serverAfMountMask;
     /** pair-class: sim-tick of each own mount's last observed wire autofire flip. */
@@ -345,7 +369,7 @@ final class FireLaneCoordinator {
 
     // === Fire-lane step 4 — discharge RECONCILE-TREATMENT state (see
     // DISCHARGE_RECONCILE_MODE / DischargeReconcileLaw). Render-thread only, like the pairing
-    // deques it treats. expireDischargePairs never acts inline (it also runs MID-SCAN from
+    // deques it treats. expireDueDischargePairs never acts inline (it also runs MID-SCAN from
     // recordLocalDischarge — queueing makes treatment-at-the-drain-site safe BY CONSTRUCTION);
     // processDischargeTreatments drains these queues at the drainEdgeEvents site, post-scan
     // same frame. ===
@@ -376,6 +400,17 @@ final class FireLaneCoordinator {
      *  The scan runs BEFORE this frame's pose resolves, so record-time reads need the prior frame
      *  (refreshed post-compare in maintainDischargeReconcile). */
     final java.util.HashMap<Integer, long[]> dischargeMountAuthCache = new java.util.HashMap<>();
+    /**
+     * -- the DOMAIN check on the wire mount index keyed into
+     * {@link #dischargeMountAuthCache}: an index outside {@code [0, own body getAllWeapons().size())} names no mount
+     * (both sides index mounts by that list) and is refused + counted, so the cache holds at most one entry per own
+     * mount. With no own body there is nothing to check against, so every mount is refused + counted (the next fresh
+     * snapshot re-offers it). The first out-of-domain refusal writes one row; the session's cumulative counts ride
+     * the discharge-reconcile meter line.
+     */
+    long mountDomainRefused;   // mount_domain_refused
+    long mountNullOwnRefused;  // mount_null_own_refused
+    private boolean mountDomainLogged;
     /** Sticky decode-lane signal: any AWSD fold ever seen ⇒ the session is on the delta lane whose
      *  hold-last windows repeat stale mount ammo at fresh ticks — the FALSE-early-retire hazard
      *  (frozen) — so {@code exactAmmoLane} fails closed for the rest of the session.
@@ -437,12 +472,16 @@ final class FireLaneCoordinator {
          *  the presenter's own-role spawn needs the full payload (mount/aim/bearing/tick). */
         final ClientGameplayEdgeEvent event;
         boolean mountMismatchCounted; // aim_rebase_mount_mismatch counts a passed-over entry ONCE
+        /** The {@code ageClock} ms at intake, the age law's origin. */
+        final long enqueuedAtMillis;
 
-        PendingAuthDischarge(long tick, float rebaseAimDeg, int mount, ClientGameplayEdgeEvent event) {
+        PendingAuthDischarge(long tick, float rebaseAimDeg, int mount, ClientGameplayEdgeEvent event,
+                long enqueuedAtMillis) {
             this.tick = tick;
             this.rebaseAimDeg = rebaseAimDeg;
             this.mount = mount;
             this.event = event;
+            this.enqueuedAtMillis = enqueuedAtMillis;
         }
 
         @Override public long pairTick() { return tick; }
@@ -920,7 +959,7 @@ final class FireLaneCoordinator {
      * otherwise a stale entry would linger and mint TWO false misses from one real pair.
      */
     void recordLocalDischarge(long snapTick, DamagingProjectileAPI proj) {
-        expireDischargePairs(snapTick);
+        expireDueDischargePairs(snapTick);
         int mount = resolveOwnMountIndex(proj);
         noteLocalCadence(mount, snapTick); // Observe the mount's own shot period
         bindSeedBody(); // this mount has now fired locally — never seed it again
@@ -1099,8 +1138,14 @@ final class FireLaneCoordinator {
             armRearmLatch(local.mount, event.simTick(), event.simTick()); // Hold until a frame PAST the fire
             drainOwnLead(local, event);
         } else {
-            pendingAuthDischarges.addLast(
-                    new PendingAuthDischarge(event.simTick(), authAim, event.mountIndex(), event));
+            // The occupancy cap -- at the bound the NEWEST is refused and
+            // counted (never stored, nothing older evicted); the latch stamp below still reads the event.
+            if (pendingAuthDischarges.size() >= RosterAppendLane.MAX_ROUND_ENTITIES) {
+                refusePendingAuthAtCap(event);
+            } else {
+                pendingAuthDischarges.addLast(new PendingAuthDischarge(event.simTick(), authAim,
+                        event.mountIndex(), event, ageClock.getAsLong()));
+            }
             // A GPEE on an already-LATCHED mount is the truth signal even unpaired (the
             // local twin already retired) — stamp it so the latch releases at the frame past it.
             long[] latch = event.mountIndex() >= 0 ? mountRearmLatch.get(event.mountIndex()) : null;
@@ -1369,6 +1414,15 @@ final class FireLaneCoordinator {
     }
 
     /**
+     * -- the edge-event drain's entry, ONE call per
+     * drain pass, a plain delegate to {@link #expireDueDischargePairs}: the age law reads the wall clock there, so
+     * the mid-scan calls in {@link #recordLocalDischarge} (one per sighted own bolt) age nothing faster.
+     */
+    void expireDischargePairs(long snapshotTick) {
+        expireDueDischargePairs(snapshotTick);
+    }
+
+    /**
      * Flush pending discharge stamps the adjudication window has passed by. An authoritative
      * discharge with no local counterpart is the miss class a player sees (server fired; the client's
      * sim-time-lagged cooldown hadn't ended — visible to a player, uncountable by the meter until now). A
@@ -1383,7 +1437,7 @@ final class FireLaneCoordinator {
      * also survives as the cap/backstop. Treatments themselves are unchanged (queue here, drain
      * same frame at the drain site).
      */
-    void expireDischargePairs(long snapshotTick) {
+    void expireDueDischargePairs(long snapshotTick) {
         if (snapshotTick != graceRefreshTick) {
             graceRefreshTick = snapshotTick;
             double ping;
@@ -1395,7 +1449,21 @@ final class FireLaneCoordinator {
             dischargeGraceTicks = DischargeReconcileLaw.adjudicationGraceTicks(ping);
         }
         PendingAuthDischarge a;
-        while ((a = pendingAuthDischarges.peekFirst()) != null && snapshotTick - a.tick > dischargeGraceTicks) {
+        long ageNow = Long.MIN_VALUE; // read lazily, at most once a call (nanoTime ms never reach MIN_VALUE)
+        while ((a = pendingAuthDischarges.peekFirst()) != null) {
+            if (snapshotTick - a.tick <= dischargeGraceTicks) {
+                // The tick grace expires first (below), so a pause or a
+                // stall the snapshot has since covered adjudicates; a head it has not covered expires only by WALL
+                // age -- past HELD_EDGE_AGE_MAX_MILLIS it is dropped and counted, never adopted. Intake stamps in
+                // clock order, so the head is the oldest and head-only stays complete.
+                ageNow = ageNow != Long.MIN_VALUE ? ageNow : ageClock.getAsLong();
+                if (ageNow - a.enqueuedAtMillis <= HELD_EDGE_AGE_MAX_MILLIS) {
+                    break;
+                }
+                pendingAuthDischarges.pollFirst();
+                notePendingAuthAgeExpired(a, snapshotTick, ageNow);
+                continue;
+            }
             pendingAuthDischarges.pollFirst();
             dischargeServerOnly++;
             if (snapshotTick - a.tick > dischargeMatchTolTicks()) {
@@ -1725,12 +1793,87 @@ final class FireLaneCoordinator {
                     executeRetire(l, simTick, true);
                 }
             }
+            // Only an index inside the own body's mount domain is cached.
+            int domain = ownMountDomain(plugin.ownShip);
             for (cc.starsector.client.net.ServerWeaponMountState m : pose.weaponMounts()) {
+                if (!admitCacheMount(m.mountIndex(), domain)) {
+                    continue;
+                }
                 dischargeMountAuthCache.put(m.mountIndex(),
                         new long[] {m.ammo(), m.usesAmmo() ? 1L : 0L, simTick});
             }
         } catch (Throwable ignore) {
             // reconcile lane; never break the watch
+        }
+    }
+
+    /**
+     * -- the own body's mount DOMAIN: {@code getAllWeapons().size()}, the
+     * index space both the server's mount state and {@link #resolveOwnMountIndex} use (a mounted seat's body is its
+     * module, so the module's list), or -1 when there is no own body to check against. Shared by the discharge ammo
+     * cache and the autofire-target intake ({@link AutofireTargetCoordinator#onAutofireTarget}).
+     */
+    static int ownMountDomain(ShipAPI own) {
+        if (own == null) {
+            return -1;
+        }
+        List<WeaponAPI> all = own.getAllWeapons();
+        return all == null ? 0 : all.size();
+    }
+
+    /**
+     * -- one wire mount index offered to the ammo cache against the own
+     * body's {@code domain} ({@link #ownMountDomain}): true = admitted; false = refused and counted. The first
+     * out-of-domain refusal writes one INFO row: a hull swap whose fresh pose lands a frame before the fresh own
+     * body can show it lawfully, and the next fresh snapshot re-offers the mount.
+     */
+    private boolean admitCacheMount(int mountIndex, int domain) {
+        if (domain < 0) {
+            mountNullOwnRefused++;
+            return false;
+        }
+        if (mountIndex >= 0 && mountIndex < domain) {
+            return true;
+        }
+        mountDomainRefused++;
+        if (!mountDomainLogged) {
+            mountDomainLogged = true;
+            PilotWatchLog.info("predict discharge mount index refused: mount=" + mountIndex + " own_weapons="
+                    + domain + " (not cached; later refusals are counted on the discharge-reconcile line)");
+        }
+        return false;
+    }
+
+    /**
+     * -- the {@link #pendingAuthDischarges} occupancy refusal: counted, and
+     * the first one writes ONE error row plus the once-per-boot announce (a lawful serve never parks this many
+     * unadjudicated discharges). Bounded tokens only: the cap, the refused tick and mount as numbers.
+     */
+    private void refusePendingAuthAtCap(ClientGameplayEdgeEvent event) {
+        pendingAuthCapRefused++;
+        if (!pendingAuthCapLogged) {
+            pendingAuthCapLogged = true;
+            String detail = "pending authoritative discharge cap (" + RosterAppendLane.MAX_ROUND_ENTITIES
+                    + " entries) reached: refused tick=" + event.simTick() + " mount=" + event.mountIndex()
+                    + " (not stored, nothing evicted; later refusals are counted on the discharge-reconcile line)";
+            PilotWatchLog.error("predict discharge " + detail, null);
+            FallbackAnnounce.announceOnce("flc-pending-auth-cap", detail);
+        }
+    }
+
+    /**
+     * -- one {@link #pendingAuthDischarges} head
+     * dropped by the age law ({@link #HELD_EDGE_AGE_MAX_MILLIS}): counted, and the first one writes one INFO row (a
+     * lawful snapshot stall that outlasts the bound while the drain keeps running reaches it too).
+     */
+    private void notePendingAuthAgeExpired(PendingAuthDischarge a, long snapshotTick, long nowMillis) {
+        pendingAuthAgeExpired++;
+        if (!pendingAuthAgeLogged) {
+            pendingAuthAgeLogged = true;
+            PilotWatchLog.info("predict discharge pending age law: dropped tick=" + a.tick + " snapshot_tick="
+                    + snapshotTick + " mount=" + a.mount + " age_ms=" + (nowMillis - a.enqueuedAtMillis)
+                    + " bound_ms=" + HELD_EDGE_AGE_MAX_MILLIS + " (not adopted; later expiries are counted on the"
+                    + " discharge-reconcile line)");
         }
     }
 
@@ -1848,7 +1991,14 @@ final class FireLaneCoordinator {
                 + " retire_at_tol=" + dischargeRetireAtTol
                 + " mount_index_oob=" + dischargeMountIndexOob //
                 + " grace_ticks=" + dischargeGraceTicks
-                + " corrections_per_min=" + perMin);
+                + " corrections_per_min=" + perMin
+                // The hostile-serve bounds, cumulative per session.
+                + " pending_auth_cap_refused=" + pendingAuthCapRefused
+                + " pending_auth_age_expired=" + pendingAuthAgeExpired
+                + " mount_domain_refused=" + mountDomainRefused
+                + " mount_null_own_refused=" + mountNullOwnRefused
+                + " autofire_mount_refused=" + plugin.afTargets.mountRefused
+                + " autofire_mount_null_own_refused=" + plugin.afTargets.mountNullOwnRefused);
     }
 
     // === AUTOFIRE LEAD-ERROR METER (measure-only; feeds the
@@ -2091,5 +2241,34 @@ final class FireLaneCoordinator {
                 + PredictReconcileCombatPlugin.fmt2(b.velDivMaxAbs)
                 + " predict_autofire_lead_mounts" + cls + "="
                 + (mounts.length() == 0 ? "none" : mounts.toString());
+    }
+
+    /**
+     * The sweep law for {@link #presentedOwnProj}: an adopted bolt
+     * the projectile scan never consumed (it expired first, or no own ship ran the scan) is dropped once the
+     * engine no longer holds it. KEEP = in play ({@link CombatEngineAPI#isEntityInPlay}: live or a pending
+     * add) OR still listed by {@code getProjectiles()} — the projectile-set sweep's own keep rule: a
+     * pending-removal bolt the scan still sees must stay consumable, else the scan would count it as a local
+     * discharge and declare it to the server a second time. Render thread, on that sweep's cadence; the
+     * listed set is built only when a key is out of play.
+     */
+    void sweepGone(CombatEngineAPI engine) {
+        if (engine == null || presentedOwnProj.isEmpty()) {
+            return;
+        }
+        Set<Object> listed = null;
+        for (java.util.Iterator<Object> it = presentedOwnProj.iterator(); it.hasNext(); ) {
+            Object p = it.next();
+            if (p instanceof CombatEntityAPI && engine.isEntityInPlay((CombatEntityAPI) p)) {
+                continue;
+            }
+            if (listed == null) {
+                listed = Collections.newSetFromMap(new IdentityHashMap<Object, Boolean>());
+                listed.addAll(engine.getProjectiles());
+            }
+            if (!listed.contains(p)) {
+                it.remove();
+            }
+        }
     }
 }

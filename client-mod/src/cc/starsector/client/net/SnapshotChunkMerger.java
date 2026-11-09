@@ -198,8 +198,8 @@ public final class SnapshotChunkMerger {
                 frame.fragmentMarkerCount() == 0, id -> frame.entityById(id) != null);
         if (kind == ChunkMergerCore.FrameKind.IDENTITY) {
             for (ServerEntityPose pose : frame.entities()) {
-                core.foldWhole(pose.entityId(), tick, pose, scalarsFor(pose),
-                        pose.weaponMounts());
+                ServerEntityPose held = heldPose(pose);
+                core.foldWhole(pose.entityId(), tick, held, scalarsFor(held), pose.weaponMounts());
             }
             // The identity path never sees a stale tick (the ordering guard forces those
             // down the merge branch), so the accumulators differ from the frame's own lists
@@ -224,12 +224,12 @@ public final class SnapshotChunkMerger {
         }
         for (ServerEntityPose pose : frame.entities()) {
             ServerFragmentMarker marker = markerById.get(Long.valueOf(pose.entityId()));
+            ServerEntityPose held = heldPose(pose);
             if (marker == null) {
-                core.foldWhole(pose.entityId(), tick, pose, scalarsFor(pose),
-                        pose.weaponMounts());
+                core.foldWhole(pose.entityId(), tick, held, scalarsFor(held), pose.weaponMounts());
             } else {
-                core.foldFragment(pose.entityId(), tick, marker.tierMask(), pose,
-                        scalarsFor(pose), pose.weaponMounts(),
+                core.foldFragment(pose.entityId(), tick, marker.tierMask(), held,
+                        scalarsFor(held), pose.weaponMounts(),
                         marker.mountFrom(), marker.mountTo());
             }
         }
@@ -395,12 +395,13 @@ public final class SnapshotChunkMerger {
      * The counts keep rising in {@link #meterTokens}. */
     private void noteCapDrops() {
         if (capDropAnnounced
-                || (core.trackedCapDrops() | core.anchorCapDrops() | unionCapDrops) == 0) {
+                || (core.trackedCapDrops() | core.anchorCapDrops() | core.mountCapDrops() | unionCapDrops) == 0) {
             return;
         }
         capDropAnnounced = true;
         FallbackAnnounce.announceOnce("snap-merger-cap-drop",
                 "cells=" + core.trackedCapDrops() + " anchors=" + core.anchorCapDrops()
+                        + " mounts=" + core.mountCapDrops() // the per-cell and store-wide mount-bound drops
                         + " union=" + unionCapDrops + " trackedCap=" + core.trackedCap()
                         + " unionTickCap=" + unionTickCap + " -> new ids dropped, counted");
     }
@@ -505,6 +506,7 @@ public final class SnapshotChunkMerger {
                 + " armor_restamps=" + armorRestamps
                 + " snap_cap_drop_cells=" + core.trackedCapDrops()
                 + " snap_cap_drop_anchors=" + core.anchorCapDrops()
+                + " snap_mount_cap_dropped=" + core.mountCapDrops() // the kernel's per-cell and store-wide mount bounds
                 + " snap_cap_drop_union=" + unionCapDrops;
     }
 
@@ -644,12 +646,21 @@ public final class SnapshotChunkMerger {
         return scalars;
     }
 
+    /** The pose the kernel holds as core and scalar:
+     * the decoded pose without its mount list, which {@link #synthesize} never reads (the
+     * published mounts come from the cell's own store), so up to nine held poses a cell would
+     * otherwise pin a list each that the kernel's mount bounds never count. */
+    private static ServerEntityPose heldPose(ServerEntityPose pose) {
+        return pose.weaponMounts().isEmpty() ? pose : pose.withWeaponMounts(List.of());
+    }
+
     /** One resolved AWSD state into the kernel at the frame tick (anchor+delta = complete
      * knowledge; cloak asserted by RECORD KIND inside {@code foldAwsd} — the twin law). */
     private void foldAwsdPose(long entityId, AwsdSnapshotReader.AwsdKeyframe state, long tick,
             boolean keyframe) {
         ServerEntityPose pose = AwsdSnapshotReader.resolvePose(state);
-        core.foldAwsd(entityId, tick, keyframe, pose, scalarsFor(pose), pose.weaponMounts());
+        ServerEntityPose held = heldPose(pose);
+        core.foldAwsd(entityId, tick, keyframe, held, scalarsFor(held), pose.weaponMounts());
     }
 
     /**

@@ -90,8 +90,8 @@ public final class PostureRegistry {
             new Knob("cc.match.waveCategory", "CC_MATCH_WAVE_CATEGORY", "match.waveCategory", KnobClass.BEHAVIOR),
             // Endless mode — the wave chain wraps after its last clear (default ON).
             new Knob("cc.match.endless", "CC_MATCH_ENDLESS", "match.endless", KnobClass.BEHAVIOR),
-            // The client-OPTIONAL mod ids (comma list) the serve publishes on the probe
-            // (MARK_MODSET_OPTIONAL) but never loads nor folds; the wrapper mirrors them (serve-mods-lib).
+            // The client-OPTIONAL mod ids (comma list, at most 8) the serve publishes on the probe
+            // (MARK_MODSET_OPTIONAL), never loads; the door admits any subset a joiner folds; the wrapper mirrors them (serve-mods-lib).
             new Knob("cc.mods.optional", "CC_MODS_OPTIONAL", "mods.optional", KnobClass.BEHAVIOR),
             // The host's LunaSettings rows never pushed to a joiner
             // (<modId>:<fieldId>, comma list) on top of the built-in table; it changes the minted sheet, so BEHAVIOR.

@@ -124,7 +124,7 @@ final class PidsChatVerbs {
                     // + the session's own observer flag
                     // (server truth) — the /ban menu's observer-handle rows key on it.
                     live.add(new AdminBanCommand.Target(s.sessionId, s.seatId, s.shipId, s.admin,
-                            s.clientId, door.resolvedSeatNameLocked(s), s.observer));
+                            s.clientId, door.resolvedSeatNameLocked(s), s.observer, s.observerOrdinal));
                 }
             }
         }
@@ -207,8 +207,8 @@ final class PidsChatVerbs {
             for (PeerSession s : door.sessionsById.values()) {
                 if (s.isLiveLocked() && s.seatId >= 0) {
                     live.add(new AdminChatMuteCommand.Target(s.sessionId, s.seatId, s.admin(), s.observer,
-                            chatLineName(s), chatMuteIdKeyOrNull(s), chatMuteSrcKeyOrNull(s, requester),
-                            s.chatBucketRefillMillis));
+                            s.observerOrdinal, chatLineName(s), chatMuteIdKeyOrNull(s),
+                            chatMuteSrcKeyOrNull(s, requester), s.chatBucketRefillMillis));
                 }
             }
             snapshot = door.chatMutes.snapshotNewestFirst();
@@ -237,8 +237,7 @@ final class PidsChatVerbs {
                 ChatMuteSet.Verdict verdict = door.chatMutes.add(new ChatMuteSet.Entry(t.idKeyOrNull(),
                         t.srcKeyOrNull(), ChatMuteSet.Origin.CHAT, AdminChatMuteCommand.entryLabel(t), now));
                 reply = switch (verdict) {
-                    case ADDED -> AdminChatMuteCommand.muteReceipt(t.seatId(), t.observer(),
-                            AdminChatMuteCommand.observerSlot(by.sessionId, live, t.sessionId()),
+                    case ADDED -> AdminChatMuteCommand.muteReceipt(t.seatId(), t.observer(), t.observerOrdinal(),
                             t.idKeyOrNull() != null, t.srcKeyOrNull() != null,
                             othersOnAddressLocked(t.srcKeyOrNull(), t.sessionId()));
                     case ALREADY_MUTED -> AdminChatMuteCommand.ALREADY_MUTED;
@@ -363,8 +362,8 @@ final class PidsChatVerbs {
                 status = "target_admin";
             } else {
                 AdminChatMuteCommand.Target t = new AdminChatMuteCommand.Target(target.sessionId, target.seatId,
-                        target.admin(), target.observer, chatLineName(target), chatMuteIdKeyOrNull(target),
-                        chatMuteSrcKeyOrNull(target, null), target.chatBucketRefillMillis);
+                        target.admin(), target.observer, target.observerOrdinal, chatLineName(target),
+                        chatMuteIdKeyOrNull(target), chatMuteSrcKeyOrNull(target, null), target.chatBucketRefillMillis);
                 keys = keysToken(t.idKeyOrNull(), t.srcKeyOrNull());
                 if (mute) {
                     ChatMuteSet.Verdict verdict = door.chatMutes.add(new ChatMuteSet.Entry(t.idKeyOrNull(),
@@ -789,10 +788,11 @@ final class PidsChatVerbs {
             // resolved name captured under the lock (the adminSwitchTeams idiom), fed by seat —
             // never the arbiter's put-only per-seat map (a nameless successor = seat N). This
             // dispatch runs OUTSIDE the lock (onChatUp's block closed before the call).
-            // + the live OBSERVER session ids from the same
-            // lock snapshot (server truth) — the /mute handle rows; VoiceRelay.Endpoint is not widened.
+            // + the live OBSERVER sessions' door ordinals from the same
+            // lock snapshot (server truth; r4: the ONE "observer N") — the /mute handle rows;
+            // VoiceRelay.Endpoint is not widened.
             HashMap<Integer, String> ownNameBySeat = new HashMap<Integer, String>();
-            HashSet<Long> observerSessions = new HashSet<Long>();
+            HashMap<Long, Integer> observerOrdinals = new HashMap<Long, Integer>();
             synchronized (door.lock) {
                 for (PeerSession s : door.sessionsById.values()) {
                     if (s.isLiveLocked() && s.seatId >= 0) {
@@ -801,13 +801,13 @@ final class PidsChatVerbs {
                             ownNameBySeat.putIfAbsent(s.seatId, name);
                         }
                         if (s.observer) {
-                            observerSessions.add(s.sessionId);
+                            observerOrdinals.put(s.sessionId, s.observerOrdinal);
                         }
                     }
                 }
             }
             replyLines = VoiceMuteCommand.handle(parsed, session.sessionId, seatId, door.voice,
-                    ownNameBySeat::get, observerSessions::contains, listingSink);
+                    ownNameBySeat::get, sid -> observerOrdinals.getOrDefault(sid, 0), listingSink);
             // An admin who just muted a player's VOICE for themselves may have meant the text mute, which is
             // a different verb: the pointer rides a successful mute reply only — a seat
             // OR an observer target; no other VoiceMuteCommand line starts with "muted ".

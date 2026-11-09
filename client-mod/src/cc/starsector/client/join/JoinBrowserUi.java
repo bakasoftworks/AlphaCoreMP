@@ -22,6 +22,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import javax.sound.sampled.Mixer;
@@ -155,6 +156,9 @@ final class JoinBrowserUi implements JoinRoutes.Session {
     }
 
     private final Path modDir;
+    /** Where the Launch gate's game-version row goes — this window's log
+     *  file; a selftest window keeps it on stderr so a build never appends to the player's real log. */
+    private Consumer<String> gateLog = JoinBrowserUi::log;
     private final Path planFile;
     private final String nonce;
     private final Path settingsPath;
@@ -275,8 +279,10 @@ final class JoinBrowserUi implements JoinRoutes.Session {
      * {@code modDir} and are never written by paste or probe. Test-only; {@link #run} stays the one real entry.
      */
     static JoinBrowserUi forSelftest(Path modDir, JoinSettings saved) {
-        return new JoinBrowserUi(modDir, modDir.resolve("selftest-plan.txt"), "selftest",
+        JoinBrowserUi ui = new JoinBrowserUi(modDir, modDir.resolve("selftest-plan.txt"), "selftest",
                 modDir.resolve("selftest-settings.properties"), saved);
+        ui.gateLog = System.err::println;
+        return ui;
     }
 
     /** The last served probe's launch state (the row reads it; {@link JoinLaunchGates.Probed#NONE} = none). */
@@ -311,7 +317,14 @@ final class JoinBrowserUi implements JoinRoutes.Session {
         }
         Path settingsPath = JoinSettings.pathForRun();
         JoinSettings saved = JoinSettings.load(settingsPath);
-        log("join-browser: start (browser lane; log " + LOG_FILE.getFileName() + ")");
+        // The start row names the settings file this window reads by its NAME
+        // only (the default or an allow-listed window name, never a path); a refused window name writes ONE row naming
+        // the key, never its value, after the start row has made the log file (javaw has no stderr)
+        log("join-browser: start (browser lane; log " + LOG_FILE.getFileName() + "; settings "
+                + settingsPath.getFileName() + ")");
+        if (JoinSettings.nameRefused(System.getenv(JoinSettings.SETTINGS_NAME_ENV))) {
+            log(JoinSettings.SETTINGS_NAME_REFUSED_ROW);
+        }
         JoinBrowserUi ui = new JoinBrowserUi(modDir, planFile, nonce, settingsPath, saved);
         return ui.serve(endpointFile);
     }
@@ -1083,6 +1096,12 @@ final class JoinBrowserUi implements JoinRoutes.Session {
             // with none, the gate reads the last probe's outcome for the launch's pair
             String document = stagedCredential != null && JoinLaunchGates.samePair(stagedHost, stagedPort, host, port)
                     ? stagedCredential : null;
+            // The game-version gate first, so a kit sitting in a different
+            // Starsector refuses with nothing written; its row rides this window's log (gateLog)
+            JoinLaunchGates.Refusal game = JoinLaunchGates.checkGame(modDir, gateLog);
+            if (game != null) {
+                return refusalJson(game);
+            }
             JoinLaunchGates.Verdict verdict = JoinLaunchGates.check(
                     new JoinLaunchGates.Form(host, port, name, pw, ship, document, logs, team), modDir, lastProbe);
             if (verdict.refusal != null) {

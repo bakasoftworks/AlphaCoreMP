@@ -4,7 +4,6 @@ import com.fs.starfarer.api.combat.MissileAPI;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -99,8 +98,11 @@ final class BallisticEndLinkLane {
     /** Linked tracks by wire id — the confession's O(1) resolve. */
     private final Map<Long, Track> byWireId = new HashMap<Long, Track>();
     /** Wire ids ever claimed here (per-round; the mint never recycles):
-     *  a post-consume stale record must never re-claim a different local bolt. */
-    private final Set<Long> consumedIds = new HashSet<Long>();
+     *  a post-consume stale record must never re-claim a different local bolt.
+     *  <p>A monotone-id WINDOW of its own, not a set: ids more than
+     *  65,536 mints behind the newest are dead for certain on a lawful serve, refused and counted, so a hostile
+     *  serve cannot grow it past 65,537 entries. */
+    private final MonotoneIdWindow consumedIds = new MonotoneIdWindow("ballistic-consumed");
 
     private int endBuffered;      // predict_missile_ballistic_end_buffered (CL-2 intake)
     private int endLateTwin;      // predict_missile_ballistic_end_late_twin (twin claimed late)
@@ -262,7 +264,7 @@ final class BallisticEndLinkLane {
                 tr.wireId = id;
                 tr.lastSeenTick = tick;
                 byWireId.put(Long.valueOf(id), tr);
-                consumedIds.add(Long.valueOf(id));
+                consumedIds.offer(id);
                 it.remove();
                 linked++;
                 // A record already FIZZLING at the claim relays at once
@@ -589,7 +591,7 @@ final class BallisticEndLinkLane {
                 "cls=ballistic-own")) {
             return false; // the ladder's own meters named why; the expiry skip counts the residue
         }
-        consumedIds.add(Long.valueOf(id));
+        consumedIds.offer(id);
         if (mpl.plugin.engine.isEntityInPlay(body)) {
             mpl.plugin.engine.removeEntity(body);
         }
@@ -959,11 +961,17 @@ final class BallisticEndLinkLane {
         }
     }
 
+    /** The consumed-id window's session totals row at teardown (silent
+     *  when nothing was refused), called from the missile lane's teardown census. */
+    void logIdWindowTeardown() {
+        consumedIds.logTeardownTotals();
+    }
+
     /** Round reset: identity state clears; counters stay cumulative (FoeHull discipline). */
     void resetForMatchReset() {
         unlinked.clear();
         byWireId.clear();
-        consumedIds.clear();
+        consumedIds.clear(); // the window's round-close totals row rides this clear
         pendingEnds.clear();
         ownSourcedSeen.clear();
         ownSourcedSpec.clear(); //

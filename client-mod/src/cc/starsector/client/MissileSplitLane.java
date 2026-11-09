@@ -274,6 +274,13 @@ final class MissileSplitLane {
 
     /** Split child-recipe stashes by source pair (lazy expiry at lookup). */
     private final Map<Long, ChildOverride> childOverrides = new HashMap<Long, ChildOverride>();
+    /** {@link #childOverrides} holds at most
+     *  {@link RosterAppendLane#MAX_ROUND_ENTITIES} distinct source pairs a round (expiry is lazy, so
+     *  only an occupancy cap bounds it). {@code childOverrideCapRefused} is cumulative (the meter
+     *  tokens: round reset + teardown); {@code childOverrideRefusedRound} arms the round's ONE
+     *  first-refusal row and re-arms in {@link #resetForMatchReset}. Render thread. */
+    private long childOverrideCapRefused;
+    private int childOverrideRefusedRound;
 
     private int splitEvents;         // predict_missile_split_events (MISSILE_SPLIT received)
     private int splitRetired;        // predict_missile_split_retired (linked twin ended at split)
@@ -761,7 +768,16 @@ final class MissileSplitLane {
     private void stashChildOverride(MissilePoseLane.Twin t, JSONObject params, String childSpecId,
             long tick) {
         try {
-            childOverrides.put(MissilePoseLane.pairKey(t.sourceEntityId, t.sourceMountIndex),
+            Long pair = Long.valueOf(MissilePoseLane.pairKey(t.sourceEntityId, t.sourceMountIndex));
+            // The occupancy cap on distinct pairs — a fresh
+            // pair at the cap is refused (its children adopt un-overridden, the fail-soft path),
+            // a pair already held is overwritten in place (no growth); no held stash is evicted.
+            if (childOverrides.size() >= RosterAppendLane.MAX_ROUND_ENTITIES
+                    && !childOverrides.containsKey(pair)) {
+                refuseChildOverrideAtCap(t);
+                return;
+            }
+            childOverrides.put(pair,
                     new ChildOverride(
                     childSpecId,
                     (float) params.getDouble("damage"),
@@ -919,12 +935,51 @@ final class MissileSplitLane {
                 + " predict_missile_split_fallback_threw=" + splitFallbackThrew
                 + " predict_missile_split_forensic=" + (splitForensic == null ? "none" : splitForensic)
                 + " predict_missile_child_override_hit=" + childOverrideHit
-                + " predict_missile_child_override_miss=" + childOverrideMiss;
+                + " predict_missile_child_override_miss=" + childOverrideMiss
+                + " predict_missile_child_override_cap_refused=" + childOverrideCapRefused;
     }
 
     /** Round reset (called from the pose lane's {@code resetForMatchReset}): per-round
      *  identity state clears — counters stay cumulative across rounds. */
     void resetForMatchReset() {
         childOverrides.clear();
+        childOverrideRefusedRound = 0;
+    }
+
+    /** game-free reads of the stash cap state — this class's
+     *  reflective field table resolves engine-jar types, so a game-free rig reads through these. */
+    int childOverrideCount() {
+        return childOverrides.size();
+    }
+
+    long childOverrideCapRefused() {
+        return childOverrideCapRefused;
+    }
+
+    int childOverrideRefusedRound() {
+        return childOverrideRefusedRound;
+    }
+
+    /** The held stash's expiry tick for {@code pair}, or -1 when no stash is held for it. */
+    long childOverrideExpiryTick(long pair) {
+        ChildOverride ov = childOverrides.get(Long.valueOf(pair));
+        return ov == null ? -1L : ov.expiryTick;
+    }
+
+    /** A fresh source pair met a full
+     *  {@link #childOverrides} — refused, counted; the round's first refusal writes ONE error row
+     *  and the one-shot announce, later ones only count. Bounded tokens only (the source id and
+     *  mount index as numbers). Render thread. */
+    private void refuseChildOverrideAtCap(MissilePoseLane.Twin t) {
+        childOverrideCapRefused++;
+        if (++childOverrideRefusedRound != 1) {
+            return;
+        }
+        String detail = "split child-override cap (" + RosterAppendLane.MAX_ROUND_ENTITIES
+                + " source pairs this round): refused source=" + t.sourceEntityId + " mount="
+                + t.sourceMountIndex + " (children adopt un-overridden; later refusals this round are"
+                + " counted silently)";
+        PilotWatchLog.error("predict missile " + detail, null);
+        FallbackAnnounce.announceOnce("msl-child-override-cap", detail);
     }
 }

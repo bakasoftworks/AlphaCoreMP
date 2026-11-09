@@ -369,6 +369,64 @@ final class JoinGuiSelftestFs {
                 "settings M5: a lost move race reads the winner's moved file and prints nothing (flips if the catch"
                         + " returns the vanished legacy path - a blank form, the roaming file re-created at Launch - or"
                         + " prints the failure line first)");
+        // W1-W3: two windows of one profile, the second one's file named by
+        // JoinSettings.SETTINGS_NAME_ENV. W1: a lawful name skips the one-time move - the legacy file stays
+        // byte-identical and in place, whether the named file is absent (the move would carry the legacy file into it)
+        // or present (the legacy file would be deleted as a leftover). W2: absent, blank or refused = the default file,
+        // and the move still runs. W3: the remembered password binds per FILE.
+        Path winLegacy = root.resolve("win-roaming").resolve(JoinSettings.DIR_NAME).resolve(JoinSettings.FILE_NAME);
+        Path winDefault = root.resolve("win-local").resolve(JoinSettings.DIR_NAME).resolve(JoinSettings.FILE_NAME);
+        Path winNamed = winDefault.resolveSibling("join-settings-2.properties");
+        JoinSettings winSeed = new JoinSettings("10.2.0.9", "46337", "Win Pilot", "win-pass-1", "", true, "",
+                "10.2.0.9:46337");
+        winSeed.save(winLegacy);
+        byte[] legacyBytes = Files.readAllBytes(winLegacy);
+        for (boolean namedPresent : new boolean[] {false, true}) {
+            if (namedPresent) {
+                new JoinSettings("203.0.113.5", "46337", "", "", "", true, "", "").save(winNamed);
+            }
+            Path w1 = JoinSettings.pathForRun(winDefault, "join-settings-2.properties", winLegacy);
+            check(winNamed.equals(w1) && Files.isRegularFile(winLegacy)
+                    && Arrays.equals(legacyBytes, Files.readAllBytes(winLegacy)) && !Files.exists(winDefault)
+                    && Files.exists(winNamed) == namedPresent,
+                    "settings W1: a named window file skips the one-time move (named file "
+                            + (namedPresent ? "present" : "absent") + "; flips if the move runs on the named path - it"
+                            + " would " + (namedPresent ? "delete" : "move") + " the first window's legacy file, its"
+                            + " password and old cid, or if the named window runs the default file's move)");
+        }
+        for (String unnamed : new String[] {null, "", "   ", "../x.properties"}) {
+            Files.deleteIfExists(winDefault);
+            winSeed.save(winLegacy);
+            Path w2 = JoinSettings.pathForRun(winDefault, unnamed, winLegacy);
+            check(winDefault.equals(w2) && !Files.exists(winLegacy) && Files.isRegularFile(winDefault)
+                    && "win-pass-1".equals(JoinSettings.load(w2).rememberedPasswordFor("10.2.0.9", "46337")),
+                    "settings W2: a window name of " + (unnamed == null ? "(unset)" : "'" + unnamed + "'")
+                            + " reads the default file through the one-time move (flips if an unnamed or refused"
+                            + " window skips the move - the legacy file stays in the roaming profile and the form"
+                            + " opens blank - or reads any other file)");
+        }
+        Path fileA = root.resolve("win-bind").resolve(JoinSettings.FILE_NAME);
+        Path fileB = JoinSettings.windowPath(fileA, "join-settings-2.properties");
+        new JoinSettings("10.2.0.9", "46337", "Pilot A", "pw-local-1", "", true, "", "10.2.0.9:46337").save(fileA);
+        byte[] aBytes = Files.readAllBytes(fileA);
+        JoinSettings.forLaunch(fileB, "203.0.113.5", "46337", "Pilot B", "", "", true, "").save(fileB);
+        JoinSettings bEmpty = JoinSettings.load(fileB);
+        JoinSettings.forLaunch(fileB, "203.0.113.5", "46337", "Pilot B", "pw-public-2", "", true, "").save(fileB);
+        check(fileA.resolveSibling("join-settings-2.properties").equals(fileB)
+                && Arrays.equals(aBytes, Files.readAllBytes(fileA)) && bEmpty.password.isEmpty()
+                && bEmpty.passwordFor.isEmpty(),
+                "settings W3: window 2's Launch saves leave window 1's file byte-identical, and an empty-password"
+                        + " launch in window 2 remembers nothing (flips if window 2 saves into window 1's file, or its"
+                        + " empty launch borrows window 1's password from the other file)");
+        JoinSettings a = JoinSettings.load(fileA);
+        JoinSettings b = JoinSettings.load(fileB);
+        check("pw-local-1".equals(a.rememberedPasswordFor("10.2.0.9", "46337"))
+                && a.rememberedPasswordFor("203.0.113.5", "46337").isEmpty()
+                && "pw-public-2".equals(b.rememberedPasswordFor("203.0.113.5", "46337"))
+                && b.rememberedPasswordFor("10.2.0.9", "46337").isEmpty(),
+                "settings W3b: each file answers its OWN pair only - window 1's local pair still gets its password,"
+                        + " the public pair gets none from it, and window 2's file binds the public pair alone (flips if"
+                        + " the binding is shared across the two files or a second window's save rebinds the first)");
         // R5d: a malformed backslash-u row BETWEEN the password and its
         // passwordFor row. Properties.load keeps the rows read before the bad line; without the catch's remove the
         // password would take the legacy binding to THIS file's host/port and forLaunch would re-save that.
@@ -622,6 +680,101 @@ final class JoinGuiSelftestFs {
         for (Path p : List.of(kitLink, modLink)) {
             if (JoinModStage.isKitLink(p)) {
                 Files.delete(p); // the link only: the temp tree keeps no reparse point behind
+            }
+        }
+    }
+
+    /**
+     * Rows {@code mod-stage-optional-*}: a launch whose server publishes one required and one OPTIONAL mod, both
+     * present and current, staged through the REAL {@link JoinModStage#stage}. The game folds its FULL enabled set
+     * (the server's door holds a lawful print for every subset of its published optional set), so the root holds a
+     * link per mod plus the kit link, {@code enabled_mods.json} lists cc_client and BOTH ids, and no optional-ids
+     * sidecar is written. A legacy sidecar left by an older kit is swept; any other real item still refuses the
+     * stage untouched. The legacy name is a literal here: it is what older kits wrote, whatever the constant says.
+     *
+     */
+    static void selftestModStageOptional(Path tmp) throws Exception {
+        boolean windows = cc.starsector.client.KitUserDirs.isWindows();
+        Path install = tmp.resolve("modopt-install");
+        if (windows && JoinModStage.stageableName(install.toString()) != null) {
+            System.out.println("join-gui selftest SKIP mod-stage-optional-* (the temp path holds a character mklink cannot take)");
+            return;
+        }
+        Path kitDir = install.resolve("mods").resolve("CC_Client");
+        Files.createDirectories(kitDir);
+        String[][] mods = {{"Req Mod", "req_mod", "false"}, {"Opt Mod", "opt_mod", "true"}};
+        for (String[] m : mods) {
+            Path dir = install.resolve("mods").resolve(m[0]);
+            Files.createDirectories(dir.resolve("data"));
+            Files.createDirectories(dir.resolve("jars"));
+            Files.writeString(dir.resolve("mod_info.json"),
+                    "{\"id\":\"" + m[1] + "\",\"version\":\"1.0\",\"jars\":[\"jars/a.jar\"]}", StandardCharsets.UTF_8);
+            Files.write(dir.resolve("jars").resolve("a.jar"), new byte[] {0x50, 0x4b, 0x05, 0x06, 7, 8, 9});
+            Files.writeString(dir.resolve("data").resolve("a.csv"), "a,b\n" + m[1] + "\n", StandardCharsets.UTF_8);
+        }
+        JoinModStage.Scan scan = JoinModStage.scan(install);
+        List<DoorProbe.ModRow> published = new ArrayList<>();
+        for (String[] m : mods) {
+            JoinModStage.LocalMod have = JoinModStage.digest(scan.byId.get(m[1]));
+            published.add(new DoorProbe.ModRow(m[1], cc.starsector.server.runtime.ModSet.versionLabel(have.version),
+                    cc.starsector.server.runtime.ModSet.filesPrefix(have.jarsMd5, have.dataMd5), Boolean.parseBoolean(m[2])));
+        }
+        JoinModStage.Diff d = JoinModStage.diff(published, 2, true, JoinModStage.scan(install));
+        check(d.ok && d.rows.size() == 2 && JoinModStage.STATUS_OK.equals(d.rows.get(0).status)
+                        && JoinModStage.STATUS_OK.equals(d.rows.get(1).status) && !d.rows.get(0).optional
+                        && d.rows.get(1).optional,
+                "SETUP-mod-stage-optional: the required + optional rows did not both diff OK (the stage rows below never ran)");
+
+        Path root = JoinModStage.root(install);
+        Files.createDirectories(root);
+        Path legacy = root.resolve("optional-mods.txt.data");
+        Files.writeString(legacy, "cc-optional1\nopt_mod\n", StandardCharsets.UTF_8);
+        String fault = null;
+        Path staged = null;
+        try {
+            staged = JoinModStage.stage(install, kitDir, d.rows);
+        } catch (IOException e) {
+            fault = e.getMessage();
+        }
+        check(fault == null && root.equals(staged) && !Files.exists(legacy),
+                "mod-stage-optional-legacy-sweep: an older kit's optional-mods.txt.data in the root was not swept (stage"
+                        + " said: " + fault + ") - flips if the sweep goes (the real-item law then refuses every Launch)"
+                        + " or the stage writes the sidecar again");
+        Set<String> entries = new java.util.TreeSet<>();
+        try (java.nio.file.DirectoryStream<Path> ds = Files.newDirectoryStream(root)) {
+            for (Path p : ds) {
+                entries.add(p.getFileName().toString());
+            }
+        }
+        String json = new String(Files.readAllBytes(root.resolve("enabled_mods.json")), StandardCharsets.UTF_8);
+        check(entries.equals(Set.of("CC_Client", "Req Mod", "Opt Mod", "enabled_mods.json"))
+                        && JoinModStage.isKitLink(root.resolve("CC_Client")) && JoinModStage.isKitLink(root.resolve("Req Mod"))
+                        && JoinModStage.isKitLink(root.resolve("Opt Mod"))
+                        && json.equals("{\"enabledMods\": [\"cc_client\", \"req_mod\", \"opt_mod\"]}\n"),
+                "mod-stage-optional-full-set: the root is not exactly the kit link + one link per OK mod + a json listing"
+                        + " cc_client and BOTH ids (root holds " + entries + ") - flips if the sidecar write returns, an OK"
+                        + " optional row is no longer linked or listed, or the stage leaves any other file");
+
+        for (String name : List.of("notes.txt.data", "optional-mods.txt.data.old")) {
+            Path planted = root.resolve(name);
+            Files.writeString(planted, "x\n", StandardCharsets.UTF_8);
+            String refused = null;
+            try {
+                JoinModStage.stage(install, kitDir, d.rows);
+            } catch (IOException e) {
+                refused = e.getMessage();
+            }
+            check(refused != null && refused.contains("a real item it did not create") && Files.isRegularFile(planted),
+                    "mod-stage-optional-legacy-law: a player file named " + name + " in the root was not refused untouched"
+                            + " - flips if the legacy sweep widens past the one old sidecar name (the stage would then"
+                            + " delete a player's file)");
+            Files.delete(planted);
+        }
+        // a refused stage may have left some links behind: the temp tree keeps no reparse point
+        for (String name : List.of("CC_Client", "Req Mod", "Opt Mod")) {
+            Path p = root.resolve(name);
+            if (JoinModStage.isKitLink(p)) {
+                Files.delete(p);
             }
         }
     }

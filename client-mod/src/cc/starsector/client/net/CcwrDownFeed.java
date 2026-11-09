@@ -1,5 +1,6 @@
 package cc.starsector.client.net;
 
+import cc.starsector.client.ServerTickRate;
 import cc.starsector.server.runtime.WireRecordSink;
 
 import java.io.BufferedInputStream;
@@ -106,7 +107,13 @@ public final class CcwrDownFeed implements AutoCloseable {
         }
     }
 
-    /** The reel's {@code knob.tickRate} meta, or {@code dflt} when absent / unparseable. */
+    /**
+     * The reel's {@code knob.tickRate} meta, or {@code dflt} when absent / unparseable or outside
+     * [{@link ServerTickRate#MIN_TICKS_PER_SECOND}, {@link ServerTickRate#MAX_TICKS_PER_SECOND}] —
+     * the same range the client accepts from a live WELCOME, and one that fits the door's u16 field.
+     * The reel file is untrusted input, so a value the live
+     * client would refuse falls back to the default instead of reaching the door's handshake rows.
+     */
     public int tickRateOr(int dflt) {
         String raw = meta.get("knob.tickRate");
         if (raw == null) {
@@ -114,7 +121,7 @@ public final class CcwrDownFeed implements AutoCloseable {
         }
         try {
             int v = Integer.parseInt(raw.trim());
-            return v > 0 ? v : dflt;
+            return v >= ServerTickRate.MIN_TICKS_PER_SECOND && v <= ServerTickRate.MAX_TICKS_PER_SECOND ? v : dflt;
         } catch (NumberFormatException e) {
             return dflt;
         }

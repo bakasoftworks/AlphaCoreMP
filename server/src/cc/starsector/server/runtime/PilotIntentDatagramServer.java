@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -192,7 +193,8 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
     private final IdTables idTables;
     /** The Main-minted boot mod set (null on a set-less rig door) the session fold carries. */
     private final ModSet modSet;
-    /** The client-optional set (mods.optional) — probe rows with MARK_MODSET_OPTIONAL, excluded from the fold. */
+    /** The client-optional set (mods.optional) — probe rows with MARK_MODSET_OPTIONAL; the door admits
+     * the required set plus any subset of it (the lawful table). */
     private final ModSet optionalModSet;
     /** non-null = the PASSWORD-mode multi door — every HELLO's credential slot must
      * equal this ONE shared match password exactly; seats resolve per client-instance id through
@@ -350,6 +352,8 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
     // ---- session tables (guarded by lock) ----
     // Iteration order = admission order (LinkedHashMap).
     final LinkedHashMap<Long, PeerSession> sessionsById = new LinkedHashMap<Long, PeerSession>();
+    // r4: observer ordinals minted by this door (lock); monotone, never reused in a serve's life.
+    int observerOrdinalsMinted;
     // HELLO lookup is by token (the takeover/reconnect key). The design's source-addr index is
     // deliberately NOT built: every in-session frame carries the session id (the demux key) and no
     // consumer needs source->session (a recorded deviation from the design).
@@ -602,6 +606,10 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
          * full DOWN fan-out; its PINT deposits and seat-scoped CTRL/verbs are dropped at
          * ingest. Identity-final like its siblings (a takeover re-presents the bit). */
         final boolean observer;
+        /** r4: the door-minted OBSERVER ORDINAL — the ONE "observer N" every moderation
+         * menu (/ban, /mute, /chatmute) shows, minted by {@link #mintObserverOrdinalLocked} at admission (never
+         * reused in a serve's life; a same-cid takeover keeps its predecessor's); 0 = not an observer. */
+        final int observerOrdinal;
         /** this session's ban NUMBERING — the cid KEYS
          * every ban listing served to it (the /unban menu, every /bans page) shares, which
          * {@code /unban #n} indexes by KEY with a live re-check; {@code null} = no pin ⇒
@@ -800,8 +808,9 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
 
         PeerSession(long sessionId, long helloNonce, byte[] welcomeDatagram,
                 InetSocketAddress peer, String clientId, String seatToken, int seatId, long shipId,
-                boolean admin, boolean observer, boolean replay) {
+                boolean admin, boolean observer, int observerOrdinal, boolean replay) {
             this.replay = replay;
+            this.observerOrdinal = observerOrdinal;
             this.sessionId = sessionId;
             this.helloNonce = helloNonce;
             this.welcomeDatagram = welcomeDatagram;
@@ -904,6 +913,11 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
          * observer never deposits an intent, so no seat-side path ever sees seat 0). */
         public boolean observer() {
             return observer;
+        }
+
+        /** The door-minted observer ordinal, r4; 0 = not an observer. */
+        public int observerOrdinal() {
+            return observerOrdinal;
         }
 
         /** Ops-GUI seat name (it once showed only the client id): the
@@ -1126,6 +1140,23 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         }
     }
 
+    /**
+     * The door's content-fingerprint expectations from EXPLICIT inputs: {@link DoorFingerprintExpectations#OFF}
+     * when the fingerprint is null, else the raw print plus every lawful session print (the required set's
+     * fold, and one per subset of the published optional set when a lawful table is given). PURE - no
+     * JVM-global read inside, so a contract row arms it with its own sets while the process-wide installs
+     * stay null; the constructor passes the boot installs.
+     */
+    public static DoorFingerprintExpectations armDoor(String requiredDoorFingerprintOrNull, IdTables tablesOrNull,
+            ModSet requiredOrNull, Map<String, List<String>> lawfulOrNull) {
+        if (requiredDoorFingerprintOrNull == null) {
+            return DoorFingerprintExpectations.OFF;
+        }
+        return DoorFingerprintExpectations.armed(requiredDoorFingerprintOrNull,
+                tablesOrNull == null ? null : tablesOrNull.vtab(),
+                requiredOrNull == null ? null : requiredOrNull.digest(), lawfulOrNull);
+    }
+
     private PilotIntentDatagramServer(DatagramSocket socket, boolean offLoopback, String host,
             int port, MatchSeatAuthority seatAuthority, boolean multiPeer, int maxSessions,
             String requiredDoorFingerprint, String matchPassword,
@@ -1147,15 +1178,14 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         this.maxSessions = maxSessions;
         this.requiredDoorFingerprint = requiredDoorFingerprint;
         // The Main-minted boot table (null on an engine-less
-        // rig door) and the door's TWO expectations — raw for the game-free PROBE/VCHK, folded
-        // (data= over vtab) for a session claim. OFF when the door is unarmed.
+        // rig door) and the door's expectations — raw for the game-free PROBE/VCHK, the lawful folded
+        // prints (data= over vtab + a lawful mod set) for a session claim. OFF when the door is unarmed.
         this.idTables = IdTables.installedOrNull();
         this.modSet = ModSet.installedOrNull();   // Folded beside vtab (null = vtab-only, rigs)
-        this.optionalModSet = ModSet.installedOptionalOrNull();   // Published on the probe, never folded
-        this.doorExpectations = requiredDoorFingerprint == null ? DoorFingerprintExpectations.OFF
-                : DoorFingerprintExpectations.armed(requiredDoorFingerprint,
-                        idTables == null ? null : idTables.vtab(),
-                        modSet == null ? null : modSet.digest());
+        // Published on the probe; the door admits the required set's fold plus any lawful subset's -
+        // the boot-built table, read once here (null on rigs / no mods.optional row)
+        this.optionalModSet = ModSet.installedOptionalOrNull();
+        this.doorExpectations = armDoor(requiredDoorFingerprint, idTables, modSet, ModSet.installedLawfulSubsetsOrNull());
         this.matchPassword = matchPassword;
         this.passwordLedger = passwordLedger;
         this.pickableVariants = pickableVariants;
@@ -1460,12 +1490,16 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         }
         if (endpoint.doorExpectations.armed()) {
             // The fold is visible at bind — ops reads which print the
-            // door expects of a session claim, and whether a table backed it.
+            // door expects of a session claim, and whether a table backed it. optional= / lawful_prints= (k
+            // published optional mods, 2^k admitted prints) ride AFTER raw_data=: modset= stays the required
+            // set's digest, and the readers keyed on it and its neighbours are unchanged.
             System.out.println("npeer-udp-door fingerprint=armed folded=" + endpoint.doorExpectations.folded()
                     + " vtab=" + (endpoint.idTables == null ? "none" : endpoint.idTables.vtab())
                     + " modset=" + (endpoint.modSet == null ? "none" : endpoint.modSet.digest() + " n=" + endpoint.modSet.size())
                     + " session_data=" + ContentFingerprints.componentOrNull(endpoint.doorExpectations.session(), "data")
-                    + " raw_data=" + ContentFingerprints.componentOrNull(endpoint.doorExpectations.raw(), "data"));
+                    + " raw_data=" + ContentFingerprints.componentOrNull(endpoint.doorExpectations.raw(), "data")
+                    + " optional=" + endpoint.doorExpectations.optionalPublished()
+                    + " lawful_prints=" + endpoint.doorExpectations.lawfulPrints());
         }
         try {
             // B5 E1(d): the OS egress budget the whole fan shares — visibility only, fail-soft.
@@ -3492,6 +3526,14 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
                     && seatAuthority.seatMounted(claim.seat().seatId());
             freshClaim = claimed && !hullHeld;
         } else {
+            if (hello.clientId() == null || hello.clientId().isBlank()) {
+                // A token door keys the session by the token but the
+                // seat's authority identity by the cid, and that identity refuses a blank one. Refused here,
+                // BEFORE the takeover vacate below and the claim, so the token's live session and its seat are
+                // untouched (the password door refuses the same HELLO inside its credential check).
+                sendRejectLocked(hello, from, DoorRejectReasons.CLIENT_ID_REQUIRED, "", hs13);
+                return null;
+            }
             seatToken = hello.seatToken();
             hullHeld = takeover && existing.seatVacated && seatAuthority.seatMounted(existing.seatId);
             freshClaim = !takeover || (existing.seatVacated && !hullHeld);
@@ -3930,7 +3972,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         List<byte[]> modFrames;
         int optionalCount = optionalModSet == null ? 0 : optionalModSet.size();
         try {
-            // Required rows first, then the published OPTIONAL rows (mark 27, never folded)
+            // Required rows first, then the published OPTIONAL rows (mark 27; the door admits any lawful subset)
             modFrames = ListingEmitter.encodeListing(0, ListingFrameCodec.KIND_MODSET,
                     PROBE_LISTING_ID, ListingEmitter.modSetEntriesWithAnnounce(lunaTerm, modSet, optionalModSet));
         } catch (RuntimeException codecLaw) {
@@ -4120,7 +4162,8 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
                 true, hs13);
         readerCounters.observerAdmitted++;
         System.out.println("pilot-datagram-admission OBSERVER client=" + PeerText.quoteCid(hello.clientId())
-                + " session=" + session.sessionId + " from=" + from + " roundId=" + roundId);
+                + " session=" + session.sessionId + " from=" + from + " roundId=" + roundId
+                + " observer_ordinal=" + session.observerOrdinal); // r4: ties "observer N" to a cid
         lock.notifyAll();
         return session;
     }
@@ -4233,7 +4276,8 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         byte[] welcome = hs13.sealWelcome(hello.nonce(), minted, roundId, shipId, welcomeTickRate, flags,
                 serverLife, welcomeCustomTier, welcomeCustomPerSeat, welcomeCustomSModCap, welcomeCustomFlags);
         PeerSession session = new PeerSession(minted, hello.nonce(), welcome, from,
-                hello.clientId(), seatToken, seatId, shipId, admin, observer, false);
+                hello.clientId(), seatToken, seatId, shipId, admin, observer,
+                mintObserverOrdinalLocked(observer, predecessor), false);
         if (admin) {
             System.out.println("pilot-datagram-admission ADMIN client=" + PeerText.quoteCid(hello.clientId())
                     + " seat=" + seatId + " session=" + minted + " from=" + from);
@@ -4281,6 +4325,17 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         }
         sendToSession(session, welcome);
         return session;
+    }
+
+    /** Lock held, r4: the observer ordinal a session is born with — a cid-keyed takeover KEEPS its
+     *  observer predecessor's (identity re-presented), else the door's next number (1.., monotone for the serve's
+     *  life, never reused: the menus list LIVE sessions only, so a kept ordinal never collides); 0 = a pilot.
+     *  Shared by the live admit and {@code PidsReplayDoor.replayMint}. */
+    int mintObserverOrdinalLocked(boolean observer, PeerSession predecessor) {
+        if (!observer) {
+            return 0;
+        }
+        return predecessor != null && predecessor.observer ? predecessor.observerOrdinal : ++observerOrdinalsMinted;
     }
 
     /** The custom-variant AUTHOR key (VSUB ledger,

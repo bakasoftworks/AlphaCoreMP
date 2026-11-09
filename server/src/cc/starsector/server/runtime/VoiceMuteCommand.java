@@ -5,7 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.IntFunction;
-import java.util.function.LongPredicate;
+import java.util.function.LongToIntFunction;
 
 /**
  * The {@code /mute} player verb:
@@ -56,13 +56,15 @@ public final class VoiceMuteCommand {
     }
 
     /**
-     * + {@code observerOrNull} = session id → OBSERVER,
-     * the door's lock snapshot at this dispatch ({@code null} = no observer rows, no handle
-     * resolution — the pre-band behavior).
+     * + {@code observerOrdinalOrNull} = session id → the door-minted
+     * OBSERVER ORDINAL, r4 ({@code < 1} = not an observer), the door's lock snapshot at this
+     * dispatch ({@code null} = no observer rows, no handle resolution — the pre-band behavior). The handle is
+     * {@code BASE + ordinal} — the ONE "observer N" the /ban and /chatmute menus show too; an admin observer
+     * lists here under its own ordinal (voice mute is per-listener, the admin exemption is the ban verbs').
      */
     public static List<String> handle(ChatCommands.Parsed parsed, long listenerSessionId,
             int listenerSeatId, VoiceRelay relay, IntFunction<String> ownName,
-            LongPredicate observerOrNull, ChatCommandDispatch.ListingSink listingSink) {
+            LongToIntFunction observerOrdinalOrNull, ChatCommandDispatch.ListingSink listingSink) {
         if (relay == null) {
             return List.of(UNAVAILABLE);
         }
@@ -80,20 +82,22 @@ public final class VoiceMuteCommand {
                             muted ? ListingFrameCodec.MARK_MUTE_ON : ListingFrameCodec.MARK_MUTE_OFF,
                             false, label, label, ep.shipId()));
                 }
-                // The observer rows + the handle map
-                // minted in the SAME loop (ONE numbering) — the listener's mute-menu pin.
+                // The observer rows + the handle map in the SAME loop —
+                // the listener's mute-menu pin; r4: the handle rides the door ordinal, never
+                // a loop count.
                 Map<Long, Long> handles = new HashMap<>();
-                int slot = 0;
                 for (VoiceRelay.Endpoint ep : live) {
-                    if (observerOrNull == null || ep.sessionId() == listenerSessionId || ep.shipId() >= 1L
-                            || !observerOrNull.test(ep.sessionId())) {
+                    if (observerOrdinalOrNull == null || ep.sessionId() == listenerSessionId || ep.shipId() >= 1L) {
                         continue;
                     }
-                    slot++;
-                    long handle = AdminBanCommand.OBSERVER_HANDLE_BASE + slot;
-                    String label = ListingEmitter.observerLabel(slot);
+                    int ordinal = observerOrdinalOrNull.applyAsInt(ep.sessionId());
+                    if (ordinal < 1) {
+                        continue;
+                    }
+                    long handle = AdminBanCommand.OBSERVER_HANDLE_BASE + ordinal;
+                    String label = ListingEmitter.observerLabel(ordinal);
                     boolean muted = relay.isMuted(listenerSessionId, ep.sessionId());
-                    entries.add(new ListingFrameCodec.ListingEntry("obs" + slot,
+                    entries.add(new ListingFrameCodec.ListingEntry("obs" + ordinal,
                             muted ? ListingFrameCodec.MARK_MUTE_ON : ListingFrameCodec.MARK_MUTE_OFF,
                             false, label, label, handle));
                     handles.put(handle, ep.sessionId());
@@ -113,7 +117,7 @@ public final class VoiceMuteCommand {
                     return List.of(NO_SUCH_PLAYER);
                 }
                 if (wire >= AdminBanCommand.OBSERVER_HANDLE_BASE) {
-                    return toggleObserver(relay, listenerSessionId, wire, live, observerOrNull);
+                    return toggleObserver(relay, listenerSessionId, wire, live, observerOrdinalOrNull);
                 }
                 VoiceRelay.Endpoint target = null;
                 for (VoiceRelay.Endpoint ep : live) {
@@ -165,12 +169,12 @@ public final class VoiceMuteCommand {
     /** {@code /mute #<handle>} — the listener's
      *  mute-menu pin names the session, the live set + the door's observer snapshot decide (no
      *  pin / dead / not an observer ⇒ {@link #NO_SUCH_PLAYER}); the reply names the constant
-     *  {@code observer <slot>} (the slot is small: only a minted handle reaches it). */
+     *  {@code observer <ordinal>} (handle − base, an int: only a minted handle reaches it). */
     private static List<String> toggleObserver(VoiceRelay relay, long listenerSessionId, long handle,
-            VoiceRelay.Endpoint[] live, LongPredicate observerOrNull) {
+            VoiceRelay.Endpoint[] live, LongToIntFunction observerOrdinalOrNull) {
         Map<Long, Long> pin = relay.muteMenuPin(listenerSessionId);
         Long pinned = pin == null ? null : pin.get(handle);
-        if (pinned == null || observerOrNull == null || !observerOrNull.test(pinned)) {
+        if (pinned == null || observerOrdinalOrNull == null || observerOrdinalOrNull.applyAsInt(pinned) < 1) {
             return List.of(NO_SUCH_PLAYER);
         }
         boolean alive = false;

@@ -217,10 +217,15 @@ if (Test-Path -LiteralPath $copiedLog) {
 }
 $m.Add("sound_init=$soundInit")
 
+# Only the mod's own load-time rows - anchored at the row head the sidelog layout writes
+# ("<ms> [<thread>] INFO  <logger> - [CC-PILOT-WATCH] [seat tag] onApplicationLoad: ..."), case pinned. A
+# received seat name or chat line echoed MID-row never matches, so peer text cannot ride this kit-authored
+# label or push the genuine rows out. The first 6 hits: the load-time rows head the file, and the scan of a
+# large sidelog stops there.
 $sidelogKit = 'none'
 $copiedCc = Join-Path $work 'cc-client.log'
 if (Test-Path -LiteralPath $copiedCc) {
-    $sk = Select-String -Path $copiedCc -Pattern 'kit launch|sound-retry|sound second chance' -ErrorAction SilentlyContinue | Select-Object -Last 6
+    $sk = Select-String -Path $copiedCc -CaseSensitive -Pattern '^[0-9]+ \[[^\]]*\] INFO +\S+ - \[CC-PILOT-WATCH\] (\[(auto|seat[0-9]+)\] )?onApplicationLoad: (kit launch|sound second chance)' -ErrorAction SilentlyContinue | Select-Object -First 6
     if ($sk) {
         $rows = @()
         foreach ($ln in $sk) {
@@ -306,11 +311,25 @@ if (Test-Path -LiteralPath $kitArgs) { Copy-Item -LiteralPath $kitArgs (Join-Pat
 $mOut = @($m | ForEach-Object { if ($homeRe) { [regex]::Replace("$_", $homeRe, '%USERPROFILE%', 'IgnoreCase') } else { "$_" } })
 Set-Content -Path (Join-Path $work 'manifest.txt') -Value $mOut
 $zip = Join-Path $OutDir "cc-debrief-$stamp.zip"
-Compress-Archive -Path (Join-Path $work '*') -DestinationPath $zip -Force
+Compress-Archive -Path (Join-Path $work '*') -DestinationPath $zip -Force -ErrorVariable zipErr
 } finally {
     # the work dir used to be left behind - every session parked a starsector.log
     # copy (tens of MB) under %TEMP% forever (found 2026-08-21). The zip has it all.
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+}
+# "saved" prints only when the zip is really on disk. A failed save says where and why and points at the
+# game's own log, then exits 0: join-cc.bat runs this with -WaitForGameExit, so the game has already closed and
+# the bat's "did not run on this PC" hold (kept for exit 1, PowerShell scripts blocked) would mislead.
+if (-not $zip -or -not (Test-Path -LiteralPath $zip -PathType Leaf)) {
+    if (Test-Path -LiteralPath $OutDir -PathType Leaf) { $why = 'that is a file, not a folder' }
+    elseif (-not (Test-Path -LiteralPath $OutDir)) { $why = 'that folder does not exist' }
+    elseif ($zipErr) { $why = ("$($zipErr[0])" -replace '\s+', ' ').Trim().TrimEnd('.') }
+    else { $why = 'the zip was not created' }
+    if ($why.Length -gt 200) { $why = $why.Substring(0, 200) }
+    Write-Host ""
+    Write-Host "The session report could not be written to ${OutDir}: $why."
+    Write-Host "Your game log is still at $(Join-Path $GameDir 'starsector-core\starsector.log')"
+    exit 0
 }
 Write-Host ""
 Write-Host "Session report saved:"

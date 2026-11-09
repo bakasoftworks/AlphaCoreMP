@@ -139,7 +139,7 @@ final class PidsReplayDoor {
             // unread socket.
             InetSocketAddress self = door.boundSelf();
             PeerSession session = door.new PeerSession(sessionId, 0L, new byte[0], self, "replay#" + seat, token, seat,
-                    shipId, admin, observer, true);
+                    shipId, admin, observer, door.mintObserverOrdinalLocked(observer, null), true);
             session.reachedTwoWay = true;
             session.provisioned = true;
             // The recorded HELLO MagicLib reports (SESS flag bits 2-3): the admission block copies them per seat for the

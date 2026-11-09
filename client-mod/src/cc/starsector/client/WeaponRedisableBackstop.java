@@ -1,7 +1,7 @@
 package cc.starsector.client;
 
-import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.WeakHashMap;
 
 /**
  * The weapon RE-DISABLE backstop of the v4 weapon-state
@@ -30,8 +30,11 @@ final class WeaponRedisableBackstop {
      *  1–2 tick repair-then-redisable churn the meters measured. */
     static final long HOLD_TICKS = 180L;
 
-    /** Hull identity → per-mount tick of OUR last applied disable ({@code Long.MIN_VALUE} = none). */
-    private final Map<Object, long[]> lastApply = new IdentityHashMap<Object, long[]>();
+    /** Hull → per-mount tick of our last applied disable ({@code Long.MIN_VALUE} = none). Weak keys: a strong key
+     *  would hold every reaped hull this lane ever disabled a mount on until the match reset, and a server that
+     *  never resets could grow that without bound. Identity semantics hold — the engine's Ship overrides neither
+     *  equals nor hashCode (the same idiom as {@link EngineRedisableBackstop}). */
+    private final Map<Object, long[]> lastApply = new WeakHashMap<Object, long[]>();
 
     private long backstopped;
     private boolean confessed;

@@ -580,9 +580,9 @@ final class DamageWitness {
         this.snapTick = snapTick;
         this.frame = frame;
         this.engine = engine;
-        if (!aggCells.isEmpty()) { // R5: close every down-sample window the tick walked past
+        if (!aggCells.isEmpty()) { // R5: close every down-sample window but the current one (a backward tick too)
             try {
-                flushAggBefore(Math.floorDiv(snapTick, (long) AGG_WINDOW_TICKS));
+                flushAggOtherWindows(Math.floorDiv(snapTick, (long) AGG_WINDOW_TICKS));
             } catch (Throwable ignore) {
                 // witness lane: a log failure never reaches the engine advance
             }
@@ -1071,12 +1071,18 @@ final class DamageWitness {
         return c;
     }
 
-    /** Emit + drop every cell whose window closed before {@code window} (a late beam fold into an
-     *  older window re-opens a cell that flushes on the next walk — the auditor sums rows per bucket). */
-    private void flushAggBefore(long window) {
+    /**
+     * -- emit + drop every cell whose window is NOT the current
+     * {@code window}. A forward tick closes the windows it walked past; a BACKWARD tick (a lawful backward
+     * re-admission rewinds the snap tick) closes the higher windows too, so no cell is stranded in the map for the
+     * rest of the session -- a "before only" test kept every higher-window cell forever once the tick went back.
+     * A late beam fold into an older window re-opens a cell that flushes on the next walk (the auditor sums rows
+     * per bucket).
+     */
+    private void flushAggOtherWindows(long window) {
         for (Iterator<AggCell> it = aggCells.values().iterator(); it.hasNext();) {
             AggCell c = it.next();
-            if (c.window < window) {
+            if (c.window != window) {
                 it.remove();
                 emitAggRow(c);
             }

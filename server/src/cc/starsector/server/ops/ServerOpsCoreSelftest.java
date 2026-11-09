@@ -29,6 +29,7 @@ import cc.starsector.server.match.WaveSchedule;
 import cc.starsector.server.runtime.BanSet;
 import cc.starsector.server.runtime.CidDigest;
 import cc.starsector.server.runtime.ClientDebugLease;
+import cc.starsector.server.runtime.ModSet;
 import cc.starsector.server.runtime.OperatorCommandFile;
 import cc.starsector.server.runtime.SimTickRate;
 import cc.starsector.server.match.ContentFingerprintMint;
@@ -1021,6 +1022,48 @@ public final class ServerOpsCoreSelftest {
                 && modsBothRefusalOrNull("a, b", "c;b").contains("'b'")
                 && modsBothRefusalOrNull("a, b", "c;b").contains("never both"),
                 "modsBothRefusalOrNull: an id in both lists is refused by name, else null");
+        // The optional-set CAP pre-write law - the serve folds one print per
+        // subset of the optional set, so the console refuses a list over ModSet.MAX_OPTIONAL before any write.
+        String capNine = modsOptionalCapRefusalOrNull("a,b,c,d,e,f,g,h,i");
+        check(capNine != null && capNine.contains("lists 9 mods") && capNine.contains("at most 8 ")
+                && modsOptionalCapRefusalOrNull("a,b,c,d;e,f,g,h") == null
+                && modsOptionalCapRefusalOrNull(null) == null
+                && modsOptionalCapRefusalOrNull("") == null
+                && modsOptionalCapRefusalOrNull("a, b,c,d,e,f,g,h, a") == null
+                && modsOptionalCapRefusalOrNull(" a,, b,;c,d , e,f,g,h, ;") == null,
+                "modsOptionalCapRefusalOrNull: 9 distinct ids refused naming count 9 and cap 8; 8 ids, null, blank,"
+                        + " a 9-entry list that dedupes to 8 and an 8-id list with blank entries pass - flips if"
+                        + " the cap moves off 8, the refusal goes silent, or blanks / duplicates are counted");
+        // The SAME cap at the Mods tab's own POST (OpsConsole.withOptionalCap) - the host
+        // learns at the tick, not at the next Start.
+        OpsConsole.ModsEdit nineOptional = new OpsConsole.ModsEdit(null, true, null, "x", "a,b,c,d,e,f,g,h,i");
+        OpsConsole.ModsEdit eightOptional = new OpsConsole.ModsEdit(null, true, null, "x", "a,b,c,d,e,f,g,h");
+        OpsConsole.ModsEdit tenOptional = new OpsConsole.ModsEdit(null, true, null, "x", "a,b,c,d,e,f,g,h,i,j");
+        List<String> standingEight = List.of(MODS_OPTIONAL_KEY + "=a,b,c,d,e,f,g,h");
+        List<String> standingTen = List.of(MODS_OPTIONAL_KEY + "=a,b,c,d,e,f,g,h,i,j");
+        OpsConsole.ModsEdit cappedEdit = OpsConsole.withOptionalCap(nineOptional, standingEight);
+        check(cappedEdit.refusal() != null && cappedEdit.refusal().contains("at most 8 ") && !cappedEdit.writes()
+                && OpsConsole.withOptionalCap(nineOptional, List.of()).refusal() != null
+                && OpsConsole.withOptionalCap(eightOptional, standingEight) == eightOptional
+                && OpsConsole.withOptionalCap(OpsConsole.ModsEdit.NONE, standingEight) == OpsConsole.ModsEdit.NONE,
+                "withOptionalCap: a Mods-tab edit composing 9 optional ids over a standing 8 (or no row) is refused before"
+                        + " the write, naming the cap; 8 ids and a non-writing edit pass through as themselves - flips if"
+                        + " the POST path loses the cap");
+        // A standing row ALREADY over the cap never traps the host - a lowering edit (10 -> 9)
+        // and an unrelated edit that recomposes the same 10 pass at the tab (Start still refuses the row), while
+        // RAISING an over-cap row (8 -> 9 above) refuses.
+        check(OpsConsole.withOptionalCap(nineOptional, standingTen) == nineOptional
+                && OpsConsole.withOptionalCap(tenOptional, standingTen) == tenOptional
+                && modsOptionalCapRefusalOrNull("a,b,c,d,e,f,g,h,i", "a,b,c,d,e,f,g,h,i,j") == null
+                && modsOptionalCapRefusalOrNull("a,b,c,d,e,f,g,h,i", "a,b,c,d,e,f,g,h") != null
+                && modsOptionalCapRefusalOrNull("a,b,c,d,e,f,g,h,i", null) != null,
+                "withOptionalCap over a standing row already over the cap: lowering (10 -> 9) and holding (10 -> 10)"
+                        + " pass, raising (8 -> 9) and a rowless 9 refuse - flips if the tab traps a host whose row"
+                        + " is already over the cap, or lets an edit raise an over-cap row");
+        check(OpsConsolePageHtml.HTML.contains("(at most "
+                        + ModSet.MAX_OPTIONAL + " optional)"),
+                "the Mods explainer names the optional cap the console enforces - flips if the cap moves"
+                        + " without the page sentence, or the sentence is dropped");
 
         // The OFF-OPTIONAL memory row (the kind-memory fix: an unticked
         // optional mod re-ticked as required because nothing kept its kind) - the optional row's grammar and

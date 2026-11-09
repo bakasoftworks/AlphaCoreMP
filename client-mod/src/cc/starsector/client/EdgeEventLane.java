@@ -99,10 +99,121 @@ final class EdgeEventLane {
     }
 
 
-    /** net-thread side of the eventReplay intake — queue one decoded GPEE event. */
-    void enqueueEdgeEvent(ClientGameplayEdgeEvent event) {
+    /**
+     * The farthest a GPEE event may run ahead of the applied
+     * snapshot and still be held for presentation. 600 sim ticks is 1 to 60 s across the lawful 10 to
+     * 600 Hz server tick range (5 s at 120 Hz); the largest lawful ahead depth measured is 3 ticks, so
+     * the bound sits about 200x above it. An event further ahead is refused at the drain (dropped and
+     * counted, never held): a lawful serve never outruns its own snapshot stream by that much, while a
+     * server stamping far-future ticks would otherwise fill the hold with events that never come due.
+     */
+    static final long AHEAD_MAX_TICKS = 600L;
+
+    /**
+     * The per-round refusal meters of the two GPEE holders.
+     * Both are OCCUPANCY-capped at {@link RosterAppendLane#MAX_ROUND_ENTITIES} (the roster's per-round
+     * entity bound, reused) on their current size, and both refuse the NEWEST event, so an event already
+     * queued or held is never evicted. The queue counter is read and written under the
+     * {@code plugin.edgeEventQueue} lock (net-thread intake); the hold and ahead counters are
+     * render-thread only, like the hold itself. A lawful trip needs a long local pause: the drain does
+     * not run while the engine is paused and the queue keeps filling at the measured 50 to 67 events a
+     * second, about 16 minutes to the cap; the loss is counted and logged, never concealed. Each counter's
+     * first refusal of a round writes ONE error row; {@link #resetEdgeQueuesForRound} writes the round's
+     * totals and re-arms them, and the replay meter line carries them at every flush, teardown included.
+     */
+    private int edgeQueueRefused;
+    private int pendingAheadRefused;
+    private int aheadRefused;
+
+    /** GPEE events refused this round at the intake queue's occupancy cap. */
+    int edgeQueueRefused() {
         synchronized (plugin.edgeEventQueue) {
-            plugin.edgeEventQueue.addLast(event);
+            return edgeQueueRefused;
+        }
+    }
+
+    /** GPEE events refused this round at the pending-ahead hold's occupancy cap (render thread). */
+    int pendingAheadRefused() {
+        return pendingAheadRefused;
+    }
+
+    /** GPEE events refused this round as more than {@link #AHEAD_MAX_TICKS} ahead (render thread). */
+    int aheadRefused() {
+        return aheadRefused;
+    }
+
+    /**
+     * net-thread side of the eventReplay intake — queue one decoded GPEE event.
+     * Past the occupancy cap the event is refused (never
+     * queued, counted); the round's first refusal row is written outside the lock.
+     */
+    void enqueueEdgeEvent(ClientGameplayEdgeEvent event) {
+        int refused = 0;
+        synchronized (plugin.edgeEventQueue) {
+            if (plugin.edgeEventQueue.size() >= RosterAppendLane.MAX_ROUND_ENTITIES) {
+                refused = ++edgeQueueRefused;
+            } else {
+                plugin.edgeEventQueue.addLast(event);
+            }
+        }
+        if (refused == 1) {
+            logFirstRefusal("gpee-queue-cap", "intake queue occupancy cap ("
+                    + RosterAppendLane.MAX_ROUND_ENTITIES + " queued events)", event, -1L);
+        }
+    }
+
+    /**
+     * Hold one ahead event in the pending-ahead deque unless
+     * it is at its occupancy cap, which refuses the event (counted, never held). The drain's re-offer
+     * rotation re-holds through here too; it polls before it re-adds, so a held event never meets
+     * the cap and is never evicted.
+     */
+    private void holdAhead(ClientGameplayEdgeEvent event, long aheadTicks) {
+        if (plugin.pendingAheadEvents.size() >= RosterAppendLane.MAX_ROUND_ENTITIES) {
+            if (++pendingAheadRefused == 1) {
+                logFirstRefusal("gpee-hold-cap", "ahead hold occupancy cap ("
+                        + RosterAppendLane.MAX_ROUND_ENTITIES + " held events)", event, aheadTicks);
+            }
+            return;
+        }
+        plugin.pendingAheadEvents.addLast(event);
+    }
+
+    /**
+     * The ONE error row (plus the once-per-boot announce) of
+     * a counter's first refusal in a round. Bounded tokens only: the kind's enum name, the entity id and
+     * ticks as numbers; never wire text.
+     */
+    private static void logFirstRefusal(String seam, String what, ClientGameplayEdgeEvent event,
+            long aheadTicks) {
+        String detail = what + " reached: refused kind=" + event.kind() + " entity=" + event.entityId()
+                + " tick=" + event.simTick() + (aheadTicks >= 0L ? " ahead_ticks=" + aheadTicks : "")
+                + " (not presented; later refusals this round are counted silently)";
+        PilotWatchLog.error("predict GPEE " + detail, null);
+        FallbackAnnounce.announceOnce(seam, detail);
+    }
+
+    /**
+     * The round reset of both GPEE holders and their refusal
+     * meters (render thread, from the plugin's shared match-reset tail, so both reset shapes reach it).
+     * The queue clear and its counter re-arm share one lock, so a refusal is never counted into the
+     * wrong round. A round that refused anything closes with ONE row carrying its totals.
+     */
+    void resetEdgeQueuesForRound() {
+        int queueRefused;
+        synchronized (plugin.edgeEventQueue) {
+            plugin.edgeEventQueue.clear();
+            queueRefused = edgeQueueRefused;
+            edgeQueueRefused = 0;
+        }
+        plugin.pendingAheadEvents.clear(); // B2(a): held ahead edges belong to the ended round
+        int holdRefused = pendingAheadRefused;
+        int farRefused = aheadRefused;
+        pendingAheadRefused = 0;
+        aheadRefused = 0;
+        if (queueRefused > 0 || holdRefused > 0 || farRefused > 0) {
+            PilotWatchLog.info("predict GPEE queue round close: queue_refused=" + queueRefused
+                    + " hold_refused=" + holdRefused + " ahead_refused=" + farRefused);
         }
     }
 
@@ -205,7 +316,9 @@ final class EdgeEventLane {
      * window skew the spec names. An event that outran the applied snapshot (the
      * ahead case; measured ±1 tick at hairpin topology) is HELD in a pending-ahead
      * deque and re-offered at each drain until {@code T_s ≥ T} — never presented against an anchor
-     * it outran. The behind case (measured depth ≤ a few ticks) keeps drain-on-arrival + the
+     * it outran. An event more than {@link #AHEAD_MAX_TICKS}
+     * ahead is refused instead (dropped, counted, never held), and the hold refuses the newest event at
+     * its occupancy cap ({@link #holdAhead}). The behind case (measured depth ≤ a few ticks) keeps drain-on-arrival + the
      * current-pose muzzle anchor, pose-coherent within a frame at that depth. Pre-registered
      * boundary: multi-tick BEHIND depth measured at real WAN ⇒ then add the (T_s−T)·dt downrange
      * catch-up advance on presentation, not before.
@@ -218,7 +331,7 @@ final class EdgeEventLane {
         for (int i = plugin.pendingAheadEvents.size(); i > 0; i--) {
             ClientGameplayEdgeEvent held = plugin.pendingAheadEvents.pollFirst();
             if (held.simTick() > snapshotTick) {
-                plugin.pendingAheadEvents.addLast(held);
+                holdAhead(held, held.simTick() - snapshotTick);
             } else {
                 presentEdgeEvent(held, snapshotTick);
             }
@@ -234,11 +347,20 @@ final class EdgeEventLane {
             plugin.eventReplayReceived++;
             long aheadTicks = event.simTick() - snapshotTick;
             if (aheadTicks > 0) {
+                // Past the ahead bound the event is refused
+                // BEFORE the ahead meters, so ahead and ahead_max keep measuring the held depth only.
+                if (aheadTicks > AHEAD_MAX_TICKS) {
+                    if (++aheadRefused == 1) {
+                        logFirstRefusal("gpee-ahead-cap", "ahead bound (" + AHEAD_MAX_TICKS
+                                + " ticks past the applied snapshot)", event, aheadTicks);
+                    }
+                    continue;
+                }
                 plugin.eventReplayAheadOfSnapshot++;
                 if (aheadTicks > plugin.eventReplayAheadMaxTicks) {
                     plugin.eventReplayAheadMaxTicks = aheadTicks;
                 }
-                plugin.pendingAheadEvents.addLast(event);
+                holdAhead(event, aheadTicks);
                 continue;
             }
             presentEdgeEvent(event, snapshotTick);
@@ -756,6 +878,9 @@ final class EdgeEventLane {
                 + " predict_event_rebase_autofire_target_applies=" + plugin.afTargets.applies
                 + " predict_event_rebase_autofire_target_skip_unknown=" + plugin.afTargets.skipUnknown
                 + " predict_event_rebase_autofire_target_stale_expired=" + plugin.afTargets.staleExpired
+                // dets refused past PaladinDetFxLane.DET_PRESENT_PER_DRAIN_MAX in one drain pass;
+                // the lane has no round hook of its own, so this line is its only totals carrier (cadence + teardown).
+                + " predict_event_rebase_paladin_det_budget_refused=" + plugin.paladinDetLane.budgetRefused()
                 // Appended-fields law: the kind-8 lane — rx + the presenter's
                 // apply/meter liveness split, plus the reader-side overlap-law census (PROJECTILE
                 // NSE rows are decoded past, never presented; content-0 = the script-det class,
@@ -954,6 +1079,11 @@ final class EdgeEventLane {
                 // at the intake cap + consumed rows suppressed by the per-round row cap.
                 + " predict_event_rebase_despawn_dropped_at_cap=" + despawnDroppedAtCap()
                 + " predict_event_rebase_despawn_log_capped=" + despawnLogCapped()
+                // this round's GPEE refusals at the queue and
+                // hold occupancy caps and past the ahead bound.
+                + " predict_event_queue_refused=" + edgeQueueRefused()
+                + " predict_event_hold_refused=" + pendingAheadRefused()
+                + " predict_event_ahead_refused=" + aheadRefused()
                 + " predict_event_rebase_despawn_ignored="
                 + (plugin.session != null ? plugin.session.despawnFramesIgnored() : 0)
                 + " predict_event_rebase_match_reset_ignored=" + plugin.matchResetsIgnored

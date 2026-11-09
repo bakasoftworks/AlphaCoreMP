@@ -2,6 +2,8 @@ package cc.starsector.client;
 
 import cc.starsector.client.net.ServerEntityPose;
 import cc.starsector.client.net.ServerSnapshotFrame;
+import cc.starsector.server.match.MatchDocumentLaws;
+import com.fs.starfarer.api.combat.CombatEngineAPI;
 import com.fs.starfarer.api.combat.ShipAPI;
 import com.fs.starfarer.api.combat.ViewportAPI;
 import com.fs.starfarer.api.ui.Alignment;
@@ -159,21 +161,61 @@ final class SeatNameHullBarLane {
      * ships that bound BEFORE a name landed; a ship binding after the stash gets its wire name
      * directly at bind. setName is idempotent and {@link #applySeatName} no-ops on an unchanged
      * name, so the two paths overlap safely. The map survives match resets (the server's table
-     * persists across rounds; finishMatchReset only re-marks dirty).
+     * persists across rounds; finishMatchReset only re-marks dirty); its growth is bounded per session
+     * by the occupancy cap in {@link #putWireName}.
      */
     private volatile java.util.Map<Long, String> wireNameByShipId = java.util.Collections.emptyMap();
     private volatile boolean wireSeatNamesDirty;
 
-    /** Net-thread copy-on-write fold of one wire name (no-op + no dirty churn on an unchanged value). */
-    private void putWireName(long shipId, String name) {
+    /**
+     * Wire seat names refused this SESSION at the occupancy cap
+     * ({@link MatchDocumentLaws#SHIPS_MAX} distinct ship ids held, at least 16 times the seat count a
+     * door can field). The map is session-scoped (a name is sent at first announce and at admission
+     * catch-up, never re-sent per round), so the cap and this count never re-arm at a round reset.
+     * Single writer = the net thread; the round-close totals row reads it on the render thread.
+     */
+    private volatile int seatNamesRefusedAtCap;
+
+    /**
+     * Net-thread copy-on-write fold of one wire name (no-op + no dirty churn on an unchanged value).
+     * A NEW ship id past the occupancy cap is refused, never
+     * stored, counted, and its first refusal this session writes one error row; a name change for an
+     * id already held is admitted (it does not grow the map). Returns false only for a refusal.
+     */
+    private boolean putWireName(long shipId, String name) {
         java.util.Map<Long, String> current = wireNameByShipId;
         if (name.equals(current.get(Long.valueOf(shipId)))) {
-            return;
+            return true;
+        }
+        if (current.size() >= MatchDocumentLaws.SHIPS_MAX && !current.containsKey(Long.valueOf(shipId))) {
+            int refused = ++seatNamesRefusedAtCap;
+            if (refused == 1) {
+                String detail = "session cap (" + MatchDocumentLaws.SHIPS_MAX + " wire seat names) reached:"
+                        + " refused shipId=" + shipId + " held=" + current.size()
+                        + " (not stored; later refusals this session are counted silently)";
+                PilotWatchLog.error("predict seat-names-wire " + detail, null);
+                FallbackAnnounce.announceOnce("seat-name-session-cap", detail);
+            }
+            return false;
         }
         java.util.Map<Long, String> next = new java.util.HashMap<Long, String>(current);
         next.put(Long.valueOf(shipId), name);
         wireNameByShipId = java.util.Collections.unmodifiableMap(next);
         wireSeatNamesDirty = true;
+        return true;
+    }
+
+    /**
+     * The seat-name cap totals row: written only when the
+     * session refused at least one name, so a lawful session stays silent. {@code where} is a fixed
+     * call-site token (round close; session teardown), never wire text.
+     */
+    void logSeatNameCapTotals(String where) {
+        int refused = seatNamesRefusedAtCap;
+        if (refused > 0) {
+            PilotWatchLog.info("predict seat-names-wire cap totals [" + where + "]: held="
+                    + wireNameByShipId.size() + " refused_session=" + refused + " cap=" + MatchDocumentLaws.SHIPS_MAX);
+        }
     }
 
     /** net-thread intake of the legacy {@code SNMS} two-seat table (TCP/selftest lane
@@ -192,12 +234,16 @@ final class SeatNameHullBarLane {
 
     /** net-thread intake of one {@code SNMR} per-seat name record (fan or catch-up).
      * The {@code ""} sentinel is a no-op — a name is never un-set (a standing law; the server skips
-     * sentinel-resolved records anyway). */
+     * sentinel-resolved records anyway).
+     * A record refused at the session cap returns before the
+     * received row — it is counted by the cap, never logged as applied. */
     void onSeatNameRecordEvent(cc.starsector.client.net.ClientSeatNameRecord record) {
         if (!record.hasName()) {
             return;
         }
-        putWireName(record.shipId(), record.name());
+        if (!putWireName(record.shipId(), record.name())) {
+            return;
+        }
         PilotWatchLog.info("predict seat-names-wire: SNMR received seat=" + record.seatId()
                 + " shipId=" + record.shipId() + " name=" + FallbackAnnounce.quote(record.name(), 64)
                 + " -> render-thread wire-first apply at/after bind");
@@ -536,5 +582,26 @@ final class SeatNameHullBarLane {
         seatLabelByShip.clear();
         seatNameTagDead = false;
         wireSeatNamesDirty = true;
+        logSeatNameCapTotals("round-close"); // the wire-name map itself is session-scoped: never cleared here
+    }
+
+    /**
+     * The sweep law for the per-body tag holders: a ship the
+     * engine no longer holds in play ({@link CombatEngineAPI#isEntityInPlay} false: neither live nor a
+     * pending add) drops its tag name and its cached label, so a server that never resets the round
+     * cannot grow them by one entry per seat body ever named. Render thread, on the projectile-set sweep
+     * cadence; the tag render pass iterates these maps in a separate callback, never during this sweep.
+     * The ship's name is not restored (that is {@link #forgetSeatName}'s, for a body still in play).
+     */
+    void sweepGone(CombatEngineAPI engine) {
+        if (engine == null) {
+            return;
+        }
+        if (!seatNameByShip.isEmpty()) {
+            seatNameByShip.keySet().removeIf(ship -> !engine.isEntityInPlay(ship));
+        }
+        if (!seatLabelByShip.isEmpty()) {
+            seatLabelByShip.keySet().removeIf(ship -> !engine.isEntityInPlay(ship));
+        }
     }
 }

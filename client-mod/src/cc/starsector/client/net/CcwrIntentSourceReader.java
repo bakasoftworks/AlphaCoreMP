@@ -18,7 +18,8 @@ import java.util.List;
  * the server's {@code CcwrUpReplayReader} (the oracle): walks one {@code WireRecordSink}-written
  * CCWR recording and returns every UP record's decoded {@link PilotIntentFrame} in file order —
  * the recorded human's per-tick predict-lane input stream the {@code cc.predict.intentSource}
- * override feeds into the otherwise-REAL predict client. DOWN records are skipped without decoding.
+ * override feeds into the otherwise-REAL predict client. DOWN records are skipped without decoding,
+ * and so is an UP record holding a fire-discharge declaration frame ({@link Recording#recordsDecl}).
  *
  * <p><b>Why a sibling and not the oracle itself.</b> The mod is loaded by Starsector's script
  * classloader {@code B} — a STATIC {@code java.io}/{@code java.nio.file} name blocklist
@@ -56,6 +57,12 @@ public final class CcwrIntentSourceReader {
     public static final class Recording {
         public final List<PilotIntentFrame> frames = new ArrayList<>();
         public long recordsDown;
+        /**
+         * UP records skipped undecoded as fire-discharge declaration ({@code PDCL}) frames. The test is
+         * length + magic only — no CRC, type-code or schema mirror; the oracle decodes fail-closed, so a
+         * damaged or older-schema declaration counts here where the oracle reports an error.
+         */
+        public long recordsDecl;
         /** Row-kind records ({@code KIND_ROW_MIN..KIND_ROW_MAX}, the END trailer included) skipped undecoded. */
         public long rowsSkipped;
         public boolean truncatedTail;
@@ -159,6 +166,16 @@ public final class CcwrIntentSourceReader {
                 }
                 records++;
                 if (kind == WireRecordSink.KIND_UP) {
+                    // The UP lane also carries the client's PDCL
+                    // frames; the PINT decode below refuses their magic and would abort the whole replay,
+                    // so each is counted and skipped first (the count law: the recordsDecl field doc).
+                    if (payload.length == FireDischargeDeclarationWriter.FRAME_BYTES
+                            && (((payload[0] & 0xFF) << 24) | ((payload[1] & 0xFF) << 16)
+                                    | ((payload[2] & 0xFF) << 8) | (payload[3] & 0xFF))
+                                    == FireDischargeDeclarationWriter.MAGIC) {
+                        r.recordsDecl++;
+                        continue;
+                    }
                     ByteArrayInputStream up = new ByteArrayInputStream(payload);
                     // Recorded-corpus compat read (v5|v6) — parity with the oracle's
                     // identical switch; the strict live-lane readFrame refuses prior-width records.

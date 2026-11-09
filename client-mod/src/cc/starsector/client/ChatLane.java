@@ -47,6 +47,17 @@ public final class ChatLane {
     // thread drains them strictly behind an intent at BOTH send sites (the PDCL/SNNK slot).
     private final ArrayDeque<cc.starsector.client.net.ClientChatMessage> chatQueue = new ArrayDeque<>();
     private static final int CHAT_QUEUE_MAX = 64;
+    /**
+     * -- at most this many queued lines go onto the engine's HUD feed per
+     * frame. The engine keeps every fed line for its 20 s removal window and walks that list on each add, so an
+     * unthrottled drain of a relay flood grows it without bound; at 4 per frame the list holds at most ~4,800
+     * lines (240 lines/s, far above any human typing rate) and the 64-deep drop-oldest queue above is the bound
+     * on what waits. {@link #chatHudBudgetFrames} counts the frames the budget left lines queued;
+     * {@link #chatQueueDropped} counts the lines the full queue dropped (guarded by {@link #chatQueue}).
+     */
+    static final int HUD_ADDS_PER_FRAME_MAX = 4;
+    private int chatHudBudgetFrames; // chat_hud_budget_frames -- render thread
+    private int chatQueueDropped;    // chat_queue_dropped -- under the chatQueue monitor (net thread writes)
     private final ArrayDeque<String> pendingChatSends = new ArrayDeque<>();
     private static final int CHAT_SEND_PENDING_MAX = 16;
     private int chatSent;        // chat_sent — CHTU frames actually sent on CTRL
@@ -451,6 +462,7 @@ public final class ChatLane {
         synchronized (chatQueue) {
             if (chatQueue.size() >= CHAT_QUEUE_MAX) {
                 chatQueue.pollFirst();
+                chatQueueDropped++;
             }
             chatQueue.addLast(chat);
         }
@@ -475,9 +487,19 @@ public final class ChatLane {
             return;
         }
         pollHelpMenu(ui); // Once per drain, BEFORE the queue (a flushed capture is older)
+        // At most HUD_ADDS_PER_FRAME_MAX feed adds per frame; the rest
+        // stay queued (FIFO) for the next frame, and a frame that leaves lines behind is counted once. A line the
+        // help capture holds is no feed add, so it does not spend the budget.
+        int fed = 0;
         while (true) {
             cc.starsector.client.net.ClientChatMessage chat;
             synchronized (chatQueue) {
+                if (fed >= HUD_ADDS_PER_FRAME_MAX) {
+                    if (!chatQueue.isEmpty()) {
+                        chatHudBudgetFrames++;
+                    }
+                    return;
+                }
                 chat = chatQueue.pollFirst();
             }
             if (chat == null) {
@@ -487,6 +509,15 @@ public final class ChatLane {
                 continue; // Held for the /help menu — no feed line, no bubble forward
             }
             toHud(ui, chat);
+            fed++;
+        }
+    }
+
+    /** The drop-oldest count, read under the queue's monitor (the net
+     *  thread's enqueue writes it there). */
+    private int queueDroppedNow() {
+        synchronized (chatQueue) {
+            return chatQueueDropped;
         }
     }
 
@@ -1013,6 +1044,8 @@ public final class ChatLane {
         PilotWatchLog.info("predict chat round: chat_sent=" + chatSent
                 + " chat_send_dropped=" + chatSendDropped
                 + " chat_hud_drained=" + chatHudDrained
+                + " chat_hud_budget_frames=" + chatHudBudgetFrames
+                + " chat_queue_dropped=" + queueDroppedNow()
                 + " spawn_pose_append_skipped=" + spawnPoseAppendSkipped
                 + " chat_lines_dropped_invalid=" + chatLinesDroppedInvalid
                 + " auth_replays=" + authReplay.replays()             // Both meters

@@ -401,9 +401,12 @@ public final class PilotIntentCombatServerMain {
                 LunaSheetMint.installServed(lunaSheet.sheetOrNull());
                 System.setProperty(MatchRecordMeta.LUNA_SHEET_SYSPROP, LunaSheetMint.termOf(lunaSheet.sheetOrNull()));
                 // The client-OPTIONAL set (mods.optional row; the wrapper mirrors the
-                // folders but never enables them) — published on the probe as MARK_MODSET_OPTIONAL rows,
-                // never folded. An operator-named id that cannot be minted REFUSES THE BOOT (a set knob is
-                // never silently inert; a mod in both rows is refused too).
+                // folders but never enables them) — published on the probe as MARK_MODSET_OPTIONAL rows.
+                // installOptional builds the door's lawful-subset table here, ONCE at boot (only when the required
+                // set minted above - a set-less boot keeps its vtab-only door): the door admits the
+                // required set plus any subset of these records. An operator-named id that cannot be minted,
+                // a set over ModSet.MAX_OPTIONAL, or a mod in both rows REFUSES THE BOOT (a set knob is never
+                // silently inert).
                 String optionalRow = ServerConfig.resolve("cc.mods.optional", "CC_MODS_OPTIONAL", "mods.optional", "");
                 java.util.List<String> optionalIds = new java.util.ArrayList<String>();
                 for (String id : optionalRow.split("[,;]")) {
@@ -419,7 +422,8 @@ public final class PilotIntentCombatServerMain {
                     ModSet optional = cc.starsector.server.bridge.RealEngineModSetFacts.optionalSnapshot(optionalIds);
                     ModSet.installOptional(optional);
                     System.out.println("pilot-intent-combat-server mod_set_optional " + optional.census()
-                            + " (published on the probe, NOT loaded, NOT folded)");
+                            + " (published on the probe, NOT loaded; the door admits any lawful subset: lawful_prints="
+                            + ModSet.installedLawfulSubsetsOrNull().size() + ")");
                 }
                 // The dump the game-free rigs read (the synthetic client's -Dcc.client.idTables, the
                 // parity verifiers): beside the port file, which every launcher already knows.

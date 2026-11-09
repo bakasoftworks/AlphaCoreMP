@@ -205,6 +205,11 @@ import java.util.List;
  * {@link OpsParity#PACKAGE_IDS}; header right after Use, the row template's {@code data-col="Needs"} cell right after
  * the Use cell) and one explainer sentence (a mod a required mod needs loads with it, ticked or not). WHY: the host
  * sees at a glance which mod another one needs. The provenance marker rides this javadoc, never the page.
+ *
+ * <p>The Mods explainer ({@code mods.explainer}) gains one sentence - joiners
+ * may run no mod beyond the required and optional ones, and at most 8 optional ({@code ModSet.MAX_OPTIONAL}). WHY:
+ * the serve admits a joiner running any subset of the optional mods and nothing else, and refuses a Start over the
+ * cap; the host reads both limits before ticking. The number is page text; a core selftest row ties it to the cap.
  */
 final class OpsConsolePageHtml {
 
@@ -720,7 +725,7 @@ final class OpsConsolePageHtml {
 
 <section id="sec-mods" hidden aria-labelledby="mods-title">
 <h2 id="mods-title">Mods for the next start</h2>
-<p id="mods-explainer" data-cc="mods.explainer">On = the next start uses it: required = the serve loads it and every joiner must run it; optional = joiners may run it (presentation only; the serve never loads it).  Unticked = installed, not used - tick it again any time.  A mod that a required mod needs loads with it, ticked or not; the Needs column says which.  Remove stops searching a mod you added from another folder (nothing on disk is deleted); a mod in serve-mods is unticked, forgets optional and stays listed.  cc_client is always on and never listed.</p>
+<p id="mods-explainer" data-cc="mods.explainer">On = the next start uses it: required = the serve loads it and every joiner must run it; optional = joiners may run it (presentation only; the serve never loads it).  Unticked = installed, not used - tick it again any time.  A mod that a required mod needs loads with it, ticked or not; the Needs column says which.  Remove stops searching a mod you added from another folder (nothing on disk is deleted); a mod in serve-mods is unticked, forgets optional and stays listed.  cc_client is always on and never listed.  Joiners may run no other mod (at most 8 optional).</p>
 <h3 id="mods-roots-title">Folders searched</h3>
 <ul id="mods-roots" data-cc="mods.roots.list" aria-labelledby="mods-roots-title" aria-describedby="hint-mods-roots"></ul>
 <p class="hint" id="hint-mods-roots">the folders searched for mods (the mods.roots row); none named = the serve-mods folder of this package: extract a mod there, set it to required, press Start</p>

@@ -42,7 +42,17 @@ final class TerrainLane {
     static final String ICON_ENGINE_FALLBACK = "graphics/icons/tactical/engine_damage.png";
 
     private static final String RESISTANCE = "corona_resistance";
+    /**
+     * -- the distinct failure texts logged once each, BOUNDED: a throw
+     * text can carry per-call detail (a hash, an id), so a set keyed by it would grow with every distinct one. At
+     * most {@link #FAILURE_TEXTS_MAX} texts are kept; past it a new text is only counted in
+     * {@link #failureTextsOverflow} (ONE row at the first overflow; the total rides the epoch row). Both are
+     * guarded by the set's monitor: {@link #apply} runs from every deploy-CR site, {@link #advance} on the render
+     * thread.
+     */
+    static final int FAILURE_TEXTS_MAX = 64;
     private static final Set<String> failuresLogged = new HashSet<String>();
+    private static long failureTextsOverflow;
     /** Ships written so far (smoke + log reads). */
     static int applied;
 
@@ -70,7 +80,8 @@ final class TerrainLane {
 
     /**
      * Install (or clear) the terrain mults on one local ship; idempotent and re-callable. Returns
-     * true when the five stats were written. Fail-SOFT: a throw logs one row per distinct message.
+     * true when the five stats were written. Fail-SOFT: a throw logs one row per distinct message (at most
+     * {@link #FAILURE_TEXTS_MAX} texts; past it a count).
      */
     static boolean apply(ShipAPI ship) {
         if (ship == null) {
@@ -108,11 +119,7 @@ final class TerrainLane {
             return true;
         } catch (Throwable t) {
             String key = String.valueOf(t);
-            boolean first;
-            synchronized (failuresLogged) {
-                first = failuresLogged.add(key);
-            }
-            if (first) {
+            if (admitFailureText(key)) {
                 PilotWatchLog.info("terrain_stat_apply_failed err=" + key
                         + " (logged once per distinct error; the ship keeps vanilla stats)");
             }
@@ -225,10 +232,12 @@ final class TerrainLane {
         } catch (Throwable t) {
             logOnce("terrain_present_failed err=" + t);
         }
+        long overflow = failureTextsOverflow();
         PilotWatchLog.info("terrain lane epoch=" + e + " terrain=" + ClientWireKnobs.terrainWord()
                 + " level=" + pct + " ships=" + n + " present="
                 + (coronaActive ? (choice == TerrainStatLaw.PULSAR ? "pulsar" : "corona")
-                        : abyssActive ? "abyss" : "none"));
+                        : abyssActive ? "abyss" : "none")
+                + (overflow > 0L ? " failure_texts_overflow=" + overflow : ""));
     }
 
     /** The icon ONCE per change: the registered sprite name, or the literal registered path
@@ -278,12 +287,40 @@ final class TerrainLane {
     }
 
     private static void logOnce(String msg) {
-        boolean first;
-        synchronized (failuresLogged) {
-            first = failuresLogged.add(msg);
-        }
-        if (first) {
+        if (admitFailureText(msg)) {
             PilotWatchLog.info(msg + " (logged once per distinct error)");
+        }
+    }
+
+    /**
+     * -- the one gate both failure sites share: true when {@code text}
+     * is new AND the kept set is under {@link #FAILURE_TEXTS_MAX} (the caller logs it once); a text already kept
+     * is silent as before; a new text that finds the set full is counted, the first such one writing ONE row.
+     */
+    private static boolean admitFailureText(String text) {
+        boolean firstOverflow;
+        synchronized (failuresLogged) {
+            if (failuresLogged.contains(text)) {
+                return false;
+            }
+            if (failuresLogged.size() < FAILURE_TEXTS_MAX) {
+                failuresLogged.add(text);
+                return true;
+            }
+            failureTextsOverflow++;
+            firstOverflow = failureTextsOverflow == 1L;
+        }
+        if (firstOverflow) {
+            PilotWatchLog.info("terrain_failure_texts_capped max=" + FAILURE_TEXTS_MAX
+                    + " (later distinct failure texts are counted, not logged)");
+        }
+        return false;
+    }
+
+    /** Failures whose new text found the kept set full (cumulative per JVM; read under the set's monitor). */
+    static long failureTextsOverflow() {
+        synchronized (failuresLogged) {
+            return failureTextsOverflow;
         }
     }
 

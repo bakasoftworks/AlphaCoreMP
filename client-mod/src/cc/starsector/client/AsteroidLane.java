@@ -108,6 +108,13 @@ final class AsteroidLane {
     final Map<Integer, Body> bodies = new LinkedHashMap<Integer, Body>();
     final Set<Integer> seenIds = new HashSet<Integer>();
     final Map<Integer, Long> goneAtTick = new HashMap<Integer, Long>();
+    /** Asteroid ids are wire i32s, so {@link #seenIds}
+     *  takes an occupancy cap of {@link RosterAppendLane#MAX_ROUND_ENTITIES} distinct ids an
+     *  epoch. {@code seenIdsCapRefused} is cumulative (the meter row); {@code seenIdsRefusedEpoch}
+     *  arms the epoch's ONE first-refusal row and its close row, and re-arms where the epoch's
+     *  ids are forgotten. Render thread. */
+    long seenIdsCapRefused;
+    int seenIdsRefusedEpoch;
 
     long minted, adopted, yields, glides, deaths, expired, remints, remintStale, localGone;
     long dropped, droppedStale, heldFrames, flips, killRowsUntracked, applyFailures, coastFailures;
@@ -148,6 +155,7 @@ final class AsteroidLane {
         // (a) the bodies belong to the old engine: forget them (never touch a dead engine).
         if (engine != lastEngine) {
             bodies.clear();
+            closeSeenIdEpoch();
             seenIds.clear();
             goneAtTick.clear();
             lastEngine = engine;
@@ -225,7 +233,9 @@ final class AsteroidLane {
             if (!inPlay) {
                 it.remove();
                 localGone++;
-                goneAtTick.put(e.getKey(), presentedTick);
+                // An id the seenIds cap refused keeps no remint fork, so it keeps no gone-tick either: goneAtTick is
+                // thereby bounded by the same epoch cap, lane 04's leftover S3.
+                if (seenIds.contains(e.getKey())) goneAtTick.put(e.getKey(), presentedTick);
             }
         }
         // (e) coast every tracked body that got no row this frame.
@@ -261,7 +271,7 @@ final class AsteroidLane {
                 // gone locally since the last prune: the (d) prune, inline, then the unknown path
                 bodies.remove(id);
                 localGone++;
-                goneAtTick.put(id, presentedTick);
+                if (seenIds.contains(id)) goneAtTick.put(id, presentedTick); // bounded by the seenIds cap
                 b = null;
             }
             if (b == null) {
@@ -377,7 +387,19 @@ final class AsteroidLane {
             }
         }
         minted++;
-        if (!seenIds.add(id) || gone != null) {
+        // seenIds feeds only the remint fork meter. At the
+        // epoch's occupancy cap a fresh id is refused (not remembered, counted); the twin above is
+        // already minted and tracked, so presentation is unchanged — only that id's later fork
+        // can no longer be told apart from a first sight.
+        boolean seen = seenIds.contains(id);
+        if (!seen) {
+            if (seenIds.size() < RosterAppendLane.MAX_ROUND_ENTITIES) {
+                seenIds.add(id);
+            } else {
+                refuseSeenIdAtCap(id);
+            }
+        }
+        if (seen || gone != null) {
             remints++; // the true fork: this id was live in this epoch and died locally
         }
         goneAtTick.remove(id);
@@ -507,8 +529,36 @@ final class AsteroidLane {
             }
         }
         bodies.clear();
+        closeSeenIdEpoch();
         seenIds.clear();
         goneAtTick.clear();
+    }
+
+    /** A fresh id met a full {@link #seenIds}
+     *  ({@link RosterAppendLane#MAX_ROUND_ENTITIES} distinct ids this epoch) — refused, counted; the
+     *  epoch's first refusal writes ONE error row and the one-shot announce, later ones only count.
+     *  Bounded tokens only (the id as a number). Render thread. */
+    private void refuseSeenIdAtCap(Integer id) {
+        seenIdsCapRefused++;
+        if (++seenIdsRefusedEpoch != 1) {
+            return;
+        }
+        String detail = "seen-id cap (" + RosterAppendLane.MAX_ROUND_ENTITIES
+                + " distinct ids this epoch): refused id=" + id + " epoch=" + appliedEpoch
+                + " (the twin still presents; later refusals this epoch are counted silently)";
+        PilotWatchLog.error("asteroid lane " + detail, null);
+        FallbackAnnounce.announceOnce("asteroid-seen-id-cap", detail);
+    }
+
+    /** The epoch's ids are about to be forgotten — when
+     *  the seen-id cap refused this epoch, ONE close row carries the epoch and cumulative counts;
+     *  then the first-refusal row re-arms. Called wherever {@link #seenIds} is cleared. */
+    private void closeSeenIdEpoch() {
+        if (seenIdsRefusedEpoch > 0) {
+            PilotWatchLog.info("asteroid lane seen-id cap epoch close: epoch=" + appliedEpoch
+                    + " refused=" + seenIdsRefusedEpoch + " refused_total=" + seenIdsCapRefused);
+        }
+        seenIdsRefusedEpoch = 0;
     }
 
     /**
@@ -542,7 +592,7 @@ final class AsteroidLane {
         long sig = minted + adopted + yields + glides + deaths + expired + remints + remintStale
                 + localGone + dropped + droppedStale + heldFrames + killRowsUntracked
                 + applyFailures + coastFailures + mintFailures + mintCapped + queueDropped
-                + deathKept + deathDropped;
+                + deathKept + deathDropped + seenIdsCapRefused;
         if (sig == lastLoggedSig || frameNo - lastLogFrame < LOG_EVERY_FRAMES) {
             return;
         }
@@ -565,6 +615,7 @@ final class AsteroidLane {
                 + " mint_failures=" + mintFailures + " asteroid_mint_capped=" + mintCapped
                 + " queue_dropped=" + queueDropped + " flips=" + flips
                 + " death_kept=" + deathKept + " death_dropped=" + deathDropped // the death-row meters
+                + " seen_ids_cap_refused=" + seenIdsCapRefused
                 + " advance_ns_max=" + advanceNsMax
                 + " advance_ns_avg=" + (advanceFrames == 0 ? 0 : advanceNsTotal / advanceFrames)
                 + " live=" + bodies.size();

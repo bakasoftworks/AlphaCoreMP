@@ -125,6 +125,7 @@ final class StationAdoptBindLane {
     private int latches;
     private int deadAtFirstSight;
     private int inertSweeps;
+    private long outOfBandSkipsTotal; // every cluster's out-of-band skips (the one-shot's count)
 
     StationAdoptBindLane(PredictReconcileCombatPlugin plugin) {
         this.plugin = plugin;
@@ -622,11 +623,17 @@ final class StationAdoptBindLane {
                 // (the later append is swallowed by the registry dedupe) or latch the whole cluster
                 // on a false natural-key collision. Only the band the server interns at t=0 for
                 // THIS cluster may claim a slot; anything else waits for its own row.
-                if (cluster.outOfBandLogged.add(Long.valueOf(wireId))) {
+                // ONE row for the band's first out-of-band id, then a
+                // count only -- a per-id dedupe set grew with every distinct id a serve could mint.
+                cluster.outOfBandSkips++;
+                outOfBandSkipsTotal++;
+                if (!cluster.outOfBandLogged) {
+                    cluster.outOfBandLogged = true;
                     PilotWatchLog.info("predict station_bind: base id=" + cluster.baseId
                             + " SKIPPED unknown wire id " + wireId + " — outside the module id band"
                             + " [" + cluster.bandLow + ".." + cluster.bandHigh + "] (a station-born"
-                            + " body whose roster append has not drained yet, not a module)");
+                            + " body whose roster append has not drained yet, not a module; later"
+                            + " out-of-band ids are counted on the band drop and round rows)");
                 }
                 continue;
             }
@@ -1225,14 +1232,17 @@ final class StationAdoptBindLane {
         cluster.slotByWireId.clear();
         cluster.boundChildren.clear();
         cluster.childMissLogged.clear();
-        cluster.outOfBandLogged.clear();
+        long bandOutOfBandSkips = cluster.outOfBandSkips;
+        cluster.outOfBandSkips = 0L;
+        cluster.outOfBandLogged = false;
         cluster.deadAtFirstSightDone = false;
         cluster.noLocalBodyLogged = false;
         cluster.corpseSkipLogged = false;
         bandDrops++;
         PilotWatchLog.info("predict station_bind: band DROPPED base id=" + cluster.baseId + " — "
                 + why + " (rows removed=" + dropped + " unbound given back=" + givenBack
-                + ", drops=" + bandDrops + ") -> re-adopt from the fresh base");
+                + ", drops=" + bandDrops + ", outOfBandSkips=" + bandOutOfBandSkips
+                + ") -> re-adopt from the fresh base");
     }
 
     /**
@@ -1251,6 +1261,7 @@ final class StationAdoptBindLane {
                 + " moduleRowsBound=" + moduleRowsBound + " repairs=" + moduleRowsRepaired
                 + " moduleRowsKilled=" + moduleRowsKilled + " latches=" + latches
                 + " deadAtFirstSight=" + deadAtFirstSight + " inertSweeps=" + inertSweeps
+                + " outOfBandSkips=" + outOfBandSkipsTotal
                 + (refused ? " REFUSED(" + refusedWhy + ")" : ""));
         for (Cluster cluster : clusters.values()) {
             dropBand(cluster, "match reset");
@@ -1357,8 +1368,13 @@ final class StationAdoptBindLane {
         final Set<ShipAPI> boundChildren =
                 Collections.newSetFromMap(new IdentityHashMap<ShipAPI, Boolean>());
         final Set<String> childMissLogged = new java.util.HashSet<String>();
-        /** Unknown out-of-band wire ids already logged (drones repose every frame — throttle). */
-        final Set<Long> outOfBandLogged = new java.util.HashSet<Long>();
+        /**
+         * The out-of-band one-shot: true once this band logged its first
+         * unknown out-of-band wire id; {@code outOfBandSkips} counts every skip since (drones repose every frame,
+         * so it counts skip EVENTS, not distinct ids). Both re-arm when the band drops, whose row prints the count.
+         */
+        boolean outOfBandLogged;
+        long outOfBandSkips;
 
         Cluster(long baseId, String variantId, boolean appended) {
             this.baseId = baseId;

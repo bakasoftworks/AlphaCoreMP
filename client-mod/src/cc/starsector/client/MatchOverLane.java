@@ -61,6 +61,19 @@ final class MatchOverLane {
      * native-credit-only tally as the A/B lever — is in git). */
     static final boolean ROSTER_ON = true;
 
+    /**
+     * The most debrief rows one drive injects. The ledger is keyed
+     * by DESTROYED id per round and fed behind the kit's despawn intake cap, so it can hold up to
+     * {@link RosterAppendLane#MAX_ROUND_ENTITIES} ids, and every injected row is a live fleet member in the
+     * engine's own roster. The axis is debrief rows per round, never the roster size: growth spawns let a
+     * lawful round field more ships than it started with. Measured lawful load: 44 and 23 rows in a
+     * one-round match each (about 372x headroom) and about 602 rows an hour, so a three-hour round fills
+     * about a ninth of it. Past the cap the drive injects nothing more and counts every remaining id as
+     * {@code refused=} on its summary row, never silently.
+     *
+     */
+    static final int MATCHOVER_INJECT_MAX = 16_384;
+
     /** Whiteout beat between the drive and the native results dialog — the dialog itself is
      * Continue-gated with the engine paused (no auto-return timer), so teardown keeps
      * unlimited time regardless of this value. */
@@ -147,7 +160,8 @@ final class MatchOverLane {
      * Injection sweep (drive-once, render thread): join each queued DESTROYED id to
      * {variant, side}, filter (fighters, unknown ids), dedupe against members the engine
      * already credited, then append a synthetic {@code FleetMember} to the owning manager's
-     * live fleet list + destroyed set. Per-entry fail-soft; one summary log line.
+     * live fleet list + destroyed set — at most {@link #MATCHOVER_INJECT_MAX} rows, the rest
+     * counted refused ({@link #drainLedger}). Per-entry fail-soft; one summary log line.
      */
     private void ensureDestroyedRoster(CombatEngineAPI engine, int ownSide) {
         int queued = destroyedIds.size();
@@ -156,11 +170,6 @@ final class MatchOverLane {
                     + (ROSTER_ON ? "" : " (knob off)"));
             return;
         }
-        int injected = 0;
-        int dedup = 0;
-        int fighter = 0;
-        int unknown = 0;
-        int failed = 0;
         com.fs.starfarer.combat.CombatFleetManager[] mgrs =
                 new com.fs.starfarer.combat.CombatFleetManager[2];
         // (owner + "|" + variantId) -> count of members ALREADY in a live destroyed set: the
@@ -176,71 +185,123 @@ final class MatchOverLane {
                 credited.put(key, Integer.valueOf(have == null ? 1 : have.intValue() + 1));
             }
         }
-        for (Long id = destroyedIds.poll(); id != null; id = destroyedIds.poll()) {
-            String variantId = variantById.get(id);
-            if (variantId == null) {
-                unknown++; // no id-contract row (unexpected server id) — skip, counted
-                continue;
-            }
-            try {
-                ShipVariantAPI variant = Global.getSettings().getVariant(variantId);
-                if (variant != null && variant.getHullSpec() != null
-                        && variant.getHullSpec().getHullSize() == ShipAPI.HullSize.FIGHTER) {
-                    fighter++; // vanilla-faithful: the fleet manager's !isFighter() gate — ships only
-                    continue;
-                }
-                // The registry row is read AFTER the fighter gate — a killed
-                // fighter's entry is REAPED from remoteEntities one frame after its kill (its
-                // variant row stays), so it must classify as `fighter`, never as `unknown`.
-                PredictReconcileCombatPlugin.RemoteEntity re = remoteEntities.get(id);
-                if (re == null) {
-                    unknown++; // a non-fighter id with no registry row (unexpected server id)
-                    continue;
-                }
-                int owner = re.side == 0 ? ownSide : 1 - ownSide;
-                String key = owner + "|" + variantId; // wire-scrub: not a sink (map key)
-                Integer have = credited.get(key);
-                if (have != null && have.intValue() > 0) {
-                    credited.put(key, Integer.valueOf(have.intValue() - 1));
-                    dedup++; // the engine already shows one of these — don't double-row it
-                    continue;
-                }
-                FleetMemberAPI member = Global.getFactory()
-                        .createFleetMember(FleetMemberType.SHIP, variantId);
-                member.setOwner(owner); // factory hardcodes 0 — REQUIRED
-                // descriptor-lane entities carry no fanned name (RosterRow has no
-                // shipName field). The debrief
-                // row carries the name the hull ALREADY wore in this window — the bound
-                // replica's own engine name (the game's vanilla-like generator named it at
-                // spawn; the player sees it on hover/target all match) — never a minted
-                // "WAVE 1.n" label (the twin naming + its prefix are RETIRED).
-                // Order: fanned wire name (wave spawns), else the replica's in-game name, else
-                // the hull display name.
-                String name = re.appendShipName;
-                if (name == null && re.ship != null) {
-                    String inGame = re.ship.getName();
-                    if (inGame != null && !inGame.isEmpty()) {
-                        name = inGame;
-                    }
-                }
-                if (name == null && variant != null && variant.getHullSpec() != null) {
-                    name = variant.getHullSpec().getHullName();
-                }
-                if (name != null && !name.isEmpty()) {
-                    member.setShipName(name);
-                }
-                com.fs.starfarer.campaign.fleet.FleetMember fm =
-                        (com.fs.starfarer.campaign.fleet.FleetMember) member;
-                mgrs[owner].getFleet().Object().add(fm); // the debrief roster iterates this
-                mgrs[owner].getDestroyed().add(fm);      // live set => getFinalStatus DESTROYED
-                injected++;
-            } catch (Throwable t) {
-                failed++; // per-entry fail-soft: one bad variant never costs the rest
+        drainLedger(id -> injectOne(id, mgrs, credited, ownSide), queued);
+    }
+
+    /** One queued id of the injection sweep (the drain's
+     *  per-entry body, moved out unchanged so the capped drain runs game-free): join, filter, dedupe,
+     *  inject; returns the id's outcome. A throw is counted failed by the drain. Render thread. */
+    private int injectOne(Long id, com.fs.starfarer.combat.CombatFleetManager[] mgrs,
+            java.util.Map<String, Integer> credited, int ownSide) {
+        String variantId = variantById.get(id);
+        if (variantId == null) {
+            return UNKNOWN; // no id-contract row (unexpected server id) — skip, counted
+        }
+        ShipVariantAPI variant = Global.getSettings().getVariant(variantId);
+        if (variant != null && variant.getHullSpec() != null
+                && variant.getHullSpec().getHullSize() == ShipAPI.HullSize.FIGHTER) {
+            return FIGHTER; // vanilla-faithful: the fleet manager's !isFighter() gate — ships only
+        }
+        // The registry row is read AFTER the fighter gate — a killed
+        // fighter's entry is REAPED from remoteEntities one frame after its kill (its
+        // variant row stays), so it must classify as `fighter`, never as `unknown`.
+        PredictReconcileCombatPlugin.RemoteEntity re = remoteEntities.get(id);
+        if (re == null) {
+            return UNKNOWN; // a non-fighter id with no registry row (unexpected server id)
+        }
+        int owner = re.side == 0 ? ownSide : 1 - ownSide;
+        String key = owner + "|" + variantId; // wire-scrub: not a sink (map key)
+        Integer have = credited.get(key);
+        if (have != null && have.intValue() > 0) {
+            credited.put(key, Integer.valueOf(have.intValue() - 1));
+            return DEDUP; // the engine already shows one of these — don't double-row it
+        }
+        FleetMemberAPI member = Global.getFactory()
+                .createFleetMember(FleetMemberType.SHIP, variantId);
+        member.setOwner(owner); // factory hardcodes 0 — REQUIRED
+        // descriptor-lane entities carry no fanned name (RosterRow has no
+        // shipName field). The debrief
+        // row carries the name the hull ALREADY wore in this window — the bound
+        // replica's own engine name (the game's vanilla-like generator named it at
+        // spawn; the player sees it on hover/target all match) — never a minted
+        // "WAVE 1.n" label (the twin naming + its prefix are RETIRED).
+        // Order: fanned wire name (wave spawns), else the replica's in-game name, else
+        // the hull display name.
+        String name = re.appendShipName;
+        if (name == null && re.ship != null) {
+            String inGame = re.ship.getName();
+            if (inGame != null && !inGame.isEmpty()) {
+                name = inGame;
             }
         }
-        PilotWatchLog.info("cc-results-roster injected=" + injected + " dedup=" + dedup
-                + " fighter=" + fighter + " unknown=" + unknown + " failed=" + failed
-                + " queued=" + queued);
+        if (name == null && variant != null && variant.getHullSpec() != null) {
+            name = variant.getHullSpec().getHullName();
+        }
+        if (name != null && !name.isEmpty()) {
+            member.setShipName(name);
+        }
+        com.fs.starfarer.campaign.fleet.FleetMember fm =
+                (com.fs.starfarer.campaign.fleet.FleetMember) member;
+        mgrs[owner].getFleet().Object().add(fm); // the debrief roster iterates this
+        mgrs[owner].getDestroyed().add(fm);      // live set => getFinalStatus DESTROYED
+        return INJECTED;
+    }
+
+    /** One queued id's outcome at the drive; each is a counter index of {@link #drainLedger}'s result
+     *  and a token of the summary row. */
+    static final int INJECTED = 0;
+    static final int DEDUP = 1;
+    static final int FIGHTER = 2;
+    static final int UNKNOWN = 3;
+    static final int FAILED = 4;
+    static final int REFUSED = 5;
+
+    /** Classifies one queued DESTROYED id and injects its debrief row when it earns one; returns
+     *  one of the outcome codes above (never {@link #REFUSED}, which only the drain assigns). */
+    interface RowInjector {
+        int inject(Long id);
+    }
+
+    /**
+     * Drains the ledger through {@code injector} under
+     * {@link #MATCHOVER_INJECT_MAX}. The cap counts INJECTED rows only (a fighter, a duplicate or an
+     * unknown id costs no row); once it is reached every remaining id is polled unclassified and counted
+     * refused (fighters and duplicates among them are not sorted out — the cap spares exactly that work),
+     * so the ledger always empties. A throwing entry counts failed and never stops the drain. Writes the
+     * drive's one summary row (its {@code refused=} token always printed) and, on a refusal, the one-shot
+     * announce. Returns the counters by outcome code. Render thread (ids keep arriving from the net
+     * thread while it drains, as before the cap).
+     */
+    int[] drainLedger(RowInjector injector, int queued) {
+        int[] n = new int[REFUSED + 1];
+        for (Long id = destroyedIds.poll(); id != null; id = destroyedIds.poll()) {
+            if (n[INJECTED] >= MATCHOVER_INJECT_MAX) {
+                n[REFUSED]++;
+                continue;
+            }
+            int outcome;
+            try {
+                outcome = injector.inject(id);
+            } catch (Throwable t) {
+                outcome = FAILED; // per-entry fail-soft: one bad variant never costs the rest
+            }
+            n[outcome]++;
+        }
+        PilotWatchLog.info(summaryRow(n, queued));
+        if (n[REFUSED] > 0) {
+            FallbackAnnounce.announceOnce("matchover-inject-cap", "debrief row cap ("
+                    + MATCHOVER_INJECT_MAX + " rows a drive) reached: refused=" + n[REFUSED]
+                    + " queued=" + queued + " (not injected, counted)");
+        }
+        return n;
+    }
+
+    /** The drive's one summary row, counters by outcome code; {@code refused=} is printed even at
+     *  zero, so a capped drive is never silent and every drive states it. */
+    static String summaryRow(int[] n, int queued) {
+        return "cc-results-roster injected=" + n[INJECTED] + " dedup=" + n[DEDUP]
+                + " fighter=" + n[FIGHTER] + " unknown=" + n[UNKNOWN] + " failed=" + n[FAILED]
+                + " refused=" + n[REFUSED] + " queued=" + queued;
     }
 
     /** Defensive never-re-field assert (a no-op until the drive has run); the
@@ -251,6 +312,68 @@ final class MatchOverLane {
             PilotWatchLog.error("cc-match-over DEFECT: round flip AFTER the match-over drive —"
                     + " the server re-fielded past a latched matchOver (never-re-field"
                     + " violated); not re-driving", null);
+        }
+    }
+
+    /**
+     * The per-SESSION entry cap of the plugin's content
+     * catalog (wire content id to engine spec id) — the session's other server-fed id join, kept beside
+     * the results-roster ledger's cap. The server mints one id per installed spec (about 590 on a vanilla
+     * install, one registry per serve) and the catalog outlives round resets, so it is capped per session
+     * at {@link RosterAppendLane#MAX_ROUND_ENTITIES} entries (about 110x). A NEW id past the cap is
+     * refused (not stored) and counted ONCE per distinct id: the dictionary re-announces in cycles, so a
+     * per-announcement count would grow without bound. The remembered refused ids are bounded by the same
+     * constant; a new refused id past THAT bound counts as untracked (repeats included, the totals row says
+     * so). An existing key's re-announce still updates (nothing grows). Every catalog reader already
+     * treats an absent id as unresolved, so a refused id costs only its presented spec. The session's
+     * first refusal writes ONE error row plus the one-shot announce; {@link #teardown} writes the session
+     * totals and re-arms. Content ids are signed 32-bit wire values, either sign; spec ids (wire text) are
+     * never logged. Render thread only, the catalog's own thread.
+     */
+    static final class ContentCatalogCap {
+
+        private final java.util.Set<Integer> refusedIds = new java.util.HashSet<Integer>();
+        private int refusedUntracked;
+
+        /** Merges one fresh frame's announced entries into {@code catalog} under the cap — the
+         *  catalog's only writer on the live path. */
+        void admit(java.util.Map<Integer, String> catalog, java.util.Map<Integer, String> announced) {
+            for (java.util.Map.Entry<Integer, String> e : announced.entrySet()) {
+                Integer id = e.getKey();
+                if (catalog.size() < RosterAppendLane.MAX_ROUND_ENTITIES || catalog.containsKey(id)) {
+                    catalog.put(id, e.getValue());
+                } else if (refusedIds.size() < RosterAppendLane.MAX_ROUND_ENTITIES) {
+                    if (refusedIds.add(id) && refusedIds.size() == 1) {
+                        String detail = "content catalog cap (" + RosterAppendLane.MAX_ROUND_ENTITIES
+                                + " entries this session) reached: refused content id=" + id
+                                + " (not stored; later refusals are counted once per id)";
+                        PilotWatchLog.error("predict " + detail, null);
+                        FallbackAnnounce.announceOnce("content-catalog-cap", detail);
+                    }
+                } else if (!refusedIds.contains(id)) {
+                    refusedUntracked++;
+                }
+            }
+        }
+
+        /** Distinct ids refused this session, each counted once. */
+        int refusedIds() {
+            return refusedIds.size();
+        }
+
+        /** Refused announcements of ids the full refused-id set could not remember (repeats included). */
+        int refusedUntracked() {
+            return refusedUntracked;
+        }
+
+        /** Session teardown: ONE totals row (written at zero too, so every session states its catalog
+         *  size), then the refusal state re-arms for the next session. */
+        void teardown(int catalogSize) {
+            PilotWatchLog.info("predict content-catalog teardown: entries=" + catalogSize + " cap="
+                    + RosterAppendLane.MAX_ROUND_ENTITIES + " refused_ids=" + refusedIds.size()
+                    + " refused_untracked=" + refusedUntracked);
+            refusedIds.clear();
+            refusedUntracked = 0;
         }
     }
 

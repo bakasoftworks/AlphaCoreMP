@@ -4,6 +4,7 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Set;
 
+import com.fs.starfarer.api.combat.CombatEngineAPI;
 import com.fs.starfarer.api.combat.ShipAPI;
 
 import cc.starsector.client.net.ServerEntityPose;
@@ -187,6 +188,35 @@ final class ReplicaCompDamageShield {
         ownEngineDead.clear();
         ownCritShielded.clear(); //
         ownCritDead.clear();
+    }
+
+    /**
+     * The sweep law over all eight identity sets: a hull the
+     * engine no longer holds in play ({@link CombatEngineAPI#isEntityInPlay} false: neither live nor a
+     * pending add) leaves every set, the own-keyed ones included. Nothing else removes a hull before the
+     * round reset (no reap relay reaches these sets, and the remote reap never sees the own ship), so a
+     * server that never resets the round would grow them by one hull per body ever bound. Render thread,
+     * on the projectile-set sweep cadence. A swept instance that re-enters play is treated as new: one
+     * more keyed install (idempotent on the stat) or one more probe.
+     */
+    void sweepGone(CombatEngineAPI engine) {
+        if (engine == null) {
+            return;
+        }
+        sweepGoneFrom(engineShielded, engine);
+        sweepGoneFrom(weaponShielded, engine);
+        sweepGoneFrom(ownEngineShielded, engine);
+        sweepGoneFrom(engineDead, engine);
+        sweepGoneFrom(weaponDead, engine);
+        sweepGoneFrom(ownEngineDead, engine);
+        sweepGoneFrom(ownCritShielded, engine);
+        sweepGoneFrom(ownCritDead, engine);
+    }
+
+    private static void sweepGoneFrom(Set<ShipAPI> set, CombatEngineAPI engine) {
+        if (!set.isEmpty()) {
+            set.removeIf(ship -> !engine.isEntityInPlay(ship));
+        }
     }
 
     /**

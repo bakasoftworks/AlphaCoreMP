@@ -284,7 +284,7 @@ final class ServeRecordSelftest {
     /** The four refusals verbatim, console-safe (printable ASCII, no dev token), and the host echo bounded. */
     private static void textLaw(String r) {
         List<String> draft = List.of(
-                "recording is on (record=full) but the disk holding <run> has <n> MiB free, less than record.maxMiB (<m>) plus 1024: free space, lower record.maxMiB in launcher.properties, or set record=off",
+                "recording is on (record=full) but the disk holding <run> has <n> MiB free, less than record.maxMiB (<m>) plus 1024: free space (delete old flight folders from that folder; a lower run.keepFlights keeps fewer from then on), lower record.maxMiB in launcher.properties, or set record=off",
                 "the row record does not parse: must be off, diag or full, got '<v>'",
                 "the row record.maxMiB does not parse: must be a whole number from 1024 to 262144, got '<v>'",
                 "the launch template <t> already sets <key>: delete that line, or set record=off");

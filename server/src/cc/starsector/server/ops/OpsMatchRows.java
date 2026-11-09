@@ -1677,4 +1677,55 @@ public final class OpsMatchRows {
         }
         return null;
     }
+
+    /**
+     * The optional-set CAP law as a pre-write refusal. WHY: the serve
+     * builds one session print per subset of the published optional set (2^k prints for k optional mods),
+     * so {@code ModSet.installOptional} refuses a boot over {@link ModSet#MAX_OPTIONAL}; every writer of the
+     * {@link #MODS_OPTIONAL_KEY} row refuses HERE first, before the file changes, so a serve never boots into
+     * that refusal and a supervisor never relaunches into it. Input = the raw or canonical list (split on
+     * {@code ,}/{@code ;}, trimmed, blanks skipped, duplicates counted once - the serve's set has no
+     * duplicates); null = no list. Returns one host sentence naming the count and the cap, else {@code null}.
+     * The cap lives ONLY in {@link ModSet#MAX_OPTIONAL}; the sentence renders it.
+     */
+    public static String modsOptionalCapRefusalOrNull(String optionalCsv) {
+        return modsOptionalCapRefusalOrNull(optionalCsv, null);
+    }
+
+    /**
+     * The cap at a writer that must never TRAP the host. A standing row already
+     * over the cap (a hand edit, or a package whose properties a pre-cap console wrote) made every Mods-tab edit
+     * recompose an over-cap row and be refused - the untick the sentence asks for included. So this form refuses
+     * only an edit that composes MORE optional ids than {@code standingCsv} holds ({@code null} = no standing row:
+     * every over-cap list refuses, the one-argument form). Start, the package launch and the boot keep the
+     * one-argument law, so a lowering edit that is still over the cap is never SERVED - the host just gets to
+     * finish lowering it.
+     */
+    public static String modsOptionalCapRefusalOrNull(String optionalCsv, String standingCsv) {
+        if (optionalCsv == null) {
+            return null;
+        }
+        int count = distinctModIdCount(optionalCsv);
+        if (count <= ModSet.MAX_OPTIONAL) {
+            return null;
+        }
+        if (standingCsv != null && count <= distinctModIdCount(standingCsv)) {
+            return null;
+        }
+        return "mods.optional lists " + count + " mods - at most " + ModSet.MAX_OPTIONAL
+                + " optional mods can be published (joiners may run any subset of them, and the server"
+                + " keeps a fingerprint for each subset); untick some.";
+    }
+
+    /** The cap's count: split on {@code ,}/{@code ;}, trimmed, blanks skipped, duplicates once. */
+    private static int distinctModIdCount(String csv) {
+        java.util.Set<String> ids = new java.util.LinkedHashSet<>();
+        for (String t : csv.split("[,;]")) {
+            String id = t.trim();
+            if (!id.isEmpty()) {
+                ids.add(id);
+            }
+        }
+        return ids.size();
+    }
 }

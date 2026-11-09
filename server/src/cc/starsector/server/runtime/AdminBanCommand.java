@@ -41,8 +41,9 @@ import java.util.Map;
  *
  * <p>The OBSERVER HANDLE band — an observer holds no
  * hull (seat 0 / ship 0), so the {@code /ban} menu names it by a server-minted HANDLE
- * {@link #OBSERVER_HANDLE_BASE}{@code + slot} (slot 1.. in listing order, per menu), label the
- * constant {@code observer <slot>} (never player text). {@code #<wire> >= }
+ * {@link #OBSERVER_HANDLE_BASE}{@code + ordinal} — r4: the session's DOOR ordinal,
+ * minted at admission, ONE numbering across /ban, /mute, /chatmute and across listeners — label the
+ * constant {@code observer <ordinal>} (never player text). {@code #<wire> >= }
  * {@link #OBSERVER_HANDLE_BASE} resolves ONLY through the caller's menu pin (handle → session id,
  * the ONE numbering {@link ListingEmitter#banEntries(long, List, Map)} minted) and then re-looks
  * that session up in the FRESH live snapshot — dead / not an observer / no pin ⇒
@@ -86,15 +87,21 @@ public final class AdminBanCommand {
      *  arbiter's per-seat map (put-only, never cleared).
      *  + {@code observer} = the session's own OBSERVER
      *  flag (server truth, read under the door lock — never a wire claim); the 6-arg form = a
-     *  non-observer. */
+     *  non-observer. r4: + {@code observerOrdinal} = the session's door-minted
+     *  ordinal (the ONE "observer N"); class law {@code observer == (observerOrdinal > 0)} — both fields
+     *  come from ONE {@code PeerSession}, no wire input reaches this ctor, so a breach is a server bug. */
     public record Target(long sessionId, int seatId, long shipId, boolean admin, String cid, String name,
-            boolean observer) {
+            boolean observer, int observerOrdinal) {
         public Target {
             name = name == null ? "" : name;
+            if (observer != (observerOrdinal > 0)) {
+                throw new IllegalArgumentException("Target: observer=" + observer + " with observerOrdinal="
+                        + observerOrdinal + " (an observer is born with its ordinal, a pilot has none)");
+            }
         }
 
         public Target(long sessionId, int seatId, long shipId, boolean admin, String cid, String name) {
-            this(sessionId, seatId, shipId, admin, cid, name, false);
+            this(sessionId, seatId, shipId, admin, cid, name, false, 0);
         }
     }
 

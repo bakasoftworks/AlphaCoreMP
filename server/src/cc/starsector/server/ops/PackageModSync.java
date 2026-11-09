@@ -85,8 +85,9 @@ public final class PackageModSync {
      * Resolve the rows against the package. {@code rootsRowOrNull} = the {@code mods.roots} value, or
      * null when the row is absent (the present-but-blank row = no roots, the Mods tab's law).
      *
-     * @throws IllegalArgumentException one operator sentence (an unlawful id, an id in both rows, a
-     *         missing / ambiguous mod or dependency, a folder-name collision)
+     * @throws IllegalArgumentException one operator sentence (an unlawful id, an id in both rows, an
+     *         optional set over {@code ModSet.MAX_OPTIONAL}, a missing / ambiguous mod or dependency, a
+     *         folder-name collision)
      */
     public static Plan plan(Path pkg, String enabledRow, String optionalRow, String rootsRowOrNull) {
         Path root = pkg.toAbsolutePath().normalize();
@@ -97,7 +98,13 @@ public final class PackageModSync {
         if (both != null) {
             throw new IllegalArgumentException(both);
         }
-        List<String> roots = rootsRowOrNull == null ? PACKAGE_DEFAULT_ROOTS : InstalledModScan.splitRoots(rootsRowOrNull);
+        // The optional-set cap (ModSet.MAX_OPTIONAL) - a hand-edited
+        // row over it is refused here, every launch, before anything is staged or the serve boots.
+        String cap = OpsMatchRows.modsOptionalCapRefusalOrNull(String.join(",", optional));
+        if (cap != null) {
+            throw new IllegalArgumentException(cap);
+        }
+        List<String> roots =rootsRowOrNull == null ? PACKAGE_DEFAULT_ROOTS : InstalledModScan.splitRoots(rootsRowOrNull);
         Map<String, List<Path>> found = new LinkedHashMap<>();
         for (InstalledModScan.InstalledMod m : InstalledModScan.scanRoots(root, roots)) {
             if (ModSet.EXCLUDED_ID.equals(m.id())) {

@@ -532,6 +532,12 @@ final class ShipListFetcher {
      *
      */
     JoinLaunchGates.Verdict launchVerdict(String name, String ship, boolean logs) {
+        // The game-version gate first (the browser's Launch runs the same
+        // order), so a kit sitting in a different Starsector refuses with nothing written
+        JoinLaunchGates.Refusal game = JoinLaunchGates.checkGame(modDir);
+        if (game != null) {
+            return JoinLaunchGates.Verdict.refuse(game.gate, game.title, game.message);
+        }
         String host = hostField.getText();
         String port = portField.getText();
         return JoinLaunchGates.check(new JoinLaunchGates.Form(host, port, name, effectivePassword(), ship,

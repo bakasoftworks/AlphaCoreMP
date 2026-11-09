@@ -26,7 +26,9 @@ import cc.starsector.server.platform.ActivationGate;
  * <p><b>Receipt grammar, append-only, KEPT</b> so the Ops GUI's existing reader
  * ({@link LaneFollow#parseLifeFailure}, which parses only {@code life=N exit=} and
  * {@code relaunch_budget_exhausted=}) reads a Java-written receipt unchanged:
- * {@code supervisor_pid=<pid>} (first), per life {@code life=N pid=<pid>},
+ * {@code supervisor_pid=<pid>} (first), then on a packed start that swept old flight folders
+ * {@code retention kept=<k> removed=<n> failed=<f> freed_mib=<m>} ({@link ServeRetention.Result#receiptRow}, handed in
+ * through {@link #rowAfterPid}), per life {@code life=N pid=<pid>},
  * {@code life=N timer_optout=<rc>} ({@link TimerOptOut}), {@code life=N exit=<code>}; terminal
  * {@code clean_exit=true lives=N} (0), {@code stopped=true lives=N} (0),
  * {@code refused_exit=true lives=N} (78), {@code relaunch_budget_exhausted=true lives=N} (1).
@@ -85,6 +87,8 @@ public final class ServeSupervisor {
     private final CountDownLatch finished = new CountDownLatch(1);
     private volatile boolean stopRequested;
     private volatile boolean started;
+    /** {@link #rowAfterPid}'s row; null = none. */
+    private volatile String leadRow;
 
     /**
      * @param flightDir this launch's flight dir (its {@code lives/} holds each life's
@@ -147,8 +151,27 @@ public final class ServeSupervisor {
         }
     }
 
+    /**
+     * A launcher row appended right after {@code supervisor_pid=} and before any life row (the retention receipt);
+     * called before {@link #run}, at most once (a later call replaces the row). WHY here and not in the launcher: a
+     * row the launcher appended before {@link #run} would displace {@code supervisor_pid=} from the receipt's first
+     * row, which the grammar above promises and a reader takes positionally.
+     *
+     *
+     */
+    public void rowAfterPid(String row) {
+        if (started) {
+            throw new IllegalStateException("rowAfterPid after run()");
+        }
+        leadRow = row;
+    }
+
     private int loop() {
         appendRow(receipt, "supervisor_pid=" + ProcessHandle.current().pid(), console);
+        String lead = leadRow;
+        if (lead != null) {
+            appendRow(receipt, lead, console);
+        }
         Path lives = flightDir.resolve("lives");
         int life = 0;
         int relaunches = 0;

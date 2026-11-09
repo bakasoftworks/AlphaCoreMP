@@ -282,7 +282,8 @@ public final class ServeRecord {
     private static String disk(String run, String freeMiB, String capMiB) {
         return "recording is on (record=full) but the disk holding " + run + " has " + freeMiB
                 + " MiB free, less than record.maxMiB (" + capMiB + ") plus " + DISK_HEADROOM_MIB
-                + ": free space, lower record.maxMiB in launcher.properties, or set record=off";
+                + ": free space (delete old flight folders from that folder; a lower run.keepFlights keeps fewer from"
+                + " then on), lower record.maxMiB in launcher.properties, or set record=off";
     }
 
     /**

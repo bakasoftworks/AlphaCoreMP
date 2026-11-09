@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.function.Consumer;
 
 import cc.starsector.client.net.DoorProbe;
 import cc.starsector.server.match.MatchDescriptor;
@@ -26,7 +27,7 @@ import cc.starsector.server.runtime.LunaSheetCodec;
  *
  * <p>Gate ids are fixed words the SPA keys on (never player text): {@code address}, {@code password},
  * {@code ship}, {@code probe}, {@code door}, {@code document}, {@code credential_write}, {@code luna_write},
- * {@code cid}, {@code plan_write}. Player-authored input (host, name) is DATA here: sanitized by
+ * {@code cid}, {@code plan_write}, {@code game_version}. Player-authored input (host, name) is DATA here: sanitized by
  * {@link JoinLaunchPlan}, matched against fixed rules; a refused document is named by OUR reason + field only.
  */
 final class JoinLaunchGates {
@@ -451,6 +452,40 @@ final class JoinLaunchGates {
      *  another pair's probe): nothing lawful to write, so the document is fetched again. */
     static final String MSG_STAGE_GONE = "The server's match was fetched but is no longer staged - press Refresh,"
             + " then Launch.";
+
+    /** The game-version gate's word and title (the kit and the game it sits in name different Starsector versions). */
+    static final String GATE_GAME_VERSION = "game_version";
+    static final String TITLE_GAME_VERSION = "Wrong game version";
+
+    /**
+     * The game-version gate, run by both Launch presses BEFORE
+     * {@link #check} (which stays pure; this one reads the kit's {@code mod_info.json} and the game's engine jar
+     * through {@link JoinGameVersion}). Only a lawful MISMATCH refuses; UNCHECKED (no jar, an unknown layout, damaged
+     * bytes) lets the press go on, so this read never locks a correct install out. Read fresh on every press, never
+     * cached: a player who swaps the game with the window open gets the new answer, and one test fixture's verdict
+     * cannot leak into a later row of the same JVM. Each press writes one {@code join-gates: game_version ...} row
+     * (bounded tokens only) to {@code log}; this overload's log is stderr.
+     */
+    static Refusal checkGame(Path modDir) {
+        return checkGame(modDir, System.err::println);
+    }
+
+    /** {@link #checkGame(Path)} with the window's own log sink; null = the press may go on. */
+    static Refusal checkGame(Path modDir, Consumer<String> log) {
+        JoinGameVersion.Result r = JoinGameVersion.forKit(modDir);
+        log.accept("join-gates: " + r.row());
+        if (r.kind != JoinGameVersion.Kind.MISMATCH) {
+            return null;
+        }
+        return new Refusal(GATE_GAME_VERSION, TITLE_GAME_VERSION, gameVersionMessage(r.expected, r.found), false);
+    }
+
+    /** The refusal text: both versions, then what the player does next (the game they need, or a newer kit). */
+    static String gameVersionMessage(String expected, String found) {
+        return "This kit is for Starsector " + expected + ", but the Starsector it is installed in is " + found
+                + ". Install Starsector " + expected + " and move this kit into that game's mods folder, or get the"
+                + " host's current kit if their server was updated.";
+    }
 
     /**
      * The gates in order: host/port → password → ship charset → the match. A staged document is re-parsed and

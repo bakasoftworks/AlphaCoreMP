@@ -214,8 +214,15 @@ final class OpsJoinSelf {
      * (two windows on one file would interleave). {@link #DIAG_FIRST} / {@link #DIAG_SECOND} = each window's diag
      * folder under the flight folder. {@link #CID_MAX_CHARS} = the door's sendable seat-id length (each char
      * {@code 0x21..0x7E}).
+     *
+     * <p>{@link #JOIN_SETTINGS_NAME_KEY} = the SECOND window's settings file name, the constant
+     * {@value #SETTINGS_FILE_NAME_SECOND} (never host text), so neither press's write lands in the other window's
+     * file; window 1 and every single-window press carry no such key (= the default file). It sits in the
+     * {@code CC_JOIN_*} family the join window reads, apart from the kit bat's own drill inputs ({@code CC_JOIN_HOST}
+     * and its siblings).
      */
     static final String PREDICT_CID_KEY = "CC_PREDICT_CLIENT_ID";
+    static final String JOIN_SETTINGS_NAME_KEY = "CC_JOIN_SETTINGS_NAME";
     static final String WATCH_SIDELOG_KEY = "CC_WATCH_SIDELOG";
     static final String SIDELOG_FILE = "cc-client.log";
     static final String DIAG_FIRST = "client";
@@ -245,6 +252,12 @@ final class OpsJoinSelf {
     static final String SETTINGS_DIR_NAME = "cc-starsector";
     /** {@code JoinSettings.FILE_NAME}. */
     static final String SETTINGS_FILE_NAME = "join-settings.properties";
+    /** The debug watch's SECOND window's own settings file, beside {@value #SETTINGS_FILE_NAME} and named to that
+     *  window by {@value #JOIN_SETTINGS_NAME_KEY} (a name the client's {@code JoinSettings.SETTINGS_NAME} allow-list
+     *  admits; {@code join-client-twin} pins both). WHY its own file: each window reads its file once at start and
+     *  the two presses run back to back with no wait, so one shared file handed a window whichever host the other
+     *  press wrote last. */
+    static final String SETTINGS_FILE_NAME_SECOND = "join-settings-2.properties";
     /** {@code JoinHost.endpointFile}'s sub-folder. */
     static final String ENDPOINT_DIR_NAME = "join";
     /** {@code JoinHost.ENDPOINT_FILE_PREFIX}. */
@@ -1427,7 +1440,8 @@ final class OpsJoinSelf {
     /**
      * The join settings' secret scrub, for the END of a debug flight (the serve or the window gone): only the
      * console's watch daemon sees that end, so it calls this - a press never does. In each settings file that
-     * exists (the current one and the legacy roaming one): every {@code password} / {@code passwordFor} row
+     * exists (the current one, the second window's {@value #SETTINGS_FILE_NAME_SECOND} beside it, and the legacy
+     * roaming one): every {@code password} / {@code passwordFor} row
      * (case-blind) dropped, with any row a backslash continuation folds into it, and every other row kept
      * byte-verbatim through {@link #continuationGuard}, CRLF out, temp + move; a file with no such row is not
      * written. WHY every password row, unconditionally: this class cannot tell the kept admin secret from the
@@ -1435,17 +1449,20 @@ final class OpsJoinSelf {
      * the host typed, and every console press writes the match password row again - so the scrub costs a console
      * host nothing. The answer, also ONE stdout row {@code cc-ops join settings_secret=<answer>} (never a value):
      * {@code scrubbed} (a row dropped), {@code clean} (a file, no secret row), {@code absent} (no file) or
-     * {@code failed (<SimpleName>)} (the first failure; that file untouched, the other file still scrubbed). A
+     * {@code failed (<SimpleName>)} (the first failure; that file untouched, the other files still scrubbed). A
      * scrub while a window is mid-launch could overwrite that window's own save (both sides write temp + move),
      * hence the flight's end only. This is the Windows host's form (the plain write); a Linux host's is
      * {@link #scrubSettingsSecret(Effects, PosixHost)}, both over {@link #scrubFiles}. Thread: any.
-     *
+     * The second window's file joins the list because a debug watch's press writes
+     * the match password there and that window's Launch saves it there too.
      */
     static String scrubSettingsSecret(Effects fx, String localAppData, String appData, String userHome) {
         List<Path> files = new ArrayList<>();
         String failed = null;
         try {
-            files.add(settingsFile(localAppData, appData, userHome));
+            Path current = settingsFile(localAppData, appData, userHome);
+            files.add(current);
+            files.add(current.resolveSibling(SETTINGS_FILE_NAME_SECOND));
         } catch (RuntimeException unresolved) {
             failed = unresolved.getClass().getSimpleName();
         }
@@ -1457,15 +1474,17 @@ final class OpsJoinSelf {
     }
 
     /**
-     * The secret scrub on a Linux host, for the same END of a debug flight: the ONE settings file the press wrote
-     * there ({@link #posixSettingsFileOrNull}; no legacy file; no usable HOME / {@code XDG_DATA_HOME} =
+     * The secret scrub on a Linux host, for the same END of a debug flight: the settings files the presses wrote
+     * there ({@link #posixSettingsFileOrNull} and the second window's {@value #SETTINGS_FILE_NAME_SECOND} beside
+     * it; no legacy file; no usable HOME / {@code XDG_DATA_HOME} =
      * {@code absent}), the same rows dropped and the same ONE answer row as the Windows form, rewritten through the
      * OWNER-ONLY write ({@link Effects#writeAtomic(Path, byte[], boolean)}): the temp is born owner-only and the
      * move keeps that mode, where the plain form would leave the umask's wider mode on a file that held the
      * password. CRLF out, the bytes the press's own Linux write produces. WHY {@code posix} is handed in: the END
      * leg runs on a daemon thread, and the host's platform and folders are the ones the WATCH route read when it
      * armed - this class makes no platform read of its own. The Windows folder resolvers are never consulted.
-     * Thread: any.
+     * Thread: any. The second window's file is listed for the Windows
+     * form's reason.
      */
     static String scrubSettingsSecret(Effects fx, PosixHost posix) {
         List<Path> files = new ArrayList<>();
@@ -1474,6 +1493,7 @@ final class OpsJoinSelf {
             Path file = posixSettingsFileOrNull(posix);
             if (file != null) {
                 files.add(file);
+                files.add(file.resolveSibling(SETTINGS_FILE_NAME_SECOND));
             }
         } catch (RuntimeException unresolved) {
             failed = unresolved.getClass().getSimpleName();
@@ -1819,10 +1839,10 @@ final class OpsJoinSelf {
 
     /** The child env = {@code parent} minus every key starting {@link #CC_ENV_PREFIX} (ASCII case-blind);
      *  {@code JAVA_TOOL_OPTIONS} is KEPT for parity with a by-hand run. A debug-watch press
-     *  re-adds up to four {@code CC_*} keys AFTER this strip, each its own, never an inherited one: the diag flags
+     *  re-adds up to five {@code CC_*} keys AFTER this strip, each its own, never an inherited one: the diag flags
      *  ({@link #clientDiagEnv}), the window's sidelog ({@value #WATCH_SIDELOG_KEY}) with its cap
-     *  ({@value #WATCH_SIDELOG_MAX_MIB_KEY}) and the second window's seat key ({@value #PREDICT_CID_KEY}), the last
-     *  three in {@link #step7Spawn}. Thread: any. */
+     *  ({@value #WATCH_SIDELOG_MAX_MIB_KEY}), the second window's seat key ({@value #PREDICT_CID_KEY}) and its
+     *  settings file name ({@value #JOIN_SETTINGS_NAME_KEY}), the last four in {@link #step7Spawn}. Thread: any. */
     static Map<String, String> childEnv(Map<String, String> parent) {
         Map<String, String> env = new LinkedHashMap<>();
         for (Map.Entry<String, String> e : parent.entrySet()) {
@@ -1918,6 +1938,11 @@ final class OpsJoinSelf {
          *  would leave window 1's still-running launcher appending to an unlinked file, its later words lost.
          * */
         String pressLogName = PRESS_LOG_NAME;
+        /** This window's settings file name beside the default one ({@link #step6Write}), named to the window by
+         *  {@value #JOIN_SETTINGS_NAME_KEY} ({@link #step7Spawn}): null = the default file (a hand press, a lone
+         *  window, a debug watch's first window), {@value #SETTINGS_FILE_NAME_SECOND} for its second
+         *  ({@link #pressWatch}). */
+        String settingsName;
 
         Press(Inputs in, Effects fx) {
             this.in = in;
@@ -2004,6 +2029,12 @@ final class OpsJoinSelf {
      * {@link #dialLocal} - the live bind's own endpoint, never the hairpin a ProtonVPN-saved folder would take,
      * no probe - and says ONE stdout row {@code cc-ops join first_dial=local} (no address). A single window keeps
      * {@link #dial}.
+     *
+     * <p>Window 2 writes its OWN settings file, {@value #SETTINGS_FILE_NAME_SECOND} beside the default one, and is
+     * told its name in its env ({@value #JOIN_SETTINGS_NAME_KEY}); window 1 keeps the default file. WHY: each
+     * window reads its file once at start and nothing waits between the two presses, so on one shared file a
+     * window could read the other press's host (and its {@code passwordFor} binding). Each file holds one dial.
+     *
      */
     static Result pressWatch(Inputs in, Effects fx, Path flightOrNull) {
         Map<String, String> rows = in.launcherRows();
@@ -2047,6 +2078,7 @@ final class OpsJoinSelf {
         second.recordWindow = true;
         second.publicDial = true;
         second.pressLogName = PRESS_LOG_NAME_SECOND;
+        second.settingsName = SETTINGS_FILE_NAME_SECOND;
         String cid2 = mintCid();
         while (cid2.equals(first.cid)) {
             cid2 = mintCid();
@@ -2645,14 +2677,26 @@ final class OpsJoinSelf {
      * an ARMED window's key rides its env and is never written.
      *  A Linux host writes {@link #posixSettingsFileOrNull} (no
      *  legacy file there; none = R20) owner-only ({@link Effects#writeAtomic(Path, byte[], boolean)}) and refuses
-     *  with {@link #R6P}. */
+     *  with {@link #R6P}.
+     *
+     *  <p>A press with {@link Press#settingsName} set (a debug watch's second window) writes that name beside
+     *  {@link #settingsFile} (Linux: beside {@link #posixSettingsFileOrNull}, none = R20), NEVER through
+     *  {@link #settingsForRun}: the legacy roaming fallback belongs to the default file alone, so with a legacy
+     *  file present the password would land in the roaming folder while the window reads its named file beside the
+     *  current one. */
     private static Result step6Write(Press p) {
         Path file;
         byte[] existing = null;
         boolean posix = p.in.posixHost();
         try {
-            file = posix ? posixSettingsFileOrNull(p.in.posixOrNull())
-                    : settingsForRun(p.fx, p.in.localAppData(), p.in.appData(), p.in.userHome());
+            if (p.settingsName == null) {
+                file = posix ? posixSettingsFileOrNull(p.in.posixOrNull())
+                        : settingsForRun(p.fx, p.in.localAppData(), p.in.appData(), p.in.userHome());
+            } else {
+                Path beside = posix ? posixSettingsFileOrNull(p.in.posixOrNull())
+                        : settingsFile(p.in.localAppData(), p.in.appData(), p.in.userHome());
+                file = beside == null ? null : beside.resolveSibling(p.settingsName);
+            }
             if (file == null) {
                 return refused("r20", R20);
             }
@@ -2779,7 +2823,9 @@ final class OpsJoinSelf {
      *  ({@link #NOTE_OPENED_ADMIN} when this window was armed, else {@link #NOTE_OPENED}). The press's own env keys go in AFTER the {@link #childEnv} strip, so
      *  an inherited {@code CC_*} copy never reaches the window: the sidelog when set (with its cap,
      *  {@value #WATCH_SIDELOG_MAX_MIB_KEY}), the env-delivered seat key
-     *  when set (the second window's, or an armed window's) - never inside {@value #CLIENT_JVM_FLAGS_KEY}.
+     *  when set (the second window's, or an armed window's) - never inside {@value #CLIENT_JVM_FLAGS_KEY}
+     *  - and the window's settings file name when set
+     *  ({@value #JOIN_SETTINGS_NAME_KEY}, the second window's).
      *  An OPENED window of a press that records ({@link Press#recordWindow}) rides
      *  {@link Result#windows} when the spawn kept its handle and start instant; without both it cannot be closed
      *  safely later, so it is not recorded.
@@ -2803,6 +2849,9 @@ final class OpsJoinSelf {
             }
             if (p.cidOverrideOrNull != null) {
                 env.put(PREDICT_CID_KEY, p.cidOverrideOrNull);
+            }
+            if (p.settingsName != null) {
+                env.put(JOIN_SETTINGS_NAME_KEY, p.settingsName);
             }
             if (logOrNull != null) {
                 try {

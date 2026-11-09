@@ -15,6 +15,7 @@ import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Properties;
+import java.util.regex.Pattern;
 
 import cc.starsector.client.KitUserDirs;
 import cc.starsector.server.runtime.HandshakeCrypto;
@@ -121,6 +122,21 @@ final class JoinSettings {
 
     static final String DIR_NAME = "cc-starsector";
     static final String FILE_NAME = "join-settings.properties";
+    /** The env key naming THIS window's own settings file, for two join
+     *  windows of one user profile open side by side — the second gets {@code join-settings-2.properties}, so its
+     *  saved address, its Launch save and its remembered password never overwrite the first window's. Absent or blank
+     *  = {@link #FILE_NAME}. Read at window start ({@link #pathForRun}) and by the match refresh
+     *  ({@code JoinGui.runRefreshMatch}); its value is untrusted text and is never logged. */
+    static final String SETTINGS_NAME_ENV = "CC_JOIN_SETTINGS_NAME";
+    /** The ONLY names {@link #SETTINGS_NAME_ENV} may select: an allow-list, never a charset. A Launch save
+     *  ({@link #save}) rewrites the file it is aimed at WHOLE, so a charset would let the key aim it at a device name
+     *  ({@code NUL.properties}) or a foreign {@code .properties} file in this folder; every admitted name is a plain
+     *  sibling of {@link #FILE_NAME} from a small known set. Case-sensitive, whole-string, ASCII digits only. */
+    static final Pattern SETTINGS_NAME = Pattern.compile("join-settings-[2-9]\\.properties");
+    /** The one row a refused {@link #SETTINGS_NAME_ENV} value writes into the window's log, once at window start: it
+     *  names the KEY, never the value, and no path. */
+    static final String SETTINGS_NAME_REFUSED_ROW = "join-settings: " + SETTINGS_NAME_ENV
+            + " refused (not a window settings file name) - this window reads the default settings file";
     /** The per-install cid master's OWN file beside {@link #FILE_NAME} in the LOCAL profile ({@link #defaultPath}'s
      *  folder, never the legacy roaming one): not a row of the settings file, which a save rewrites whole and a roaming
      *  profile copies off the box. 32 hex (16 B, SecureRandom), minted once by {@link #hostCid(Path, String, int, boolean)}. */
@@ -222,7 +238,9 @@ final class JoinSettings {
      * LOCAL (non-roaming) profile: the file holds the remembered match password and its pair (an older one also a
      * retired cid row), and a roaming profile copies it off the box. {@code LOCALAPPDATA} unset, blank or not absolute
      * ⇒ {@code %APPDATA%}, else {@code user.home} (the old order). Off Windows the folder is
-     * {@link #settingsDirOffWindows} instead. A run reads it through {@link #pathForRun}.
+     * {@link #settingsDirOffWindows} instead. A run reads it through {@link #pathForRun} — or, when
+     * {@link #SETTINGS_NAME_ENV} names a lawful window file, that sibling in the same folder ({@link #windowPath}); this
+     * method itself never reads that key, so {@code cid-master} and the window log always sit beside THIS path.
      */
     static Path defaultPath() {
         if (!KitUserDirs.isWindows()) {
@@ -275,11 +293,40 @@ final class JoinSettings {
         }
     }
 
+    /** Is {@code envValueOrNull} a {@link #SETTINGS_NAME_ENV} value this window
+     *  refuses? Absent or blank is NEVER refused: it means {@link #FILE_NAME}, the single-window default, so an ordinary
+     *  window logs nothing. Any other value is refused unless {@link #SETTINGS_NAME} matches it WHOLE — no trim, no case
+     *  fold: a padded or re-cased name is refused, never repaired. Pure. */
+    static boolean nameRefused(String envValueOrNull) {
+        return envValueOrNull != null && !envValueOrNull.isBlank() && !SETTINGS_NAME.matcher(envValueOrNull).matches();
+    }
+
+    /** The settings file THIS window reads and a Launch writes, pure the way
+     *  {@link #settingsDirOffWindows} is: a lawful {@link #SETTINGS_NAME_ENV} value ⇒ that name beside {@code defaultFile}
+     *  (one folder, so the {@code cid-master} and the window log stay shared); absent, blank or refused
+     *  ({@link #nameRefused}) ⇒ {@code defaultFile} itself. A refused value never reaches {@link Path#resolveSibling}. */
+    static Path windowPath(Path defaultFile, String envValueOrNull) {
+        return envValueOrNull != null && SETTINGS_NAME.matcher(envValueOrNull).matches()
+                ? defaultFile.resolveSibling(envValueOrNull) : defaultFile;
+    }
+
     /** The settings path THIS run reads and a Launch writes — {@link #defaultPath},
-     *  after the one-time move of an older {@code %APPDATA%} file ({@link #migrateLegacy}). */
+     *  after the one-time move of an older {@code %APPDATA%} file ({@link #migrateLegacy}); or this window's own file
+     *  when {@link #SETTINGS_NAME_ENV} names one ({@link #pathForRun(Path, String, Path)}). */
     static Path pathForRun() {
         Path appData = absoluteEnvDir(System.getenv("APPDATA"));
-        return migrateLegacy(defaultPath(), appData == null ? null : appData.resolve(DIR_NAME).resolve(FILE_NAME));
+        return pathForRun(defaultPath(), System.getenv(SETTINGS_NAME_ENV),
+                appData == null ? null : appData.resolve(DIR_NAME).resolve(FILE_NAME));
+    }
+
+    /** {@link #pathForRun}'s decision with its inputs injected (the selftest
+     *  drives it on temp folders). A lawful window name returns {@link #windowPath} BEFORE {@link #migrateLegacy} runs:
+     *  the move belongs to the DEFAULT file alone — run on a named path it would move the first window's legacy file
+     *  (its password and old cid) into the second window's name, or delete it as a leftover once that file exists.
+     *  Absent, blank or refused ⇒ the default file through the move, as before. */
+    static Path pathForRun(Path defaultFile, String envValueOrNull, Path legacy) {
+        Path window = windowPath(defaultFile, envValueOrNull);
+        return window.equals(defaultFile) ? migrateLegacy(defaultFile, legacy) : window;
     }
 
     /**

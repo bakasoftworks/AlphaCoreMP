@@ -3,6 +3,7 @@ package cc.starsector.server.client;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -244,6 +245,35 @@ public final class ChunkMergerCore<A, M> {
      */
     public static final int DEFAULT_TRACKED_CAP = 65_536;
 
+    /**
+     * The occupancy bound on one cell's mount store:
+     * a record whose mountIndex is NOT already stored, met by a cell already holding this many,
+     * is dropped and counted ({@link #mountCapDrops}), never an exception that would end the net
+     * loop. The kernel is generic over the mount payload and holds no ship body, so the bound is
+     * a number, not a check against the hull's weapon list: vanilla hulls carry about 40 mounts
+     * and a large modded hull about 100, so 1,024 is at least 10 times any lawful cell. The cap
+     * never evicts: a stored index keeps updating at the cap, and the range law
+     * ({@code foldMounts}) is unchanged; within one frame the records land in wire order until
+     * the cell is full.
+     */
+    public static final int MOUNTS_PER_CELL_MAX = 1_024;
+
+    /**
+     * The occupancy bound on the whole kernel's mount
+     * store, summed over every cell: past it a record whose mountIndex is NOT already stored in
+     * its cell is dropped and counted on the same {@link #mountCapDrops} as the per-cell bound
+     * (refuse the newest, never evict). The per-cell bound alone lets a door that never sends a
+     * despawn or a reset fill {@link #DEFAULT_TRACKED_CAP} cells at 1,024 slots each, about 67
+     * million slots. Sizing (2^18): a lawful live battle of a few hundred ships at about 40
+     * mounts each (vanilla; a large modded hull about 100) holds about 12,000 to 30,000 slots,
+     * at most about a ninth of this, and a full 4,096-ship summed roster at 40 mounts (163,840)
+     * still fits. At about 128 bytes a slot (map entry, slot record, mount payload) the bound is
+     * about 34 MB. The total is kept exact by {@code foldMounts}, {@link #evict}, {@link #clear}
+     * and the identity wipe in {@link #beginAwssFrame}; the stored maps are reachable from
+     * outside only through read-only views, so no caller can remove a slot behind the count.
+     */
+    public static final int MOUNTS_STORE_MAX = 262_144;
+
     /** One stored mount payload + the tick it arrived on (the v2 mount-tier sub-store). */
     public record MountSlot<M>(M mount, long tick) {
     }
@@ -286,9 +316,10 @@ public final class ChunkMergerCore<A, M> {
             return scalarTick[i];
         }
 
-        /** Stored mounts ascending by mountIndex (the view-order contract), read-only use. */
+        /** Stored mounts ascending by mountIndex (the view-order contract), as a read-only view:
+         * a removal through it would bypass the kernel's store-wide mount total. */
         public Collection<MountSlot<M>> mounts() {
-            return mounts.values();
+            return Collections.unmodifiableCollection(mounts.values());
         }
     }
 
@@ -335,6 +366,11 @@ public final class ChunkMergerCore<A, M> {
     private final long nackIdMax;
     /** Max ids the cell store and (separately) the anchor map hold; see {@link #DEFAULT_TRACKED_CAP}. */
     private final int trackedCap;
+    /** Max mount slots summed over every cell; see {@link #MOUNTS_STORE_MAX}. */
+    private final int mountStoreCap;
+    /** Mount slots held summed over every cell (owning thread): always equals the sum of
+     * every stored cell's mount-map size, so it never goes negative. */
+    private int mountsRetained;
 
     /** NACK state: deposited under this lock on the owning thread, drained on the
      * intent-pump thread. Throttle + queue clear on keyframe adopt (that id), evict, clear. */
@@ -358,6 +394,7 @@ public final class ChunkMergerCore<A, M> {
     private volatile long awsdNacksSkippedWideId; // ids outside [0, nackIdMax] skip-counted
     private volatile long trackedCapDrops;   // folds refused: a NEW id with the store at trackedCap
     private volatile long anchorCapDrops;    // keyframes refused: a NEW id with the anchors at trackedCap
+    private volatile long mountCapDrops;     // mount records refused: a NEW index into a full cell or a full store
 
     /**
      * The default-bounded kernel ({@link #DEFAULT_TRACKED_CAP}).
@@ -376,14 +413,27 @@ public final class ChunkMergerCore<A, M> {
      * cell store and the anchor map each; size it at or above the largest lawful roster. */
     public ChunkMergerCore(ToLongFunction<A> anchorTickOf, ToIntFunction<A> epochOf,
             ToIntFunction<M> mountIndexOf, long nackIdMax, int trackedCap) {
+        this(anchorTickOf, epochOf, mountIndexOf, nackIdMax, trackedCap, MOUNTS_STORE_MAX);
+    }
+
+    /** {@code mountStoreCap} (&ge; 1, else throws)
+     * bounds the mount slots summed over every cell; the product passes
+     * {@link #MOUNTS_STORE_MAX}, and a lowered value lets a game-free row reach the bound
+     * without allocating it. */
+    public ChunkMergerCore(ToLongFunction<A> anchorTickOf, ToIntFunction<A> epochOf,
+            ToIntFunction<M> mountIndexOf, long nackIdMax, int trackedCap, int mountStoreCap) {
         if (trackedCap < 1) {
             throw new IllegalArgumentException("trackedCap must be >= 1: " + trackedCap);
+        }
+        if (mountStoreCap < 1) {
+            throw new IllegalArgumentException("mountStoreCap must be >= 1: " + mountStoreCap);
         }
         this.anchorTickOf = anchorTickOf;
         this.epochOf = epochOf;
         this.mountIndexOf = mountIndexOf;
         this.nackIdMax = nackIdMax;
         this.trackedCap = trackedCap;
+        this.mountStoreCap = mountStoreCap;
     }
 
     // ------------------------------------------------------------------ AWSS law
@@ -411,6 +461,7 @@ public final class ChunkMergerCore<A, M> {
             // frame is exactly what a server AWSD-fallback tick emits, and the server keeps its
             // baselines across it (the next good tick resumes DELTAs vs pre-fallback anchors).
             store.clear();
+            mountsRetained = 0; // every cell, so every mount slot, just went
             pruneUncarriedAnchors(frameCarriesId);
             return FrameKind.IDENTITY;
         }
@@ -566,9 +617,14 @@ public final class ChunkMergerCore<A, M> {
     // ------------------------------------------------------------------ lifecycle
 
     /** The consumed EDSP despawn: under merge, store EVICTION is the death edge — the
-     * entity's cell, AWSD anchor, and NACK state die together (server DEC mirror). */
+     * entity's cell, AWSD anchor, and NACK state die together (server DEC mirror).
+     * The evicted cell's mount slots leave the
+     * store-wide total, so a refused index fits again once a despawn frees the room. */
     public void evict(long entityId) {
-        store.remove(entityId);
+        Cell<M> gone = store.remove(entityId);
+        if (gone != null) {
+            mountsRetained -= gone.mounts.size();
+        }
         awsdAnchors.remove(entityId);
         clearNackFor(entityId);
     }
@@ -578,6 +634,7 @@ public final class ChunkMergerCore<A, M> {
      * and the AWSD anchors (the server clears its baselines at the same boundary). */
     public void clear() {
         store.clear();
+        mountsRetained = 0;
         awsdAnchors.clear();
         newestFoldedTick = Long.MIN_VALUE;
         synchronized (nackLock) {
@@ -755,10 +812,10 @@ public final class ChunkMergerCore<A, M> {
         return store.get(entityId);
     }
 
-    /** Every stored (entityId, cell) ascending by id (the twins' projection iteration),
-     * read-only use. */
+    /** Every stored (entityId, cell) ascending by id (the twins' projection iteration), as a
+     * read-only view: a removal through it would bypass the store-wide mount total. */
     public Collection<Map.Entry<Long, Cell<M>>> cells() {
-        return store.entrySet();
+        return Collections.unmodifiableMap(store).entrySet();
     }
 
     /** Fork-A v0: the stored per-tier ticks for one entity, or {@code null} when untracked. */
@@ -789,6 +846,25 @@ public final class ChunkMergerCore<A, M> {
     /** Keyframes refused because a NEW id met a full anchor map (cumulative). */
     public long anchorCapDrops() {
         return anchorCapDrops;
+    }
+
+    /** Mount records refused because a NEW
+     * mountIndex met a cell already at {@link #MOUNTS_PER_CELL_MAX} or a store already
+     * holding {@link #mountStoreCap} slots (cumulative, once per refused record; a lawful
+     * serve never moves it). */
+    public long mountCapDrops() {
+        return mountCapDrops;
+    }
+
+    /** Mount slots held now, summed over every
+     * cell (test observability: equals the sum of every cell's mount count). */
+    public int mountsRetained() {
+        return mountsRetained;
+    }
+
+    /** The bound on {@link #mountsRetained}: {@link #MOUNTS_STORE_MAX} unless a test lowers it. */
+    public int mountStoreCap() {
+        return mountStoreCap;
     }
 
     // ------------------------------------------------------------------ internals
@@ -869,6 +945,13 @@ public final class ChunkMergerCore<A, M> {
      * Range-bounded mount authority: within {@code [from, to)} the frame is truth at its
      * tick — stored mounts not newer than the frame are removed, then the carried in-range
      * records are (re)upserted; out-of-range mounts are untouched.
+     * an in-range record whose index is not stored, met by a cell already at
+     * {@link #MOUNTS_PER_CELL_MAX}, is dropped and counted; the check runs after the range
+     * removal, so a frame re-carrying the stored indices always fits, and a stored index (a
+     * same-frame repeat) still updates at the cap.
+     * the same refusal fires when the store already holds {@link #mountStoreCap} slots, and
+     * this is the only put into a cell's mount map, so each removal and each new-index put
+     * moves {@link #mountsRetained} in the same step (a replaced slot leaves it unchanged).
      */
     private void foldMounts(Cell<M> cell, Iterable<M> mounts, int from, int to, long tick) {
         Iterator<Map.Entry<Integer, MountSlot<M>>> inRange =
@@ -876,6 +959,7 @@ public final class ChunkMergerCore<A, M> {
         while (inRange.hasNext()) {
             if (inRange.next().getValue().tick() <= tick) {
                 inRange.remove();
+                mountsRetained--;
             }
         }
         for (M mount : mounts) {
@@ -884,7 +968,14 @@ public final class ChunkMergerCore<A, M> {
                 continue;
             }
             MountSlot<M> existing = cell.mounts.get(index);
-            if (existing == null || tick >= existing.tick()) {
+            if (existing == null) {
+                if (cell.mounts.size() >= MOUNTS_PER_CELL_MAX || mountsRetained >= mountStoreCap) {
+                    mountCapDrops++;
+                    continue;
+                }
+                cell.mounts.put(index, new MountSlot<>(mount, tick));
+                mountsRetained++;
+            } else if (tick >= existing.tick()) {
                 cell.mounts.put(index, new MountSlot<>(mount, tick));
             }
         }

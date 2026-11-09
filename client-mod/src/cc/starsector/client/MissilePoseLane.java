@@ -834,11 +834,14 @@ final class MissilePoseLane {
      *  record); presence-adopt stays free to re-present them (the self-heal — correct
      *  for foe ids; own-sourced ids never presence-adopt, so a refused OWN reappearance stays
      *  feed-only until it ends, logged LOUD below — the lesser, honest degrade). NOT GC'd with
-     *  the live-id set (the feed gap is exactly what it must survive); cleared at round reset. */
-    private final Set<Long> consumedWireIds = new HashSet<Long>();
-    /** One LOUD refusal line per wire id (the counter still ticks per refused frame — the
-     *  {@link #linkCrossSpec} per-frame idiom). */
-    private final Set<Long> consumedRefusalLogged = new HashSet<Long>();
+     *  the live-id set (the feed gap is exactly what it must survive); cleared at round reset.
+     *  <p>The ledger is a monotone-id WINDOW, not a set: it
+     *  keeps the ids within 65,536 mints of the newest it saw (an older id is dead for certain on a lawful
+     *  serve and is refused, counted), so a hostile serve cannot grow it past 65,537 entries. Its marked
+     *  subset is the one-LOUD-row-per-id dedupe of the link refusal below (pruned with the window, so
+     *  bounded by it); the refusal counter still ticks per refused frame, the {@link #linkCrossSpec}
+     *  idiom. */
+    private final MonotoneIdWindow consumedWireIds = new MonotoneIdWindow("missile-consumed");
 
     // === Cumulative counters (survive rounds — the FoeHull totals discipline) ===
     private int enrolledGuided;      // predict_missile_enrolled_guided
@@ -1418,7 +1421,7 @@ final class MissilePoseLane {
                         // feed gap; claiming it is the instant mislink. Leave it for
                         // presence-adopt (foe self-heal); this twin waits for its true twin.
                         linkRefusedConsumed++;
-                        if (consumedRefusalLogged.add(rec.networkId())) {
+                        if (consumedWireIds.markOnce(rec.networkId())) {
                             lane.log("predict v13 missile-link REFUSED (consumed id): id="
                                     + rec.networkId() + " src=" + t.sourceEntityId
                                     + " mount=" + t.sourceMountIndex
@@ -1470,7 +1473,7 @@ final class MissilePoseLane {
     private void claimLink(Twin t, ServerMissileState rec, long tick) {
         t.wireId = rec.networkId();
         twinByWireId.put(t.wireId, t);
-        consumedWireIds.add(t.wireId); // freshness ledger
+        consumedWireIds.offer(t.wireId); // freshness ledger
         sightings.remove(t.wireId); // a claimed id is no presence-adopt candidate
         dictDefer.remove(t.wireId);
         if (t.own) {
@@ -2141,7 +2144,7 @@ final class MissilePoseLane {
             t.lastWireTick = tick;
             twins.put(missile, t);
             twinByWireId.put(id, t);
-            consumedWireIds.add(id); // freshness ledger (re-adds are idempotent)
+            consumedWireIds.offer(id); // freshness ledger (re-adds are idempotent)
             presenceAdopts++;
             linked++;
             lane.log("predict v13 missile-adopt: id=" + id + " src=" + rec.sourceEntityId()
@@ -2446,7 +2449,7 @@ final class MissilePoseLane {
         t.lastWireTick = tick;
         twins.put(missile, t);
         twinByWireId.put(id, t);
-        consumedWireIds.add(id);
+        consumedWireIds.offer(id);
         sourcelessAdopts++;
         sourcelessAdoptsRound++;
         sourcelessPresenceAdopts++; // Pairs the bump below OUT of the feed
@@ -2766,14 +2769,19 @@ final class MissilePoseLane {
         end.resetForMatchReset(); // end-cause verdicts are round-local like the twins they key
         sourcedEnd.resetForMatchReset(); // The VICTIM_MISMATCH announce-once ids are round-local (ids reused per round)
         ballistic.resetForMatchReset(); // Link state is round-local like the pairs it keys
-        consumedWireIds.clear();
-        consumedRefusalLogged.clear();
+        consumedWireIds.clear(); // the window's round-close totals row + its marked subset ride this clear
         own.resetForMatchReset();
     }
 
     /** The lane's greppable meter/census line (the counter-line discipline); silent at off
      *  (both knobs). NB the apply assert rides the PRCP init announce, never this line. */
     void logMeter(String where) {
+        // The id windows' session totals at teardown, ahead of the
+        // meter knobs (a refusal is never silent); the plugin's teardown reaches this lane only through here.
+        if ("teardown".equals(where)) {
+            consumedWireIds.logTeardownTotals();
+            ballistic.logIdWindowTeardown();
+        }
         if (!MISSILE_POSE_METER && !OwnMissileHandoffLane.OWN_MISSILE_METER) {
             return;
         }

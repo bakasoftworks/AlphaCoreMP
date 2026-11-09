@@ -48,6 +48,48 @@ final class OwnSeatLifecycleLane {
     /** B2(c): fresh own hulls re-minted from the engine's neutral (100) at the spawn instant. */
     private int ownSpawnOwnerMints;
     private static final int OWNER_MINT_LOG_MAX = 20;
+    /**
+     * The own-seat churn bound. A hostile own-id flap
+     * (alive, absent, alive every few frames) mints a fresh hull per re-field and a corpse plus a
+     * fracture family per presented death, so own death-edge presentations COUNT per round against
+     * {@link RosterAppendLane#MAX_ROUND_ENTITIES} (an event count, never a stored entry: the despawn
+     * intake cap's shape); at the cap every further own re-field is refused and counted, and the
+     * round's first refusal writes ONE row. No time floor: the respawn policy allows an instant
+     * respawn, and a floor would add latency to a lawful spawn-kill; lawful own deaths per round are
+     * tens. A spawn that returns null counts here too (one row a round, never one a frame). The round
+     * is the plugin's applied-reset count, bumped in the shared match-reset tail for every round
+     * shape: a change closes the counted round (its totals row) at the next own edge.
+     */
+    private int ownDeathEdgesThisRound;
+    private int ownRefieldsRefusedThisRound;
+    private int ownSpawnNullThisRound;
+    private int ownCountedRound;
+
+    /** Close the counted round once the plugin applied a reset since. */
+    private void rollOwnRound() {
+        int applied = plugin.matchResetsApplied;
+        if (applied != ownCountedRound) {
+            closeOwnRoundTotals("round-close");
+            ownCountedRound = applied;
+        }
+    }
+
+    /**
+     * Write the counted round's totals row (only when
+     * anything counted) and re-arm the counters with their one-row latches. Runs lazily at the first
+     * own edge after a reset; package-private so the session teardown can close the last round,
+     * which never reaches a reset. Bounded tokens only (counts, the cap, a code-literal tag).
+     */
+    void closeOwnRoundTotals(String why) {
+        if (ownDeathEdgesThisRound > 0 || ownRefieldsRefusedThisRound > 0 || ownSpawnNullThisRound > 0) {
+            PilotWatchLog.info("predict own-seat round totals (" + why + "): deathEdges=" + ownDeathEdgesThisRound
+                    + " refieldRefused=" + ownRefieldsRefusedThisRound + " spawnNull=" + ownSpawnNullThisRound
+                    + " cap=" + RosterAppendLane.MAX_ROUND_ENTITIES);
+        }
+        ownDeathEdgesThisRound = 0;
+        ownRefieldsRefusedThisRound = 0;
+        ownSpawnNullThisRound = 0;
+    }
 
     /**
      * Run the engine's OWN death sequence on the foe when the server reports it dead (reusing the proven
@@ -213,6 +255,8 @@ final class OwnSeatLifecycleLane {
                         + " misread) despawnTick=" + plugin.ownDespawnTick);
                 return;
             }
+            rollOwnRound();
+            ownDeathEdgesThisRound++;
             ServerEntityPose deathPose = poseOrNull != null ? poseOrNull : plugin.lastOwnPose;
             if (deathPose != null) {
                 plugin.foeState.reconcilePosition(plugin.ownShip, deathPose.locX(), deathPose.locY(), 1.0f); // snap to the death pose
@@ -504,6 +548,18 @@ final class OwnSeatLifecycleLane {
         if (plugin.engine == null || pose == null) {
             return;
         }
+        // The own churn cap, checked before the variant read
+        // and the spawn; a refusal changes no latch, so the next round (its count re-armed) fields as before.
+        rollOwnRound();
+        if (ownDeathEdgesThisRound >= RosterAppendLane.MAX_ROUND_ENTITIES) {
+            if (ownRefieldsRefusedThisRound++ == 0) {
+                PilotWatchLog.error("predict own re-field cap: " + ownDeathEdgesThisRound
+                        + " own death edges this round reached the cap of " + RosterAppendLane.MAX_ROUND_ENTITIES
+                        + " -> own re-field REFUSED (later refusals this round counted; totals at round close)",
+                        null);
+            }
+            return;
+        }
         String variantId = plugin.variantById.get(Long.valueOf(plugin.session.shipId()));
         if (variantId == null && plugin.ownShip != null) {
             variantId = plugin.ownShip.getVariant().getHullVariantId();
@@ -523,8 +579,12 @@ final class OwnSeatLifecycleLane {
                     plugin.sideAuthority(), variantId, new Vector2f(pose.locX(), pose.locY()), facing,
                     flyinBurnSec, "respawnOwn"); // The shared own-seat mint
             if (newOwn == null) {
-                PilotWatchLog.error("predict respawnOwn: spawnShipOrWing returned null (variant="
-                        + FallbackAnnounce.sanitize(variantId, 64) + ") -> retry next frame", null);
+                // The retry stays every frame; the row is one a round.
+                if (ownSpawnNullThisRound++ == 0) {
+                    PilotWatchLog.error("predict respawnOwn: spawnShipOrWing returned null (variant="
+                            + FallbackAnnounce.sanitize(variantId, 64) + ") -> retry next frame (first this round;"
+                            + " later failures counted, totals at round close)", null);
+                }
                 return;
             }
             plugin.ownShip = newOwn;

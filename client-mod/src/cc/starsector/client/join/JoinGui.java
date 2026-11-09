@@ -102,6 +102,11 @@ public final class JoinGui {
             System.exit(runRefreshMatch(args[1], args[2], Paths.get(args[3])));
             return;
         }
+        // Dispatched before the default form so the flag never reads as a modDir
+        if (args.length >= 2 && "--game-version".equals(args[0])) {
+            System.exit(runGameVersionCli(args));
+            return;
+        }
         if (args.length >= 2 && "--launched".equals(args[0])) {
             // Row (f) law 3: the launch FACE alone — a REJOIN pass
             // of join-cc.bat (the first pass's window left when the game closed) and
@@ -113,7 +118,8 @@ public final class JoinGui {
             System.err.println("usage: JoinGui <modDir> <planFile> [nonce] | JoinGui --selftest"
                     + " | JoinGui --probe <host> <port> <password> [modDir [customFile...]]"
                     + " | JoinGui --launched <modDir> [nonce]"
-                    + " | JoinGui --refresh-match <host> <port> <modDir>");
+                    + " | JoinGui --refresh-match <host> <port> <modDir>"
+                    + " | JoinGui --game-version <modDir> [gameRoot]");
             System.exit(64);
             return;
         }
@@ -144,7 +150,8 @@ public final class JoinGui {
 
     /**
      * {@link #runRefreshMatch}'s door call and settings file (its {@code cid-master} sits beside it): production =
-     * {@link DoorProbe#fetch13} and {@link JoinSettings#defaultPath} (null here); the selftest rows swap both and
+     * {@link DoorProbe#fetch13} and this window's settings file, {@link JoinSettings#windowPath} of
+     * {@link JoinSettings#defaultPath} (null here); the selftest rows swap both and
      * restore them in {@code finally} — production never writes them. Read once per refresh.
      *
      *
@@ -175,7 +182,8 @@ public final class JoinGui {
                 return refreshExit(REFRESH_REFUSED, "the address or port is not usable");
             }
             int portNo = Integer.parseInt(p);
-            Path settings = refreshSettingsPath != null ? refreshSettingsPath : JoinSettings.defaultPath();
+            Path settings = refreshSettingsPath != null ? refreshSettingsPath : JoinSettings.windowPath(
+                    JoinSettings.defaultPath(), System.getenv(JoinSettings.SETTINGS_NAME_ENV));
             String pw = JoinSettings.load(settings).rememberedPasswordFor(h, p);
             if (pw.isEmpty()) {
                 return refreshExit(REFRESH_REFUSED, "no match password is remembered for this server");
@@ -238,6 +246,12 @@ public final class JoinGui {
             // default L&F is fine
         }
         Path settingsPath = JoinSettings.pathForRun();
+        // A refused window name is logged ONCE per window - here only when this
+        // form was opened directly (a browser fallback already wrote the row at its start); the key, never the value,
+        // through the window log, since javaw has no stderr
+        if (fallbackNote == null && JoinSettings.nameRefused(System.getenv(JoinSettings.SETTINGS_NAME_ENV))) {
+            JoinBrowserUi.log(JoinSettings.SETTINGS_NAME_REFUSED_ROW);
+        }
         JoinSettings saved = JoinSettings.load(settingsPath);
         boolean credentialPresent = hasKitCredential(modDir);
         // The HAIRPIN-window ADMIN AUTO-AUTH lane.
@@ -609,6 +623,24 @@ public final class JoinGui {
 
         done.await();
         return exitCode.get();
+    }
+
+    /**
+     * {@code --game-version <modDir> [gameRoot]} — the Launch gate's
+     * game-version read, headless, printed as its one row ({@code game_version expected= found= verdict= why=}).
+     * The game root defaults to the kit's own install ({@code modDir/../..}, the folder the join scripts launch).
+     * Exit 0 OK / 1 MISMATCH / 2 UNCHECKED; an argument that is no path reads as UNCHECKED {@code bad_path}.
+     */
+    static int runGameVersionCli(String[] args) {
+        JoinGameVersion.Result r;
+        try {
+            Path modDir = Paths.get(args[1]);
+            r = args.length >= 3 ? JoinGameVersion.check(modDir, Paths.get(args[2])) : JoinGameVersion.forKit(modDir);
+        } catch (RuntimeException badPath) {
+            r = JoinGameVersion.Result.unchecked("bad_path");
+        }
+        System.out.println(r.row());
+        return r.kind == JoinGameVersion.Kind.OK ? 0 : r.kind == JoinGameVersion.Kind.MISMATCH ? 1 : 2;
     }
 
     /**

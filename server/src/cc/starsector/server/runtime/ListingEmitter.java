@@ -331,9 +331,11 @@ public final class ListingEmitter {
      * AFTER the hull rows — a live {@link AdminBanCommand.Target#observer} with no hull, not an
      * admin, not self (a hull-less NON-observer stays skipped: the row keys on the flag, never on
      * {@code shipId < 1} alone); {@code hullWireId} = {@link AdminBanCommand#OBSERVER_HANDLE_BASE}
-     * {@code + slot} (slot 1.. in listing order, this call), token {@code obs<slot>}, label the
-     * CONSTANT {@link #observerLabel} (an observer's name is never fanned). {@code handlesOut}
-     * (nullable) receives each minted handle → session id — the ONE numbering the caller pins.
+     * {@code + } the session's door ordinal — r4: {@link AdminBanCommand.Target#observerOrdinal},
+     * minted at admission, ONE numbering across /ban, /mute, /chatmute and across listeners, so rows list in
+     * door order and may skip numbers — token {@code obs<ordinal>}, label the CONSTANT {@link #observerLabel}
+     * (an observer's name is never fanned). {@code handlesOut} (nullable) receives each handle → session id —
+     * the pin the caller keeps.
      */
     public static List<ListingEntry> banEntries(long selfSessionId,
             List<AdminBanCommand.Target> live, Map<Long, Long> handlesOut) {
@@ -347,16 +349,15 @@ public final class ListingEmitter {
             entries.add(new ListingEntry("seat" + target.seatId(),
                     ListingFrameCodec.MARK_BAN_PLAYER, false, label, label, target.shipId()));
         }
-        int slot = 0;
         for (AdminBanCommand.Target target : live) {
             if (!target.observer() || target.shipId() >= 1L || target.admin()
                     || target.sessionId() == selfSessionId) {
                 continue;
             }
-            slot++;
-            long handle = AdminBanCommand.OBSERVER_HANDLE_BASE + slot;
-            String label = observerLabel(slot);
-            entries.add(new ListingEntry("obs" + slot, ListingFrameCodec.MARK_BAN_PLAYER, false,
+            int ordinal = target.observerOrdinal();
+            long handle = AdminBanCommand.OBSERVER_HANDLE_BASE + ordinal;
+            String label = observerLabel(ordinal);
+            entries.add(new ListingEntry("obs" + ordinal, ListingFrameCodec.MARK_BAN_PLAYER, false,
                     label, label, handle));
             if (handlesOut != null) {
                 handlesOut.put(handle, target.sessionId());
@@ -366,10 +367,10 @@ public final class ListingEmitter {
     }
 
     /** An observer row's label — the CONSTANT
-     *  {@code observer <slot>} (no player text); shared by the /ban + /mute rows and the /mute
-     *  toggle reply. */
-    static String observerLabel(int slot) {
-        return "observer " + slot;
+     *  {@code observer <ordinal>} (no player text; the door ordinal since r4); shared by the
+     *  /ban + /mute rows and the /mute toggle reply. */
+    static String observerLabel(int ordinal) {
+        return "observer " + ordinal;
     }
 
     /** A player row's label — the name

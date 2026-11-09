@@ -224,6 +224,7 @@ final class OpsJoinSelfSelftest {
             row(failed, "join-kit-refresh-verify", r -> joinKitRefreshVerify(r, dir.resolve("refreshverify")));
             row(failed, "join-fx-delegates", r -> joinFxDelegates(r, dir.resolve("delegates")));
             row(failed, "join-second-window", r -> joinSecondWindow(r, dir.resolve("second")));
+            row(failed, "join-second-settings-legacy", r -> joinSecondSettingsLegacy(r, dir.resolve("secondlegacy")));
             row(failed, "join-second-refused", r -> joinSecondRefused(r, dir.resolve("secondbad")));
             row(failed, "join-watch-log-cap", r -> joinWatchLogCap(r, dir.resolve("logcap")));
             row(failed, "join-cid-arm", r -> joinCidArm(r, dir.resolve("cidarm")));
@@ -498,6 +499,19 @@ final class OpsJoinSelfSelftest {
                 "window 1 asks no probe and says first_dial=local, window 2 probes once and says second_dial=vpn, no"
                         + " address on stdout (flips if window 1 probes - a silent gateway would refuse it R10 - or a"
                         + " dial row is lost or carries the address): probeCalls=" + fx.probeCalls);
+        // Each window's dial lives in its OWN settings file, and each
+        // window's note names the host and port its own file holds - the file that window reads at start.
+        byte[] file1 = fx.files.get(settings(base));
+        byte[] file2 = fx.files.get(settings(base).resolveSibling("join-settings-2.properties"));
+        String noted = noteFromFile(file1) + " " + OpsJoinSelf.SECOND_PREFIX + noteFromFile(file2);
+        check(r, "10.2.0.9".equals(lastRowValue(file1, "host")) && "203.0.113.5".equals(lastRowValue(file2, "host"))
+                        && "203.0.113.5\\:46337".equals(lastRowValue(file2, "passwordFor"))
+                        && !String.join("\n", rowsOf(file1)).contains("203.0.113.5")
+                        && noted.equals(two.result.text()),
+                "window 1's bind 10.2.0.9 sits in the default settings file, window 2's public 203.0.113.5 with its"
+                        + " passwordFor binding in join-settings-2.properties, the default file holds no public host,"
+                        + " and each window's note equals its own file's host (flips if window 2 writes the default"
+                        + " file - the two presses race on one file again): " + rowsOf(file1) + " | " + rowsOf(file2));
 
         FakeEffects wildFx = twoKits(install1, install2);
         wildFx.probe = found;
@@ -1314,13 +1328,27 @@ final class OpsJoinSelfSelftest {
                 "JoinHost.installTag's hash vs OpsJoinSelf.installTag"},
             {"JoinHost.java", "for (int i = 0; i < 4; i++)",
                 "JoinHost.installTag's 4-byte width vs OpsJoinSelf.installTag"},
+            // The second window's settings-file name key + allow-list
+            {"JoinSettings.java", "static final String SETTINGS_NAME_ENV = \"" + OpsJoinSelf.JOIN_SETTINGS_NAME_KEY + "\";",
+                "JoinSettings.SETTINGS_NAME_ENV vs OpsJoinSelf.JOIN_SETTINGS_NAME_KEY"},
+            {"JoinSettings.java", "static final Pattern SETTINGS_NAME = Pattern.compile(\""
+                    + WINDOW_SETTINGS_NAME.replace("\\", "\\\\") + "\");",
+                "JoinSettings.SETTINGS_NAME's allow-list vs the regex this row matches SETTINGS_FILE_NAME_SECOND with"},
         };
         for (String[] pin : pins) {
             check(r, source.get(pin[0]).contains(pin[1]),
                     "flips when the kit moves its settings file / endpoint file and the console's third copy did not"
                             + " follow: " + pin[2] + " - " + pin[0] + " no longer holds [" + pin[1] + "]");
         }
+        check(r, Pattern.compile(WINDOW_SETTINGS_NAME).matcher(OpsJoinSelf.SETTINGS_FILE_NAME_SECOND).matches(),
+                "the client's window settings-name allow-list admits OpsJoinSelf.SETTINGS_FILE_NAME_SECOND (flips if"
+                        + " the server names window 2's file outside it - that window would refuse the name and read"
+                        + " window 1's file): " + OpsJoinSelf.SETTINGS_FILE_NAME_SECOND);
     }
+
+    /** The client's {@code JoinSettings.SETTINGS_NAME} regex as compiled (its source line is pinned verbatim above).
+     * */
+    private static final String WINDOW_SETTINGS_NAME = "join-settings-[2-9]\\.properties";
 
     // ---- the Player game folder row ----
 
@@ -2569,6 +2597,8 @@ final class OpsJoinSelfSelftest {
         fx.env.put("cc_watch_sidelog", "inherited-low");
         fx.env.put("CC_WATCH_SIDELOG_MAX_MIB", "4321");
         fx.env.put("cc_watch_sidelog_max_mib", "4322");
+        fx.env.put("CC_JOIN_SETTINGS_NAME", "inherited-name.properties");
+        fx.env.put("cc_join_settings_name", "inherited-low.properties");
         Pressed two = pressWatch(inputs(base, install1, wild, PW,
                 Map.of(ServeLauncher.ROW_GAME_ROOT_SECOND, install2.toString(),
                         OpsJoinSelf.ROW_WATCH_CLIENT_LOG_MAX_MIB, " 300 ")), fx, flight);
@@ -2629,6 +2659,22 @@ final class OpsJoinSelfSelftest {
         check(r, !two.stdout.contains(cid2) && !two.stdout.contains(fileCid)
                         && !two.stdout.contains(cid2.substring(0, 8)) && !two.stdout.contains(fileCid.substring(0, 8)),
                 "no stdout row carries either seat key or its 8-char prefix (flips if a press logs a key)");
+        // Window 2 alone is told its own settings file name, a constant;
+        // the parent's copy of the key, in either spelling, reaches neither window.
+        Path second = settings(base).resolveSibling("join-settings-2.properties");
+        boolean nameStripped = true;
+        for (Map<String, String> env : List.of(env1, env2)) {
+            nameStripped &= !env.containsValue("inherited-name.properties")
+                    && !env.containsValue("inherited-low.properties") && !env.containsKey("cc_join_settings_name");
+        }
+        check(r, "join-settings-2.properties".equals(env2.get("CC_JOIN_SETTINGS_NAME"))
+                        && !env1.containsKey("CC_JOIN_SETTINGS_NAME") && nameStripped
+                        && fx.files.containsKey(second) && fx.files.containsKey(settings(base)),
+                "window 2's env names join-settings-2.properties and window 1's names none, each window's file written,"
+                        + " no parent CC_JOIN_SETTINGS_NAME / cc_join_settings_name surviving (flips if the key rides"
+                        + " window 1 - it would read window 2's file - or survives the strip, or window 2 writes the"
+                        + " default file): " + shownEnv(env1.get("CC_JOIN_SETTINGS_NAME")) + " "
+                        + shownEnv(env2.get("CC_JOIN_SETTINGS_NAME")) + " second=" + fx.files.containsKey(second));
 
         // a blank second row = ONE window, its sidelog set, no seat key in its env, no cid row minted
         FakeEffects one = twoKits(install1, install2);
@@ -2640,11 +2686,54 @@ final class OpsJoinSelfSelftest {
                         && (d1 + "\\cc-client.log").equals(one.spawns.get(0).env.get("CC_WATCH_SIDELOG"))
                         && "1024".equals(one.spawns.get(0).env.get("CC_WATCH_SIDELOG_MAX_MIB"))
                         && single.stdout.contains("cc-ops join second=none")
-                        && lastRowValue(one.files.get(settings(base)), "cid") == null,
+                        && lastRowValue(one.files.get(settings(base)), "cid") == null
+                        && !one.spawns.get(0).env.containsKey("CC_JOIN_SETTINGS_NAME")
+                        && !one.files.containsKey(second) && one.files.containsKey(settings(base)),
                 "a blank second Game folder opens ONE window with its sidelog, its cap at the 1024 MiB default (no"
                         + " cap row), no seat key in its env and no cid row written (flips if a blank row opens two, a"
-                        + " lone window loses its cap or the default moves, or a lone unarmed window gets a key minted): "
+                        + " lone window loses its cap or the default moves, or a lone unarmed window gets a key minted,"
+                        + " or a lone window is pointed at the second window's settings file): "
                         + single.result + " spawns=" + one.spawns.size());
+    }
+
+    /**
+     * {@code join-second-settings-legacy}: a legacy roaming settings file present and no current one - window 1
+     * writes the LEGACY file (the press's {@code settingsForRun} law: that window moves it itself at its next run),
+     * while window 2 writes {@code <LOCALAPPDATA>\cc-starsector\join-settings-2.properties}, beside the current
+     * file, and nothing under the roaming folder: a named file never takes the legacy fallback, or window 2's
+     * password would sit in the roaming folder while that window reads an empty file.
+     *
+     */
+    private static void joinSecondSettingsLegacy(String r, Path base) throws Exception {
+        Path install1 = stageInstall(base.resolve("game1"), true, true);
+        Path install2 = stageInstall(base.resolve("game2"), true, true);
+        Path roaming = base.resolve("ad");
+        Path legacy = settingsUnder(roaming);
+        Path current = settings(base);
+        Path second = current.resolveSibling("join-settings-2.properties");
+        FakeEffects fx = twoKits(install1, install2);
+        fx.files.put(legacy, ascii("name=old\r\ncid=legacy\r\n"));
+        Pressed two = pressWatch(inputs(base, install1, live("0.0.0.0", 46337), PW,
+                Map.of(ServeLauncher.ROW_GAME_ROOT_SECOND, install2.toString())), fx, base.resolve("flight"));
+        List<Path> roamingWrites = new ArrayList<>();
+        for (Path w : fx.writes) {
+            if (w.startsWith(roaming)) {
+                roamingWrites.add(w);
+            }
+        }
+        check(r, two.result.outcome() == Outcome.OPENED && fx.spawns.size() == 2
+                        && "46337".equals(lastRowValue(fx.files.get(legacy), "port"))
+                        && "old".equals(lastRowValue(fx.files.get(legacy), "name")) && !fx.files.containsKey(current),
+                "window 1 merges into the legacy roaming file while no current file exists (flips if the default"
+                        + " file's legacy law moves - the join window's own move would then delete the legacy file,"
+                        + " cid and all): " + two.result + " " + rowsOf(fx.files.get(legacy)));
+        check(r, "46337".equals(lastRowValue(fx.files.get(second), "port"))
+                        && PW.equals(lastRowValue(fx.files.get(second), "password"))
+                        && roamingWrites.equals(List.of(legacy)),
+                "window 2 writes join-settings-2.properties beside the CURRENT file, its password there, and nothing"
+                        + " under the roaming folder but window 1's legacy file (flips if window 2's file is composed"
+                        + " through settingsForRun - the password would land in the roaming folder, away from the file"
+                        + " that window reads): " + rowsOf(fx.files.get(second)) + " roamingWrites=" + roamingWrites);
     }
 
     /**
@@ -3109,6 +3198,19 @@ final class OpsJoinSelfSelftest {
                         && g.stdout().contains("cc-ops join settings_secret=failed (IOException)"),
                 "an over-cap file fails untouched while the legacy file is still scrubbed (flips if the cap is lost or"
                         + " one failure skips the other file): " + g.value());
+
+        // The debug watch's second window's file beside the current one.
+        Path second = current.resolveSibling("join-settings-2.properties");
+        FakeEffects two = new FakeEffects();
+        two.files.put(current, ascii("host=10.2.0.9\r\npassword=p\r\npasswordFor=10.2.0.9\\:1\r\ncid=c\r\n"));
+        two.files.put(second, ascii("name=b\r\nhost=203.0.113.5\r\npassword=p\r\npasswordFor=203.0.113.5\\:1\r\n"));
+        Printed t = printed(() -> OpsJoinSelf.scrubSettingsSecret(two, lad.toString(), ad.toString(), base.toString()));
+        check(r, "scrubbed".equals(t.value()) && t.stdout().trim().equals("cc-ops join settings_secret=scrubbed")
+                        && Arrays.equals(ascii("host=10.2.0.9\r\ncid=c\r\n"), two.files.get(current))
+                        && Arrays.equals(ascii("name=b\r\nhost=203.0.113.5\r\n"), two.files.get(second)),
+                "the password rows are dropped from BOTH the current file and join-settings-2.properties, every"
+                        + " other row kept, ONE scrubbed row (flips if the scrub misses the second window's file - its"
+                        + " match password and its Launch save stay at rest): " + rowsOf(two.files.get(second)));
     }
 
     // ---- fixtures ----
@@ -3550,6 +3652,15 @@ final class OpsJoinSelfSelftest {
                 : Arrays.asList(new String(bytes, StandardCharsets.ISO_8859_1).split("\r\n"));
     }
 
+    /** The plain OPENED note for the {@code host} / {@code port} a window's settings file holds (the dial that window
+     *  reads at start), or {@code "<no file>"}. */
+    private static String noteFromFile(byte[] bytes) {
+        String host = lastRowValue(bytes, "host");
+        String port = lastRowValue(bytes, "port");
+        return host == null || port == null || !port.matches("[0-9]{1,5}") ? "<no file>"
+                : String.format(Locale.ROOT, OpsJoinSelf.NOTE_OPENED, host, Integer.parseInt(port));
+    }
+
     /** The value of the LAST row that starts exactly {@code key=} (case-sensitive, as the window's load), or null. */
     private static String lastRowValue(byte[] bytes, String key) {
         String value = null;
@@ -3918,5 +4029,20 @@ final class OpsJoinSelfSelftest {
         check(r, "failed (IOException)".equals(g.value()) && Arrays.equals(over, big.files.get(POSIX_SETTINGS))
                         && big.writes.isEmpty(),
                 "an over-cap Linux file fails untouched (flips if the read cap is lost on the Linux form): " + g.value());
+
+        // The debug watch's second window's file beside the Linux one.
+        Path second = POSIX_SETTINGS.resolveSibling("join-settings-2.properties");
+        FakeEffects two = new FakeEffects();
+        two.files.put(POSIX_SETTINGS, ascii("host=h\r\npassword=p\r\ncid=c\r\n"));
+        two.files.put(second, ascii("host=g\r\npassword=p\r\npasswordFor=g\\:1\r\n"));
+        Printed t = printed(() -> OpsJoinSelf.scrubSettingsSecret(two, POSIX_HOST));
+        check(r, "scrubbed".equals(t.value()) && t.stdout().trim().equals("cc-ops join settings_secret=scrubbed")
+                        && Arrays.equals(ascii("host=h\r\ncid=c\r\n"), two.files.get(POSIX_SETTINGS))
+                        && Arrays.equals(ascii("host=g\r\n"), two.files.get(second))
+                        && "dir=0700 file=0600".equals(two.modes.get(second)),
+                "the password rows are dropped from BOTH Linux files, the second window's join-settings-2.properties"
+                        + " rewritten owner-only too (flips if the Linux scrub misses that file - its match password"
+                        + " stays at rest - or rewrites it through the plain write): " + rowsOf(two.files.get(second))
+                        + " " + two.modes);
     }
 }

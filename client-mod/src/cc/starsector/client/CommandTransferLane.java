@@ -213,7 +213,8 @@ final class CommandTransferLane {
 
     // ---- remote seats ----
     /** Seat ids whose pod is FLYING (remote BEGIN applied, no COMMIT / strand yet): the W3-P
-     *  replica mint reads NONE for them. Round-scoped. */
+     *  replica mint reads NONE for them. Round-scoped; at most
+     *  {@link RosterAppendLane#MAX_ROUND_ENTITIES} marks (a full set refuses the new seat's BEGIN). */
     private final HashSet<Long> flyingPodSeats = new HashSet<Long>();
     /** Remote BEGIN staging: the seat row's PRE-RAPP variant captured at the fold, keyed seat. */
     private final java.util.HashMap<Long, String> stagedBeginVariant =
@@ -239,7 +240,37 @@ final class CommandTransferLane {
     private final ArrayDeque<ClientCommandTransfer> staged =
             new ArrayDeque<ClientCommandTransfer>();
 
-    /** Ids retired this round (post-COMMIT toWireId, ended own pods): never re-mint. */
+    /**
+     * The park AGE bound — a staged edge
+     * parked longer than this many {@link #ageClock} ms since its first park is dropped (counted, one row a round).
+     * The ONE held-edge bound, declared in {@link FireLaneCoordinator}: 10x {@link #MODULE_PARK_MILLIS}, so the
+     * module park still retires a pending-mount edge first. WALL time, never passes: a pass count shrinks with the
+     * frame rate (600 passes are 1.1 s at 540 fps, under the 2 s module park).
+     */
+    private static final long HELD_EDGE_AGE_MAX_MILLIS = FireLaneCoordinator.HELD_EDGE_AGE_MAX_MILLIS;
+    /** First-park {@link #ageClock} ms per PARKED staged edge,
+     *  keyed by identity (the edge is a value record: two equal edges are two parks); an entry
+     *  leaves when its edge is consumed or expires, so the map never outgrows {@link #staged}. */
+    private final java.util.IdentityHashMap<ClientCommandTransfer, long[]> stagedParkSince =
+            new java.util.IdentityHashMap<ClientCommandTransfer, long[]>();
+    /** The park clocks' monotonic ms (nanoTime-based; any sign); package-private and settable so a row drives it. */
+    java.util.function.LongSupplier ageClock = () -> System.nanoTime() / 1_000_000L;
+    /** The per-round bound meters (cleared by
+     *  {@link #resetRound} after its totals row prints them). Remote edges refused at the
+     *  {@link #staged} occupancy cap ({@link RosterAppendLane#MAX_ROUND_ENTITIES}), parked edges
+     *  expired at {@link #HELD_EDGE_AGE_MAX_MILLIS}, re-home fresh rows refused at the entity cap, COMMITs
+     *  refused at the {@link #retiredWireIds} bound, and remote BEGINs refused at the {@link #flyingPodSeats}
+     *  bound. The round's first of each is the count's 0 -> 1 and logs one row. Render thread. */
+    private int stagedRefusedAtCap;
+    private int stagedParkExpired;
+    private int freshMintsRefused;
+    private int retiresRefusedAtCap;
+    private int podMarksRefusedAtCap;
+
+    /** Ids retired this round (post-COMMIT toWireId, ended own pods): never re-mint.
+     *  At most {@link RosterAppendLane#MAX_ROUND_ENTITIES} ids a round
+     *  ({@link #retireRefusedAtCap}): a full set refuses the COMMIT that would add a new id and never forgets
+     *  one it holds. */
     private final HashSet<Long> retiredWireIds = new HashSet<Long>();
 
     // ---- counters (debrief-grade, logged on the lane's own lines) ----
@@ -709,6 +740,11 @@ final class CommandTransferLane {
             if (own) {
                 beginOwn(e);
             } else {
+                // The staged occupancy cap refuses the
+                // newest edge BEFORE the variant capture, so a refused BEGIN leaves nothing behind.
+                if (stagedAtCap(e)) {
+                    return; // refused at the staged occupancy cap (counted): no variant captured
+                }
                 // Staged — the source re-home needs F's announced row (this frame's
                 // RAPP fold, which runs AFTER this intake); capture the PRE-repoint variant now.
                 Long seatKey = Long.valueOf(e.seatWireId());
@@ -737,12 +773,84 @@ final class CommandTransferLane {
                 pendingOwnCommit = e;
                 commitWaitStartMillis = System.currentTimeMillis();
                 rowlessParkStartMillis = 0L; // fresh commit = fresh park window
-            } else {
+            } else if (!stagedAtCap(e)) {
                 staged.addLast(e);
             }
         } else {
             anomaliesDropped++;
         }
+    }
+
+    /**
+     * The {@link #staged} OCCUPANCY cap at
+     * {@link RosterAppendLane#MAX_ROUND_ENTITIES} — a full queue refuses the NEWEST remote edge (a
+     * staged edge a lawful serve still names is never evicted), counts it, and the round's first
+     * refusal logs one row (bounded tokens: the kind code and the seat id). Render thread.
+     *
+     * @return true = refused (the caller stages nothing), false = room to stage
+     */
+    private boolean stagedAtCap(ClientCommandTransfer e) {
+        if (staged.size() < RosterAppendLane.MAX_ROUND_ENTITIES) {
+            return false;
+        }
+        if (++stagedRefusedAtCap == 1) {
+            PilotWatchLog.error("cc-transfer staged cap (" + RosterAppendLane.MAX_ROUND_ENTITIES
+                    + " edges): refused kind=" + e.kind() + " seat=" + e.seatWireId()
+                    + " (not staged; later refusals this round are counted silently)", null);
+        }
+        return true;
+    }
+
+    /**
+     * The per-round {@link #retiredWireIds} bound at
+     * {@link RosterAppendLane#MAX_ROUND_ENTITIES}. A retire frees the very roster slot the entity cap counts, so the
+     * roster cap alone never bounds this set: a server that pairs a BEGIN from a fresh source id with a COMMIT onto
+     * that id grows it by one id a pair until a round reset. A full set refuses the NEWEST — the COMMIT that would add
+     * an id it does not hold — and never forgets an id it holds (a retired id stays retired for the round, so a stale
+     * snapshot can never re-mint it). An id already held re-adds nothing and passes. Counted; the round's first
+     * refusal logs one row (bounded tokens: own/remote, the seat and target ids). Render thread.
+     *
+     * @return true = refused (the caller applies nothing and consumes the edge), false = the retire may run
+     */
+    private boolean retireRefusedAtCap(ClientCommandTransfer e, Long toKey, boolean own) {
+        if (retiredWireIds.size() < RosterAppendLane.MAX_ROUND_ENTITIES || retiredWireIds.contains(toKey)) {
+            return false;
+        }
+        if (++retiresRefusedAtCap == 1) {
+            PilotWatchLog.error("cc-transfer retired-id cap (" + RosterAppendLane.MAX_ROUND_ENTITIES
+                    + " ids): refused " + (own ? "own" : "remote") + " COMMIT seat=" + e.seatWireId()
+                    + " to=" + e.toWireId()
+                    + " (unapplied; later refusals this round are counted silently)", null);
+        }
+        return true;
+    }
+
+    /**
+     * One more failed pass for a parked staged
+     * edge at {@code now} (the pass's {@link #ageClock} ms, read once by the caller); the first park stamps it, and
+     * past {@link #HELD_EDGE_AGE_MAX_MILLIS} parked the edge EXPIRES — dropped unapplied (its seat's module-park
+     * stamp with it), counted, the round's first expiry logs one row (bounded tokens). The caller clears the edge's
+     * park stamp and adopt hold. Render thread.
+     *
+     * @return true = expired (drop it), false = park it again
+     */
+    private boolean parkExpired(ClientCommandTransfer e, long now) {
+        long[] since = stagedParkSince.get(e);
+        if (since == null) {
+            stagedParkSince.put(e, new long[] {now});
+            return false;
+        }
+        if (now - since[0] <= HELD_EDGE_AGE_MAX_MILLIS) {
+            return false;
+        }
+        forgetSeatPark(e.seatWireId()); // a module-park stamp dies with its edge (no stale window)
+        if (++stagedParkExpired == 1) {
+            PilotWatchLog.error("cc-transfer staged park expired after " + (now - since[0])
+                    + " ms: kind=" + e.kind() + " seat=" + e.seatWireId() + " to="
+                    + e.toWireId() + " (dropped unapplied; later expiries this round are counted"
+                    + " silently)", null);
+        }
+        return true;
     }
 
     private void beginOwn(ClientCommandTransfer e) {
@@ -1123,6 +1231,7 @@ final class CommandTransferLane {
         if (pendingOwnCommit != null && !strandPending) {
             maintainOwnCommit();
         }
+        long now = ageClock.getAsLong(); // ONE read a pass, never one per staged edge (a full staged = 1 read)
         for (int i = staged.size(); i > 0; i--) {
             ClientCommandTransfer e = staged.pollFirst();
             boolean consumed;
@@ -1134,10 +1243,15 @@ final class CommandTransferLane {
                 PilotWatchLog.error("cc-transfer remote COMMIT apply FAILED (consumed-with-error)"
                         + " seat=" + e.seatWireId() + " to=" + e.toWireId(), t);
             }
-            if (!consumed) {
+            // A park is bounded by WALL
+            // age — parked past HELD_EDGE_AGE_MAX_MILLIS, the edge expires instead of re-parking.
+            if (!consumed && !parkExpired(e, now)) {
                 staged.addLast(e); // park-and-retry: the target replica is not bound yet
             } else {
-                clearAdoptHold(e.toWireId()); // F1: applied or dropped — stamp dies with it
+                if (!stagedParkSince.isEmpty()) {
+                    stagedParkSince.remove(e); // consumed or expired: its park stamp goes too
+                }
+                clearAdoptHold(e.toWireId()); // F1: applied, dropped or expired — stamp dies with it
             }
         }
     }
@@ -1380,6 +1494,14 @@ final class CommandTransferLane {
             }
             return false; // park-and-retry until spawn-on-sight binds the target
         }
+        // The retired-id bound, checked before any rewrite, so a
+        // refusal adopts nothing and retires nothing. Adopting WITHOUT the retire would let a stale snapshot
+        // re-mint the target as a twin of the own hull, so the own COMMIT fails closed through the anomaly
+        // exits' restore (the in-play own pointer, else the transit source hull) instead of growing the set.
+        if (retireRefusedAtCap(e, toKey, true)) {
+            endTransitRestore("own COMMIT retired-id cap");
+            return true;
+        }
         // ---- capture BEFORE any rewrite (capture-then-rewrite) ----
         ShipAPI oldOwn = plugin.ownShip;
         Long seatKey = Long.valueOf(plugin.session.shipId());
@@ -1571,7 +1693,7 @@ final class CommandTransferLane {
         if (moduleTarget) {
             // The mount is still pending (cluster not committed / slot body not resolvable):
             // park bounded — NEVER re-point rowA + retire the module row (the stolen adopt).
-            long now = System.currentTimeMillis();
+            long now = ageClock.getAsLong(); // the age laws' monotonic clock, row-drivable
             Long since = moduleParkStart.get(seatKey);
             if (since == null) {
                 moduleParkStart.put(seatKey, Long.valueOf(now));
@@ -1603,6 +1725,12 @@ final class CommandTransferLane {
                 return true;
             }
             return false; // park-and-retry
+        }
+        // The retired-id bound, checked before the defuse: a refusal
+        // removes no row and re-points nothing (consumed, never parked). The flight mark already ended at
+        // the top, as on every unapplied COMMIT arm above.
+        if (retireRefusedAtCap(e, toKey, false)) {
+            return true;
         }
         // ---- capture ----
         ShipAPI sourceBody = rowA.ship; // may be null (seat replica unbound — fresh row unbound)
@@ -1781,7 +1909,7 @@ final class CommandTransferLane {
                             + (sourceBody != null ? "; stray capture dropped" : "; unbound")
                             + ")");
                 }
-            } else {
+            } else if (plugin.rapp.admitFresh(e.fromWireId(), seatVariant)) {
                 PredictReconcileCombatPlugin.RemoteEntity fresh =
                         new PredictReconcileCombatPlugin.RemoteEntity(e.fromWireId(), rowA.side);
                 fresh.rekeyPoseHold = true;
@@ -1797,6 +1925,27 @@ final class CommandTransferLane {
                 plugin.remoteEntities.put(fromKey, fresh);
                 if (seatVariant != null) {
                     plugin.variantById.put(fromKey, seatVariant);
+                }
+            } else {
+                // The roster sits at its entity cap, so
+                // no row is minted for fromWireId (the shared gate counted the refusal). The
+                // captured source body would have no row and no wire feed: it leaves the engine
+                // by the stray-capture idiom above. The edge itself still applies — this refusal
+                // never parks a COMMIT or BEGIN.
+                String source = "unbound";
+                if (sourceBody != null) {
+                    source = "kept"; // a wreck stays a wreck (the idiom removes live bodies only)
+                    if (sourceBody.isAlive() && plugin.engine != null) {
+                        plugin.removeStaleBody(sourceBody, "transfer-source-refused");
+                        source = "removed";
+                    }
+                    plugin.forgetRemoteBodyTreatment(sourceBody);
+                }
+                if (++freshMintsRefused == 1) {
+                    PilotWatchLog.error("cc-transfer re-home: fresh row " + e.fromWireId()
+                            + " refused at the entity cap (" + RosterAppendLane.MAX_ROUND_ENTITIES
+                            + " roster entries); source=" + source
+                            + " (later refusals this round are counted silently)", null);
                 }
             }
         }
@@ -1827,6 +1976,18 @@ final class CommandTransferLane {
             anomaliesDropped++;
             PilotWatchLog.error("cc-transfer remote BEGIN: no seat row " + e.seatWireId()
                     + " (dropped)", null);
+            return true;
+        }
+        // The flight-mark bound. A mark leaves only at its seat's COMMIT
+        // or strand, so a seat whose row left the roster (retired, reaped) keeps its mark until the round
+        // reset; a full set refuses the NEWEST seat's BEGIN (consumed unapplied: no mark, no re-home, no
+        // unbind), counted, the round's first refusal logs one row. A retarget re-fan returned above.
+        if (flyingPodSeats.size() >= RosterAppendLane.MAX_ROUND_ENTITIES) {
+            if (++podMarksRefusedAtCap == 1) {
+                PilotWatchLog.error("cc-transfer flying-pod cap (" + RosterAppendLane.MAX_ROUND_ENTITIES
+                        + " seats): refused remote BEGIN seat=" + e.seatWireId() + " from=" + e.fromWireId()
+                        + " (unapplied; later refusals this round are counted silently)", null);
+            }
             return true;
         }
         flyingPodSeats.add(seatKey);
@@ -2008,7 +2169,7 @@ final class CommandTransferLane {
 
     /**
      * The ONE transit-ending restore (@0334 /): the player force now lives INSIDE, so
-     * EVERY exit — ABORT, observer, and all three own-COMMIT anomaly exits — ends with the
+     * EVERY exit — ABORT, observer, and every own-COMMIT anomaly / refusal exit — ends with the
      * player off the intangible pod (the source's per-frame decision hold lapses with
      * {@code ownTransit} — no lock to clear). Fail-safe restore target: the live own pointer if in-play (a
      * partial-adopt throw may already have flipped it — seat truth), else the transit source
@@ -2198,12 +2359,35 @@ final class CommandTransferLane {
         moduleParkStart.remove(Long.valueOf(seatWireId));
     }
 
+    /**
+     * The bound meters' totals row —
+     * printed only when a bound fired — then their re-arm, so the next round's first refusal logs again.
+     * {@link #resetRound} calls it at every round close ({@code when} = a fixed label, never wire
+     * text). Render thread.
+     */
+    void closeBoundMeters(String when) {
+        if (stagedRefusedAtCap > 0 || stagedParkExpired > 0 || freshMintsRefused > 0
+                || retiresRefusedAtCap > 0 || podMarksRefusedAtCap > 0) {
+            PilotWatchLog.info("cc-transfer bounds closed (" + when + "): staged refused="
+                    + stagedRefusedAtCap + " park expired=" + stagedParkExpired
+                    + " fresh rows refused=" + freshMintsRefused + " retires refused=" + retiresRefusedAtCap
+                    + " pod marks refused=" + podMarksRefusedAtCap);
+        }
+        stagedRefusedAtCap = 0;
+        stagedParkExpired = 0;
+        freshMintsRefused = 0;
+        retiresRefusedAtCap = 0;
+        podMarksRefusedAtCap = 0;
+    }
+
     /** Round boundary ({@code finishMatchReset} relay): every per-round latch/queue/set dies. */
     void resetRound() {
         for (PredictReconcileCombatPlugin.RemoteEntity re : plugin.remoteEntities.values()) {
             re.adoptHoldSinceTick = Long.MIN_VALUE; // F1 belt: no stamp crosses a round wrap
         }
         staged.clear();
+        stagedParkSince.clear();
+        closeBoundMeters("round close");
         moduleParkStart.clear();       // No park stamp crosses a round wrap
         retiredWireIds.clear();
         flyingPodSeats.clear();        // No flying-pod mark crosses a round wrap

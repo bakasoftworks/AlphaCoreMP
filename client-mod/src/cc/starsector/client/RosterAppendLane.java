@@ -166,6 +166,11 @@ final class RosterAppendLane {
      *  before sight this round ({@link #retireDeadBeforeSight}); render thread, cleared by
      *  {@link #onRoundReset} after its summary row prints it. */
     private int entriesRetiredDead;
+    /** At most ONE {@link #retireDeadBeforeSight} walk a
+     *  drain pass (one pass a render frame) — re-armed at the start of each {@link #drain}; the
+     *  command-transfer re-home, later in the same render frame, shares it through
+     *  {@link #admitFresh}, so a mint flood at the cap never re-walks the map per id. */
+    private boolean capRetireWalked;
     /** Failed spawn attempts per entry object (identity: a re-appended id is a fresh budget):
      *  {failures, throws}; render thread, cleared at the round reset. */
     private final IdentityHashMap<PredictReconcileCombatPlugin.RemoteEntity, int[]> spawnFailures =
@@ -493,16 +498,53 @@ final class RosterAppendLane {
         }
     }
 
+    /**
+     * The entity cap's ONE admission gate for a fresh
+     * roster id, shared by the roster-append fold ({@link #drain}) and the command-transfer
+     * re-home's row-less mint, so neither path can grow {@code remoteEntities} past
+     * {@link #MAX_ROUND_ENTITIES}. A full map first sheds its appended entries dead before sight
+     * (ONE walk a drain pass, {@link #capRetireWalked}); the id is refused only if that freed no
+     * room — counted, the round's first refusal logs one row ({@link #refuseAtEntityCap}). A
+     * refusal stores nothing; the caller decides what its refused id leaves behind. {@code wireId}
+     * is the signed-long u64 wire id; {@code variant} may be null (logged sanitized). Render thread.
+     *
+     * @return true = room for one more entry (the caller mints it), false = refused at the cap
+     */
+    boolean admitFresh(long wireId, String variant) {
+        if (plugin.remoteEntities.size() < MAX_ROUND_ENTITIES) {
+            return true;
+        }
+        if (!capRetireWalked) {
+            capRetireWalked = true;
+            retireDeadBeforeSight();
+        }
+        if (plugin.remoteEntities.size() < MAX_ROUND_ENTITIES) {
+            return true;
+        }
+        refuseAtEntityCap(wireId, variant);
+        return false;
+    }
+
+    /** {@code re} left the registry through the remote
+     *  reap sweep — its spawn-failure count goes with it (the retire walk's own remove), so a
+     *  reaped entry's budget never outlives the entry. One isEmpty read on the common frame.
+     *  Render thread. */
+    void onReaped(PredictReconcileCombatPlugin.RemoteEntity re) {
+        if (!spawnFailures.isEmpty()) {
+            spawnFailures.remove(re);
+        }
+    }
+
     /** A fresh wire id met a full roster map
      *  ({@link #MAX_ROUND_ENTITIES}) that {@link #retireDeadBeforeSight} could not thin — refused,
      *  counted; the round's first refusal logs ONE error row (and the one-shot verdict announce,
      *  both naming the round's retire count), later ones only count. Render thread. */
-    private void refuseAtEntityCap(ClientRosterAppend.Row row) {
+    private void refuseAtEntityCap(long wireId, String variant) {
         if (++rowsRefusedAtCap != 1) {
             return;
         }
         String detail = "entity cap (" + MAX_ROUND_ENTITIES + " roster entries): refused fresh id "
-                + row.wireId() + " variant=" + FallbackAnnounce.sanitize(row.variantId(), 64)
+                + wireId + " variant=" + FallbackAnnounce.sanitize(variant, 64)
                 + " retiredDead=" + entriesRetiredDead
                 + " (not stored; later refusals this round are counted silently)";
         PilotWatchLog.error("predict roster-append: " + detail, null);
@@ -662,7 +704,7 @@ final class RosterAppendLane {
      *  re-pointed) this frame can mint at this same frame's first pose sight. */
     void drain() {
         long ownWireId = plugin.session.shipId();
-        boolean capRetireWalked = false; // at most ONE retire walk a drain pass (one pass a render frame)
+        capRetireWalked = false; // at most ONE retire walk a drain pass (one pass a render frame)
         while (true) {
             // PEEK + the round-epoch gate. Only this
             // (render) thread removes frames, so the head peeked here is the one polled below.
@@ -856,18 +898,8 @@ final class RosterAppendLane {
                             + " (repointed=" + rowsRepointed + ")");
                     continue;
                 }
-                if (plugin.remoteEntities.size() >= MAX_ROUND_ENTITIES) {
-                    // A full map first sheds its appended
-                    // entries dead before sight (ONE walk a drain pass, so a row flood at the cap
-                    // never re-walks the map per row); refused only if that freed no room.
-                    if (!capRetireWalked) {
-                        capRetireWalked = true;
-                        retireDeadBeforeSight();
-                    }
-                    if (plugin.remoteEntities.size() >= MAX_ROUND_ENTITIES) {
-                        refuseAtEntityCap(row);
-                        continue;
-                    }
+                if (!admitFresh(row.wireId(), row.variantId())) {
+                    continue; // refused at the entity cap (counted; the walk-then-refuse gate)
                 }
                 int relSide = row.side() == plugin.ownDescSide ? 0 : 1;
                 plugin.remoteEntities.put(key, new PredictReconcileCombatPlugin.RemoteEntity(
