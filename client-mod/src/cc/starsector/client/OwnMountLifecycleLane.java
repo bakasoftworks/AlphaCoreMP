@@ -182,6 +182,7 @@ final class OwnMountLifecycleLane {
         ownDismountAwaitingGap = false; // a fresh mounted life supersedes any vacate hold
         plugin.capOwnDamage = true;     // axis B re-arms on the mounted body...
         plugin.ownCapInstalled = false;
+        plugin.ownCapBody = null;
         plugin.installOwnCap();         // ...via a fresh OwnDamageCap listener (identity-gated)
         plugin.seatHud.applySeatName(body, plugin.session.shipId());
         // Re-arm the pose-stream reconcile baselines the death gap made discontinuous — the
@@ -298,6 +299,7 @@ final class OwnMountLifecycleLane {
         if (!adoptedDead) {
             plugin.capOwnDamage = true;     // axis B re-arms on the adopted body...
             plugin.ownCapInstalled = false;
+            plugin.ownCapBody = null;
             plugin.installOwnCap();         // ...via a fresh OwnDamageCap listener (identity-gated)
         }
         plugin.seatHud.applySeatName(body, plugin.session.shipId());

@@ -26,7 +26,7 @@ import java.util.zip.CRC32;
  * seatId of 0, a {@code nameLen} out of range, NONZERO padding beyond {@code nameLen}, a name
  * that is not valid UTF-8 or violates the {@code parseSeatName} contract, or a CRC32 mismatch
  * all throw {@link IOException}. {@code nameLen} 0 decodes as the empty-string "no name"
- * sentinel — a valid frame per the codec contract (the consumer no-ops it).
+ * sentinel — a valid frame per the codec contract (the consumer CLEARS the held name).
  */
 public final class ClientSeatNameRecordReader {
 

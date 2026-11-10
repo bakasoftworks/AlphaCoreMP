@@ -116,6 +116,9 @@ final class EditorRoutes {
             HttpExchange.replyJson(out, 422, error(EditorText.sanitize(law.getMessage(), 200)));
         } catch (IOException io) {
             throw io;
+        } catch (EditorPersons.NotReady early) {
+            // A person mint before the title has its sector = "not ready", never a 500 fault
+            HttpExchange.replyJson(out, 503, error(early.getMessage()));
         } catch (RuntimeException fault) {
             PilotWatchLog.error("editor route fault on " + EditorText.sanitize(rest, 80), fault);
             HttpExchange.replyJson(out, 500, error(fault.getClass().getSimpleName()));

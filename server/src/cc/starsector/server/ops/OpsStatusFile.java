@@ -117,9 +117,22 @@ public final class OpsStatusFile {
             int pending, int capGlobal, String tier, int perSeat, String sModCap, String dMods,
             long exported, long exportFailed, int kept, List<String> keptIds, long keptFailed,
             String keptLast, List<String> inboxIds, boolean keptOverCap, boolean inboxOverCap,
-            int frameEncodeFailed, int vsubDecodeRefused) {
+            int frameEncodeFailed, int vsubDecodeRefused, List<String> keptLabels) {
         public static final CustomStats NONE = new CustomStats(0, 0, 0, false,
                 0, 0, 0, 0, 0, 0, "-", 0, "-", "-", 0L, 0L);
+
+        /** The 25-arg arity (before the kept labels): every label slot
+         *  writes {@code -}. */
+        public CustomStats(int count, int rejected, int banned, boolean submissions,
+                int rejectedPolicy, int rejectedCaps, int rejectedEngine, int rejectedOperator,
+                int pending, int capGlobal, String tier, int perSeat, String sModCap, String dMods,
+                long exported, long exportFailed, int kept, List<String> keptIds, long keptFailed,
+                String keptLast, List<String> inboxIds, boolean keptOverCap, boolean inboxOverCap,
+                int frameEncodeFailed, int vsubDecodeRefused) {
+            this(count, rejected, banned, submissions, rejectedPolicy, rejectedCaps, rejectedEngine, rejectedOperator,
+                    pending, capGlobal, tier, perSeat, sModCap, dMods, exported, exportFailed, kept, keptIds, keptFailed,
+                    keptLast, inboxIds, keptOverCap, inboxOverCap, frameEncodeFailed, vsubDecodeRefused, List.of());
+        }
 
         /** The 23-arg arity (before the R3b refusal meters): both meters read 0. */
         public CustomStats(int count, int rejected, int banned, boolean submissions,
@@ -139,6 +152,20 @@ public final class OpsStatusFile {
             keptIds = List.copyOf(Objects.requireNonNull(keptIds, "keptIds"));
             Objects.requireNonNull(keptLast, "keptLast");
             inboxIds = List.copyOf(Objects.requireNonNull(inboxIds, "inboxIds"));
+            keptLabels = blankNullSlots(keptLabels); // never null, never a null slot: the status compose must not throw
+        }
+
+        /** A copy of {@code labelsOrNull} with each null slot read as {@code ""}; null = empty.
+         * */
+        private static List<String> blankNullSlots(List<String> labelsOrNull) {
+            if (labelsOrNull == null) {
+                return List.of();
+            }
+            List<String> out = new java.util.ArrayList<String>(labelsOrNull.size());
+            for (String label : labelsOrNull) {
+                out.add(label == null ? "" : label);
+            }
+            return List.copyOf(out);
         }
 
         /** The 16-arg arity (the kept rows read as OFF: zeros, empty, "-"). */
@@ -285,6 +312,49 @@ public final class OpsStatusFile {
             row.append(sanitize(ids.get(i)));
         }
         return row.toString();
+    }
+
+    /** The longest kept label a slot carries - a 24-char name and a 24-char
+     *  hull, {@code "name" (hull)}; a longer label writes {@code -}. */
+    public static final int KEPT_LABEL_MAX_CHARS = 53;
+
+    /**
+     * The {@code custom.kept_labels} value - one slot per id the
+     * {@code custom.kept_ids} row WROTE ({@code ids} cut at the same {@code cap}, same order), each the lowercase hex
+     * of its label's bytes, or {@code -} for an empty label, a missing one (a labels list shorter than the ids), a
+     * label holding a char outside 0x20-0x7E or one over {@link #KEPT_LABEL_MAX_CHARS} chars; no ids = {@code -}.
+     * Hex per slot keeps the player's typed text out of the row grammar ({@code ,} {@code =} and line breaks cannot
+     * appear), so the row never rides {@link #sanitize}, whose whole-value cut would split a slot: at most
+     * 32 x 106 + 31 chars.
+     */
+    static String keptLabelRow(List<String> ids, List<String> labels, int cap) {
+        if (ids.isEmpty()) {
+            return "-";
+        }
+        StringBuilder row = new StringBuilder();
+        for (int i = 0; i < ids.size() && i < cap; i++) {
+            if (i > 0) {
+                row.append(',');
+            }
+            row.append(keptLabelSlot(i < labels.size() ? labels.get(i) : null));
+        }
+        return row.toString();
+    }
+
+    /** One {@link #keptLabelRow} slot: the label's lowercase hex, or {@code -}. */
+    private static String keptLabelSlot(String labelOrNull) {
+        if (labelOrNull == null || labelOrNull.isEmpty() || labelOrNull.length() > KEPT_LABEL_MAX_CHARS) {
+            return "-";
+        }
+        StringBuilder hex = new StringBuilder(labelOrNull.length() * 2);
+        for (int i = 0; i < labelOrNull.length(); i++) {
+            char c = labelOrNull.charAt(i);
+            if (c < 0x20 || c > 0x7E) {
+                return "-";
+            }
+            hex.append(Character.forDigit(c >> 4, 16)).append(Character.forDigit(c & 0xF, 16));
+        }
+        return hex.toString();
     }
 
     private final Path file;
@@ -762,6 +832,9 @@ public final class OpsStatusFile {
         // bump); the two over-cap rows keep the store's bound loud.
         lines.add("custom.kept=" + custom.kept());
         lines.add("custom.kept_ids=" + keptIdRow(custom.keptIds(), KEPT_ID_ROW_CAP));
+        // Each kept ship's typed-name label, slot for slot with kept_ids (hex
+        // per slot, never the whole-value sanitizer); additive optional key, no version bump - an older reader skips it
+        lines.add("custom.kept_labels=" + keptLabelRow(custom.keptIds(), custom.keptLabels(), KEPT_ID_ROW_CAP));
         lines.add("custom.kept_failed=" + custom.keptFailed());
         lines.add("custom.kept_last=" + sanitize(custom.keptLast()));
         lines.add("custom.inbox_ids=" + keptIdRow(custom.inboxIds(), INBOX_ID_ROW_CAP));

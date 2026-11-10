@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -219,6 +220,10 @@ public final class CatalogPromotionLane {
     private volatile long keptOutcomesDropped;
     // written under scanLock / on the sim thread; read by the status lane on any thread
     private volatile List<String> keptIdsLast = List.of();
+    /** Kept stem -> its status label ({@link #keptLabelOf}); put on the sim
+     *  thread where a kept copy registers (the one site holding its name and hull), pruned to the last kept scan's
+     *  stems where {@link #keptIdsLast} is written, read lock-free by {@link #keptLabels} on the serve thread. */
+    private final ConcurrentHashMap<String, String> keptLabelByStem = new ConcurrentHashMap<String, String>();
     private volatile List<String> inboxIdsLast = List.of();
     /** Written by {@link #listInbox} just BEFORE {@link #inboxIdsLast}, read
      *  on the sim thread: a listed inbox {@code kept-} stem -> the {@code supersedes} link its {@code .meta} carries
@@ -1016,6 +1021,7 @@ public final class CatalogPromotionLane {
                     System.out.println("catalog-kept meta_unread=" + metaUnread + " time_unknown=" + timeUnknown);
                 }
                 keptIdsLast = List.copyOf(stems);
+                keptLabelByStem.keySet().retainAll(keptIdsLast); // a stem that left the list (a Forget) frees its label
                 keptOverCapLast = over;
                 keptRefusedLast = refusedCount;
                 supersedesByCopy = Map.copyOf(links);
@@ -1443,6 +1449,13 @@ public final class CatalogPromotionLane {
         // A differing body for a stem THIS serve registered = a live UPDATE (the header's law)
         boolean update = known != null && !Arrays.equals(known, c.frame());
         if (known != null && !update) {
+            // A Forget's rescan frees the stem's status label, and the same body put
+            // back (or kept again) mints the same stem + frame and leaves HERE, before the registration's put below:
+            // the host's kept list showed the bare stem until a restart. An absent label is put back; a present
+            // one is never rebuilt (no string per scan).
+            if (c.kept() && !keptLabelByStem.containsKey(stem)) {
+                keptLabelByStem.put(stem, keptLabelOf(c.def().displayName(), c.def().hullId()));
+            }
             return false; // the same body: listed, no pass, no re-fan
         }
         if (Arrays.equals(refusedFrames.get(stem), c.frame())) {
@@ -1531,11 +1544,19 @@ public final class CatalogPromotionLane {
         // The registered body's HULL rides beside its name: /ship's name+hull+id search and
         // the rows' hull label would otherwise miss every promoted ship until a restart's scan re-read its file
         pickable.rememberHull(stem, c.def().hullId());
+        // A kept copy's typed name + hull become its status label here, once
+        // per keep or update (one map put, no lock); the host's kept list reads it off the status file
+        if (c.kept()) {
+            keptLabelByStem.put(stem, keptLabelOf(c.def().displayName(), c.def().hullId()));
+        }
         // A kept copy's keep time (the last kept scan's) orders every
         // ship list's kept rows newest first; an unknown time leaves the copy after the timed ones
         Long keptAt = c.kept() ? keptAtByCopy.get(stem) : null;
         if (keptAt != null) {
             pickable.rememberKeptAt(stem, keptAt);
+            // A kept copy with a keep time is a spawn pick too, so it gets its officer
+            // pick here (the table is warmed from the boot catalogue only); fail-soft, one row, its us= = this cost
+            cc.starsector.server.platform.AdhocOfficerTable.register(stem);
         }
         if (fanOrNull != null) {
             try {
@@ -1705,6 +1726,52 @@ public final class CatalogPromotionLane {
     /** The stems the last kept scan read (≤ {@link #KEPT_CAP}, case-insensitive order; refused ones included). */
     public List<String> keptIds() {
         return keptIdsLast;
+    }
+
+    /**
+     * The status label of each of {@code ids} - the list the caller already
+     * holds (the status compose passes its one {@link #keptIds} read, so labels and ids never come from two scans) -
+     * {@code ""} for a stem with none (a refused copy, one not registered yet, a null id). Same size and order, never
+     * a null slot; a null list reads empty. One map read per id and no lock: it runs inside the serve thread's status
+     * compose, which has no catch above it and must never wait on a ship-list walk. Never throws.
+     */
+    public List<String> keptLabels(List<String> ids) {
+        if (ids == null) {
+            return List.of();
+        }
+        List<String> labels = new ArrayList<String>(ids.size());
+        for (String id : ids) {
+            String label = id == null ? null : keptLabelByStem.get(id);
+            labels.add(label == null ? "" : label);
+        }
+        return List.copyOf(labels);
+    }
+
+    /**
+     * A kept copy's status label, the name the host typed for it:
+     * {@code "<name>"}, or {@code "<name>" (<hull>)} when the hull prints. The name takes the occupant fold
+     * ({@link VoiceMuteCommand#safeLabel}: printable ASCII 0x20-0x7E, trimmed, at most 24 chars) with every {@code "}
+     * dropped, so the double quotes FENCE the player text: a name typed to look like another stem cannot pass for one
+     * and no quote inside can close the fence. The hull = {@link ListingEmitter#shipHullLabelOrNull} (left off for a
+     * null, unprintable or over-24-char hull). {@code ""} for a null, blank or all-unprintable name and on any fault;
+     * never the text {@code null}, never throws; at most 53 chars, each 0x20-0x7E.
+     */
+    static String keptLabelOf(String nameOrNull, String hullOrNull) {
+        try {
+            if (nameOrNull == null || nameOrNull.trim().isEmpty()) {
+                return "";
+            }
+            String safe = VoiceMuteCommand.safeLabel(nameOrNull);
+            String name = safe == null ? "" : safe.replace("\"", "").trim();
+            if (name.isEmpty()) {
+                return "";
+            }
+            String hull = ListingEmitter.shipHullLabelOrNull(hullOrNull);
+            return hull == null ? "\"" + name + "\"" : "\"" + name + "\" (" + hull + ")";
+        } catch (RuntimeException fault) {
+            System.out.println("catalog-kept label_fault " + fault.getClass().getSimpleName() + " (the label reads empty)");
+            return "";
+        }
     }
 
     /** The inbox's forgotten-kept then export stems the last scan listed (≤ {@link #INBOX_LIST_CAP} of each prefix;

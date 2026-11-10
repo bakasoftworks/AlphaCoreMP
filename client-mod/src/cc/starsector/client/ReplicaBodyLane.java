@@ -6,6 +6,8 @@ import static cc.starsector.client.PredictReconcileCombatPlugin.SLEW_MOVED_DEG;
 import cc.starsector.client.PredictReconcileCombatPlugin.RemoteEntity;
 import com.fs.starfarer.api.combat.ArmorGridAPI;
 import com.fs.starfarer.api.combat.DamageType;
+import com.fs.starfarer.api.combat.MutableShipStatsAPI;
+import com.fs.starfarer.api.combat.MutableStat;
 import com.fs.starfarer.api.combat.ShipAPI;
 import com.fs.starfarer.api.combat.ShipCommand;
 import com.fs.starfarer.api.combat.WeaponAPI;
@@ -172,7 +174,7 @@ final class ReplicaBodyLane {
         // FLUX idiom = WireAckedFluxWindow (carved OUT so the own-shield presenter
         // shares it; the headroom WHY, the one-shot law and the residue class live on that class). Unarmed
         // (null) the apply still runs — presentation lane.
-        WireAckedFluxWindow flux = bypassShields ? null : WireAckedFluxWindow.arm(victim, damage, type);
+        WireAckedFluxWindow flux = bypassShields ? null : WireAckedFluxWindow.arm(victim, damage, type, source);
         float dealt = 0f;
         plugin.hullLane.beginWireAckedApply(hitTick);
         boolean armorArmed = snapshotWireAckedArmor(victim); // The armor twin, restored below
@@ -210,10 +212,139 @@ final class ReplicaBodyLane {
                 }
             }
             if (armorArmed) {
-                restoreWireAckedArmor(victim);
+                restoreWireAckedArmor(victim, plugin.hullLane.armorCells());
             }
         }
         return dealt; // measured BEFORE the restore — pre - getHitpoints() reads 0 after it
+    }
+
+    /**
+     * The OWN ship's wire-acked hit: a server-dealt hit on the
+     * player's own ship (first user: a foe fuse bomb's burst, {@link BlastHitLane}) presented through the
+     * engine's own {@code applyDamage}, so the number, flash and hit sound are the engine's; everything else
+     * the apply writes is put back before this method returns, because the wire owns the own ship's hull,
+     * armor and flux. The same idiom as {@link #applyWireAckedHit}, with the own ship's differences:
+     * <ul>
+     * <li>FLUX (a shield record only): the hit's EXACT flux ceiling must fit under the own ship's max flux, and
+     * the {@link WireAckedFluxWindow} must arm (the own arm, its wide room); either refusal returns NaN with
+     * nothing applied (fail-closed: an own overload inside the call drops the shield, on the server too). A
+     * restore that had to stop an overload is counted {@link #blastOwnOverloadFaults}.</li>
+     * <li>HULL: the engine's subtraction is measured, then put back through {@code mirrorHull}. No foe hull
+     * ledger is opened and nothing is added to the own deterministic-hit ledger: the wire already holds
+     * this hit.</li>
+     * <li>ARMOR: the whole grid is snapshotted and written back for BOTH record kinds (an engine-side shield
+     * arc miss falls into the hull branch), consuming section stamps on the OWN cell lane.</li>
+     * <li>WEAPONS and ENGINES take nothing: a keyed zero mult ({@link #OWN_DOOR_COMPONENT_KEY}) on both
+     * damage-taken stats for the call only, removed unconditionally ({@link #zeroOwnComponents}).</li>
+     * <li>A ship source is offered to the hull cap's class slot first, so the slot is at least the size stat
+     * the engine folds from that same source.</li>
+     * </ul>
+     * EMP is applied as 0. {@code hitTick} is not read: the own path keeps no ledger to order. Returns the
+     * hull the engine applied (at least 0, measured BEFORE the restore), or NaN when nothing was applied (the
+     * flux refusal; a null body or engine reads the same). Combat thread.
+     *
+     * <p>Accepted residuals:
+     * <ul>
+     * <li>a ship-sourced bomb's number can read up to about 15 % low: the stat-less local damage record lacks
+     * the source's hit-strength, hull-dealt and shield-dealt mults;</li>
+     * <li>the lethal guard is {@code OwnDamageCap}: a cap throw fails open, and a later-registered own damage
+     * listener could raise the damage ({@code localKillPrematureOwn} is the meter);</li>
+     * <li>the source offer grows a round-static class slot (a benign over-cap); the 10-argument
+     * {@code applyDamage} was not taken because it changes the parameter every listener sees;</li>
+     * <li>at low CR each shield record re-opens the engine's shield-malfunction roll, as every presented own
+     * shield hit does.</li>
+     * </ul>
+     */
+    float applyWireAckedOwnHit(ShipAPI own, Vector2f at, float damage, DamageType type, boolean bypassShields,
+            Object source, long hitTick) {
+        if (own == null || plugin.engine == null) {
+            return Float.NaN;
+        }
+        if (!bypassShields) {
+            float need = WireAckedFluxWindow.shieldFluxCeiling(own, damage, type, source);
+            if (WireAckedFluxWindow.overFluxCap(own, need)) {
+                return Float.NaN; // the hit would overload the own ship inside the call at any headroom
+            }
+        }
+        WireAckedFluxWindow flux = null;
+        boolean armorArmed = false;
+        float preHull = Float.NaN;
+        float dealt = 0f;
+        MutableStat weapons = null;
+        MutableStat engines = null;
+        try {
+            if (!bypassShields) {
+                flux = WireAckedFluxWindow.armOwn(own, damage, type, source);
+                if (flux == null) {
+                    return Float.NaN; // fail-closed on the own ship: an unarmed shield apply could overload it
+                }
+            }
+            preHull = own.getHitpoints();
+            armorArmed = snapshotWireAckedArmor(own);
+            MutableShipStatsAPI stats = own.getMutableStats();
+            weapons = stats.getWeaponDamageTakenMult();
+            engines = stats.getEngineDamageTakenMult();
+            zeroOwnComponents(weapons, engines);
+            if (source instanceof ShipAPI) {
+                HullCapBound.offerReplicaFallback((ShipAPI) source);
+            }
+            plugin.engine.applyDamage(own, at, damage, type, 0f, bypassShields, false, source, true);
+        } finally {
+            // Reverse order: components, armor, hull, flux. Each step is total, so one cannot skip the next.
+            releaseOwnComponents(weapons, engines);
+            if (armorArmed) {
+                restoreWireAckedArmor(own, plugin.ownDetLane.ownCellLane());
+            }
+            if (!Float.isNaN(preHull)) {
+                try {
+                    dealt = Math.max(0f, preHull - own.getHitpoints());
+                    if (dealt > 0f) {
+                        plugin.mirrorHull(own, preHull);
+                    }
+                } catch (Throwable t) {
+                    blastOwnRestoreFaults++; // the dip stands until the next own hull mirror
+                }
+            }
+            if (flux != null) {
+                flux.restore();
+                if (flux.stoppedOverload) {
+                    blastOwnOverloadFaults++;
+                }
+            }
+        }
+        return dealt; // measured BEFORE the restore
+    }
+
+    /** The own door's counters, printed on the blast-hit meter: a
+     *  flux restore that had to stop an overload the apply started, and a hull measure or restore that threw. */
+    int blastOwnOverloadFaults;
+    int blastOwnRestoreFaults;
+
+    /** The own door's key on the own ship's weapon and engine damage-taken stats: its own id, because
+     *  per-key mults multiply and another feature's key on the same stats must survive the release. */
+    static final String OWN_DOOR_COMPONENT_KEY = "cc_blast_own_door";
+
+    /** Weapons and engines take no damage from the own door's apply:
+     *  a keyed 0 mult on each stat (a null stat is skipped). Paired with {@link #releaseOwnComponents}, which
+     *  the caller runs in a finally. Pure over its two stats. */
+    static void zeroOwnComponents(MutableStat weapons, MutableStat engines) {
+        if (weapons != null) {
+            weapons.modifyMult(OWN_DOOR_COMPONENT_KEY, 0f);
+        }
+        if (engines != null) {
+            engines.modifyMult(OWN_DOOR_COMPONENT_KEY, 0f);
+        }
+    }
+
+    /** Removes the own door's key from both stats (a null stat, or a stat never zeroed, is a no-op); every
+     *  other key stays. Pure over its two stats. */
+    static void releaseOwnComponents(MutableStat weapons, MutableStat engines) {
+        if (weapons != null) {
+            weapons.unmodifyMult(OWN_DOOR_COMPONENT_KEY);
+        }
+        if (engines != null) {
+            engines.unmodifyMult(OWN_DOOR_COMPONENT_KEY);
+        }
     }
 
     /** Wire-acked flux idiom counters (the foe-fluxflags-meter line): restores = applies
@@ -297,8 +428,10 @@ final class ReplicaBodyLane {
      * repaint natively, so ONE decal batch follows — the same two ShipAPI calls
      * {@link ArmorCellLane#maintain} makes for its upward writes (the decal law; the lane has no
      * package hook to fold into, so this is its own batch, once per restoring hit). Total.
+     * {@code cellLane} = the cell lane whose section stamps this restore consumes: the FOE instance for a
+     * replica, the OWN instance for the own ship.
      */
-    private void restoreWireAckedArmor(ShipAPI victim) {
+    private void restoreWireAckedArmor(ShipAPI victim, ArmorCellLane cellLane) {
         wireAckedArmorArmed = false;
         try {
             ArmorGridAPI grid = victim.getArmorGrid();
@@ -324,7 +457,7 @@ final class ReplicaBodyLane {
                         double d = pre[i] - post;
                         hp += Double.isFinite(d) ? d : 0d;
                         if (d > 0d) {
-                            plugin.hullLane.armorCells().consumeStrip(ackId, i, (float) d, mic); // consume the section stamp
+                            cellLane.consumeStrip(ackId, i, (float) d, mic); // consume the section stamp
                         }
                         wrote = true;
                     }

@@ -8,8 +8,8 @@ package cc.starsector.server.protocol;
  *
  * <p>Fixed 73-byte frame: seatId (u16) + shipId (i64) + one name buffer (nameLen +
  * 48-byte zero-padded UTF-8; {@code nameLen 0} = the no-override sentinel — a valid frame a
- * client treats as a no-op, though the server's fan/catch-up skip sentinel-resolved records:
- * a name is never un-set, so they say nothing). Fanned reactively in the {@code fanChat} shape
+ * client treats as CLEAR-this-seat-name; the fan/catch-up skip sentinel-resolved records, and
+ * the ONE sender is the forget fan (old kits no-op it). Fanned reactively in the {@code fanChat} shape
  * (encode once, spool per live session): on a stored {@code SNAM} announce to ALL sessions, and
  * on ADMIT/TAKEOVER as a full-table catch-up to the newcomer only — names are session metadata,
  * not per-tick seat state, so the record never rides the serve loop's tick fan. Server resolve

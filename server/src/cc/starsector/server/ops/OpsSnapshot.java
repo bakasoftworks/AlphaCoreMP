@@ -77,6 +77,10 @@ public final class OpsSnapshot {
     private final boolean customKeptKnown;
     private final int customKept;
     private final List<String> customKeptIds;
+    /** The OPTIONAL {@code custom.kept_labels=} row decoded by
+     *  {@link #keptLabelRow} - the name each kept ship was typed with, index for index with {@link #customKeptIds}
+     *  (always its size; {@code ""} = no name, and every slot of an older writer's file). */
+    private final List<String> customKeptLabels;
     private final long customKeptFailed;
     private final String customKeptLast;
     private final List<String> customInboxIds;
@@ -240,6 +244,7 @@ public final class OpsSnapshot {
         this.customKeptKnown = kv.containsKey("custom.kept");
         this.customKept = optionalInt(kv, "custom.kept");
         this.customKeptIds = idRow(kv.get("custom.kept_ids"));
+        this.customKeptLabels = keptLabelRow(kv.get("custom.kept_labels"), customKeptIds.size());
         this.customKeptFailed = kv.containsKey("custom.kept_failed") ? longOf(kv, "custom.kept_failed") : 0L;
         String keptLast = kv.get("custom.kept_last");
         this.customKeptLast = keptLast == null || keptLast.isBlank() ? "-" : keptLast;
@@ -527,6 +532,60 @@ public final class OpsSnapshot {
         return List.copyOf(out);
     }
 
+    /** A kept label is at most this many hex digits: 53 printable-ASCII bytes, two digits each. */
+    private static final int KEPT_LABEL_HEX_MAX = 106;
+
+    /**
+     * {@code custom.kept_labels=} decoded against {@code size} kept ids -
+     * one slot per id, same order; a slot = the lowercase hex of the label's bytes, or {@code -} for none. The status
+     * file is a trust boundary (anything that can write the run folder can forge it) and a parse throw blanks the
+     * WHOLE snapshot, so this never throws: a faulty slot reads {@code ""} alone, a missing row (an older writer) reads
+     * every slot {@code ""}. Empty pieces stay slots ({@code split(",", -1)}, never {@link #idRow}, which drops them
+     * and would shift every later label onto the wrong stem); extra slots are dropped, missing ones read {@code ""}.
+     * The split is bounded by {@code size} BEFORE it runs: no ids = no split at all, else
+     * at most {@code size + 1} pieces, the last one the unread remainder - a forged row of any length costs one scan,
+     * never an array of its commas. Pure; the result is exactly {@code size} long, never a null element.
+     */
+    static List<String> keptLabelRow(String row, int size) {
+        if (size <= 0) {
+            return List.of();
+        }
+        String[] slots = row == null ? new String[0] : row.split(",", size + 1);
+        List<String> out = new ArrayList<>(Math.max(0, size));
+        for (int i = 0; i < size; i++) {
+            out.add(i < slots.length ? keptLabelSlot(slots[i]) : "");
+        }
+        return List.copyOf(out);
+    }
+
+    /** One {@link #keptLabelRow} slot, checked in this order - {@code -} or
+     *  empty, then over {@link #KEPT_LABEL_HEX_MAX} digits or odd (before any decoding), then per byte a digit outside
+     *  {@code 0-9a-f} and a byte outside printable ASCII 0x20-0x7E - each reading {@code ""}; else the label. */
+    private static String keptLabelSlot(String slot) {
+        if (slot.isEmpty() || "-".equals(slot) || slot.length() > KEPT_LABEL_HEX_MAX || (slot.length() & 1) != 0) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(slot.length() / 2);
+        for (int i = 0; i < slot.length(); i += 2) {
+            int hi = lowerHexDigit(slot.charAt(i));
+            int lo = lowerHexDigit(slot.charAt(i + 1));
+            if (hi < 0 || lo < 0) {
+                return "";
+            }
+            int b = hi << 4 | lo;
+            if (b < 0x20 || b > 0x7E) {
+                return "";
+            }
+            sb.append((char) b);
+        }
+        return sb.toString();
+    }
+
+    /** {@code c}'s value as a lowercase hex digit (the writer's alphabet), or -1. */
+    private static int lowerHexDigit(char c) {
+        return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+    }
+
     /** true when the writer carries the kept rows ({@code custom.kept=} present). */
     public boolean customKeptKnown() {
         return customKeptKnown;
@@ -540,6 +599,12 @@ public final class OpsSnapshot {
     /** {@code custom.kept_ids=}: the kept stems (at most the writer's 32; empty when absent or {@code -}). */
     public List<String> customKeptIds() {
         return customKeptIds;
+    }
+
+    /** {@code custom.kept_labels=}: the typed name of each kept ship, by index against {@link #customKeptIds()} (the
+     *  same size; {@code ""} = none, never null) - a display text only, every verb acts on the stem. */
+    public List<String> customKeptLabels() {
+        return customKeptLabels;
     }
 
     /** {@code custom.kept_failed=}: kept verbs refused + kept jobs the writer refused or failed. */

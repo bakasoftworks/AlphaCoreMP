@@ -3486,6 +3486,16 @@ public final class EngineCombatBinding {
     private Map<Long, cc.starsector.server.runtime.MissileImpactMemo.Impact> lastRemovedMissileImpacts = Map.of();
     /** The probe-fed memo joined at delist ({@link #setMissileImpactMemo}); null = no join. */
     private cc.starsector.server.runtime.MissileImpactMemo missileImpactMemo;
+    /** The fuse-burst attribution index this walk fills ({@link #setBlastSpecIndex}); null = no fill, zero cost.
+     * */
+    private cc.starsector.server.runtime.ArcHitServeProbe.BlastSpecIndex blastSpecIndex;
+    /** {@code MissileAPI.getUnwrappedMissileAI()} / {@code getMissileAI()} / {@code getSpec()} and
+     *  {@code MissileSpecAPI.getExplosionSpec()}, resolved ONCE on the first listing ({@link #listBlastBomb}). */
+    private Method blastGetUnwrappedAi;
+    private Method blastGetAi;
+    private Method blastGetSpec;
+    private Method blastSpecGetExplosionSpec;
+    private boolean blastHandlesTried;
 
     // per-read side channel + across-read identity set for the
     // Paladin-det birth probe (PROJECTILE lane). The det list and skip count follow the
@@ -3694,6 +3704,10 @@ public final class EngineCombatBinding {
                 // weaponless-mine spawn row below fires ONE-PER-LIFETIME (first read only).
                 boolean freshMissile = !missileStableIds.containsKey(entity);
                 long stableId = missileStableIdFor(entity);
+                // A first listing feeds the fuse-burst attribution index.
+                if (freshMissile && blastSpecIndex != null) {
+                    listBlastBomb(entity, stableId);
+                }
                 long sourcePositionShipId = 0L;
                 int sourceMountIndex = -1;
                 try {
@@ -3859,6 +3873,13 @@ public final class EngineCombatBinding {
                 if (missileImpactMemo != null) {
                     missileImpactMemo.retainLive(liveMissiles); // the leak guard: unconsumed memos of dead missiles
                 }
+                // Every walk re-reads each live fuse bomb's burst-spec
+                // field (one cached Field read per live fuse bomb; the AI replaces the object on each
+                // updateDamage) and re-puts a changed one. Delisted bombs leave the tracking set here;
+                // their spec entries stay (weak), since a burst reports hits after its bomb's delist.
+                if (blastSpecIndex != null) {
+                    blastSpecIndex.retainLiveAndRefresh(liveMissiles);
+                }
             }
             if (kind == CombatEntityView.Kind.PROJECTILE) {
                 if (mirvChildBirths != null) {
@@ -3963,6 +3984,59 @@ public final class EngineCombatBinding {
     /** Install the probe-fed last-impact memo the missile read joins at delist. */
     public void setMissileImpactMemo(cc.starsector.server.runtime.MissileImpactMemo memo) {
         this.missileImpactMemo = memo;
+    }
+
+    /** Installs the arc-hit probe's fuse-burst attribution index, which the missile walk fills
+     *  ({@link #listBlastBomb} at a first listing, the per-walk refresh after the prune).
+     * */
+    public void setBlastSpecIndex(cc.starsector.server.runtime.ArcHitServeProbe.BlastSpecIndex index) {
+        this.blastSpecIndex = index;
+    }
+
+    /**
+     * A missile's FIRST listing (sim thread, the missile walk): hands its AI to the fuse-burst index, which
+     * tracks it when the AI is fuse-family, and notes its spec's top-level contact-blast spec. Three to four
+     * cached invokes per BIRTH ({@code getUnwrappedMissileAI}, then {@code getMissileAI} only when that is
+     * null, {@code getSpec}, {@code getExplosionSpec}); nothing per tick. The AI read prefers the unwrapped
+     * plugin (the engine wraps a bare plugin, the DEM-walk idiom in {@link #demChildMissileByDroneShip}).
+     * A fault is counted on the index ({@code blast_fill_faults=}) and leaves that missile untracked.
+     *
+     */
+    private void listBlastBomb(Object missile, long stableId) {
+        if (!blastHandlesTried) {
+            blastHandlesTried = true;
+            try {
+                ClassLoader loader = missile.getClass().getClassLoader();
+                Class<?> missileApi = Class.forName("com.fs.starfarer.api.combat.MissileAPI", false, loader);
+                Class<?> specApi = Class.forName("com.fs.starfarer.api.loading.MissileSpecAPI", false, loader);
+                Method unwrapped = OpenHandles.open(missileApi.getMethod("getUnwrappedMissileAI"));
+                Method wrapped = OpenHandles.open(missileApi.getMethod("getMissileAI"));
+                Method spec = OpenHandles.open(missileApi.getMethod("getSpec"));
+                Method explosionSpec = OpenHandles.open(specApi.getMethod("getExplosionSpec"));
+                blastGetUnwrappedAi = unwrapped;
+                blastGetAi = wrapped;
+                blastGetSpec = spec;
+                blastSpecGetExplosionSpec = explosionSpec;
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                blastSpecIndex.noteFillFault("resolve", e);
+            }
+        }
+        if (blastSpecGetExplosionSpec == null) {
+            return;
+        }
+        try {
+            Object ai = blastGetUnwrappedAi.invoke(missile, NO_ARGS);
+            if (ai == null) {
+                ai = blastGetAi.invoke(missile, NO_ARGS);
+            }
+            blastSpecIndex.listBomb(missile, ai, stableId);
+            Object spec = blastGetSpec.invoke(missile, NO_ARGS);
+            if (spec != null) {
+                blastSpecIndex.noteContactSpec(blastSpecGetExplosionSpec.invoke(spec, NO_ARGS));
+            }
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            blastSpecIndex.noteFillFault("list", e);
+        }
     }
 
     /**

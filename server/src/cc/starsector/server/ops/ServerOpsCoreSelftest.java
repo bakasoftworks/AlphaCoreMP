@@ -4975,26 +4975,88 @@ public final class ServerOpsCoreSelftest {
                 r + ": kept / inbox pick rows = the two id rows, '-' / absent / null = empty (flips if the lists swap,"
                         + " '-' parses as an id or null throws): " + keptPickRows(keptSnap) + " / " + inboxPickRows(keptSnap));
 
+        // custom.kept_labels decoded beside the kept ids from literal status
+        // file lines (the writer's pinned example first) and carried to the page's status JSON; no fixture may throw
+        // (a throw blanks the whole snapshot) or move a name onto a neighbour's stem.
+        r = "status-kept-labels";
+        String ids3 = "kept-my-wolf-1a2b3c,kept-b-000001,kept-c-000002";
+        String wolf = "\"Wolf, =<b>\" (wolf)";
+        List<String> pinnedLines = keptLabelLines(base, ids3, "22576f6c662c203d3c623e222028776f6c6629,-,224222");
+        List<String> pinnedLabels = keptLabelsOf(pinnedLines);
+        check(List.of(wolf, "", "\"B\"").equals(pinnedLabels),
+                r + ": the pinned example decodes slot for slot, the '-' in the MIDDLE keeping its place (flips if a"
+                        + " slot is dropped or reordered, or the quotes / the comma inside a name mis-decode): "
+                        + pinnedLabels);
+        String pinnedJson;
+        String pinnedDetail;
+        try {
+            OpsSnapshot pinnedSnap = OpsSnapshot.parse(pinnedLines);
+            pinnedJson = statusJson(pinnedSnap, null, "x", true, false, 10.0, 1L, List.of());
+            pinnedDetail = customsDetailText(pinnedSnap);
+        } catch (RuntimeException e) {
+            pinnedJson = "threw " + e.getClass().getSimpleName();
+            pinnedDetail = pinnedJson;
+        }
+        check(pinnedJson.contains("\"customKeptIds\":[\"kept-my-wolf-1a2b3c\",\"kept-b-000001\",\"kept-c-000002\"],"
+                        + "\"customKeptLabels\":[\"\\\"Wolf, =<b>\\\" (wolf)\",\"\",\"\\\"B\\\"\"],"),
+                r + ": the status JSON carries customKeptLabels right after the ids, every name escaped, the empty slot"
+                        + " in place (flips if the key is dropped, renamed, unescaped or reads another row): " + pinnedJson);
+        check(pinnedDetail.contains("kept for everyone: 3/32: kept-my-wolf-1a2b3c, kept-b-000001, kept-c-000002")
+                        && !pinnedDetail.contains("Wolf"),
+                r + ": the customs detail text stays ids-only (flips if the summary takes a typed name): "
+                        + pinnedDetail);
+        List<String> noRow = keptLabelsOf(keptLabelLines(base, ids3, null));
+        List<String> noIds = keptLabelsOf(keptLabelLines(base, "-", "224122"));
+        check(List.of("", "", "").equals(noRow) && noIds.isEmpty(),
+                r + ": an older writer's file (no labels row) reads one empty name per id, and no ids reads none even"
+                        + " beside a stray slot (flips if a missing row throws, shrinks the list or reads null, or the"
+                        + " list is sized by the slots): " + noRow + " / " + noIds);
+        String la = "224122";
+        String lb = "224222";
+        String quotedA = "\"A\"";
+        String quotedB = "\"B\"";
+        for (String[] fx : new String[][] {
+                {"an odd-length slot", la + ",22412," + lb, quotedA, "", quotedB},
+                {"a non-hex slot", la + ",22zz22," + lb, quotedA, "", quotedB},
+                {"a 108-hex slot", la + "," + "41".repeat(54) + "," + lb, quotedA, "", quotedB},
+                {"a slot decoding to 0x7F", la + ",227f22," + lb, quotedA, "", quotedB},
+                {"a slot decoding to a byte >= 0x80", la + ",22c322," + lb, quotedA, "", quotedB},
+                {"a slot decoding below 0x20", la + ",221f22," + lb, quotedA, "", quotedB},
+                {"an empty middle slot", la + ",," + lb, quotedA, "", quotedB},
+                {"more slots than ids", la + ",-," + lb + ",224322", quotedA, "", quotedB},
+                {"fewer slots than ids", la, quotedA, "", ""},
+                {"a trailing comma", la + "," + lb + ",", quotedA, quotedB, ""},
+                {"a row of only commas", ",,,,", "", "", ""},
+                {"an empty row", "", "", "", ""},
+                {"the 106-hex cap and the 0x20 / 0x7E bounds", "41".repeat(53) + ",207e," + lb, "A".repeat(53), " ~",
+                        quotedB}}) {
+            List<String> got = keptLabelsOf(keptLabelLines(base, ids3, fx[1]));
+            check(List.of(fx[2], fx[3], fx[4]).equals(got),
+                    r + ": " + fx[0] + " (flips if a bad slot throws, decodes, or shifts a neighbour, or a length cap /"
+                            + " byte bound is off by one): " + got);
+        }
+
         r = "status-json-kept";
-        String keptJson = statusJson(keptSnap, null, "x", true, false, 10.0, 1L, List.of());
-        String emptyKeys = "\"customKept\":0,\"customKeptIds\":[],\"customKeptFailed\":0,\"customKeptLast\":\"-\","
-                + "\"customInboxIds\":[],\"customKeptOverCap\":false,\"customInboxOverCap\":false";
+        String keptJson =statusJson(keptSnap, null, "x", true, false, 10.0, 1L, List.of());
+        String emptyKeys = "\"customKept\":0,\"customKeptIds\":[],\"customKeptLabels\":[],\"customKeptFailed\":0,"
+                + "\"customKeptLast\":\"-\",\"customInboxIds\":[],\"customKeptOverCap\":false,\"customInboxOverCap\":false";
         check(keptJson.contains("\"customKept\":2,\"customKeptIds\":[\"kept-my-wolf-1a2b3c\",\"kept-b-000001\"],"
-                        + "\"customKeptFailed\":1,\"customKeptLast\":\"forgot kept-c-000002\","
+                        + "\"customKeptLabels\":[\"\",\"\"],\"customKeptFailed\":1,\"customKeptLast\":\"forgot kept-c-000002\","
                         + "\"customInboxIds\":[\"cc-v3-x\",\"kept-c-000002\"],\"customKeptOverCap\":false,"
                         + "\"customInboxOverCap\":false")
                         && statusJson(overSnap, null, "x", true, false, 10.0, 1L, List.of())
                                 .contains("\"customKeptOverCap\":true,\"customInboxOverCap\":true")
                         && statusJson(preSnap, null, "x", true, false, 10.0, 1L, List.of()).contains(emptyKeys)
                         && statusJson(null, null, "x", false, false, 10.0, 1L, List.of()).contains(emptyKeys),
-                r + ": the 7 kept keys from a kept snapshot, [] / '-' / false from a pre-kept one and none (flips if a"
+                r + ": the 8 kept keys from a kept snapshot, [] / '-' / false from a pre-kept one and none (flips if a"
                         + " key is dropped, renamed or reads another row): " + keptJson);
         List<String> quoteLines = new ArrayList<>(base);
         quoteLines.addAll(List.of("custom.kept=0", "custom.kept_last=a\"b"));
         check(statusJson(OpsSnapshot.parse(quoteLines), null, "x", true, false, 10.0, 1L, List.of())
                         .contains("\"customKeptLast\":\"a\\\"b\""),
                 r + ": customKeptLast rides jsonEscape (flips if a status string reaches the JSON raw)");
-        System.out.println("  PASS keep-forget-minters customs-detail-kept pick-rows-kept status-json-kept");
+        System.out.println("  PASS keep-forget-minters customs-detail-kept pick-rows-kept status-kept-labels"
+                + " status-json-kept");
     }
 
     /**
@@ -6513,6 +6575,28 @@ public final class ServerOpsCoreSelftest {
 
     /** One row: a failure prints {@code FAIL <what>} and counts into {@link #failures}, then the chain goes on.
      * */
+    /** Literal status-file lines for {@code status-kept-labels} - {@code base}
+     *  + {@code custom.kept=3} + {@code custom.kept_ids=<idsRow>} + {@code custom.kept_labels=<labelsRow>} (null = no
+     *  labels line, as an older writer's file). */
+    private static List<String> keptLabelLines(List<String> base, String idsRow, String labelsRow) {
+        List<String> lines = new ArrayList<>(base);
+        lines.addAll(List.of("custom.kept=3", "custom.kept_ids=" + idsRow));
+        if (labelsRow != null) {
+            lines.add("custom.kept_labels=" + labelsRow);
+        }
+        return lines;
+    }
+
+    /** The decoded kept names of {@code lines}; a parse throw reads as the
+     *  one-element list {@code ["threw <SimpleName>"]}, so a throwing decode fails its row by name. */
+    private static List<String> keptLabelsOf(List<String> lines) {
+        try {
+            return OpsSnapshot.parse(lines).customKeptLabels();
+        } catch (RuntimeException e) {
+            return List.of("threw " + e.getClass().getSimpleName());
+        }
+    }
+
     private static void check(boolean ok, String what) {
         if (!ok) {
             failures++;

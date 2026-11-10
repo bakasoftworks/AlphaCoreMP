@@ -101,12 +101,16 @@ public final class GameplayEdgeEventDetector {
     public static final String MOTE_CONTROL_SYSTEM_ID = "mote_control";
 
     /** The within-tick dedup/order key — shared with {@link OnFireTruthMerger},
-     *  which re-sorts its merged stream by the same canonical key. */
+     *  which re-sorts its merged stream by the same canonical key. A {@code BLAST_HIT}
+     *  tie breaks on its victim ({@code targetWireId}): one bomb names one record per victim with the
+     *  same code in one tick, and both must survive in a canonical order; every other kind keys 0
+     *  there, so its order is unchanged. */
     static final Comparator<GameplayEdgeEvent> CANONICAL_ORDER =
             Comparator.comparingLong(GameplayEdgeEvent::entityId)
                     .thenComparing(GameplayEdgeEvent::kind)
                     .thenComparing(GameplayEdgeEvent::phase)
-                    .thenComparingInt(GameplayEdgeEvent::mountIndex);
+                    .thenComparingInt(GameplayEdgeEvent::mountIndex)
+                    .thenComparingLong(e -> e.kind() == GameplayEdgeEventKind.BLAST_HIT ? e.targetWireId() : 0L);
 
     private record MountKey(long shipId, int mountIndex) {}
 

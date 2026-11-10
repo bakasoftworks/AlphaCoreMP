@@ -87,7 +87,27 @@ final class HostShips {
     }
 
     static boolean live() {
-        return sessionOrNull() != null && ChatLane.editorLive();
+        return liveOn(sessionOrNull(), ChatLane.editorLive());
+    }
+
+    /**
+     * The card's live test: a session whose own seat is KNOWN ({@link #ownSeat}) and a bound editor chat lane. A
+     * session in the pre-round hold, or an observer that never holds a hull, reads not-live, so the card's automatic
+     * list read waits for the first ping after the seat arrives, and that read's answer lands on the card, not in the
+     * host's chat.
+     */
+    static boolean liveOn(PredictSession s, boolean editorLane) {
+        return ownSeat(s) >= 0 && editorLane;
+    }
+
+    /**
+     * The own seat every host-card slot keys its reply on, or -1 (no session, or the seat is not known yet: a SEAT
+     * frame carrying this session's hull has not landed). A slot keyed on -1 takes nothing, so a line sent then would
+     * print its whole answer into the host's chat: every sender here refuses at -1 BEFORE it arms a slot or sends.
+     *
+     */
+    static int ownSeat(PredictSession s) {
+        return s == null ? -1 : s.ownSeatIdOrMinusOne();
     }
 
     static boolean admin() {
@@ -157,7 +177,7 @@ final class HostShips {
         }
         String state;
         try {
-            state = signInOnce(secret);
+            state = signInOnce(sessionOrNull(), secret);
         } finally {
             synchronized (GATE) {
                 signInInFlight = false;
@@ -167,12 +187,14 @@ final class HostShips {
         return state;
     }
 
-    private static String signInOnce(String secret) {
-        PredictSession s = sessionOrNull();
-        if (s == null) {
+    /** One sign-in on {@code s}: an unknown own seat ({@link #ownSeat} -1) arms nothing and queues nothing, it reads
+     *  {@code not-live}. */
+    static String signInOnce(PredictSession s, String secret) {
+        int seat = ownSeat(s);
+        if (seat < 0) {
             return "not-live";
         }
-        long gen = HostShipsLatch.armAuth(s.ownSeatIdOrMinusOne());
+        long gen = HostShipsLatch.armAuth(seat);
         if (!ChatLane.editorAuth(secret)) {
             HostShipsLatch.disarmAuth(gen);
             return "not-live";
@@ -203,8 +225,17 @@ final class HostShips {
 
     /** {@code GET host/ships}: the server's {@code /shiplist}, parsed into its four groups. */
     static JSONObject ships() throws JSONException {
-        PredictSession s = sessionOrNull();
-        if (s == null) {
+        return ships(sessionOrNull());
+    }
+
+    /** {@link #ships()} on {@code s}: an unknown own seat ({@link #ownSeat} -1) arms nothing and sends nothing, it
+     *  answers like no session. */
+    static JSONObject ships(PredictSession s) throws JSONException {
+        int seat = ownSeat(s);
+        if (seat < 0) {
+            if (s != null) {
+                PilotWatchLog.info("editor host verb: shiplist NOT sent (own seat not known yet)");
+            }
             return fail(NO_ANSWER);
         }
         synchronized (GATE) {
@@ -214,7 +245,7 @@ final class HostShips {
             verbInFlight = true;
         }
         try {
-            long gen = HostShipsLatch.armList(s.ownSeatIdOrMinusOne());
+            long gen = HostShipsLatch.armList(seat);
             try {
                 s.sendChat("/shiplist");
             } catch (IOException | RuntimeException notSent) {
@@ -410,12 +441,21 @@ final class HostShips {
      * as typed - so the latch slot is the same one a plain keep arms.
      */
     static JSONObject verb(String verb, String id, String replaces) throws JSONException {
+        return verb(verb, id, replaces, sessionOrNull());
+    }
+
+    /** {@link #verb(String, String, String)} on {@code s}: an unknown own seat ({@link #ownSeat} -1) arms nothing and
+     *  sends nothing, it answers like no session. */
+    static JSONObject verb(String verb, String id, String replaces, PredictSession s) throws JSONException {
         String line = verbLine(verb, id, replaces);
         if (line == null) {
             return fail("bad ship id");
         }
-        PredictSession s = sessionOrNull();
-        if (s == null) {
+        int seat = ownSeat(s);
+        if (seat < 0) {
+            if (s != null) {
+                PilotWatchLog.info("editor host verb: " + verb + " NOT sent (own seat not known yet)");
+            }
             return fail(NO_ANSWER);
         }
         synchronized (GATE) {
@@ -426,7 +466,7 @@ final class HostShips {
         }
         try {
             String prefix = verb + " " + id + ": ";
-            long gen = HostShipsLatch.armVerb(prefix, s.ownSeatIdOrMinusOne());
+            long gen = HostShipsLatch.armVerb(prefix, seat);
             try {
                 s.sendChat(line);
             } catch (IOException | RuntimeException notSent) {

@@ -899,6 +899,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     boolean capOwnDamage = true; // package: OwnMountLifecycleLane adopt/release (axis B arm/off)
     /** One-shot guard: {@link OwnDamageCap} installed on the own ship (both bind paths call {@link #installOwnCap}). */
     boolean ownCapInstalled; // package: OwnMountLifecycleLane adopt re-installs the cap
+    /** The body {@link #installOwnCap} last put an OwnDamageCap on: set only after addListener returned, null from an install's start. */
+    ShipAPI ownCapBody; // package: BlastHitLane's own door reads it (a body with no cap gets no own apply)
     /** Logged once when own/foe are first resolved against the snapshot, so a bad mapping is visible in the WATCH. */
     private boolean mappingLogged;
     /** Logged once if the seat-2+ index fallback is REFUSED (never silently mis-map own onto entity 1). */
@@ -2285,6 +2287,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
      *  (arc to the true node + the applied-split floaty); knob statics live in the lane. */
     final ArcHitFxLane arcHitLane = new ArcHitFxLane(this);
     final CritMalfunctionLane critMalfunctionLane = new CritMalfunctionLane(this); //
+    /** The GPEE v17 BLAST_HIT (kind 11) presenter: a fuse burst's server-named hits on local bodies. */
+    final BlastHitLane blastHitLane = new BlastHitLane(this);
     // The presented-missile track instrument (cc.mtrack.every;
     // OFF by default — log-only, knob-independent of the lane so it can measure the A side too).
     final PresentedMissileTrack mtrack = new PresentedMissileTrack(this, missileLane);
@@ -2323,7 +2327,11 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                                                            // binds the live threshold
     boolean foeDischargeStarvationWarned;
     private int replayShipAutonomousLogLines;
-    int replayShipNonWeaponDamagers; // predict_event_rebase_replay_ship_nonweapon_damager (death-explosion class)
+    // predict_event_rebase_replay_ship_nonweapon_damager: every null-weapon, null-spec damager of a
+    // replay-driven ship = a death explosion AND each inert fuse / blast spawn the presentation lanes
+    // mint (one per bomb burst, so the count tracks fuse_burst, not deaths alone).
+    int replayShipNonWeaponDamagers;
+    private int replayShipNonWeaponLogLines; // capped like the two sibling arms
     // The mine/null-weapon-MINT arm split out of the bucket above (spec id non-null —
     // the engine's DamagingExplosion hardcodes null for both getWeapon and getProjectileSpecId).
     int replayShipWeaponlessSpawns;  // predict_event_rebase_replay_ship_weaponless_spawn
@@ -4187,12 +4195,17 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                                 // i.e. exactly the earlier classification — never a new bar trip.
                             }
                             if (weaponlessSpec == null) {
+                                // The counter counts every one; the ROW is capped (
+                                // an inert fuse burst lands here once per bomb, ~200 a Wasp fight).
                                 replayShipNonWeaponDamagers++;
-                                PilotWatchLog.info("predict autofire-suppress: non-weapon damager #"
-                                        + replayShipNonWeaponDamagers + " from replay-driven ship "
-                                        + Integer.toHexString(System.identityHashCode(p.getSource()))
-                                        + " at snapTick=" + lastSnapshotSimTick
-                                        + " (death-explosion class; not a weapon discharge)");
+                                if (replayShipNonWeaponLogLines < EVENT_REPLAY_LOG_MAX) {
+                                    replayShipNonWeaponLogLines++;
+                                    PilotWatchLog.info("predict autofire-suppress: non-weapon damager #"
+                                            + replayShipNonWeaponDamagers + " from replay-driven ship "
+                                            + Integer.toHexString(System.identityHashCode(p.getSource()))
+                                            + " at snapTick=" + lastSnapshotSimTick
+                                            + " (death explosion or inert burst; not a weapon discharge)");
+                                }
                             } else {
                                 replayShipWeaponlessSpawns++;
                                 if (replayShipWeaponlessLogLines < EVENT_REPLAY_LOG_MAX) {
@@ -6538,8 +6551,10 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             return;
         }
         ownCapInstalled = true;
+        ownCapBody = null; // a throw below leaves the body uncapped for the own door
         try {
             ownShip.addListener(hullCap.new OwnDamageCap());
+            ownCapBody = ownShip;
         } catch (Throwable t) {
             PilotWatchLog.error("predict own-cap install FAILED (own ship locally unkillable-guard absent)", t);
         }
@@ -6657,10 +6672,19 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         return replicaBody.remoteBodyFullyTreated(ship);
     }
 
-    /** {@link ReplicaBodyLane#applyWireAckedHit} (the 7-arg form; the 9-arg one has no outside caller). */
+    /** {@link ReplicaBodyLane#applyWireAckedHit} (the 7-arg form). */
     float applyWireAckedHit(ShipAPI victim, Vector2f at, float damage, DamageType type,
             float emp, Object source, long hitTick) {
         return replicaBody.applyWireAckedHit(victim, at, damage, type, emp, source, hitTick);
+    }
+
+    /** {@link ReplicaBodyLane#applyWireAckedHit} (the 9-arg form with the engine door's
+     *  {@code bypassShields} / {@code playSound} switches): {@link BlastHitLane} needs a hull record to
+     *  bypass the shield. */
+    float applyWireAckedHit(ShipAPI victim, Vector2f at, float damage, DamageType type,
+            float emp, Object source, boolean bypassShields, boolean playSound, long hitTick) {
+        return replicaBody.applyWireAckedHit(victim, at, damage, type, emp, source, bypassShields,
+                playSound, hitTick);
     }
 
     /** {@link ReplicaBodyLane#forgetRemoteBodyTreatment}. */
@@ -7069,6 +7093,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         flagshipLeverApplied = false; // Fresh round hull re-runs the stats lever
         leverSettledRefireAtMillis = 0L; // The fresh round's own t=0 lever re-arms it
         ownCapInstalled = false;
+        ownCapBody = null;
         foeState.resetForMatchReset(); // K17: foe-family round-scoped latches/maps
         teleportLane.resetRound(); // Fences/windows/patience are round-local (K16)
         ownCrWireLast = Float.NaN; // the census wire riders are round-local

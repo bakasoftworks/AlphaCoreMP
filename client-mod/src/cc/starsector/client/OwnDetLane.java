@@ -567,6 +567,8 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
     /** The OWN per-cell armor lane (the twin ownership; knob
      *  {@code cc.predict.armorCells}). Bound to the fold lane for the cellLive skip. */
     private final ArmorCellLane ownCellLane = ArmorCellLane.own(ArmorCellLane.MODE);
+    /** The OWN cell lane, for the own wire-acked apply's armor restore (it consumes this instance's stamps). */
+    ArmorCellLane ownCellLane() { return ownCellLane; }
 
     /**
      * Fold the authoritative own-ship armor fraction onto the own grid — the PRCP

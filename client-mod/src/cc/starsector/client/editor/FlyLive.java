@@ -35,7 +35,8 @@ import cc.starsector.client.net.ShipReplyLatch;
  * the same canonical id) — the accept seeds the seat's next-respawn override server-side; the
  * verdict object rides as {@code submit}.</li>
  * </ul>
- * Not live ⇒ {@code replyState=not-live} and the SPA says "flies at your next connect". Fail-soft:
+ * Not live ⇒ {@code replyState=not-live} and the SPA says "flies at your next connect"; a roster build whose
+ * session has no known own seat yet still sends its {@code /ship} (unlatched, {@code replyState=sent}). Fail-soft:
  * a send that throws is {@code not-sent} with a sanitized reason; nothing here throws past the route.
  * Player-authored text (ids, the server echo) is DATA: sanitized + capped before the log / the SPA.
  */
@@ -79,12 +80,21 @@ final class FlyLive {
         }
     }
 
-    private static void shipVerb(JSONObject o, PredictSession session, String id) throws JSONException {
+    /** The roster build's {@code /ship <id>}. Its reply keys on this session's own seat, so an unknown seat (-1: the
+     *  briefing / pre-round hold, an observer) arms NO reply slot — but the line is still SENT: the server stores a
+     *  seated session's pick per seat with no hull needed ({@code ChatCommandDispatch} {@code overrideBySeat}) and the
+     *  FIRST fly-in reads it, and nothing else carries a hold-time pick ({@code current.data} is read at dial time
+     *  only). The unkeyed reply prints as one chat line; the answer is {@code sent} at once, never a 2-s wait on a
+     *  slot that cannot match. WHY not gated like the automatic {@code /shiplist}: this is one explicit click, and
+     *  the belt that dropped it left the player flying the old ship all session.
+     * */
+    static void shipVerb(JSONObject o, PredictSession session, String id) throws JSONException {
         if (!EditorText.isId(id)) {
             o.put("replyState", "not-sent");
             return;
         }
-        long gen = ShipReplyLatch.arm(session.ownSeatIdOrMinusOne()); // The reply's seat
+        int seat = session.ownSeatIdOrMinusOne();
+        long gen = seat < 0 ? -1L : ShipReplyLatch.arm(seat); // The reply's seat
         try {
             session.sendChat("/ship " + id);
         } catch (IOException | RuntimeException notSent) {
@@ -93,6 +103,12 @@ final class FlyLive {
                     ? notSent.getClass().getSimpleName() : notSent.getMessage(), 120));
             PilotWatchLog.info("editor fly (server build): /ship " + id + " NOT sent ("
                     + notSent.getClass().getSimpleName() + ")");
+            return;
+        }
+        if (seat < 0) {
+            o.put("replyState", "sent");
+            PilotWatchLog.info("editor fly (server build): /ship " + id
+                    + " sent unlatched (own seat not known yet; the chat shows the reply)");
             return;
         }
         String reply = ShipReplyLatch.await(gen, SHIP_REPLY_WAIT_MS);

@@ -18,7 +18,8 @@ import java.util.Map;
  *
  * <p>Laws: only the author {@code server} on the slot's OWN seat id is read (the server stamps a receipt with the
  * caller's seat; a peer who names itself "server" speaks on its own seat, and an unknown own seat, -1, takes
- * nothing). {@link #offer} returns {@code true} = CONSUMED for exactly two classes of line: a {@code shiplist } line
+ * nothing: so the editor neither arms a slot nor sends its line before its own seat is known, or the answer would
+ * print in the host's chat). {@link #offer} returns {@code true} = CONSUMED for exactly two classes of line: a {@code shiplist } line
  * while the LIST slot is armed (the host's chat is not spammed with the card's list), and a {@code "<verb> <id>: "}
  * receipt (its QUEUED line or its final one) that lands on an ARMED verb slot - the editor's own verbs answer on the
  * card, and their heads carry ids no chat line should show. A receipt with no armed slot (a verb the host typed in

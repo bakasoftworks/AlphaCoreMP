@@ -5,9 +5,9 @@ package cc.starsector.client.net;
  * spools as admission catch-up (N-aware seat names): the client-side analogue of the
  * server's {@code SeatNameFrameCodec.SeatNameRecord}. One record names ONE seat — {@code seatId}
  * is the door's seat ordinal, {@code shipId} the wire id the name renders over. {@code name} may
- * be the empty-string "no name" sentinel in principle, but the server SKIPS sentinel-resolved
- * records (a name is never un-set), so a live frame always carries a
- * name; the consumer treats {@code ""} as a no-op regardless (the design's own empty-name law).
+ * be the empty-string "no name" sentinel: the server fans ONE such record
+ * when a seat name is forgotten (a new occupant with no name), and the consumer CLEARS the name
+ * it holds for that ship id ({@code SeatNameHullBarLane.clearWireName}); an unheld id is a no-op.
  *
  * <p>Like its {@code SNMS} sibling {@link ClientSeatNames}, this is a small client-owned mirror —
  * the mod deliberately does not bundle the server's record (its codec statics drag

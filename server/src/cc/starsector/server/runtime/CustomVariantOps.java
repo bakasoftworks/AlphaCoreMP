@@ -263,6 +263,9 @@ public final class CustomVariantOps {
         int operator = laneOrNull.operatorRefusals();
         CatalogPromotionLane promo = laneOrNull.promoOrNull();
         CustomVariantPersistSink sink = laneOrNull.persistSinkOrNull();
+        // The kept ids are read ONCE and that same list keys the labels, so
+        // the two rows always pair slot for slot; the label read is lock-free and never throws (this is the serve thread)
+        java.util.List<String> keptIds = promo == null ? java.util.List.of() : promo.keptIds();
         return new OpsStatusFile.CustomStats(ledger.acceptedCount(),
                 policy + caps + engine + operator,
                 ledger.bannedCount(), laneOrNull.accepting(),
@@ -273,13 +276,14 @@ public final class CustomVariantOps {
                 config.dModsAllowed() ? "allow" : "deny",
                 laneOrNull.exportsWritten(), laneOrNull.exportsFailed(),
                 promo == null ? 0 : promo.keptListed(),
-                promo == null ? java.util.List.of() : promo.keptIds(),
+                keptIds,
                 laneOrNull.keptFailed(),
                 sink == null ? "-" : sink.keptLast(),
                 promo == null ? java.util.List.of() : promo.inboxIds(),
                 promo != null && promo.keptOverCap(),
                 promo != null && promo.inboxOverCap(),
-                laneOrNull.submitFrameEncodeFailed(), laneOrNull.vsubDecodeRefused());
+                laneOrNull.submitFrameEncodeFailed(), laneOrNull.vsubDecodeRefused(),
+                promo == null ? java.util.List.of() : promo.keptLabels(keptIds));
     }
 
     /** Dispatch one drained custom verb; returns the one-line receipt (the D5 lane's text). */

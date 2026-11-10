@@ -1439,6 +1439,13 @@ public final class ServerOpsCore {
         return snapOrNull == null ? List.of() : snapOrNull.customKeptIds();
     }
 
+    /** The page's kept names = the status file's decoded
+     * {@code custom.kept_labels}, index for index with {@link #keptPickRows} ({@code ""} = none); empty without a
+     * snapshot. A display text only: the Forget pick, its confirm and the verb line all keep the stem. */
+    public static List<String> keptLabelRows(OpsSnapshot snapOrNull) {
+        return snapOrNull == null ? List.of() : snapOrNull.customKeptLabels();
+    }
+
     /** The Swing Keep pick list when no seat is picked (and the
      * page's "Exported, not kept yet" list) = the status file's {@code custom.inbox_ids}; empty without one. */
     public static List<String> inboxPickRows(OpsSnapshot snapOrNull) {
@@ -2465,8 +2472,11 @@ public final class ServerOpsCore {
         // The page's Kept / Exported lists - the status file's kept
         // rows (OpsSnapshot's optional keys: 0 / [] / "-" / false without a snapshot or from a pre-kept writer),
         // every string through jsonEscape; the page renders them as textContent only.
+        // customKeptLabels = the typed names, the same length and order as
+        // customKeptIds ("" = none) - the page paints each beside its stem; every verb still takes the stem.
         sb.append(",\"customKept\":").append(snap == null ? 0 : snap.customKept())
                 .append(",\"customKeptIds\":").append(jsonStringArray(keptPickRows(snap)))
+                .append(",\"customKeptLabels\":").append(jsonStringArray(keptLabelRows(snap)))
                 .append(",\"customKeptFailed\":").append(snap == null ? 0L : snap.customKeptFailed())
                 .append(",\"customKeptLast\":\"").append(jsonEscape(snap == null ? "-" : snap.customKeptLast()))
                 .append("\",\"customInboxIds\":").append(jsonStringArray(inboxPickRows(snap)))

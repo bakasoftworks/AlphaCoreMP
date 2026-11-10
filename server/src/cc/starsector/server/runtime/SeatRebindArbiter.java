@@ -63,11 +63,21 @@ public final class SeatRebindArbiter {
      * door's SNMR fan (reader thread, outside the door lock — never-nested law holds); values
      * are already codec-validated ({@code SeatNameFrameCodec.validateSeatName}: ≤24 chars,
      * single-line printable), so every reply line embedding one stays inside the chat line law.
-     * Never cleared (a takeover's re-announce overwrites; an unnamed seat falls back to
-     * "seat N" — the chat fan's own fallback vocabulary).
+     * A takeover's re-announce overwrites; {@link #forgetSeatName} drops a seat's entry when the
+     * door admits a NEW occupant to it, or when the seat's own player returns and announces no
+     * name — so a nameless newcomer reads "seat N" (the chat fan's own fallback vocabulary),
+     * never the leaver's name. A round wrap ({@link #clearRound}) keeps the table.
      */
     private final LinkedHashMap<Integer, String> nameBySeatId =
             new LinkedHashMap<Integer, String>();
+    /**
+     * Bumped (under this monitor) whenever {@link #nameBySeatId} changes value: a note that
+     * changes or adds a name, a forget that removed one. Volatile so the sim thread's census
+     * publish reads it without taking this monitor and re-publishes when a label moved —
+     * a name change marks no census dirty bit of its own. Wraps harmlessly (compared for
+     * inequality only).
+     */
+    private volatile int seatNameChanges;
 
     // ---- W3 command-transfer contest core -------------------
 
@@ -942,7 +952,28 @@ public final class SeatRebindArbiter {
         if (name.isEmpty()) {
             throw new IllegalArgumentException("noteSeatName takes hasName() rows only");
         }
-        nameBySeatId.put(seatId, name);
+        if (!name.equals(nameBySeatId.put(seatId, name))) {
+            seatNameChanges++; // an unchanged re-note (every admission's catch-up) moves nothing
+        }
+    }
+
+    /**
+     * Drop a seat's display name: the seat changed occupant, or its own player came back with
+     * no name. Returns true only when a name was removed (the change counter moves then too),
+     * so the door fans a clear only for a seat that had a label. Reader thread, no lock held
+     * (this monitor stays a leaf).
+     */
+    public synchronized boolean forgetSeatName(int seatId) {
+        if (nameBySeatId.remove(seatId) == null) {
+            return false;
+        }
+        seatNameChanges++;
+        return true;
+    }
+
+    /** The name-change counter (see {@link #seatNameChanges}); lock-free read for the sim thread. */
+    public int seatNameChangeCount() {
+        return seatNameChanges;
     }
 
     /** Occupancy-reply label: the seat's announced name, or "seat N" until one is known. */

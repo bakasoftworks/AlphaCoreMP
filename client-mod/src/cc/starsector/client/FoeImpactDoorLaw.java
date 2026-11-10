@@ -55,10 +55,87 @@ final class FoeImpactDoorLaw {
          *  bare glow at the ring with no engine shield hit: it exploded near the shield, not on it. */
         PRESENT_OWN_SHIELD,
         /** Hit glow off or radius 0: {@code explode()} would show nothing. */
-        PAINT_RESIDUE_GLOW_OFF
+        PAINT_RESIDUE_GLOW_OFF,
+        /** The door TAKEN, never a {@link #decide} result: the
+         *  {@link #PAINT_RESIDUE_EXPLOSION_SPEC} door of a fuse bomb whose server END names a live, treated
+         *  replica presented the contact through the engine's own damage path ({@link #contactAct} =
+         *  {@link ContactAct#APPLY_HULL} / {@link ContactAct#APPLY_SHIELD}) and its blast inert, unpainted. */
+        PRESENT_CONTACT_HIT
+    }
+
+    /** What the {@link Door#PAINT_RESIDUE_EXPLOSION_SPEC} door does
+     *  with a FUSE-FAMILY bomb ({@code FuseBurstLaw.classify}) whose server END names the ship it struck.
+     *  WHY: the paint drew a particle + a hand-made explosion and no damage number for a hit the server
+     *  dealt; vanilla presents that contact through the engine's own applyDamage on the victim. Only the
+     *  family: the other explosionSpec missiles (rift torpedo, dragon) have no measured contact amount, so
+     *  they keep the paint. Every PAINT_* act is the paint, unchanged, counted by name. */
+    enum ContactAct {
+        /** Not this door's end (another door, or a cause outside INTACT / SHIELD_ABSORBED): flow on unchanged. */
+        NOT_THIS_DOOR,
+        /** A hull-cause end: the engine's applyDamage on the victim's hull, shields BYPASSED (the server's
+         *  shield did not take it, so a locally raised replica shield must not either). */
+        APPLY_HULL,
+        /** {@code END_CAUSE_SHIELD_ABSORBED} with a local shield-ring contact: the engine's applyDamage at
+         *  that contact, shields NOT bypassed (the server's own shield verdict). */
+        APPLY_SHIELD,
+        /** Not the fuse family: the paint. */
+        PAINT_NONFAMILY,
+        /** The END's victim id does not resolve to a local ship. */
+        PAINT_NO_VICTIM,
+        /** The victim is the OWN ship: a foe-door hit there would book twice (out of scope; the paint). */
+        PAINT_OWN_SHIP,
+        /** The victim is dead or a hulk. */
+        PAINT_VICTIM_DEAD,
+        /** The victim is not a fully treated replica: an apply there would drift with no wire restore. */
+        PAINT_UNTREATED,
+        /** The bomb has no local source: the blast spawn dereferences it unguarded. */
+        PAINT_NO_SOURCE,
+        /** A SHIELD_ABSORBED end with no local shield-ring contact: never a hull point. */
+        PAINT_SHIELD_MISS
     }
 
     private FoeImpactDoorLaw() {
+    }
+
+    /** The contact act, pure; order is the law. {@code door} = the
+     *  {@link #decide} result (so a local {@code didDamage} keeps its early door and never reaches here);
+     *  {@code shieldContact} = the caller found the local shield-ring contact (read only on cause 3). */
+    static ContactAct contactAct(Door door, int endCauseCode, boolean family, boolean victimResolved,
+            boolean victimIsOwn, boolean victimDeadOrHulk, boolean victimTreated, boolean sourceKnown,
+            boolean shieldContact) {
+        boolean shieldCause = endCauseCode
+                == cc.starsector.client.net.ClientGameplayEdgeEvent.END_CAUSE_SHIELD_ABSORBED;
+        if (door != Door.PAINT_RESIDUE_EXPLOSION_SPEC || !(shieldCause
+                || endCauseCode == cc.starsector.client.net.ClientGameplayEdgeEvent.END_CAUSE_INTACT)) {
+            return ContactAct.NOT_THIS_DOOR;
+        }
+        if (!family) {
+            return ContactAct.PAINT_NONFAMILY;
+        }
+        if (!victimResolved) {
+            return ContactAct.PAINT_NO_VICTIM;
+        }
+        if (victimIsOwn) {
+            return ContactAct.PAINT_OWN_SHIP;
+        }
+        if (victimDeadOrHulk) {
+            return ContactAct.PAINT_VICTIM_DEAD;
+        }
+        if (!victimTreated) {
+            return ContactAct.PAINT_UNTREATED;
+        }
+        if (!sourceKnown) {
+            return ContactAct.PAINT_NO_SOURCE;
+        }
+        if (shieldCause) {
+            return shieldContact ? ContactAct.APPLY_SHIELD : ContactAct.PAINT_SHIELD_MISS;
+        }
+        return ContactAct.APPLY_HULL;
+    }
+
+    /** The apply's {@code bypassShields}: TRUE only on the hull cause, never on the shield-absorbed one. */
+    static boolean contactBypassesShields(ContactAct act) {
+        return act == ContactAct.APPLY_HULL;
     }
 
     /** Evaluated AFTER the caller's spec exclusions + wire pose ceiling; order is the law.

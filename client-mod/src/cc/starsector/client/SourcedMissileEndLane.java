@@ -32,7 +32,8 @@ import org.lwjgl.util.vector.Vector2f;
  *
  * <p>Scope law: SOURCED twins only ({@code t.sourceEntityId > 0} — the server's
  * {@code NO_SOURCE} partition mirrored). Only the legacy degraded {@code (0,-1)} pair stays
- * on the pre-v7 absence-time consumers. Since a later widening moved every
+ * on the pre-v7 absence-time consumers — but for a fuse-family foe twin's BURST
+ * end, served here ({@code FuseBurstLaw.sourcelessBursts}). Since a later widening moved every
  * weaponless spawn to {@code (N,-1)}, the whole sourceless family (mines, motes, drone-strike
  * conversions, canisters) is served HERE, same tick — kept deliberately
  * (NEVER-ADD-LATENCY: reverting them to the G=6 absence confirm would re-add ~6 frames of end
@@ -105,6 +106,16 @@ final class SourcedMissileEndLane {
 
     private int sourcedEndRetired;   // predict_missile_sourced_end_retired (the watch bar)
     private int foeImpactPresented;  // predict_missile_foe_impact_presented
+    /** The generic fuse burst's end meters (round line; reader = the arena rig proof:
+     *  fuse_burst against the reel's FIZZLING + victimless-INTACT ends of the family; a refusal &gt; 0 is a miss). */
+    private int fuseBurst;           // predict_missile_fuse_burst (the behaviour's own blast spawned at a wire END)
+    private int fuseBurstFizzling;   // predict_missile_fuse_burst_fizzling (… on a FIZZLING end: the flight-time burst)
+    private int fuseBurstIntact;     // predict_missile_fuse_burst_intact (… on a victimless INTACT end: the proximity burst)
+    private int fuseBurstBodyless;   // predict_missile_fuse_burst_bodyless (refused: the body left play first)
+    private int fuseBurstNoSource;   // predict_missile_fuse_burst_no_source (refused: a null source)
+    private int fuseBurstNoSpec;     // predict_missile_fuse_burst_no_spec (refused: no cached burst spec)
+    private int fuseBurstFault;      // predict_missile_fuse_burst_fault (presentFuseBurst threw)
+    private int fuseBurstSourceless; // predict_missile_fuse_burst_sourceless (a BURST end served for a twin with no source hull)
     /** The {@link FoeImpactDoorLaw} door meters (round line). */
     private int foeImpactExplodeDoor;        // predict_missile_foe_impact_explode_door
     private int foeImpactNativeDone;         // predict_missile_foe_impact_native_done
@@ -120,6 +131,7 @@ final class SourcedMissileEndLane {
     private int foeFizzlingExplodeDoor;      // predict_missile_foe_fizzling_explode_door (foeImpactExplodeDoor counts it too)
     private int foeImpactOwnShieldPresent;   // predict_missile_foe_impact_own_shield_present (PRESENT_OWN_SHIELD, act=shield)
     private int foeImpactOwnShieldResidue;   // predict_missile_foe_impact_own_shield_residue (the door fired; the act= token names the residue)
+    private int foeImpactOwnShieldOverloadFault; // predict_missile_foe_impact_own_shield_overload_fault (the apply overloaded the own ship past the ceiling)
     private int foeImpactOwnShieldGlow;      // predict_missile_foe_impact_own_shield_glow (the door on a no-explosionSpec spec — the engine's hit glow drew at the ring contact)
     private int foeFizzlingPaintSkipped;     // predict_missile_foe_fizzling_paint_skipped (a PAINT_RESIDUE_* door: never painted)
     private int foeFizzlingVictimUnnamed;    // predict_missile_foe_fizzling_victim_unnamed (no victim on the wire)
@@ -652,13 +664,20 @@ final class SourcedMissileEndLane {
     private void consumeTwin(MissilePoseLane.Twin t,
             cc.starsector.client.net.ClientGameplayEdgeEvent event) {
         long id = event.entityId();
-        if (t.sourceEntityId <= 0L) {
+        // A fuse-family foe twin adopted with no source hull still draws its burst (FuseBurstLaw.sourcelessBursts
+        // = why): before this its BURST end fell to the quiet return below and the bomb just vanished (1 of 198
+        // burst ends in the measured rig run). Only that verdict passes; the twin leaves both maps below, so the
+        // absence-confirm path never serves the same end twice.
+        boolean sourcelessBurst = FuseBurstLaw.sourcelessBursts(t.fuseBurst, t.own, t.sourceEntityId,
+                event.endCauseCode(), event.endVictimWireId());
+        if (t.sourceEntityId <= 0L && !sourcelessBurst) {
             // The legacy degraded (0,-1) pair: pre-v7 consumers own these ends at
             // absence-confirm — the landed, watch-graded arcs stay untouched. The (N,-1)
             // sourceless family passes and is served same-tick (class javadoc).
             return;
         }
         long tick = event.simTick();
+        mpl.plugin.blastHitLane.latchFuseEnd(t, tick);
         if (t.own) {
             // The server's hit on a named victim presents through the engine's own
             // damage path BEFORE the body is retired below (the local seeker may have flown elsewhere).
@@ -696,7 +715,13 @@ final class SourcedMissileEndLane {
             // the generic 80 su impact puff on top of it was the L2 double-paint.
             // And NO (N,-1) twin paints it — motes/canisters/conversions
             // have no mount; the flash was hand-painted presentation (paintsImpactFx).
-            if (paintsImpactFx(t.sourceMountIndex, t.mine)
+            // A fuse bomb's FIZZLING / victimless-INTACT end is the fuse's own burst — a CLAIMED
+            // end: presented or a counted refusal, never the generic paint door on top of it. Its contact and
+            // shot-down ends flow on unchanged (the door below, the death puff).
+            if (FuseBurstLaw.endVerdict(t.fuseBurst, event.endCauseCode(), event.endVictimWireId())
+                    == FuseBurstLaw.BURST) {
+                presentFuseBurst(t, event);
+            } else if (paintsImpactFx(t.sourceMountIndex, t.mine)
                     && presentImpactFx(t.specId, t.missile, t.wireId, event, "sourced")) {
                 foeImpactPresented++;
             }
@@ -710,13 +735,85 @@ final class SourcedMissileEndLane {
         }
         mpl.twins.remove(t.missile);
         mpl.twinByWireId.remove(t.wireId);
-        sourcedEndRetired++;
+        if (sourcelessBurst) {
+            fuseBurstSourceless++; // its own count: sourcedEndRetired stays the SOURCED watch bar
+        } else {
+            sourcedEndRetired++;
+        }
         mpl.lane.log("predict v16 sourced-end RETIRE: id=" + id
                 + " cause=" + event.endCauseCode() + " tick=" + tick
                 + " at=" + (int) event.endX() + "," + (int) event.endY()
                 + " victim=" + event.endVictimWireId()
                 + (t.own ? (t.handedOff ? " class=own-puppet" : " class=own-live")
-                        : " class=foe"));
+                        : (sourcelessBurst ? " class=foe-sourceless-burst" : " class=foe")));
+    }
+
+    /** The generic fuse burst's act. Vanilla's {@code ProximityFuseAI.explode()} removes the
+     *  bomb and spawns a {@code DamagingExplosion} from the BEHAVIOUR's explosionSpec at the bomb's own
+     *  location; this is that spawn through the
+     *  engine's own door, on the damage-inert clone {@link FuseBurstLaw#burstSpecFor} keeps (both collision
+     *  classes NONE: the grid never pairs it, so no local damage, no impact sound, no onHit — the damage is
+     *  the server's and rides the hull mirror). The engine draws the particles and plays the spec's sound.
+     *
+     *  <p>No removal here: the caller's in-play-guarded retire removes the body in the same call, and the
+     *  engine flushes removals before it inits the new explosion in that frame — no gap, no overlap. The
+     *  body is held collision NONE first because a queued removal is still collidable for the rest of the
+     *  frame. NEVER {@code MissileAPI.explode()} here (it spawns the TOP-LEVEL spec with real damage), never
+     *  the named prox door (its fuse deals real local damage only its own rows book), never a hand-painted
+     *  particle.
+     *
+     *  <p>Refusals are counted by name and announced once each: a body already out of play (it ended
+     *  locally first), a NULL source (the one input the engine dereferences unguarded; a dead or hulked
+     *  source is safe), no cached spec. Per-END work only (a map read + one spawn); nothing per frame. */
+    private void presentFuseBurst(MissilePoseLane.Twin t, cc.starsector.client.net.ClientGameplayEdgeEvent event) {
+        if (!MissilePoseLane.MISSILE_POSE_APPLY) {
+            return; // meter mode mutates nothing perceivable
+        }
+        try {
+            MissileAPI body = t.missile;
+            com.fs.starfarer.api.combat.ShipAPI source = body == null ? null : body.getSource();
+            com.fs.starfarer.api.loading.DamagingExplosionSpec inert = FuseBurstLaw.burstSpecFor(t.specId);
+            int route = FuseBurstLaw.burstRoute(
+                    body != null && mpl.plugin.engine != null && mpl.plugin.engine.isEntityInPlay(body),
+                    source != null, inert != null);
+            if (route != FuseBurstLaw.ACT_PRESENT) {
+                String why;
+                if (route == FuseBurstLaw.ACT_BODYLESS) {
+                    fuseBurstBodyless++;
+                    why = "bodyless";
+                } else if (route == FuseBurstLaw.ACT_NO_SOURCE) {
+                    fuseBurstNoSource++;
+                    why = "no-source";
+                } else {
+                    fuseBurstNoSpec++;
+                    why = "no-spec";
+                }
+                FallbackAnnounce.announceOnce("fuse-burst-" + why,
+                        "fuse burst refused " + why + " (first id=" + t.wireId + " spec=" + t.specId
+                        + ") -> that bomb's end drew nothing");
+                return;
+            }
+            Vector2f at = FuseBurstLaw.burstPose(body.getLocation(), true, event.endX(), event.endY(),
+                    t.lastWireX, t.lastWireY);
+            if (body.getCollisionClass() != com.fs.starfarer.api.combat.CollisionClass.NONE) {
+                body.setCollisionClass(com.fs.starfarer.api.combat.CollisionClass.NONE);
+            }
+            mpl.plugin.engine.spawnDamagingExplosion(inert, source, at);
+            fuseBurst++;
+            if (event.endCauseCode() == cc.starsector.client.net.ClientGameplayEdgeEvent.END_CAUSE_FIZZLING) {
+                fuseBurstFizzling++;
+            } else {
+                fuseBurstIntact++;
+            }
+            mpl.lane.log("predict v16 fuse-burst: id=" + t.wireId + " spec=" + t.specId
+                    + " cause=" + event.endCauseCode() + " tick=" + event.simTick()
+                    + " at=" + (int) at.x + "," + (int) at.y + " src_owner=" + source.getOwner());
+        } catch (Throwable e) {
+            fuseBurstFault++;
+            FallbackAnnounce.announceOnce("fuse-burst-fault-" + e.getClass().getSimpleName(),
+                    "presentFuseBurst threw " + e.getClass().getSimpleName()
+                    + " (first id=" + t.wireId + " spec=" + t.specId + ")");
+        }
     }
 
     /** The generic impact FX — INTACT ends (removed-by-collision / consumed-by-det:
@@ -777,7 +874,8 @@ final class SourcedMissileEndLane {
      *  victim writes its own VICTIM_MISMATCH row ({@link #logVictimMismatch}) and, on the
      *  explode()-safe subset, takes {@code EXPLODE_VICTIM_MISMATCH} = the EXPLODE route with the
      *  victim = the wire victim (the server-truth hit is never ABSENT; no paint, no applyDamage). */
-    /* Returns the Door TAKEN (explode OR paint), null = nothing presented — the
+    /* Returns the Door TAKEN (explode, paint, or PRESENT_CONTACT_HIT = a fuse bomb's contact
+     * through the engine), null = nothing presented — the
      * ballistic consumer stamps it on its CONSUME row (`present=`). The boolean faces above are unchanged. */
     FoeImpactDoorLaw.Door presentImpactFxDoor(String specId, int owner, long wireId,
             cc.starsector.client.net.ClientGameplayEdgeEvent event, String clsLabel,
@@ -972,6 +1070,12 @@ final class SourcedMissileEndLane {
                         + " door=" + door.name() + " cls=" + clsLabel);
                 return null;
             }
+            // A fuse bomb's server-named contact presents through the
+            // engine's damage path instead of the paint below; a false return = a counted fall-back to it.
+            if (door == FoeImpactDoorLaw.Door.PAINT_RESIDUE_EXPLOSION_SPEC
+                    && presentFuseContact(missile, specId, wireId, event, clsLabel)) {
+                return FoeImpactDoorLaw.Door.PRESENT_CONTACT_HIT;
+            }
             ShipAPI snapped = nearestDetEligible(owner, loc);
             if (snapped != null) {
                 loc = MineBombEndFxLane.surfaceToward(snapped, loc);
@@ -1062,7 +1166,12 @@ final class SourcedMissileEndLane {
         ShipAPI source = missile.getSource();
         float damage = missile.getDamageAmount();
         DamageType type = missile.getDamageType();
-        WireAckedFluxWindow flux = WireAckedFluxWindow.arm(own, damage, type);
+        // A hit whose EXACT ceiling cannot fit under the own max flux would overload the own ship
+        // INSIDE the apply (the shield drops, bit 10 lowers it on the server) — refused before arming, `absent:over-cap`
+        // (the server's own overload arrives on the wire flags). A hit that fits arms the OWN window, the wide room.
+        boolean overCap = WireAckedFluxWindow.overFluxCap(own,
+                WireAckedFluxWindow.shieldFluxCeiling(own, damage, type, source));
+        WireAckedFluxWindow flux = overCap ? null : WireAckedFluxWindow.armOwn(own, damage, type, source);
         float fluxRise = 0f;
         float hullDealt = 0f;
         float armorDealt = 0f;
@@ -1116,8 +1225,12 @@ final class SourcedMissileEndLane {
             }
             visual = inert != null;
         }
-        return ownShieldActToken(flux != null, fluxRise, hullDealt, armorDealt, flux != null && flux.stoppedOverload,
-                visual, restoreFailed);
+        boolean overloadStopped = flux != null && flux.stoppedOverload;
+        if (overloadStopped) {
+            foeImpactOwnShieldOverloadFault++; // the exact refusal + the own arm's room should have held: a FAULT (the shield drops)
+        }
+        return ownShieldActToken(overCap ? "over-cap" : flux == null ? "unarmed" : null, fluxRise, hullDealt,
+                armorDealt, overloadStopped, visual, restoreFailed);
     }
 
     /** {@code ShieldAPI.isWithinArc} floors the active arc at 1 degree
@@ -1151,6 +1264,132 @@ final class SourcedMissileEndLane {
         return inert;
     }
 
+    // The fuse-bomb contact meters (meterTokens, appended last).
+    private int foeContactHitApplied;     // predict_missile_foe_contact_hit_applied (the engine apply ran on the replica)
+    private int foeContactHitShield;      // predict_missile_foe_contact_hit_shield (… of them, the SHIELD_ABSORBED act)
+    private int foeContactHitUntreated;   // predict_missile_foe_contact_hit_untreated (the apply refused: -1)
+    private int contactDoorNonfamily;     // predict_missile_contact_door_nonfamily (an explosionSpec missile outside the family: the paint)
+    private int contactDoorNoVictim;      // predict_missile_contact_door_no_victim (family; the END's victim unresolved: the paint)
+    private int contactDoorOwnShip;       // predict_missile_contact_door_own_ship (family; the victim is the own ship: the paint)
+    private int contactDoorVictimDead;    // predict_missile_contact_door_victim_dead (family; dead / hulk: the paint)
+    private int contactDoorUntreated;     // predict_missile_contact_door_untreated (family; not a treated replica: the paint)
+    private int contactDoorNoSource;      // predict_missile_contact_door_no_source (family; a null local source: the paint)
+    private int contactDoorShieldMiss;    // predict_missile_contact_door_shield_miss (family; cause 3 with no ring contact: the paint)
+
+    /**
+     * A FUSE-FAMILY bomb's server-named CONTACT, presented through the
+     * engine's own damage path on the replica it struck, in place of the explosionSpec paint. TRUE = presented
+     * (the caller returns {@code PRESENT_CONTACT_HIT}); FALSE = a {@link FoeImpactDoorLaw#contactAct} PAINT_*
+     * fall-back, counted, and the caller paints exactly as before.
+     *
+     * <p>The act, in this order: (1) the body goes intangible FIRST — the caller's retire is only a
+     * {@code removeEntity}, and the engine runs its collision pass after the plugins and before
+     * {@code executeRemoves}, so a still-tangible body could land a NATIVE contact in this same frame = a
+     * second number plus the real top-level blast (the idiom of {@link #presentFuseBurst} and
+     * {@link #presentOwnShieldHit}). (2) the direct hit = the own-end ladder's apply generalised over its
+     * source: the point law {@link #ownEndApplyPoint} (cause 3 = the local shield-ring contact, else the
+     * victim's nearest BOUNDS point), {@code applyWireAckedHit} with the bomb's OWN {@code getSource()}, the
+     * body's {@code getDamageAmount()} (the pre-armor amount, never a post-armor wire figure), its damage
+     * type + emp, sound on, shields bypassed on a hull cause only. The replica's hull, armor and flux are
+     * restored to the wire-mirrored values inside that apply: the number and sound are presentation, the
+     * damage stays the server's. (3) the spec's TOP-LEVEL blast through {@link #inertBlastSpec} at the END's
+     * point: both collision classes NONE, so the grid never pairs it = the engine's visual + sound only.
+     *
+     * <p>WHY the hull point is the BOUNDS point, not {@code MineBombEndFxLane.impactPoint}: that ladder's
+     * first rung is the shield-ring contact, and with shields bypassed a ring point lies outside the armor
+     * grid, where the engine deals nothing (no number).
+     * Per-END work only: one cached classify read, two map reads, one apply, one spawn.
+     */
+    private boolean presentFuseContact(MissileAPI missile, String specId, long wireId,
+            cc.starsector.client.net.ClientGameplayEdgeEvent event, String clsLabel) {
+        int cause = event.endCauseCode();
+        long victimId = event.endVictimWireId();
+        boolean family = FuseBurstLaw.classify(missile, specId, MissilePoseLane.keepsNativeAi(missile));
+        ShipAPI victim = family && victimId > 0L ? resolveShip(victimId) : null;
+        boolean own = victim != null && victim == mpl.plugin.ownShip;
+        boolean dead = victim != null && (!victim.isAlive() || victim.isHulk());
+        boolean treated = victim != null && mpl.plugin.remoteBodyFullyTreated(victim);
+        ShipAPI source = missile.getSource();
+        Vector2f loc = new Vector2f(event.endX(), event.endY());
+        Vector2f shieldAt = cause == cc.starsector.client.net.ClientGameplayEdgeEvent.END_CAUSE_SHIELD_ABSORBED
+                && victim != null && !own && !dead && treated
+                ? OwnDetLane.shieldContactOrNull(victim, loc, MineBombEndFxLane.CONV_HIT_SLACK_SU) : null;
+        FoeImpactDoorLaw.ContactAct act = FoeImpactDoorLaw.contactAct(
+                FoeImpactDoorLaw.Door.PAINT_RESIDUE_EXPLOSION_SPEC, cause, family, victim != null, own, dead,
+                treated, source != null, shieldAt != null);
+        if (act == FoeImpactDoorLaw.ContactAct.NOT_THIS_DOOR) {
+            return false; // unreachable past the caller's fizzling skip; the paint as before
+        }
+        if (act == FoeImpactDoorLaw.ContactAct.PAINT_NONFAMILY) {
+            contactDoorNonfamily++;
+            return false; // the common explosionSpec torpedo: no row (the paint row names the door)
+        }
+        if (act != FoeImpactDoorLaw.ContactAct.APPLY_HULL && act != FoeImpactDoorLaw.ContactAct.APPLY_SHIELD) {
+            switch (act) {
+                case PAINT_NO_VICTIM:
+                    contactDoorNoVictim++;
+                    break;
+                case PAINT_OWN_SHIP:
+                    contactDoorOwnShip++;
+                    break;
+                case PAINT_VICTIM_DEAD:
+                    contactDoorVictimDead++;
+                    break;
+                case PAINT_UNTREATED:
+                    contactDoorUntreated++;
+                    break;
+                case PAINT_NO_SOURCE:
+                    contactDoorNoSource++;
+                    break;
+                default: // PAINT_SHIELD_MISS, the last PAINT_* act; a new act lands here, still a named row
+                    contactDoorShieldMiss++;
+                    break;
+            }
+            mpl.lane.log("predict v16 foe contact-hit skip: id=" + wireId + " spec=" + specId
+                    + " tick=" + event.simTick() + " victim=" + victimId + " cause=" + cause
+                    + " why=" + act.name() + " cls=" + clsLabel);
+            return false;
+        }
+        if (missile.getCollisionClass() != com.fs.starfarer.api.combat.CollisionClass.NONE) {
+            missile.setCollisionClass(com.fs.starfarer.api.combat.CollisionClass.NONE);
+        }
+        boolean bypass = FoeImpactDoorLaw.contactBypassesShields(act);
+        Vector2f at = ownEndApplyPoint(cause, shieldAt, bypass ? boundsPointToward(victim, loc) : null);
+        float dmg = missile.getDamageAmount();
+        DamageType type = missile.getDamageType();
+        float emp = missile.getEmpAmount();
+        float applied = mpl.plugin.replicaBody.applyWireAckedHit(victim, at, dmg, type, emp, source, bypass, true,
+                event.simTick());
+        if (applied >= 0f) {
+            foeContactHitApplied++;
+        } else {
+            foeContactHitUntreated++;
+        }
+        if (act == FoeImpactDoorLaw.ContactAct.APPLY_SHIELD) {
+            foeContactHitShield++;
+        }
+        com.fs.starfarer.api.loading.MissileSpecAPI spec = missile.getSpec();
+        com.fs.starfarer.api.loading.DamagingExplosionSpec inert =
+                inertBlastSpec(specId, spec == null ? null : spec.getExplosionSpec());
+        if (inert != null) {
+            mpl.plugin.engine.spawnDamagingExplosion(inert, source, loc);
+        }
+        mpl.lane.log("predict v16 foe contact-hit: id=" + wireId + " tick=" + event.simTick()
+                + " victim=remote:" + victimId + " cause=" + cause + " spec=" + specId
+                + " dmg=" + (int) dmg + " type=" + type + " emp=" + (int) emp
+                + " at=" + (int) at.x + "," + (int) at.y + " bypass=" + bypass
+                + " applied=" + (applied >= 0f ? String.valueOf((int) applied) : "untreated")
+                + " blast=" + (inert != null ? "inert" : "none") + " cls=" + clsLabel);
+        return true;
+    }
+
+    /** The hull point for a shield-BYPASSING apply: the victim's
+     *  nearest exact-bounds point, else the collision-circle surface point. Never the shield-ring rung. */
+    private static Vector2f boundsPointToward(ShipAPI victim, Vector2f loc) {
+        float[] b = OwnDetLane.nearestPointOnBounds(victim, loc);
+        return b != null ? new Vector2f(b[0], b[1]) : MineBombEndFxLane.surfaceToward(victim, loc);
+    }
+
     /** The clean own-shield act token: the engine absorbed the direct hit on the shield, the hull stood,
      *  the window restored quietly and the blast drew. */
     static final String OWN_SHIELD_ACT_CLEAN = "shield";
@@ -1168,7 +1407,16 @@ final class SourcedMissileEndLane {
      *  this row is graded, never hidden. */
     static String ownShieldActToken(boolean armed, float fluxRise, float hullDealt, float armorDealt,
             boolean overloadStopped, boolean blast, boolean restoreFailed) {
-        StringBuilder t = new StringBuilder(!armed ? "absent:unarmed"
+        return ownShieldActToken(armed ? null : "unarmed", fluxRise, hullDealt, armorDealt, overloadStopped, blast,
+                restoreFailed);
+    }
+
+    /** The same token with the no-apply reason named: {@code absentWhy} null = the apply ran;
+     *  {@code unarmed} (no flux window) or {@code over-cap} (the hit's flux ceiling does not
+     *  fit under the own max flux, refused before arming) → {@code absent:<why>}. */
+    static String ownShieldActToken(String absentWhy, float fluxRise, float hullDealt, float armorDealt,
+            boolean overloadStopped, boolean blast, boolean restoreFailed) {
+        StringBuilder t = new StringBuilder(absentWhy != null ? "absent:" + absentWhy
                 : !(fluxRise > 0f) ? "absent:no-shield-flux" : OWN_SHIELD_ACT_CLEAN);
         if (hullDealt > 0f) {
             t.append("+hull_restored");
@@ -1495,6 +1743,28 @@ final class SourcedMissileEndLane {
                 // the never-rolled explode meter renamed present + its residue twin.
                 + " predict_missile_foe_impact_own_shield_present=" + foeImpactOwnShieldPresent
                 + " predict_missile_foe_impact_own_shield_residue=" + foeImpactOwnShieldResidue
-                + " predict_missile_foe_impact_own_shield_glow=" + foeImpactOwnShieldGlow;
+                + " predict_missile_foe_impact_own_shield_glow=" + foeImpactOwnShieldGlow
+                // The generic fuse burst, appended (order kept).
+                + " predict_missile_fuse_burst=" + fuseBurst
+                + " predict_missile_fuse_burst_fizzling=" + fuseBurstFizzling
+                + " predict_missile_fuse_burst_intact=" + fuseBurstIntact
+                + " predict_missile_fuse_burst_bodyless=" + fuseBurstBodyless
+                + " predict_missile_fuse_burst_no_source=" + fuseBurstNoSource
+                + " predict_missile_fuse_burst_no_spec=" + fuseBurstNoSpec
+                + " predict_missile_fuse_burst_fault=" + fuseBurstFault
+                + " predict_missile_fuse_burst_sourceless=" + fuseBurstSourceless
+                // The fuse-bomb contact door, appended (order kept).
+                + " predict_missile_foe_contact_hit_applied=" + foeContactHitApplied
+                + " predict_missile_foe_contact_hit_shield=" + foeContactHitShield
+                + " predict_missile_foe_contact_hit_untreated=" + foeContactHitUntreated
+                + " predict_missile_contact_door_nonfamily=" + contactDoorNonfamily
+                + " predict_missile_contact_door_no_victim=" + contactDoorNoVictim
+                + " predict_missile_contact_door_own_ship=" + contactDoorOwnShip
+                + " predict_missile_contact_door_victim_dead=" + contactDoorVictimDead
+                + " predict_missile_contact_door_untreated=" + contactDoorUntreated
+                + " predict_missile_contact_door_no_source=" + contactDoorNoSource
+                + " predict_missile_contact_door_shield_miss=" + contactDoorShieldMiss
+                // The own-shield presenter's overload FAULT, appended (order kept).
+                + " predict_missile_foe_impact_own_shield_overload_fault=" + foeImpactOwnShieldOverloadFault;
     }
 }

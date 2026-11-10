@@ -310,12 +310,12 @@ final class PidsHello13 {
                 if (probe) {
                     // A stale-term probe's document term is asked first;
                     // a denial is silence with nothing stamped (the probe budget unasked, budgetAsked unset).
-                    if (door.matchDocHeldLocked(hs, from, now)) {
+                    if (door.probeReply.matchDocHeldLocked(hs, from, now)) {
                         return null;
                     }
                     // Then the sheet's term, every proven probe on a door
                     // holding one, the same silence on a denial.
-                    if (door.lunaDocHeldLocked(hs, from, now)) {
+                    if (door.probeReply.lunaDocHeldLocked(hs, from, now)) {
                         return null;
                     }
                     if (!door.probeBudget.admit(from.toString(), now)) {

@@ -168,6 +168,13 @@ public final class CommandTransferServeLane {
     /** Starts dirty: the round's first pump publishes the opening census. */
     private boolean censusDirty = true;
     private long lastPublishTick = Long.MIN_VALUE;
+    /**
+     * The arbiter's seat-name change counter as of the last publish (sim thread only). A label
+     * that moved since (a newcomer's name, a forget at a new occupant's admission) re-publishes on
+     * the next pump instead of waiting out the belt; the reader thread never touches
+     * {@link #censusDirty}.
+     */
+    private int lastPublishedSeatNameChanges;
     /** The last publish's per-team tables (sim thread only; the drain's team gate reads it). */
     private SideCensus sideCensus = SideCensus.NONE;
     /** Late-join replay rows whose encode threw (a law bug, never
@@ -372,12 +379,17 @@ public final class CommandTransferServeLane {
         if (transferTargets == null) {
             return;
         }
-        if (!censusDirty && lastPublishTick != Long.MIN_VALUE
+        // Read BEFORE the labels below: a change landing mid-build leaves the counter ahead, so
+        // the next pump publishes once more.
+        int seatNameChanges = rebindArbiter.seatNameChangeCount();
+        if (!censusDirty && seatNameChanges == lastPublishedSeatNameChanges
+                && lastPublishTick != Long.MIN_VALUE
                 && tick - lastPublishTick < CENSUS_BELT_TICKS) {
             return;
         }
         censusDirty = false;
         lastPublishTick = tick;
+        lastPublishedSeatNameChanges = seatNameChanges;
         SortedSet<Integer> occupiedSeats = authority.occupiedSeatIds();
         Map<Integer, Integer> seatSides = seatSidesNow(occupiedSeats);
         List<EngineCombatBinding.TransferCensusRow> engineRows = binding.transferCensusOrNull(0);

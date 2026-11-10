@@ -1034,7 +1034,7 @@ final class PidsChatVerbs {
                 || parsedKind == ChatCommands.Kind.SPAWNFRIEND
                 || parsedKind == ChatCommands.Kind.SPAWNFRIEND_LIST) {
             // Validate AT THE DOOR — the id must canonicalize against the boot
-            // catalogue before it may ride toward the engine (an unresolvable id at spawn
+            // catalogue (or a listed kept copy, below) before it may ride toward the engine (an unresolvable id at spawn
             // would be serve-fatal there; the serve loop's fail-soft try is the second net,
             // this allowlist the first). The deposit rides the admin wave queue onto the sim
             // thread; effect rows are the serve loop's operator_spawn_foe/adhoc_foe_spawn.
@@ -1053,25 +1053,34 @@ final class PidsChatVerbs {
                     : ListingFrameCodec.KIND_SPAWNFOE;
             // Every read below is the catalogue's SPAWN view: the deposit replays re-parsed under the
             // operator-token grammar, so only an id inside it is listed, matched or deposited.
+            // Plus the KEPT copies the /ship list holds now, under that same
+            // grammar (PickableVariants.spawnListWithKept): the registry copy is taken at boot, before any kept
+            // copy registers, so a host's own kept builds were never offered. They lead the rows and match by id,
+            // display name or hull; the exact pick still resolves an id only. A kept row carries that name and hull as
+            // its labels (display only, sanitized at emission), every other row stays id-only.
             PickableVariants debugCatalogue = door.debugVariants;
+            PickableVariants shipCatalogue = door.pickableVariants;
             if (!session.admin()) {
                 replyLines = List.of(ChatCommands.ADMIN_ONLY);
             } else if (debugCatalogue == null || debugCatalogue.spawnIds().isEmpty()) {
                 replyLines = List.of("debug picking unavailable on this server");
             } else if (bareList) {
-                listingSink.emitListing(listingKind,
-                        ListingEmitter.spawnEntries(debugCatalogue.spawnIds(), friendly));
+                listingSink.emitListing(listingKind, ListingEmitter.keptLabelledSpawnEntries(
+                        PickableVariants.spawnListWithKept(debugCatalogue, shipCatalogue, null), friendly,
+                        shipCatalogue));
                 replyLines = List.of();
             } else {
-                String canonical = debugCatalogue.spawnCanonicalIdOrNull(parsed.arg());
+                String canonical = PickableVariants.spawnCanonicalWithKeptOrNull(debugCatalogue, shipCatalogue,
+                        parsed.arg());
                 if (canonical == null && parsed.count() == 0) {
-                    List<String> matches = debugCatalogue.spawnIdsMatching(parsed.arg());
+                    List<String> matches = PickableVariants.spawnListWithKept(debugCatalogue, shipCatalogue,
+                            parsed.arg());
                     if (matches.isEmpty()) {
                         replyLines = List.of("no variants match '"
                                 + ChatCommandDispatch.boundEcho(parsed.arg()) + "'");
                     } else {
                         listingSink.emitListing(listingKind,
-                                ListingEmitter.spawnEntries(matches, friendly));
+                                ListingEmitter.keptLabelledSpawnEntries(matches, friendly, shipCatalogue));
                         replyLines = List.of();
                     }
                 } else if (canonical == null) {

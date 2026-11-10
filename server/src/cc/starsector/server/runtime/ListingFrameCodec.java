@@ -444,8 +444,8 @@ public final class ListingFrameCodec {
         boolean wantsOccupant = markCarriesOccupant(mark);
         // A ship row's occupantLabel is OPTIONAL — the
         // ship's display name, DISPLAY ONLY, validated below by the seat-name law when present;
-        // every other kind keeps the exact-presence law.
-        if (kindOfMark(mark) != KIND_SHIP && wantsOccupant == (entry.occupantLabel() == null)) {
+        // the spawn rows share it (shipLabelsOptional); every other kind keeps the exact-presence law.
+        if (!shipLabelsOptional(kind) && wantsOccupant == (entry.occupantLabel() == null)) {
             throw new IllegalArgumentException("occupantLabel must be present exactly on the"
                     + " occupant-carrying marks; markCode=" + mark
                     + " label=" + (entry.occupantLabel() == null ? "absent" : "present"));
@@ -474,8 +474,9 @@ public final class ListingFrameCodec {
             validateTargetLabel(entry.targetLabel());
         } else {
             // A ship row MAY carry its hull id here, under the
-            // same 24-char printable-ASCII law; every other kind still forbids the field.
-            if (entry.targetLabel() != null && kind != KIND_SHIP) {
+            // same 24-char printable-ASCII law, and so may a spawn row (shipLabelsOptional); every
+            // other kind still forbids the field.
+            if (entry.targetLabel() != null && !shipLabelsOptional(kind)) {
                 throw new IllegalArgumentException(
                         "targetLabel is a /transfer-only field (kind " + kind + ")");
             }
@@ -487,6 +488,18 @@ public final class ListingFrameCodec {
                         "hullWireId must be 0 off /transfer rows; got " + entry.hullWireId());
             }
         }
+    }
+
+    /**
+     * The kinds whose rows MAY carry a ship's two optional DISPLAY labels — occupantLabel = the ship's
+     * name (the seat-name law) and targetLabel = its hull id (the 24-char printable-ASCII law), each
+     * absent or present on its own, hullWireId still 0: a {@code /ship} row, and the {@code /spawnfoe}
+     * and {@code /spawnfriend} rows, which name the same kind of ship (a host's kept build reads
+     * as a hash id without its name). The token stays the id; a label is never a key or a command.
+     * Every other kind keeps its exact field law.
+     */
+    private static boolean shipLabelsOptional(int kind) {
+        return kind == KIND_SHIP || kind == KIND_SPAWNFOE || kind == KIND_SPAWNFRIEND;
     }
 
     /** Which listing kind a mark code belongs to. */

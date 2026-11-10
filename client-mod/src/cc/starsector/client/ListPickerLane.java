@@ -121,10 +121,14 @@ final class ListPickerLane {
     /** v2: token → {@code "<name>" (<Hull>)} for the CURRENT KIND_SHARE / KIND_BUILDS listing
      *  ({@link #resolveBuildRows}); render thread; cleared per such listing. */
     private final java.util.HashMap<String, String> buildLabels = new java.util.HashMap<>();
-    /** Hull id → hull NAME for the latest /ship listing, resolved
-     *  ONCE at its landing ({@link #onFrame} via {@link ListPickerLaw#resolveShipHullNames}); the row text only
-     *  reads it (a map get per drawn row, no settings call, no allocation). Render thread. */
+    /** Hull id → hull NAME for the latest /ship or spawn listing,
+     *  resolved ONCE at its landing ({@link #onFrame} via {@link ListPickerLaw#resolveShipHullNames}); the row text
+     *  only reads it (a map get per drawn row, no settings call, no allocation). Render thread. */
     private java.util.Map<String, String> shipHullNames = java.util.Map.of();
+    /** The kept tokens of the latest /ship or spawn listing whose ship label
+     *  another row of that SAME listing also paints ({@link #keptNameTwins}, worked out at landing beside
+     *  {@link #shipHullNames}); only those rows add their id after the name. Render thread. */
+    private java.util.Set<String> shipNameTwins = java.util.Set.of();
     /** Hull ids the game's own specs could not name since load (the row shows the id instead). */
     private int hullNameMisses;
     /** The /builds row token whose FLY NEXT cell reads YES (at most one — {@code current.data}
@@ -409,16 +413,23 @@ final class ListPickerLane {
                 return; // every id lacked a resident body — nothing to show (logged in resolveBuildRows)
             }
         }
-        if (asmKind == ClientListingReader.KIND_SHIP) {
-            // the hull names resolve HERE, once per landed listing — never in the per-frame row text
-            shipHullNames = ListPickerLaw.resolveShipHullNames(asmKind, entries, this::hullNameOrId);
+        if (shipLabelKind(asmKind) && !entries.isEmpty()) {
+            // the hull names resolve HERE, once per landed listing — never in the per-frame row text. A spawn
+            // listing's hull ids ride the same targetLabel as a /ship row's, so they resolve through the /ship
+            // resolver (its kind argument is the /ship one on purpose: it answers an empty map for any other kind).
+            // An empty listing leaves both maps alone: the picker ignores an empty offer and keeps the shown one.
+            shipHullNames = ListPickerLaw.resolveShipHullNames(ClientListingReader.KIND_SHIP, entries,
+                    this::hullNameOrId);
+            shipNameTwins = keptNameTwins(entries, shipHullNames);
         }
         if (ON) {
             if (asmKind == ClientListingReader.KIND_UNBAN && unbanMenuOpensAtLift) {
                 entries = ListPickerLaw.openedAtLift(asmKind, entries); // A bare /unban opens at lift
             }
             law.offerListing(asmKind, entries, asmTotalAvailable, plugin.chat.isBoxOpen(), now,
-                    asmKind == ClientListingReader.KIND_SHIP ? shipHullNames : java.util.Map.of());
+                    // A spawn listing hands its hull names over too, so the filter matches
+                    // the hull NAME a kept spawn row paints (the law searches it for the three ship kinds)
+                    shipLabelKind(asmKind) ? shipHullNames : java.util.Map.of());
         } else {
             pushFallbackFeedLines(asmKind, entries, asmTotalAvailable);
         }
@@ -1068,7 +1079,7 @@ final class ListPickerLane {
             }
             return new RowText(out.toString(), value, kind == ClientListingReader.KIND_BUILDS);
         }
-        return rowText(kind, e, shipHullNames);
+        return rowText(kind, e, shipHullNames, shipNameTwins);
     }
 
     /**
@@ -1109,11 +1120,20 @@ final class ListPickerLane {
         return rowText(kind, e, java.util.Map.of());
     }
 
-    /** {@link #rowText(int, ClientListingRecord.Entry)} with the landed /ship listing's hull names: a /ship row
-     *  that carries a hull id takes {@link #shipHullRowText} (a hull with no landed name shows its hull id). */
+    /** {@link #rowText(int, ClientListingRecord.Entry)} with the landed listing's hull names and no twin tokens: a
+     *  /ship or spawn row that carries a hull id or a kept ship's name takes {@link #shipHullRowText} (a hull with no
+     *  landed name shows its hull id). */
     private static RowText rowText(int kind, ClientListingRecord.Entry e, java.util.Map<String, String> hullNames) {
-        if (kind == ClientListingReader.KIND_SHIP && e.targetLabel() != null) {
-            return shipHullRowText(e, hullNames.getOrDefault(e.targetLabel(), e.targetLabel()));
+        return rowText(kind, e, hullNames, java.util.Set.of());
+    }
+
+    /** The 3-arg row text plus the landed listing's twin tokens: a /ship or spawn
+     *  row that carries a hull id or a kept ship's name takes {@link #shipHullRowText}; any other row is unchanged. */
+    private static RowText rowText(int kind, ClientListingRecord.Entry e, java.util.Map<String, String> hullNames,
+            java.util.Set<String> twins) {
+        if (shipLabelKind(kind) && (e.targetLabel() != null || keptName(e) != null)) {
+            return shipHullRowText(e, e.targetLabel() == null ? null
+                    : hullNames.getOrDefault(e.targetLabel(), e.targetLabel()), twins);
         }
         if (kind == ClientListingReader.KIND_UNBAN) {
             /* An /unban menu row leads with WHO (the stored
@@ -1132,9 +1152,10 @@ final class ListPickerLane {
         }
         StringBuilder out = new StringBuilder(64);
         String value = e.value(); // a /settings row's SET value; a /ban row's term is re-cut below
-        // A row leads with its token; a /ship row's display name never paints (the list reads hull and id only;
-        // the filter still matches the name). A /ship row that carries a hull never reaches here (shipHullRowText),
-        // so a hull-less /ship row is its id plus the mark, and the targetLabel append below never prints a hull id.
+        // A row leads with its token. A /ship or spawn row that carries a hull or a kept ship's name never reaches
+        // here (shipHullRowText), so a /ship row here is a hull-less shipped or unnamed one: its id plus the mark
+        // (a shipped ship's display name never paints; the filter still matches it), and the targetLabel append
+        // below never prints a hull id. A spawn row with no label is its id plus the officer cell, as before.
         out.append(e.token());
         if (e.targetLabel() != null) {
             out.append(' ').append(e.targetLabel());
@@ -1213,21 +1234,89 @@ final class ListPickerLane {
 
     /**
      * A /ship row that carries a hull, as its OWN case:
-     * {@code <Hull> - <id>[ (piloting)| (next respawn)]}: what the ship is, then which loadout, the id once; the
+     * {@code <Hull> - <slot>[ (piloting)| (next respawn)]}: what the ship is, then which loadout, once. The slot is
+     * the id, except a kept ship that arrived with a name paints that name ({@link #shipLabel}); a shipped ship's
      * display name never paints (the filter still matches it). The separator is ASCII on purpose: the picker font
      * (victor10.fnt) maps U+00B7 to a 1-px blank cell, like the guillemets noted at the header hint. The hull name
-     * comes from the landing's map, never a lookup here. A long id can push the mark past the 60-char clamp.
+     * comes from the landing's map, never a lookup here. A long slot can push the mark past the 60-char clamp.
      *
+     * Also a hull-less kept row ({@code hull} null = the slot alone) and a spawn
+     * row that carries labels, which keeps its officer cell (a SET value, cyan, as on an unlabelled spawn row).
      */
-    private static RowText shipHullRowText(ClientListingRecord.Entry e, String hull) {
+    private static RowText shipHullRowText(ClientListingRecord.Entry e, String hull, java.util.Set<String> twins) {
         StringBuilder out = new StringBuilder(96);
-        out.append(hull).append(" - ").append(e.token());
-        if (e.markCode() == ClientListingReader.MARK_SHIP_PILOTING) {
-            out.append(" (piloting)");
-        } else if (e.markCode() == ClientListingReader.MARK_SHIP_NEXT_RESPAWN) {
-            out.append(" (next respawn)");
+        out.append(shipLabel(e, hull, twins));
+        String value = null;
+        switch (e.markCode()) {
+            case ClientListingReader.MARK_SHIP_PILOTING:
+                out.append(" (piloting)");
+                break;
+            case ClientListingReader.MARK_SHIP_NEXT_RESPAWN:
+                out.append(" (next respawn)");
+                break;
+            case ClientListingReader.MARK_SPAWNFOE_PLAIN:
+            case ClientListingReader.MARK_SPAWNFRIEND_PLAIN:
+                value = "(N/A)";
+                out.append(' ').append(value);
+                break;
+            case ClientListingReader.MARK_SPAWNFOE_OFFICER:
+            case ClientListingReader.MARK_SPAWNFRIEND_OFFICER:
+                value = "(officer)";
+                out.append(' ').append(value);
+                break;
+            default:
+                break; // MARK_SHIP_PLAIN
         }
-        return new RowText(out.toString(), null, false);
+        return new RowText(out.toString(), value, false);
+    }
+
+    /** The kinds whose rows name a ship: /ship and the two spawn menus. */
+    private static boolean shipLabelKind(int kind) {
+        return kind == ClientListingReader.KIND_SHIP || kind == ClientListingReader.KIND_SPAWNFOE
+                || kind == ClientListingReader.KIND_SPAWNFRIEND;
+    }
+
+    /** The name a kept ship paints in its id's place, else null: only a token with
+     *  the server's {@code kept-} prefix (its id ends in a content hash a player cannot read) whose occupant label
+     *  (the host-typed name, display only) arrived non-blank. A shipped token keeps its id. */
+    private static String keptName(ClientListingRecord.Entry e) {
+        String name = e.occupantLabel();
+        return e.token().startsWith("kept-") && name != null && !name.isBlank() ? name : null;
+    }
+
+    /** A ship row's label, marks aside: {@code [<hull> - ]<slot>}, the slot = the
+     *  kept name ({@code "<name> (<id>)"} for a twin), else the token. {@code hull} null = the slot alone. */
+    private static String shipLabel(ClientListingRecord.Entry e, String hull, java.util.Set<String> twins) {
+        String name = keptName(e);
+        String slot = name == null ? e.token() : twins.contains(e.token()) ? name + " (" + e.token() + ")" : name;
+        return hull == null ? slot : hull + " - " + slot;
+    }
+
+    /**
+     * The kept tokens of one landed listing whose label (hull name and slot, marks
+     * aside, so a piloting or officer mark never hides a twin) another row of the SAME listing also paints; only
+     * those kept rows add their id. A shipped row's label already carries its id, so it never changes. Called at
+     * landing, never per frame. An empty answer is the shared empty set.
+     */
+    private static java.util.Set<String> keptNameTwins(List<ClientListingRecord.Entry> entries,
+            java.util.Map<String, String> hullNames) {
+        java.util.HashMap<String, Integer> seen = new java.util.HashMap<>();
+        for (ClientListingRecord.Entry e : entries) {
+            seen.merge(plainShipLabel(e, hullNames), 1, Integer::sum);
+        }
+        java.util.HashSet<String> twins = new java.util.HashSet<>();
+        for (ClientListingRecord.Entry e : entries) {
+            if (keptName(e) != null && seen.get(plainShipLabel(e, hullNames)) > 1) {
+                twins.add(e.token());
+            }
+        }
+        return twins.isEmpty() ? java.util.Set.of() : twins;
+    }
+
+    /** {@link #shipLabel} before any twin suffix, with the row's hull NAME from the landed map. */
+    private static String plainShipLabel(ClientListingRecord.Entry e, java.util.Map<String, String> hullNames) {
+        String hull = e.targetLabel() == null ? null : hullNames.getOrDefault(e.targetLabel(), e.targetLabel());
+        return shipLabel(e, hull, java.util.Set.of());
     }
 
     /** Pure visual clamp (the bubble-lane idiom) — wire strings are never re-filtered. */

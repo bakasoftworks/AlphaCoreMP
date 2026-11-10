@@ -186,15 +186,65 @@ public final class CcwrDownFeed implements AutoCloseable {
         return records;
     }
 
+    /** The oldest GPEE schema {@link #restampLegacyEdgeFrame} lifts to the live one: 16 → 17 is
+     * add-a-kind (BLAST_HIT), width and every older kind's slots unchanged. 15 stays out — v16
+     * re-meant the long slot of WEAPON_DISCHARGE. */
+    static final int EDGE_RESTAMP_FLOOR = 16;
+
+    /** The live GPEE schema the floor above was decided against. A schema bump leaves this behind,
+     * which turns the restamp OFF (old reels throw loudly, as before) until the bump's author
+     * re-decides the floor: same width + add-a-kind keeps it, a re-meant slot raises it. */
+    static final int EDGE_RESTAMP_DECIDED_AT = 17;
+
+    /**
+     * REEL COMPAT: a reel recorded by an older serve
+     * carries GPEE frames stamped with that serve's schema, and the live reader
+     * ({@link ClientGameplayEdgeEventReader}) is exact-match by law, so without this every reel
+     * older than the last GPEE bump died at its first event tick. The compat lives HERE, in the
+     * recording feed, never in the live wire reader: a frame at {@code at} whose schema is in
+     * {@code [EDGE_RESTAMP_FLOOR, live)} is re-stamped IN PLACE to the live schema, so both this
+     * split's demux and the observer session's own decode read it. A kind born after the frame's
+     * stamp (BLAST_HIT in a schema-16 frame) is left alone and refuses at the reader, the server
+     * codec's own law ({@code GameplayEdgeEventCodec}: kind requires schema ≥ its min).
+     *
+     * @return whether the two schema bytes were rewritten
+     */
+    static boolean restampLegacyEdgeFrame(byte[] body, int at) {
+        final int live = ClientGameplayEdgeEventReader.SCHEMA_VERSION;
+        if (live != EDGE_RESTAMP_DECIDED_AT || body.length - at < ClientGameplayEdgeEventReader.FRAME_BYTES) {
+            return false;
+        }
+        if (intAt(body, at) != ClientGameplayEdgeEventReader.MAGIC) {
+            return false;
+        }
+        int schema = ((body[at + 8] & 0xff) << 8) | (body[at + 9] & 0xff); // magic(4) + typeCode(4)
+        if (schema < EDGE_RESTAMP_FLOOR || schema >= live) {
+            return false;
+        }
+        int kindCode = intAt(body, at + 26); // + schema(2) + simTick(8) + entityId(8)
+        if (kindCode == ClientGameplayEdgeEvent.Kind.BLAST_HIT.wireCode()) {
+            return false; // born at 17: never lawful in an older frame
+        }
+        body[at + 8] = (byte) (live >>> 8);
+        body[at + 9] = (byte) live;
+        return true;
+    }
+
+    private static int intAt(byte[] b, int at) {
+        return ((b[at] & 0xff) << 24) | ((b[at + 1] & 0xff) << 16) | ((b[at + 2] & 0xff) << 8) | (b[at + 3] & 0xff);
+    }
+
     /**
      * Cut one record body into its inner frames (class doc). Throws on an unknown magic or a
-     * frame that runs past the body — the same fail-closed posture as the live demux.
+     * frame that runs past the body — the same fail-closed posture as the live demux. Legacy GPEE
+     * frames are re-stamped in {@code body} first ({@link #restampLegacyEdgeFrame}).
      */
     public static List<Inner> split(byte[] body) throws IOException {
         List<Inner> out = new ArrayList<>(4);
         PositionStream in = new PositionStream(body);
         while (in.position() < body.length) {
             int start = in.position();
+            restampLegacyEdgeFrame(body, start);
             ServerStreamMessage m = MultiplexedServerStreamReader.readMessage(in);
             if (m == null) {
                 break; // cannot happen with bytes left, kept for the null contract

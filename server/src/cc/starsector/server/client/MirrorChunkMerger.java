@@ -113,10 +113,18 @@ public final class MirrorChunkMerger {
 
     /** The shared law kernel: anchor payload = the codec baseline, mount
      * payload = the wire mount record; anchorTick gauge + no-NACK-guard are this tree's
-     * documented FORM choices (see class doc). */
+     * documented FORM choices (see class doc). An anchor
+     * weighs its baseline's mount-list size, the number the kit merger weighs its keyframe by,
+     * so this merger refuses the same keyframe the kit does at the kernel's anchor mount total.
+     * this merger serves the synthetic drill seat
+     * ({@link PilotIntentDatagramClient}) and the offline tools only, not the serve path: the
+     * serving encoder keeps no model of the kit's refusal and learns of one only from the NACK
+     * the refused id's next delta draws. */
     private final ChunkMergerCore<AwsdEntityBaseline, ShipWeaponMountSnapshot> core =
             new ChunkMergerCore<>(AwsdEntityBaseline::anchorTick, AwsdEntityBaseline::epoch,
-                    ShipWeaponMountSnapshot::mountIndex, Long.MAX_VALUE);
+                    ShipWeaponMountSnapshot::mountIndex, Long.MAX_VALUE,
+                    ChunkMergerCore.DEFAULT_TRACKED_CAP, ChunkMergerCore.MOUNTS_STORE_MAX,
+                    baseline -> baseline.mounts().size(), ChunkMergerCore.ANCHOR_MOUNTS_MAX);
 
     /**
      * Fold one decoded AWSS frame in and return the view to publish: the frame's own entity

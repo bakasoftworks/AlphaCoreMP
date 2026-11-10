@@ -751,6 +751,8 @@ final class EditorOracle {
             if (opUnused < 0) {
                 problem(problems, 14, DoorRejectReasons.CUSTOM_OP_EXCEEDED, "OP over budget by " + (-opUnused), null);
             }
+        } catch (EditorPersons.NotReady early) {
+            throw early; // "not ready" is the route's 503, never a false "engine rejected" verdict on the build
         } catch (RuntimeException engine) {
             problem(problems, 8, DoorRejectReasons.CUSTOM_ENGINE_REJECTED,
                     engine.getClass().getSimpleName() + ": " + EditorText.sanitize(engine.getMessage(), 160), null);

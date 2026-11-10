@@ -33,7 +33,11 @@ public final class ClientGameplayEdgeEventReader {
 
     /**
      * Schema version this reader understands. Mirrors {@code GameplayEdgeEventCodec.SCHEMA_VERSION}
-     * (v16, told wait: SEMANTIC widening only, width UNCHANGED
+     * (v17: kind {@code BLAST_HIT(11)} added, width UNCHANGED
+     * 66 B — one record per ship a bomb's blast damaged: bomb id on entityId, victim on targetWireId, the
+     * packed type/shield/family code on the mount slot, centre x/y on the aim/bearing slots, amount / emp /
+     * applied on the birthSpeed/muzzle slots;
+     * v16, told wait: SEMANTIC widening only, width UNCHANGED
      * 66 B — a {@code WEAPON_DISCHARGE} carries its DECLARED WAIT on {@code targetWireId}: the raw server
      * ticks from the consumed declaration's arrival to the discharge, {@code 0..255}, else
      * {@code TARGET_ABSENT}; the kit's lead drain reads it instead of a ping-based guess;
@@ -73,7 +77,7 @@ public final class ClientGameplayEdgeEventReader {
      * "a v4 client never receives kind 6" holds by construction; only archived {@code .ccwr}
      * recordings need old-schema decode, and those are read server-side.
      */
-    public static final int SCHEMA_VERSION = 16; // 15 -> 16, the WEAPON_DISCHARGE declared wait
+    public static final int SCHEMA_VERSION = 17; // 16 -> 17, the BLAST_HIT kind
 
     /** magic(4) + typeCode(4) + schema(2) + simTick(8) + entityId(8) + kind(4) + phase(4) + mount(4) + aim(4) + bearing(4) + birthSpeed(4) + muzzleX(4) + muzzleY(4) + targetWireId(8). */
     public static final int FRAME_BYTES = 4 + 4 + 2 + 8 + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8;

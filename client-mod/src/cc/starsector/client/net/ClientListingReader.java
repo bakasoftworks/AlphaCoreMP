@@ -365,11 +365,13 @@ public final class ClientListingReader {
         }
         // Ship rows (marks 0..2): OPTIONAL = the ship's
         // display name (the seat-name law), absent when unknown — a present label still passes
-        // validateOccupantLabel below; every other kind keeps the exact-presence law. Mirrors
-        // the server codec (ListingFrameCodec.validateEntry).
+        // validateOccupantLabel below. Mirrors the server codec (ListingFrameCodec.validateEntry).
+        // A /spawnfoe or /spawnfriend row shares that optional
+        // law (spawnRowMayCarryLabels); every other kind keeps the exact-presence law.
         boolean shipRow = mark >= MARK_SHIP_PLAIN && mark <= MARK_SHIP_NEXT_RESPAWN;
+        boolean labelsOptional = shipRow || spawnRowMayCarryLabels(kind);
         boolean wantsOccupant = markCarriesOccupant(mark);
-        if (!shipRow && wantsOccupant == (entry.occupantLabel() == null)) {
+        if (!labelsOptional && wantsOccupant == (entry.occupantLabel() == null)) {
             throw new IllegalArgumentException("occupantLabel must be present exactly on the"
                     + " occupant-carrying marks; markCode=" + mark
                     + " label=" + (entry.occupantLabel() == null ? "absent" : "present"));
@@ -398,9 +400,9 @@ public final class ClientListingReader {
         } else {
             // A ship row (marks 0..2) MAY carry its hull id in
             // targetLabel (the picker shows the hull and searches it; an older server never sends one), under
-            // the same <= 24 printable-ASCII law; every other kind keeps the transfer-only law. Mirrors the
-            // server codec's ship-row branch.
-            if (entry.targetLabel() != null && !shipRow) {
+            // the same <= 24 printable-ASCII law; so MAY a spawn row (labelsOptional above); every other kind
+            // keeps the transfer-only law. Mirrors the server codec's ship-row branch.
+            if (entry.targetLabel() != null && !labelsOptional) {
                 throw new IllegalArgumentException(
                         "targetLabel is a /transfer-only field (kind " + kind + ")");
             }
@@ -412,6 +414,20 @@ public final class ClientListingReader {
                         "hullWireId must be 0 off /transfer rows; got " + entry.hullWireId());
             }
         }
+    }
+
+    /**
+     * True for the two spawn kinds ({@link #KIND_SPAWNFOE}, {@link #KIND_SPAWNFRIEND}), whose rows MAY carry the
+     * same two optional labels a ship row (marks 0..2) may: the occupant field = the ship's typed NAME (player
+     * text, the seat-name law via {@link #validateOccupantLabel}) and the target field = its HULL id (the
+     * {@link #validateTargetLabel} law). Why: a server-kept ship's spawn id is a generated key (not its typed
+     * name, never its hull), so an id-only row hides which ship and loadout it offers. Absent = the id-only
+     * row an older server sends; a present label still passes its validator (a malformed one refuses the frame);
+     * hullWireId stays 0. Display only: never a key, a path or a command (the paste stays the token).
+     *
+     */
+    private static boolean spawnRowMayCarryLabels(int kind) {
+        return kind == KIND_SPAWNFOE || kind == KIND_SPAWNFRIEND;
     }
 
     /** Which listing kind a mark code belongs to. Mirrors {@code ListingFrameCodec.kindOfMark}. */

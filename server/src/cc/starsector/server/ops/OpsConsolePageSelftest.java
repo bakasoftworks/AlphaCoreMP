@@ -1314,6 +1314,10 @@ public final class OpsConsolePageSelftest {
      * (Keep the Ban custom way, Forget through {@code V.forgetKept}), gates them (Keep like Ban custom, Forget like
      * Unban custom), defines {@code renderKept} and calls it on every status, paints the ids by textContent, sends
      * the per-row verbs by their own keys, and its empty-list text is {@link ServerOpsCore#NO_KEPT_TEXT}.
+     * <p>The typed names - read from {@code customKeptLabels} by index
+     * against the ids, painted through {@code CC.text} only, the stem still painted (dim) beside each, the kept
+     * signature carrying the names; the row's Forget CALL SITE, the toolbar Forget and its verb stay on the stem, and
+     * no title / data attribute / attribute write in {@code renderKept} can carry a name.
      */
     static String pageKept(String html, String js) {
         List<String> bad = new ArrayList<>();
@@ -1366,6 +1370,32 @@ public final class OpsConsolePageSelftest {
                 bad.add("script lacks '" + clip(literal) + "' (flips if a kept button is unbound /"
                         + " ungated, renderKept is dropped or unhooked from the status, a list paints by markup, a"
                         + " per-row verb sends another key, or the empty text leaves the core's)");
+            }
+        }
+        // The typed names beside the stems; every action keeps the stem.
+        for (String literal : List.of(
+                "const names = Array.isArray(s.customKeptLabels) ? s.customKeptLabels : [];",
+                "const pairs = ids.map((stem, i) => [stem, typeof names[i] === 'string' ? names[i] : ''])"
+                        + " .filter((p) => typeof p[0] === 'string');",
+                "const sig = JSON.stringify([kept, labels, inbox]);",
+                "CC.text(name, labels[i] + ' ');", "cell.classList.add('dim');", "cell.before(name);",
+                "CC.q('.forget', li).addEventListener('click', (e) => V.forgetRow(stem, e.currentTarget));",
+                "const ids = idList(CC.status && CC.status.customKeptIds);",
+                "send('/api/verb', {verb: 'custom-forget', stem: ids[0]}, CC.el('btn-forget-custom'));")) {
+            if (!flatJs.contains(literal)) {
+                bad.add("script lacks '" + clip(literal) + "' (flips if the names leave customKeptLabels or pair by a"
+                        + " filtered index, a renamed ship no longer repaints, a name paints by markup or hides the"
+                        + " stem, or a Forget sends the name instead of the stem)");
+            }
+        }
+        int rk = flatJs.indexOf("const renderKept = (s) => {");
+        int rkEnd = rk < 0 ? -1 : flatJs.indexOf("const renderShips", rk);
+        String keptBody = rkEnd < 0 ? "" : flatJs.substring(rk, rkEnd);
+        for (String sink : List.of(".title", "dataset", "setAttribute", "textContent", "innerText", "data-")) {
+            if (keptBody.isEmpty() || keptBody.contains(sink)) {
+                bad.add("renderKept " + (keptBody.isEmpty() ? "body not found" : "writes '" + sink + "'")
+                        + " (flips if a typed name reaches an attribute / tooltip or bypasses CC.text)");
+                break;
             }
         }
         return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);

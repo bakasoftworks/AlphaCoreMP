@@ -239,9 +239,17 @@ public final class ChunkMergerCore<A, M> {
      * at both, so it never binds on a lawful world: it is a hostile-door bound only. Unbounded,
      * sibling chunks that never cover or evict (AWSS carries 64-bit ids) grow the store at the
      * door's will while every chunk's publish walks it all. The anchor map's keys are u16 record
-     * ids, so at this bound it holds every id a record can name: a refused keyframe whose next
-     * delta drops, NACKs and draws a re-key that is refused again is a loop that cannot start
-     * (pending NACKs coalesce separately at {@link #AWSD_NACK_PENDING_MAX}, drop-oldest).
+     * ids, so at this bound it holds every id a record can name: this count alone never refuses
+     * a keyframe. The anchor mount total
+     * ({@link #ANCHOR_MOUNTS_MAX}) can, so a refuse, NACK, re-key loop CAN start. About 1,029
+     * full 255-mount keyframes fill that total, far below this count; past it a keyframe for a
+     * new id is refused, that id's next delta finds no anchor, drops and NACKs, and the re-key
+     * the NACK draws is refused again while the total stays full. Only a hostile door starts
+     * it: a lawful live battle anchors about 12,000 to 30,000 mounts against 262,144. Each
+     * refusal is counted ({@link #anchorCapDrops}, {@link #anchorMountCapDrops}), the NACKs
+     * throttle per epoch and coalesce at {@link #AWSD_NACK_PENDING_MAX} (drop-oldest), and room
+     * freed by {@link #evict}, {@link #clear} or the covering prune in {@link #beginAwssFrame}
+     * lets the next re-key land.
      */
     public static final int DEFAULT_TRACKED_CAP = 65_536;
 
@@ -273,6 +281,23 @@ public final class ChunkMergerCore<A, M> {
      * outside only through read-only views, so no caller can remove a slot behind the count.
      */
     public static final int MOUNTS_STORE_MAX = 262_144;
+
+    /**
+     * The bound on the mount records held by the AWSD
+     * anchor map, summed over every stored anchor: past it the NEWEST keyframe is refused and
+     * counted on {@link #anchorCapDrops} and {@link #anchorMountCapDrops} (refuse the newest,
+     * never evict; the stored anchor, if any, stays). Each anchor keeps its keyframe's full mount
+     * list (a u8 count, up to 255 records), and the anchor-count bound sits at the u16 id domain,
+     * so it never binds: without this total a door that never sends a despawn, a reset or a
+     * covering frame could park 255 records under each of 65,535 ids, about 16.7 million
+     * records and close to a gigabyte of kit heap. Sizing (2^18, the same number as
+     * {@link #MOUNTS_STORE_MAX}): the anchored entities are the same served entities whose cell
+     * mounts that bound already covers, and a keyframe carries the entity's own mount list, so
+     * the lawful anchor total tracks the lawful cell total and the measurement that sizes the
+     * store bound sizes this one. At
+     * about 54 bytes a decoded record the bound is about 14 MB.
+     */
+    public static final int ANCHOR_MOUNTS_MAX = MOUNTS_STORE_MAX;
 
     /** One stored mount payload + the tick it arrived on (the v2 mount-tier sub-store). */
     public record MountSlot<M>(M mount, long tick) {
@@ -371,6 +396,16 @@ public final class ChunkMergerCore<A, M> {
     /** Mount slots held summed over every cell (owning thread): always equals the sum of
      * every stored cell's mount-map size, so it never goes negative. */
     private int mountsRetained;
+    /** A stored anchor's mount-record weight (a list size, so &ge; 0); zero on test kernels. */
+    private final ToIntFunction<A> anchorMountsOf;
+    /** Max anchor mount records summed over every stored anchor; see {@link #ANCHOR_MOUNTS_MAX}. */
+    private final int anchorMountCap;
+    /** Anchor mount records held, summed over every
+     * stored anchor (owning thread): always equals the sum of {@code anchorMountsOf} over the
+     * anchor map, so it never goes negative. Moved only beside an anchor-map mutation: the put
+     * and same-id replace in {@link #adoptKeyframe}, {@link #evict}, the covering prune and
+     * {@link #clear}. */
+    private int anchorMountsRetained;
 
     /** NACK state: deposited under this lock on the owning thread, drained on the
      * intent-pump thread. Throttle + queue clear on keyframe adopt (that id), evict, clear. */
@@ -393,11 +428,14 @@ public final class ChunkMergerCore<A, M> {
     private volatile long awsdNacksQueued;   // NACKs deposited (post-throttle, post-coalesce)
     private volatile long awsdNacksSkippedWideId; // ids outside [0, nackIdMax] skip-counted
     private volatile long trackedCapDrops;   // folds refused: a NEW id with the store at trackedCap
-    private volatile long anchorCapDrops;    // keyframes refused: a NEW id with the anchors at trackedCap
+    private volatile long anchorCapDrops;    // keyframes refused: a NEW id with the anchors at trackedCap, or the anchor mount total full
     private volatile long mountCapDrops;     // mount records refused: a NEW index into a full cell or a full store
+    private volatile long anchorMountCapDrops; // keyframes refused: the anchor mount total would pass anchorMountCap
 
     /**
-     * The default-bounded kernel ({@link #DEFAULT_TRACKED_CAP}).
+     * The default-bounded kernel ({@link #DEFAULT_TRACKED_CAP}). Its anchors weigh zero mount
+     * records (see the widest constructor): test kernels only, a product twin passes the real
+     * weight.
      *
      * @param anchorTickOf the stored anchor's staleness gauge for {@link #adoptKeyframe}
      * @param epochOf the stored anchor's epoch for the {@link #beginDelta} D5 guard
@@ -410,7 +448,8 @@ public final class ChunkMergerCore<A, M> {
     }
 
     /** {@code trackedCap} (&ge; 1, else throws) bounds the
-     * cell store and the anchor map each; size it at or above the largest lawful roster. */
+     * cell store and the anchor map each; size it at or above the largest lawful roster. Its
+     * anchors weigh zero mount records: test kernels only. */
     public ChunkMergerCore(ToLongFunction<A> anchorTickOf, ToIntFunction<A> epochOf,
             ToIntFunction<M> mountIndexOf, long nackIdMax, int trackedCap) {
         this(anchorTickOf, epochOf, mountIndexOf, nackIdMax, trackedCap, MOUNTS_STORE_MAX);
@@ -419,15 +458,39 @@ public final class ChunkMergerCore<A, M> {
     /** {@code mountStoreCap} (&ge; 1, else throws)
      * bounds the mount slots summed over every cell; the product passes
      * {@link #MOUNTS_STORE_MAX}, and a lowered value lets a game-free row reach the bound
-     * without allocating it. */
+     * without allocating it. It weighs every anchor at zero ({@code a -> 0}), meaning the
+     * kernel's anchors carry no mounts, so {@link #ANCHOR_MOUNTS_MAX} never binds: test kernels
+     * only. */
     public ChunkMergerCore(ToLongFunction<A> anchorTickOf, ToIntFunction<A> epochOf,
             ToIntFunction<M> mountIndexOf, long nackIdMax, int trackedCap, int mountStoreCap) {
+        this(anchorTickOf, epochOf, mountIndexOf, nackIdMax, trackedCap, mountStoreCap,
+                a -> 0, ANCHOR_MOUNTS_MAX);
+    }
+
+    /** The widest constructor, the one both product twins
+     * call. {@code anchorMountsOf} weighs a stored anchor by the mount records it retains (its
+     * keyframe's mount-list size, &ge; 0); both twins must weigh the same number so the
+     * server-tree mirror refuses the same keyframe the kit does.
+     * That mirror is the merger of the synthetic drill
+     * seat ({@link PilotIntentDatagramClient}) and the offline tools, not on the serve path; the
+     * serving encoder keeps no model of this total and learns of a refusal only from the NACK
+     * the refused id's next delta draws. {@code anchorMountCap} (&ge; 1, else throws)
+     * bounds that weight summed over every stored anchor; the product passes
+     * {@link #ANCHOR_MOUNTS_MAX}, and a lowered value lets a game-free row reach the bound. */
+    public ChunkMergerCore(ToLongFunction<A> anchorTickOf, ToIntFunction<A> epochOf,
+            ToIntFunction<M> mountIndexOf, long nackIdMax, int trackedCap, int mountStoreCap,
+            ToIntFunction<A> anchorMountsOf, int anchorMountCap) {
         if (trackedCap < 1) {
             throw new IllegalArgumentException("trackedCap must be >= 1: " + trackedCap);
         }
         if (mountStoreCap < 1) {
             throw new IllegalArgumentException("mountStoreCap must be >= 1: " + mountStoreCap);
         }
+        if (anchorMountCap < 1) {
+            throw new IllegalArgumentException("anchorMountCap must be >= 1: " + anchorMountCap);
+        }
+        this.anchorMountsOf = anchorMountsOf;
+        this.anchorMountCap = anchorMountCap;
         this.anchorTickOf = anchorTickOf;
         this.epochOf = epochOf;
         this.mountIndexOf = mountIndexOf;
@@ -562,6 +625,12 @@ public final class ChunkMergerCore<A, M> {
      * gauge choice: arrival frame tick (client) or the record's embedded anchorTick (server)
      * — equivalent on encodable wire. A NEW id with the anchor map at the tracked cap is
      * refused too ({@link #anchorCapDrops} counted, no NACK queued here).
+     * So is a keyframe whose weight would carry
+     * {@link #anchorMountsRetained} past {@link #anchorMountCap} (a same-id replace frees the
+     * stored anchor's weight first), counted on {@link #anchorCapDrops} too, which arms the
+     * covering prune, and on {@link #anchorMountCapDrops}; the stored anchor stays and no NACK
+     * is queued here. The candidate's delta then drops on the epoch guard, whose NACKs throttle
+     * per epoch and coalesce at {@link #AWSD_NACK_PENDING_MAX}.
      *
      * @return true iff adopted (the twin then folds the resolved keyframe)
      */
@@ -576,7 +645,15 @@ public final class ChunkMergerCore<A, M> {
             awsdDroppedStale++; // reordered stale keyframe — hold the newer anchor
             return false;
         }
+        int oldWeight = stored == null ? 0 : anchorMountsOf.applyAsInt(stored);
+        int newWeight = anchorMountsOf.applyAsInt(anchor);
+        if ((long) anchorMountsRetained - oldWeight + newWeight > anchorMountCap) {
+            anchorCapDrops++;
+            anchorMountCapDrops++;
+            return false;
+        }
         awsdAnchors.put(entityId, anchor);
+        anchorMountsRetained += newWeight - oldWeight;
         clearNackFor(entityId);
         awsdKeyframes++;
         return true;
@@ -619,13 +696,18 @@ public final class ChunkMergerCore<A, M> {
     /** The consumed EDSP despawn: under merge, store EVICTION is the death edge — the
      * entity's cell, AWSD anchor, and NACK state die together (server DEC mirror).
      * The evicted cell's mount slots leave the
-     * store-wide total, so a refused index fits again once a despawn frees the room. */
+     * store-wide total, so a refused index fits again once a despawn frees the room.
+     * The evicted anchor's weight leaves the anchor
+     * mount total the same way, so a refused keyframe fits again after the despawn. */
     public void evict(long entityId) {
         Cell<M> gone = store.remove(entityId);
         if (gone != null) {
             mountsRetained -= gone.mounts.size();
         }
-        awsdAnchors.remove(entityId);
+        A goneAnchor = awsdAnchors.remove(entityId);
+        if (goneAnchor != null) {
+            anchorMountsRetained -= anchorMountsOf.applyAsInt(goneAnchor);
+        }
         clearNackFor(entityId);
     }
 
@@ -636,6 +718,7 @@ public final class ChunkMergerCore<A, M> {
         store.clear();
         mountsRetained = 0;
         awsdAnchors.clear();
+        anchorMountsRetained = 0;
         newestFoldedTick = Long.MIN_VALUE;
         synchronized (nackLock) {
             lastNackedEpoch.clear();
@@ -843,7 +926,8 @@ public final class ChunkMergerCore<A, M> {
         return trackedCapDrops;
     }
 
-    /** Keyframes refused because a NEW id met a full anchor map (cumulative). */
+    /** Keyframes refused because a NEW id met a full anchor map, or because the keyframe's
+     * weight would pass the anchor mount total ({@link #anchorMountCapDrops}) (cumulative). */
     public long anchorCapDrops() {
         return anchorCapDrops;
     }
@@ -867,6 +951,24 @@ public final class ChunkMergerCore<A, M> {
         return mountStoreCap;
     }
 
+    /** Keyframes refused because their weight would carry
+     * the anchor mount total past {@link #anchorMountCap} (cumulative, once per refused keyframe,
+     * each also counted on {@link #anchorCapDrops}; a lawful serve never moves it). */
+    public long anchorMountCapDrops() {
+        return anchorMountCapDrops;
+    }
+
+    /** Anchor mount records held now, summed over every stored anchor (test observability:
+     * equals the sum of every stored anchor's weight). */
+    public int anchorMountsRetained() {
+        return anchorMountsRetained;
+    }
+
+    /** The bound on {@link #anchorMountsRetained}: {@link #ANCHOR_MOUNTS_MAX} unless a test lowers it. */
+    public int anchorMountCap() {
+        return anchorMountCap;
+    }
+
     // ------------------------------------------------------------------ internals
 
     /**
@@ -876,16 +978,21 @@ public final class ChunkMergerCore<A, M> {
      * cell and a covering frame carries every stored id, so nothing could match. Past it an
      * anchor can stand cell-less; once a full frame omits its id it is gone, so it cannot crowd
      * a live id out of the bounded map.
+     * An anchor-mount-total refusal counts on
+     * {@link #anchorCapDrops} too, so it arms this prune, and each dropped anchor's weight
+     * leaves {@link #anchorMountsRetained}.
      */
     private void pruneUncarriedAnchors(LongPredicate frameCarriesId) {
         if ((trackedCapDrops | anchorCapDrops) == 0 || awsdAnchors.isEmpty()) {
             return;
         }
-        Iterator<Long> ids = awsdAnchors.keySet().iterator();
-        while (ids.hasNext()) {
-            long id = ids.next().longValue();
+        Iterator<Map.Entry<Long, A>> entries = awsdAnchors.entrySet().iterator();
+        while (entries.hasNext()) {
+            Map.Entry<Long, A> entry = entries.next();
+            long id = entry.getKey().longValue();
             if (!frameCarriesId.test(id)) {
-                ids.remove();
+                anchorMountsRetained -= anchorMountsOf.applyAsInt(entry.getValue());
+                entries.remove();
                 clearNackFor(id);
             }
         }

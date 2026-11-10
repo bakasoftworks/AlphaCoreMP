@@ -62,14 +62,34 @@
   
   
   function defaultLabel(id) { return id ? '(server default: ' + shipLabel(id) + ')' : ((st && st.serverDefaultLabel) || '(server default)'); }
-  var ships = { server: [], local: [], defaultId: '', current: '', names: {}, hulls: {} };
+  var ships = { server: [], local: [], defaultId: '', current: '', names: {}, hulls: {}, twins: Object.create(null) };
   
   
   
   
+  
+  
+  
+  function ownText(m, id) {
+    return (Object.prototype.hasOwnProperty.call(m, id) && typeof m[id] === 'string') ? m[id] : '';
+  }
+  function keptName(id) {
+    var n = ownText(ships.names, id);
+    return (typeof id === 'string' && id.indexOf('kept-') === 0 && n.trim()) ? n : '';
+  }
+  function plainShipLabel(id) {
+    var h = ownText(ships.hulls, id), slot = keptName(id) || id;
+    return h ? h + '  —  ' + slot : slot;
+  }
   function shipLabel(id) {
-    var h = ships.hulls[id];
-    return h ? h + '  —  ' + id : id;
+    var label = plainShipLabel(id);
+    return ships.twins[id] ? label + ' (' + id + ')' : label;
+  }
+  function keptTwins(ids) {
+    var seen = Object.create(null), twins = Object.create(null);
+    ids.forEach(function (id) { var t = plainShipLabel(id); seen[t] = (seen[t] || 0) + 1; });
+    ids.forEach(function (id) { if (keptName(id) && seen[plainShipLabel(id)] > 1) { twins[id] = 1; } });
+    return twins;
   }
   function labelMap(m) { return (m && typeof m === 'object') ? m : {}; }
   var shipUi = { open: false, active: -1, rows: [] };
@@ -79,6 +99,7 @@
     ships.local = uniq(localIds);
     ships.names = labelMap(names);
     ships.hulls = labelMap(hulls);
+    ships.twins = keptTwins(ships.server);
     if ($('ship').value) { pickShip($('ship').value, { quiet: true }); } 
     if (shipUi.open) { renderShipList($('shipSearch').value); }
   }

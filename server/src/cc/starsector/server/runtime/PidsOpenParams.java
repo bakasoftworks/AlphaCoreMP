@@ -54,7 +54,7 @@ import cc.starsector.server.match.PasswordSeatLedger;
  * @param lunaSheet the LunaSettings sheet ({@link ProbeLunaSheet}, minted once at boot) the door sends on EVERY
  *        password-proven PROBE reply, whatever its {@code match=} term: sealed chunks after any {@code matchDoc}
  *        chunks and before the mod-set listing, under the sheet's own per-source budget term
- *        ({@link PilotIntentDatagramServer#lunaDocHeldLocked}; a denial is silence). Null = no sheet (every rig and
+ *        ({@link PidsProbeReply#lunaDocHeldLocked}; a denial is silence). Null = no sheet (every rig and
  *        narrow overload): the listing's announce row then reads {@link LunaSheetCodec#NO_SHEET_TERM}. The live serve
  *        hands in the boot's sheet from {@code PilotServeSession}'s door parameters.
  *

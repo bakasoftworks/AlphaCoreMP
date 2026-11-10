@@ -856,8 +856,8 @@ public final class PilotServeSession {
      * Door wiring + announce (leg 3): join announce, WELCOME rate/flags, admin, the wire sink (opened
      * before admission arms), debug + joiner defaults, the voice relay, the fixed-bind row, onReady,
      * the GPEE log, the DOWN
-     * composer, the {@code npeer-serve open} row, the lobby snapshot, then the client-wait
-     * gate. Returns the no-session receipt (the early exit of {@link #serve()}, unchanged) or
+     * composer, the boot warms ({@link #runBootWarms()}), the {@code npeer-serve open} row, the
+     * lobby snapshot, then the client-wait gate. Returns the no-session receipt (the early exit of {@link #serve()}, unchanged) or
      * null once a session is admitted; {@code door} is the try-with-resources variable of
      * {@link #serve()}.
      */
@@ -1185,6 +1185,8 @@ public final class PilotServeSession {
                         DownEmissionComposer.armorCellsRepairBytesKnob())
                 : null;
         downComposer = DownEmissionComposer.resolveAtOpen(true, armorCellBook);
+        // the warms run before the open row and the lobby wait, so the first joiner never waits on them
+        runBootWarms();
         System.out.println("npeer-serve open seats=" + descriptorSeatCount
                 + " respawn_policy=" + respawnRaw + " " + downComposer.openLine()
                 + " door_fingerprint=" + (doorFingerprint == null ? "off" : doorFingerprint)
@@ -1238,9 +1240,47 @@ public final class PilotServeSession {
     }
 
     /**
+     * The serve's one-time boot warms (the {@link ServeBootWarm}
+     * legs + the two officer tables), run on the serve thread just before the {@code npeer-serve open}
+     * row, so before the lobby snapshot and the client-wait gate. They used to run after the first
+     * admit, inside the match-scope mint, so the first joiner waited on them before its first
+     * snapshot: tens of ms on a warm box, about 2 s of a 4 s wait when the class files or the
+     * serve's own pages had gone cold over a long lobby.
+     * Here they are paid while nobody is waiting, and they still run before the first
+     * round opens, so no served frame pays them either. Nothing they read is minted by the lobby
+     * wait or the match scope: legs 1-4 take no serve state, the officer table reads the engine
+     * settings loaded at boot, the ad-hoc officer catalogue was snapshotted at door wiring above,
+     * and the kept-ship boot walk has already run, as it had when the warms followed the lobby. A
+     * fail-closed officer table (a malformed row) therefore ends the serve before the open row
+     * instead of after the first admit. The {@code boot_warms} row's {@code ms=} is their wall
+     * time: the delay this adds before the open row.
+     */
+    private void runBootWarms() {
+        long warmStartNanos = System.nanoTime();
+        // Boot warms: D2-A pure-JVM fracture-lane classload warm +
+        // D3(ii) unconditional officer-table load — both BEFORE the first round opens,
+        // so no served frame pays the one-time bill (fortress shapes already paid the
+        // table read in their boot checks; this covers every other shape).
+        ServeBootWarm.warmFractureLaneClasses();
+        // Boot warm leg 2 — fan-codec encode side + t0-capture/t90/
+        // wave-mint classload lanes (the rig's measured un-warmed remainder).
+        ServeBootWarm.warmFanCodecsAndCaptureLane();
+        ServeBootWarm.warmPilotApplyLaneClasses(); // leg 3: tick-1 first-apply classes
+        ServeBootWarm.warmEngineFirstUseClasses(); // leg 4: measured cold vanilla first-use classes
+        cc.starsector.server.platform.OfficerAttach.bootWarmTable();
+        // The /spawnfoe|/spawnfriend 'officer' picks — classified from the
+        // engine's variant facts + skill-checked + wire-round-tripped HERE, once per serve, so
+        // the (c2c) drain does one map lookup on the sim thread.
+        cc.starsector.server.platform.AdhocOfficerTable.bootWarm(adhocOfficerCatalogueIds);
+        System.out.println("npeer-serve boot_warms ms=" + ((System.nanoTime() - warmStartNanos) / 1_000_000L)
+                + " at=pre_lobby");
+    }
+
+    /**
      * Match-scope mint (leg 3): the round-crossing registries, the effective tick rate, the
-     * sim-speed governor state, the stdout I/O meter, the boot warms and the linger law — all
-     * fields now (they survive round wraps; the round loop reads and reassigns them).
+     * sim-speed governor state, the stdout I/O meter and the linger law — all fields now (they
+     * survive round wraps; the round loop reads and reassigns them). The boot warms ran earlier,
+     * before the lobby wait ({@link #runBootWarms()}).
      */
     private void mintMatchScope() {
         // The previous round wrap's gated-reset identities — the next round's registry
@@ -1276,21 +1316,6 @@ public final class PilotServeSession {
         // idempotent install, aimed at THIS serve thread; fail-soft null (io_* print 0).
         ioMeter = ServeStdoutIoMeter.installForCurrentThread();
         fanMeters.ioMeter = ioMeter; // the fan stamps the compose/send boundary's I/O total from it
-        // Boot warms: D2-A pure-JVM fracture-lane classload warm +
-        // D3(ii) unconditional officer-table load — both BEFORE the first round opens,
-        // so no served frame pays the one-time bill (fortress shapes already paid the
-        // table read in their boot checks; this covers every other shape).
-        ServeBootWarm.warmFractureLaneClasses();
-        // Boot warm leg 2 — fan-codec encode side + t0-capture/t90/
-        // wave-mint classload lanes (the rig's measured un-warmed remainder).
-        ServeBootWarm.warmFanCodecsAndCaptureLane();
-        ServeBootWarm.warmPilotApplyLaneClasses(); // leg 3: tick-1 first-apply classes
-        ServeBootWarm.warmEngineFirstUseClasses(); // leg 4: measured cold vanilla first-use classes
-        cc.starsector.server.platform.OfficerAttach.bootWarmTable();
-        // The /spawnfoe|/spawnfriend 'officer' picks — classified from the
-        // engine's variant facts + skill-checked + wire-round-tripped HERE, once per serve, so
-        // the (c2c) drain does one map lookup on the sim thread.
-        cc.starsector.server.platform.AdhocOfficerTable.bootWarm(adhocOfficerCatalogueIds);
         // post-defeat linger — law + knob in MatchLingerLaw; the hold
         // itself is the frame-loop break check below (serve-ending round only).
         lingerLaw = new MatchLingerLaw(
@@ -1456,6 +1481,10 @@ public final class PilotServeSession {
         // The arc-hit probe's missile last-impact memo joins the binding's
         // delist triage, so every MISSILE_END names its victim + shield verdict (MissileImpactMemo).
         binding.setMissileImpactMemo(arcHitProbe.missileImpacts());
+        // The binding's missile walk fills the probe's fuse-burst attribution index (bomb AI explosionSpec ->
+        // bomb id); without this line every burst counts blast_unattributed and no BLAST_HIT is ever
+        // emitted.
+        binding.setBlastSpecIndex(arcHitProbe.blastSpecIndex());
         // per-round autofire-TARGET pick lane — poll+diff over SEAT
         // ships' autofire plugins, AUTOFIRE_TARGET (v9) on pick-change + slow keepalive.
         // Rides the compose below SEPARATE from effectiveEdges like the split detector:

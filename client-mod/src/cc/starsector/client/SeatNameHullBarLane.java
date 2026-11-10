@@ -99,6 +99,13 @@ final class SeatNameHullBarLane {
             if (seatNameByShip.put(ship, name) != null) {
                 seatLabelByShip.remove(ship); // name CHANGED after its tag label was built: rebuild
             }
+            // Remember which wire record this name came from, so an
+            // empty record for that id can find the hull again; a config name answers to no record.
+            if (fromWire) {
+                wireIdByNamedShip.put(ship, Long.valueOf(seatShipId));
+            } else {
+                wireIdByNamedShip.remove(ship);
+            }
             PilotWatchLog.info("predict seat-name: shipId=" + seatShipId + " <- " + FallbackAnnounce.quote(name, 64)
                     + " src=" + (fromWire ? "wire (SNMR/SNMS)"
                             : "config (cc.match.seat" + seatShipId + "Name)"));
@@ -233,12 +240,14 @@ final class SeatNameHullBarLane {
     }
 
     /** net-thread intake of one {@code SNMR} per-seat name record (fan or catch-up).
-     * The {@code ""} sentinel is a no-op — a name is never un-set (a standing law; the server skips
-     * sentinel-resolved records anyway).
+     * The {@code ""} record means "this seat has no name now" (its named
+     * occupant left and a nameless one took the seat) and goes to {@link #clearWireName}; a server that never
+     * sends one (every older server) changes nothing here.
      * A record refused at the session cap returns before the
      * received row — it is counted by the cap, never logged as applied. */
     void onSeatNameRecordEvent(cc.starsector.client.net.ClientSeatNameRecord record) {
         if (!record.hasName()) {
+            clearWireName(record.seatId(), record.shipId());
             return;
         }
         if (!putWireName(record.shipId(), record.name())) {
@@ -250,18 +259,44 @@ final class SeatNameHullBarLane {
     }
 
     /**
+     * net-thread intake of an empty record: copy-on-write removal of the
+     * ship id's wire name, then the dirty flag hands the un-naming to the render thread
+     * ({@link #unnameClearedWireSeats}), which alone may touch a ship. An id with no wire name held is a
+     * byte-quiet no-op (no copy, no dirty mark, no row): that covers a catch-up duplicate of a clear already
+     * applied and a clear for a seat this client never saw named, so the clear is idempotent. Removal never
+     * grows the table, so the occupancy cap needs no check here. The row carries the seat and ship ids only,
+     * never the name it drops. {@code seatId} is 1..65535 and {@code shipId} is non-negative (the record's
+     * decode contract).
+     */
+    private void clearWireName(int seatId, long shipId) {
+        java.util.Map<Long, String> current = wireNameByShipId;
+        Long key = Long.valueOf(shipId);
+        if (!current.containsKey(key)) {
+            return;
+        }
+        java.util.Map<Long, String> next = new java.util.HashMap<Long, String>(current);
+        next.remove(key);
+        wireNameByShipId = java.util.Collections.unmodifiableMap(next);
+        wireSeatNamesDirty = true;
+        PilotWatchLog.info("predict seat-names-wire: SNMR cleared seat=" + seatId + " shipId=" + shipId
+                + " -> render-thread un-name at the next apply");
+    }
+
+    /**
      * Late re-apply (render thread, once per intake via the dirty flag): a wire
      * name landed after a ship already bound (config-named or unnamed). The wire-first
      * {@link #applySeatName} no-ops wherever the right name is already on. A still-unbound ship
      * is covered by its own bind-time apply (also wire-first, reading the same map). Registry-lane
      * replicas are named by their wire id — this sweep is what makes registryShape lanes
-     * (gauntlet) see other players' names at all.
+     * (gauntlet) see other players' names at all. A cleared wire name is un-named first
+     * ({@link #unnameClearedWireSeats}), so the re-apply below sees the post-clear table.
      */
     void maintainWireNames() {
         if (!wireSeatNamesDirty) {
             return;
         }
         wireSeatNamesDirty = false;
+        unnameClearedWireSeats();
         applySeatName(plugin.ownShip, plugin.session.shipId());
         if (!plugin.registryShape) {
             applySeatName(plugin.foeShip,
@@ -275,18 +310,71 @@ final class SeatNameHullBarLane {
     }
 
     /**
+     * The render-thread half of an empty record: every ship whose tag
+     * name came from a wire record for an id the table no longer holds returns to the state of a seat that
+     * never had a wire name. A live hull goes through the vacated-hull seam ({@link #unnameShip}: tag and
+     * label dropped, the engine name slot given back the fleet member's own ship name), then re-applies
+     * under the same id, which yields what a seat with no wire name shows: the config name for seat 1/2
+     * when its knob is set, else nothing. A hulk only sheds its tag state: no tag draws for it either way,
+     * and its engine name belongs to the same-key hulk sweep, so writing the member name back could give it
+     * the live body's key again. Idempotent (an un-named ship leaves {@link #wireIdByNamedShip}); the row
+     * carries the ship id only.
+     */
+    private void unnameClearedWireSeats() {
+        if (wireIdByNamedShip.isEmpty()) {
+            return;
+        }
+        java.util.Map<Long, String> names = wireNameByShipId;
+        java.util.List<ShipAPI> cleared = null;
+        for (java.util.Map.Entry<ShipAPI, Long> e : wireIdByNamedShip.entrySet()) {
+            if (!names.containsKey(e.getValue())) {
+                if (cleared == null) {
+                    cleared = new java.util.ArrayList<ShipAPI>(2);
+                }
+                cleared.add(e.getKey());
+            }
+        }
+        if (cleared == null) {
+            return;
+        }
+        for (ShipAPI ship : cleared) {
+            long shipId = wireIdByNamedShip.get(ship).longValue();
+            boolean hulk = ship.isHulk();
+            if (hulk) {
+                dropTagState(ship);
+            } else {
+                unnameShip(ship);
+                applySeatName(ship, shipId);
+            }
+            PilotWatchLog.info("predict seat-name: wire name cleared shipId=" + shipId + " hulk=" + hulk
+                    + " -> tag dropped" + (hulk ? "" : ", hull name restored"));
+        }
+    }
+
+    /**
      * Name-tag state. {@code seatNameByShip}: seat ships successfully named this
      * combat, keyed by engine identity — empty ⇔ no name from config OR wire ⇔
      * {@link #renderSeatNameTags} exits before any label/GL work (byte-identical presentation, the
-     * name-less guarantee). One label per seat ship, created with its then-current text; the ONE
-     * legal mid-combat change (a config-applied name superseded by a late wire table)
-     * drops the label in {@link #applySeatName} so it is rebuilt. A draw Throwable kills the lane
+     * name-less guarantee). One label per seat ship, created with its then-current text; a mid-combat
+     * name change (a config-applied name superseded by a late wire table)
+     * drops the label in {@link #applySeatName} so it is rebuilt; a wire name cleared by an empty record
+     * drops tag and label whole ({@link #unnameClearedWireSeats}). A draw Throwable kills the lane
      * for the ROUND (fail-soft, no per-frame log spam) — presentation must never touch the round;
      * the match-reset rebuild re-arms it (it used to stay dead for the whole combat,
      * which turned one own-death NPE into "nametags gone for the remaining 9 rounds").
      */
     private final IdentityHashMap<ShipAPI, String> seatNameByShip = new IdentityHashMap<ShipAPI, String>();
     private final IdentityHashMap<ShipAPI, LabelAPI> seatLabelByShip = new IdentityHashMap<ShipAPI, LabelAPI>();
+
+    /**
+     * For each ship whose CURRENT tag name came from a wire record, the
+     * wire ship id of that record (render thread only, like the two maps above; a config-named ship is
+     * absent). An empty record clears the id from {@link #wireNameByShipId} on the net thread; this map is how
+     * {@link #unnameClearedWireSeats} then finds the hull, whatever id mapping the late re-apply uses for it.
+     * Dropped with the tag maps (forget, sweep, round reset), so it never outlives the tag it describes.
+     */
+    private final IdentityHashMap<ShipAPI, Long> wireIdByNamedShip = new IdentityHashMap<ShipAPI, Long>();
+    private int vanillaNameRestoreFailures;
     private float seatNameRowH;
     private boolean seatNameTagDead;
 
@@ -557,13 +645,27 @@ final class SeatNameHullBarLane {
      * new occupant's applySeatName re-stamps. Fail-soft: the name restore is best effort.
      */
     void forgetSeatName(ShipAPI ship) {
-        if (ship == null) {
-            return;
+        String had = unnameShip(ship);
+        if (had != null) {
+            PilotWatchLog.info("predict seat-name: vacated hull dropped tag " + FallbackAnnounce.quote(had, 64));
         }
-        String had = seatNameByShip.remove(ship);
-        seatLabelByShip.remove(ship);
+    }
+
+    /**
+     * The un-name core shared by {@link #forgetSeatName} and
+     * {@link #unnameClearedWireSeats}, carved out so a wire clear can run it without the vacated-hull row
+     * (that row quotes the dropped name; a clear logs ids only). Drops the tag state and, when the ship
+     * carried a seat name, gives the engine name slot back the fleet member's own ship name (no member, or a
+     * blank member name, leaves the slot as it is). Returns the dropped name, or null when there was none.
+     * Fail-soft: the name restore is best effort, its first failure logs once and the rest are counted.
+     */
+    private String unnameShip(ShipAPI ship) {
+        if (ship == null) {
+            return null;
+        }
+        String had = dropTagState(ship);
         if (had == null) {
-            return;
+            return null;
         }
         try {
             com.fs.starfarer.api.fleet.FleetMemberAPI member = ship.getFleetMember();
@@ -571,15 +673,29 @@ final class SeatNameHullBarLane {
             if (vanilla != null && !vanilla.isEmpty() && !vanilla.equals(had)) {
                 ship.setName(vanilla);
             }
-        } catch (Throwable ignore) {
+        } catch (Throwable t) {
             // Presentation only — the tag is already gone.
+            if (++vanillaNameRestoreFailures == 1) {
+                PilotWatchLog.error("predict seat-name: hull name restore FAILED (later failures counted silently): "
+                        + t.getClass().getSimpleName(), t);
+            }
         }
-        PilotWatchLog.info("predict seat-name: vacated hull dropped tag " + FallbackAnnounce.quote(had, 64));
+        return had;
+    }
+
+    /** Drops a ship's tag name, cached label and wire source; returns
+     * the dropped tag name or null. The engine name slot is untouched. */
+    private String dropTagState(ShipAPI ship) {
+        String had = seatNameByShip.remove(ship);
+        seatLabelByShip.remove(ship);
+        wireIdByNamedShip.remove(ship);
+        return had;
     }
 
     void resetForMatchReset() {
         seatNameByShip.clear();
         seatLabelByShip.clear();
+        wireIdByNamedShip.clear();
         seatNameTagDead = false;
         wireSeatNamesDirty = true;
         logSeatNameCapTotals("round-close"); // the wire-name map itself is session-scoped: never cleared here
@@ -588,7 +704,7 @@ final class SeatNameHullBarLane {
     /**
      * The sweep law for the per-body tag holders: a ship the
      * engine no longer holds in play ({@link CombatEngineAPI#isEntityInPlay} false: neither live nor a
-     * pending add) drops its tag name and its cached label, so a server that never resets the round
+     * pending add) drops its tag name, its cached label and its wire source, so a server that never resets the round
      * cannot grow them by one entry per seat body ever named. Render thread, on the projectile-set sweep
      * cadence; the tag render pass iterates these maps in a separate callback, never during this sweep.
      * The ship's name is not restored (that is {@link #forgetSeatName}'s, for a body still in play).
@@ -602,6 +718,10 @@ final class SeatNameHullBarLane {
         }
         if (!seatLabelByShip.isEmpty()) {
             seatLabelByShip.keySet().removeIf(ship -> !engine.isEntityInPlay(ship));
+        }
+        // The wire-source map lives exactly as long as the tag it describes.
+        if (!wireIdByNamedShip.isEmpty()) {
+            wireIdByNamedShip.keySet().removeIf(ship -> !engine.isEntityInPlay(ship));
         }
     }
 }

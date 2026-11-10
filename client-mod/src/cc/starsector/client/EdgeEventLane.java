@@ -207,6 +207,7 @@ final class EdgeEventLane {
             edgeQueueRefused = 0;
         }
         plugin.pendingAheadEvents.clear(); // B2(a): held ahead edges belong to the ended round
+        plugin.blastHitLane.resetRound(); // the ended round's latched bombs + the kind-11 log budget
         int holdRefused = pendingAheadRefused;
         int farRefused = aheadRefused;
         pendingAheadRefused = 0;
@@ -324,6 +325,7 @@ final class EdgeEventLane {
      * catch-up advance on presentation, not before.
      */
     void drainEdgeEvents(long snapshotTick) {
+        plugin.blastHitLane.beginDrainPass(snapshotTick); // sizes this pass's kind-11 apply cap, BEFORE any present
         plugin.afTargets.onSnapshotTick(snapshotTick); // Expiry clock, BEFORE any kind-7 intake
         plugin.fireLanes.expireDischargePairs(snapshotTick); // Flush discharge stamps the tolerance window passed by
         // B2(a) hold: re-offer held ahead events first (rotation preserves arrival order; neither
@@ -417,6 +419,11 @@ final class EdgeEventLane {
             // window-fold trap); entityId = the VICTIM (so `own` = the own hull was hit).
             plugin.eventReplayCritMalfunction++;
             plugin.critMalfunctionLane.present(event, own);
+        } else if (event.kind() == ClientGameplayEdgeEvent.Kind.BLAST_HIT) {
+            // Route FIRST like kinds 5-10 (the window folds below
+            // would mis-fold kind 11). entityId = the BOMB's missile id, targetWireId = the victim; the
+            // presenter resolves both and meters every exit (`own` here would compare the bomb id, unused).
+            plugin.blastHitLane.present(event);
         } else if (event.kind() == ClientGameplayEdgeEvent.Kind.SYSTEM_JUMP) {
             // Route FIRST — the own/foe window folds below would mis-fold kind 4 into
             // mfServerOpen/sysServerOpen as a bogus window edge (the window-fold trap).
@@ -1088,7 +1095,8 @@ final class EdgeEventLane {
                 + (plugin.session != null ? plugin.session.despawnFramesIgnored() : 0)
                 + " predict_event_rebase_match_reset_ignored=" + plugin.matchResetsIgnored
                 // Round boundaries the render thread rebuilt for (multi-round respawn).
-                + " predict_event_rebase_match_reset_applied=" + plugin.matchResetsApplied);
+                + " predict_event_rebase_match_reset_applied=" + plugin.matchResetsApplied
+                + plugin.blastHitLane.meterTokens()); // kind-11 exits, appended last
         // The mid-flight half of the own-window meter (the line above sees edges only).
         // srvon_localoff = the player-felt "server ON, client ate it"; over_lag = streaks past the
         // ~0.5 s edge-lag bound; open_streak_ticks > 0 = a skew UNRESOLVED at this flush.

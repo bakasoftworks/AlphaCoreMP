@@ -113,13 +113,18 @@ public final class SnapshotChunkMerger {
     }
 
     /** Explicit bounds: {@code trackedCap} for the cell
-     * store and the anchor map (each), {@code unionTickCap} (&ge; 1) per same-tick union. */
+     * store and the anchor map (each), {@code unionTickCap} (&ge; 1) per same-tick union.
+     * An anchor weighs its keyframe's mount-list size,
+     * the number the server-tree mirror (off the serve path; the server learns of a refusal only
+     * from a NACK) weighs its baseline by, against {@link ChunkMergerCore#ANCHOR_MOUNTS_MAX}. */
     public SnapshotChunkMerger(int trackedCap, int unionTickCap) {
         if (unionTickCap < 1) {
             throw new IllegalArgumentException("unionTickCap must be >= 1: " + unionTickCap);
         }
         this.core = new ChunkMergerCore<>(AwsdAnchor::anchorTick, AwsdAnchor::epoch,
-                ServerWeaponMountState::mountIndex, 0xFFFFL, trackedCap);
+                ServerWeaponMountState::mountIndex, 0xFFFFL, trackedCap,
+                ChunkMergerCore.MOUNTS_STORE_MAX, anchor -> anchor.kf().mounts().size(),
+                ChunkMergerCore.ANCHOR_MOUNTS_MAX);
         this.unionTickCap = unionTickCap;
     }
 
@@ -392,7 +397,8 @@ public final class SnapshotChunkMerger {
 
     /** Announce the first cap drop of any kind once (a
      * dropped id is missing from merge-path views); then one boolean test per published frame.
-     * The counts keep rising in {@link #meterTokens}. */
+     * The counts keep rising in {@link #meterTokens}. An anchor-mount-total refusal also counts
+     * on the kernel's anchorCapDrops, so the gate needs no term of its own. */
     private void noteCapDrops() {
         if (capDropAnnounced
                 || (core.trackedCapDrops() | core.anchorCapDrops() | core.mountCapDrops() | unionCapDrops) == 0) {
@@ -401,6 +407,7 @@ public final class SnapshotChunkMerger {
         capDropAnnounced = true;
         FallbackAnnounce.announceOnce("snap-merger-cap-drop",
                 "cells=" + core.trackedCapDrops() + " anchors=" + core.anchorCapDrops()
+                        + " anchorMounts=" + core.anchorMountCapDrops() // the anchor mount-total drops, a subset of anchors
                         + " mounts=" + core.mountCapDrops() // the per-cell and store-wide mount-bound drops
                         + " union=" + unionCapDrops + " trackedCap=" + core.trackedCap()
                         + " unionTickCap=" + unionTickCap + " -> new ids dropped, counted");
@@ -506,6 +513,7 @@ public final class SnapshotChunkMerger {
                 + " armor_restamps=" + armorRestamps
                 + " snap_cap_drop_cells=" + core.trackedCapDrops()
                 + " snap_cap_drop_anchors=" + core.anchorCapDrops()
+                + " snap_anchor_mount_cap_dropped=" + core.anchorMountCapDrops() // the kernel's anchor mount total
                 + " snap_mount_cap_dropped=" + core.mountCapDrops() // the kernel's per-cell and store-wide mount bounds
                 + " snap_cap_drop_union=" + unionCapDrops;
     }
@@ -515,9 +523,21 @@ public final class SnapshotChunkMerger {
         return core.trackedCapDrops();
     }
 
-    /** AWSD keyframes refused at the anchor-map cap. */
+    /** AWSD keyframes refused at the anchor-map cap or the anchor mount total. */
     public long anchorCapDrops() {
         return core.anchorCapDrops();
+    }
+
+    /** AWSD keyframes refused at the kernel's anchor
+     * mount total (each also counted in {@link #anchorCapDrops}). */
+    public long anchorMountCapDrops() {
+        return core.anchorMountCapDrops();
+    }
+
+    /** Anchor mount records held now, summed over every stored anchor (test observability: the
+     * proof this twin weighs an anchor by its keyframe's mount count). */
+    public int anchorMountsRetained() {
+        return core.anchorMountsRetained();
     }
 
     /** Same-tick union records (beams, missiles, dictionary entries) dropped at the per-tick cap. */

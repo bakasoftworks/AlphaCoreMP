@@ -157,9 +157,11 @@ final class CtrlFanout {
      */
     void fanSeatName(SeatNameFrameCodec.SeatNameRecord record) {
         // Every fanned name also teaches the module-seats arbiter its
-        // occupancy-reply label (reader thread, no lock held — the never-nested law; the record
-        // is hasName()-guarded by both callers and codec-validated, the noteSeatName caller law).
-        if (moduleSeats != null) {
+        // occupancy-reply label (reader thread, no lock held — the never-nested law; codec-validated,
+        // the noteSeatName caller law). A nameless record is
+        // the door's clear, fanned only after its caller already forgot the label, so it never
+        // reaches noteSeatName.
+        if (moduleSeats != null && record.hasName()) {
             moduleSeats.noteSeatName(record.seatId(), record.name());
         }
         byte[] frame = SeatNameFrameCodec.encodeSeatNameRecord(

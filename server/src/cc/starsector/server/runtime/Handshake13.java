@@ -66,11 +66,16 @@ public final class Handshake13 {
      * version-18 kit cannot read, so that kit's F1 never opens at this door: it meets the {@code HandshakeBounceLadder}
      * v18 rung and reads {@code kit_outdated} (the rung landed at the fold).
      *
+     * 20 = the version-19 bytes unchanged (no new F1 bit; {@link #FLAGS_DEFINED} stays {@code 0x3F}); the bump gates
+     * two additive DOWN changes a version-19 kit's exact-match readers refuse (the gameplay-edge frame's schema 17 and
+     * the labelled spawn-listing rows). The kit-bytes door check runs only when a host arms it, so this byte is the one
+     * guard that holds in every configuration: a version-19 kit's F1 meets the {@code HandshakeBounceLadder} v19 rung
+     * and reads {@code kit_outdated}.
      * A bump re-mints the {@code Handshake13KatRows} K0..K7 goldens in the SAME commit (two temporary hex-print
      * passes, never committed): the byte heads every frozen message, so the 15 and 16 bumps both went red on it.
      *
      */
-    public static final int VERSION = 19;
+    public static final int VERSION = 20;
     /** The highest lawful {@code team} byte; a sealed 3..255 opens as {@code bodyOk == false}. */
     public static final int TEAM_MAX = 2;
     /** The sealed F2 body's trailing pilot keymap: one byte per {@link PilotIntentFrame#CONTROL_KEY_NAMES} entry. */

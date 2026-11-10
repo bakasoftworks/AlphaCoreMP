@@ -12,8 +12,9 @@ import cc.starsector.server.runtime.PilotIntentFrame;
  * <p>This is the event-family counterpart of {@link EntityDespawnEvent}: emission is
  * a pure function of post-step engine state per tick, so under the probe
  * pin the whole stream is provable bit-exactly. The dedup/order key
- * is {@code (simTick, entityId, kind, phase, mountIndex)}; application is
- * idempotent set-semantics.
+ * is {@code (simTick, entityId, kind, phase, mountIndex)} — plus {@code targetWireId}
+ * for {@code BLAST_HIT}, where one bomb's blast names one record per victim with the same code;
+ * application is idempotent set-semantics.
  *
  * <p>{@code entityId} keys the owning ship in the same id scheme as the snapshot
  * stream the detector observes alongside (the B1 in-process detector uses the
@@ -103,6 +104,15 @@ import cc.starsector.server.runtime.PilotIntentFrame;
  * gun reads 0) or {@link #TARGET_ABSENT} (no stamped declaration consumed). Every other value is
  * corruption (fail-closed). Stamped post-step by {@link #withDeclaredWait(int)}; the emitters mint
  * {@link #TARGET_ABSENT}. Width unchanged.
+ *
+ * <p>{@code BLAST_HIT} (schema v17): {@code entityId} = the
+ * BOMB missile, {@code targetWireId} = the VICTIM ship ({@code > 0}, never a sentinel), {@code mountIndex}
+ * = the packed code {@link #blastCode(int, boolean, int)} in {@code 0..0xFF} (unknown type ordinals and
+ * family codes legal), the two reused float slots = the blast centre {@link #blastX()}/{@link #blastY()}
+ * (finite, {@code |v| <= }{@link #BLAST_POSE_CEIL_SU}), {@code birthSpeed} = {@link #blastAmount()}
+ * ({@code (0, }{@link #BLAST_AMOUNT_CEIL}{@code ]}), {@code muzzleX} = {@link #blastEmp()}
+ * ({@code [0, }{@link #BLAST_AMOUNT_CEIL}{@code ]}), {@code muzzleY} = {@link #blastApplied()}
+ * ({@code [0, }{@link #BLAST_APPLIED_CEIL}{@code ]}). Every other value is corruption (fail-closed).
  */
 public record GameplayEdgeEvent(
         long simTick,
@@ -184,6 +194,22 @@ public record GameplayEdgeEvent(
     public static final int CRIT_BRANCH_LETHAL = 2;
     /** {@code CRIT_MALFUNCTION} hull-amount ceiling (inclusive). */
     public static final float CRIT_AMOUNT_CEIL = 1_000_000f;
+
+    // The BLAST_HIT wire contract (same names and bounds both trees).
+    /** {@code BLAST_HIT} family code (bits 4-7 of the packed code): a proximity-fuse burst. */
+    public static final int BLAST_FAMILY_FUSE_BURST = 1;
+    /** {@code BLAST_HIT} family code: a contact-fuse blast (reserved; no producer names it yet). */
+    public static final int BLAST_FAMILY_FUSE_CONTACT = 2;
+    /** {@code BLAST_HIT} packed-code bit: the blast landed on the victim's shield. */
+    public static final int BLAST_SHIELD_BIT = 0x8;
+    /** {@code BLAST_HIT} packed-code mask of the damage-type ordinal (bits 0-2). */
+    public static final int BLAST_TYPE_MASK = 0x7;
+    /** {@code BLAST_HIT} ceiling (inclusive) of the pre-armor amount and of the EMP. */
+    public static final float BLAST_AMOUNT_CEIL = 1e5f;
+    /** {@code BLAST_HIT} ceiling (inclusive) of {@code |centre X|} and {@code |centre Y|}, in su. */
+    public static final float BLAST_POSE_CEIL_SU = 1e6f;
+    /** {@code BLAST_HIT} ceiling (inclusive) of the applied meter (hull + armor, or shield). */
+    public static final float BLAST_APPLIED_CEIL = 1e6f;
 
     public GameplayEdgeEvent {
         if (simTick < 0L) {
@@ -474,6 +500,42 @@ public record GameplayEdgeEvent(
                 requireNaNMuzzle(kind, muzzleX, muzzleY);
                 requireAbsentTarget(kind, targetWireId);
             }
+            case BLAST_HIT -> {
+                // Every slot bounded, fail-closed. Unknown type
+                // ordinals and family codes inside 0..0xFF are LEGAL (the consumer skips + counts them):
+                // a throw here would read as a corrupt payload on the client's decode.
+                if (phase != GameplayEdgeEventPhase.ONE_SHOT) {
+                    throw new IllegalArgumentException(
+                            "BLAST_HIT phase must be ONE_SHOT; got " + phase);
+                }
+                if (targetWireId < 1L) {
+                    throw new IllegalArgumentException(
+                            "BLAST_HIT targetWireId must be > 0; got " + targetWireId);
+                }
+                if (mountIndex < 0 || mountIndex > 0xFF) {
+                    throw new IllegalArgumentException(
+                            "BLAST_HIT code must be in 0..255; got " + mountIndex);
+                }
+                if (!Float.isFinite(aimFacingDeg) || !Float.isFinite(flightBearingDeg)
+                        || Math.abs(aimFacingDeg) > BLAST_POSE_CEIL_SU
+                        || Math.abs(flightBearingDeg) > BLAST_POSE_CEIL_SU) {
+                    throw new IllegalArgumentException(
+                            "BLAST_HIT centre must be finite with |v| <= " + BLAST_POSE_CEIL_SU + "; got "
+                                    + aimFacingDeg + "/" + flightBearingDeg);
+                }
+                if (!Float.isFinite(birthSpeed) || birthSpeed <= 0f || birthSpeed > BLAST_AMOUNT_CEIL) {
+                    throw new IllegalArgumentException(
+                            "BLAST_HIT amount must be finite in (0, " + BLAST_AMOUNT_CEIL + "]; got " + birthSpeed);
+                }
+                if (!Float.isFinite(muzzleX) || muzzleX < 0f || muzzleX > BLAST_AMOUNT_CEIL) {
+                    throw new IllegalArgumentException(
+                            "BLAST_HIT emp must be finite in [0, " + BLAST_AMOUNT_CEIL + "]; got " + muzzleX);
+                }
+                if (!Float.isFinite(muzzleY) || muzzleY < 0f || muzzleY > BLAST_APPLIED_CEIL) {
+                    throw new IllegalArgumentException(
+                            "BLAST_HIT applied must be finite in [0, " + BLAST_APPLIED_CEIL + "]; got " + muzzleY);
+                }
+            }
         }
     }
 
@@ -757,6 +819,79 @@ public record GameplayEdgeEvent(
         return birthSpeed;
     }
 
+    /**
+     * A {@code BLAST_HIT} (schema v17): the server engine's blast of the bomb {@code bombEntityId}
+     * damaged the ship {@code victimWireId} at {@code simTick} — one record per victim. The code is
+     * packed by {@link #blastCode(int, boolean, int)}; {@code centreX}/{@code centreY} = the blast
+     * centre, {@code amount} = the pre-armor damage applied to this victim, {@code emp} = its EMP,
+     * {@code applied} = hull + armor (or shield) actually taken.
+     */
+    public static GameplayEdgeEvent blastHit(long simTick, long bombEntityId, long victimWireId, int typeOrdinal,
+            boolean shieldHit, int familyCode, float centreX, float centreY, float amount, float emp,
+            float applied) {
+        return new GameplayEdgeEvent(
+                simTick, bombEntityId, GameplayEdgeEventKind.BLAST_HIT, GameplayEdgeEventPhase.ONE_SHOT,
+                blastCode(typeOrdinal, shieldHit, familyCode), centreX, centreY, amount, emp, applied,
+                victimWireId);
+    }
+
+    /** {@code BLAST_HIT} packed code: {@code familyCode << 4 | shield bit | typeOrdinal}; throws on a
+     *  type ordinal outside {@code 0..7} or a family code outside {@code 0..15}. */
+    public static int blastCode(int typeOrdinal, boolean shieldHit, int familyCode) {
+        if (typeOrdinal < 0 || typeOrdinal > BLAST_TYPE_MASK) {
+            throw new IllegalArgumentException("BLAST_HIT type ordinal must be in 0..7; got " + typeOrdinal);
+        }
+        if (familyCode < 0 || familyCode > 0xF) {
+            throw new IllegalArgumentException("BLAST_HIT family code must be in 0..15; got " + familyCode);
+        }
+        return (familyCode << 4) | (shieldHit ? BLAST_SHIELD_BIT : 0) | typeOrdinal;
+    }
+
+    /** {@code BLAST_HIT} payload: the blast centre X (the {@code aimFacingDeg} slot). */
+    public float blastX() {
+        return aimFacingDeg;
+    }
+
+    /** {@code BLAST_HIT} payload: the blast centre Y (the {@code flightBearingDeg} slot). */
+    public float blastY() {
+        return flightBearingDeg;
+    }
+
+    /** {@code BLAST_HIT} payload: the packed code (the {@code mountIndex} slot, {@code 0..0xFF}). */
+    public int blastCode() {
+        return mountIndex;
+    }
+
+    /** {@code BLAST_HIT} payload: the damage-type ordinal (code bits 0-2; unknown ordinals legal). */
+    public int blastTypeOrdinal() {
+        return mountIndex & BLAST_TYPE_MASK;
+    }
+
+    /** {@code BLAST_HIT} payload: true when the blast landed on the shield (code bit 3). */
+    public boolean blastShieldHit() {
+        return (mountIndex & BLAST_SHIELD_BIT) != 0;
+    }
+
+    /** {@code BLAST_HIT} payload: the family code (code bits 4-7; unknown families legal). */
+    public int blastFamily() {
+        return (mountIndex >>> 4) & 0xF;
+    }
+
+    /** {@code BLAST_HIT} payload: the pre-armor amount applied to this victim (the {@code birthSpeed} slot). */
+    public float blastAmount() {
+        return birthSpeed;
+    }
+
+    /** {@code BLAST_HIT} payload: the EMP (the {@code muzzleX} slot). */
+    public float blastEmp() {
+        return muzzleX;
+    }
+
+    /** {@code BLAST_HIT} payload: hull + armor, or shield, actually taken (the {@code muzzleY} slot; a meter). */
+    public float blastApplied() {
+        return muzzleY;
+    }
+
     /** {@code SYSTEM_JUMP} payload: authoritative post-jump destination X (the {@code aimFacingDeg} slot). */
     public float destX() {
         return aimFacingDeg;
@@ -853,7 +988,7 @@ public record GameplayEdgeEvent(
 
     /** The v9 long slot carries a payload only on the kinds whose own law names one
      *  ({@code AUTOFIRE_TARGET}, {@code ARC_HIT}, {@code MISSILE_END}, the {@code SYSTEM_WINDOW} mote ON
-     *  edge, and the v16 {@code WEAPON_DISCHARGE} declared wait); every caller of this check carries the
+     *  edge, the v16 {@code WEAPON_DISCHARGE} declared wait, and the v17 {@code BLAST_HIT} victim); every caller of this check carries the
      *  canonical {@link #TARGET_ABSENT} sentinel (the {@code birthSpeed} slot law). */
     private static void requireAbsentTarget(GameplayEdgeEventKind kind, long targetWireId) {
         if (targetWireId != TARGET_ABSENT) {

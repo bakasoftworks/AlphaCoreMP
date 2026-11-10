@@ -129,7 +129,15 @@ public final class ServerGameplayEdgeEventMessage {
      *  earlier or later. Pin = {@link #DECLARED_WAIT_MIN_SCHEMA}; DOWN-only. Re-pack the joiner kit (the
      *  v15 precedent: no handshake bump; the client reader exact-matches the schema).
      * */
-    public static final int SCHEMA_VERSION = 16;
+    /** v17: width UNCHANGED (66 B) — kind {@code BLAST_HIT(11)} appended (the add-a-kind form, the
+     *  v14 CRIT_MALFUNCTION template): the server names every ship a bomb's blast damaged (bomb id,
+     *  victim wire id, packed type/shield/family code, blast centre, amount, EMP, applied in the existing
+     *  slots), one record per victim; DOWN-only. Pin = {@link #BLAST_HIT_MIN_SCHEMA}. Re-pack the joiner
+     *  kit (no handshake bump: the client reader exact-matches the schema). */
+    public static final int SCHEMA_VERSION = 17;
+    /** v16 = the 66 B declared-wait schema every pre-v17 archive carries — READ-only tolerance: no
+     *  {@code BLAST_HIT} in its taxonomy. */
+    public static final int SCHEMA_VERSION_V16 = 16;
     /** v15 = the 66 B MISSILE_END victim schema every pre-v16 archive carries — READ-only tolerance:
      *  its {@code WEAPON_DISCHARGE} long slot is always {@code TARGET_ABSENT}. */
     public static final int SCHEMA_VERSION_V15 = 15;
@@ -246,6 +254,13 @@ public final class ServerGameplayEdgeEventMessage {
      *
      */
     public static final int DECLARED_WAIT_MIN_SCHEMA = 16;
+
+    /**
+     * The lowest schema whose taxonomy contains {@code BLAST_HIT(11)} (the same kind-pin idiom as
+     * {@link #CRIT_MALFUNCTION_MIN_SCHEMA}: v17 = add-a-kind, width unchanged 66 B; the codec read rejects
+     * a kind 11 in an older frame).
+     */
+    public static final int BLAST_HIT_MIN_SCHEMA = 17;
     public static final String CODEC_OWNER = "server.protocol.gameplay_edge_event.codec";
     public static final String VALIDATION_OWNER = "server.protocol.gameplay_edge_event.validation";
     public static final String RELEVANCE_RULE_ID = "gameplay_edge_event.tick_stamped_window_discharge_edge";

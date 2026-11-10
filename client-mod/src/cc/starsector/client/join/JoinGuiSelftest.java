@@ -454,6 +454,7 @@ final class JoinGuiSelftest {
         selftestSwingPlainText();
         selftestShipChoiceNames(); //
         selftestShipChoiceHulls(tmp); //
+        selftestKeptShipNames();
         selftestModStageLazy(tmp);
         selftestModStageDigestOnce(tmp);
         selftestModStageLinks(tmp);
@@ -1152,12 +1153,14 @@ final class JoinGuiSelftest {
     }
 
     /**
-     * The ship combo shows ids (plus the hull when served), never names, and
-     * launches ids. The pure mapping first: a named id with no hull reads the id alone, the editor's shown text is
-     * the id, a typed name still maps back to its id by fold, a typed id and the server-default label pass through, a
-     * name two ids share never maps back by text; then one UNSHOWN editable combo with the pair installed: a selected
-     * id shows itself, the editor hands back the id, the renderer paints hull + id suffix (never the name) through
-     * html-disabled labels, and an opener-led hull or name builds no HTML view.
+     * The ship combo shows a kept ship's name and every other ship's id (plus
+     * the hull when served), and launches ids. The pure mapping first (the fixture id is a kept one): a kept named id
+     * with no hull reads the name alone, the editor's shown text is that name, a typed name still maps back to its id
+     * by fold, a typed id and the server-default label pass through, a name two ids share never maps back by text;
+     * then one UNSHOWN editable combo with the pair installed: a selected kept id shows its name, the editor hands back
+     * the id, the renderer paints hull + name suffix through html-disabled labels, and an opener-led hull or kept name
+     * builds no HTML view.
+     *
      *
      */
     private static void selftestShipChoiceNames() {
@@ -1167,25 +1170,29 @@ final class JoinGuiSelftest {
         Map<String, String> served = new LinkedHashMap<>();
         served.put(id, name);
         n.replace(served, null);
-        check(id.equals(n.rowText(id)),
-                "ship names: a named id with no hull reads the id alone (flips if the display name paints in the row)");
+        check(name.equals(n.rowText(id)),
+                "ship names: a kept id with a name and no hull reads the name alone (flips if the kept hash id paints"
+                        + " in the name's place)");
         check("wolf_Assault".equals(n.rowText("wolf_Assault")),
                 "ship names: an unnamed id's row is the id alone (flips if an unknown id gets a guessed label)");
-        check(id.equals(n.shown(id)) && "wolf_Assault".equals(n.shown("wolf_Assault")) && "".equals(n.shown(null)),
-                "ship names: the editor shows the id even when a name is known (flips if the editor paints the name)");
+        check(name.equals(n.shown(id)) && "wolf_Assault".equals(n.shown("wolf_Assault")) && "".equals(n.shown(null)),
+                "ship names: the editor shows a kept ship's name and an unnamed id itself (flips if the editor paints"
+                        + " the kept hash id, or a guessed label on an unknown id)");
         check(id.equals(n.toId(name, null)) && id.equals(n.toId("  standard (alphacoremp) ", null)),
                 "ship names: a typed exact name maps back to its id by ASCII fold (flips if Launch gets the name)");
         check("wolf_Assault".equals(n.toId("wolf_Assault", null))
                         && JoinProbe.SERVER_DEFAULT_LABEL.equals(n.toId(JoinProbe.SERVER_DEFAULT_LABEL, null)),
                 "ship names: a typed id and the server-default label pass through untouched (flips if the fallback breaks)");
-        check("wolf_Assault".equals(n.toId("wolf_Assault", id)) && id.equals(n.toId(id, id)),
-                "ship names: an edit over a last-shown pick is the typed text, an unedited pick is its id (flips if"
-                        + " the stale pick wins over an edit)");
+        check("wolf_Assault".equals(n.toId("wolf_Assault", id)) && id.equals(n.toId(n.shown(id), id)),
+                "ship names: an edit over a last-shown pick is the typed text, an unedited pick (its shown name) is its"
+                        + " id (flips if the stale pick wins over an edit, or the shown name stops mapping back)");
         n.put("standard_copy", name);
-        check(name.equals(n.toId(name, null)) && "standard_copy".equals(n.toId(n.shown("standard_copy"), null))
-                        && id.equals(n.toId(n.shown(id), null)),
-                "ship names: a name two ids share never maps back by text, and each ship's shown text launches it with"
-                        + " no last-shown help (flips if a shared name launches the wrong ship or the editor paints it)");
+        check(name.equals(n.toId(name, null)) && "standard_copy".equals(n.shown("standard_copy"))
+                        && "standard_copy".equals(n.toId(n.shown("standard_copy"), null))
+                        && id.equals(n.toId(n.shown(id), id)),
+                "ship names: a name two ids share never maps back by text; the shipped id shows and launches as itself,"
+                        + " and the kept ship's shown name launches it through the last-shown pick (flips if a shared"
+                        + " name launches a guessed ship, or a shipped row paints its name)");
         n.replace(Map.of(), Map.of());
         check(n.nameOrNull(id) == null && name.equals(n.toId(name, null)),
                 "ship names: replace drops the last probe's names (flips if a stale server's names linger)");
@@ -1199,9 +1206,9 @@ final class JoinGuiSelftest {
         box.addItem("wolf_Assault");
         box.setSelectedItem(id);
         Component editor = box.getEditor().getEditorComponent();
-        check(editor instanceof JTextComponent && id.equals(((JTextComponent) editor).getText()),
-                "ship names: the combo editor shows the selected id itself (flips if the installed editor paints the"
-                        + " display name or the hull)");
+        check(editor instanceof JTextComponent && name.equals(((JTextComponent) editor).getText()),
+                "ship names: the combo editor shows the selected kept ship's name (flips if the installed editor"
+                        + " paints the kept hash id or the hull)");
         check(id.equals(box.getEditor().getItem())
                         && id.equals(JoinLaunchPlan.sanitizeShip(String.valueOf(box.getEditor().getItem()))),
                 "ship names: the Launch read of the editor is the id, through sanitizeShip (flips if Launch gets the name)");
@@ -1220,30 +1227,43 @@ final class JoinGuiSelftest {
                 plain &= c.getClientProperty(SwingPlainText.HTML_DISABLE) == Boolean.TRUE;
             }
         }
-        check(texts.size() == 2 && texts.contains("hammerhead") && texts.contains(ShipChoiceNames.SEPARATOR + id)
+        check(texts.size() == 2 && texts.contains("hammerhead") && texts.contains(ShipChoiceNames.SEPARATOR + name)
                         && plain,
-                "ship names: a named, hulled popup row paints the hull and the id suffix only, in html-disabled labels"
-                        + " (flips if the renderer paints the name, drops either half or paints through an HTML-capable"
-                        + " label)");
+                "ship names: a kept, named, hulled popup row paints the hull and the name suffix only, in html-disabled"
+                        + " labels (flips if the renderer paints the kept hash id, drops either half or paints through an"
+                        + " HTML-capable label)");
         installed.put("evil_ship", "<html><img src=x>");
         installed.putHull("evil_ship", "<html><b>x</b>");
+        // a kept ship's name PAINTS, so an opener-led one rides both row shapes (hulled and hull-less)
+        installed.put("kept-evil-0a0a0a", "<html><img src=x>");
+        installed.putHull("kept-evil-0a0a0a", "<html><b>x</b>");
+        installed.put("kept-evil-0b0b0b", "<html><b>y</b>");
         boolean noView = true;
-        for (JComponent c : componentTree(box.getRenderer().getListCellRendererComponent(list, "evil_ship", 2, false,
-                false))) {
-            noView &= c.getClientProperty(BasicHTML.propertyKey) == null;
+        List<String> keptPainted = new ArrayList<>();
+        for (String v : List.of("evil_ship", "kept-evil-0a0a0a", "kept-evil-0b0b0b")) {
+            for (JComponent c : componentTree(box.getRenderer().getListCellRendererComponent(list, v, 2, false,
+                    false))) {
+                noView &= c.getClientProperty(BasicHTML.propertyKey) == null;
+                if (c instanceof JLabel && !v.equals("evil_ship")) {
+                    keptPainted.add(((JLabel) c).getText());
+                }
+            }
         }
-        check(noView, "ship names: an opener-led hull (or name) builds no HTML view in the popup (flips if a server"
-                + " label renders markup)");
+        check(keptPainted.contains(ShipChoiceNames.SEPARATOR + "<html><img src=x>") && keptPainted.contains("<html><b>y</b>"),
+                "SETUP-ship names: the opener-led kept names reach the popup labels (else the no-view row proves nothing)");
+        check(noView, "ship names: an opener-led hull or kept-ship name builds no HTML view in the popup, hulled or"
+                + " hull-less (flips if a server label renders markup)");
     }
 
     /**
      * Rows {@code join_choice_shows_name_hull_id} and {@code fetcher_carries_hull_from_target_label} (the first row's
-     * name predates the no-name law and is kept as its stable id): a ship row reads {@code hull  —  id} when the
-     * server sent the hull id (the ship row's optional targetLabel), named or not, and the id alone when it sent none;
-     * a display name never paints. The pure mapping and an unshown combo's renderer first (the typed-text pick included);
+     * name is kept as its stable id): a ship row reads {@code hull  —  slot} when the server sent the hull id (the ship
+     * row's optional targetLabel) and the slot alone when it sent none; the slot is a kept ship's name (the fixture id is
+     * a kept one), else the id. The pure mapping and an unshown combo's renderer first (the typed-text pick included);
      * then one probe result reaching BOTH join windows through their door seams — the REAL Swing fetcher paints the
      * hull in its combo rows, the REAL browser probe reply carries {@code hulls} — present, then absent; then the
      * collector on the canned no-label listing names no hull. Fixture values only.
+     *
      *
      *
      */
@@ -1259,29 +1279,29 @@ final class JoinGuiSelftest {
         hulls.put("lasher_CS", "lasher");
         ShipChoiceNames n = new ShipChoiceNames();
         n.replace(names, hulls);
-        check((hull + dash + id).equals(n.rowText(id)) && dash.equals(ShipChoiceNames.SEPARATOR),
-                row + ": a named, hulled id's row is the hull, the dash and the id, no name (flips if the display name"
-                        + " paints, the hull drops or reorders, or the separator drifts)");
+        check((hull + dash + name).equals(n.rowText(id)) && dash.equals(ShipChoiceNames.SEPARATOR),
+                row + ": a kept, named, hulled id's row is the hull, the dash and the typed name, no hash id (flips if"
+                        + " the kept id paints in the name's place, the hull drops or reorders, or the separator drifts)");
         check(("lasher" + dash + "lasher_CS").equals(n.rowText("lasher_CS")) && "wolf_Assault".equals(n.rowText("wolf_Assault")),
                 row + ": an unnamed hulled id reads hull + dash + id as well, an id the server sent nothing for reads the id"
                         + " alone (flips if a hull without a name is dropped or put after the id, or a label is guessed)");
-        check(id.equals(n.shown(id)) && id.equals(n.toId(name, null)) && id.equals(n.toId(id, null))
+        check(name.equals(n.shown(id)) && id.equals(n.toId(name, null)) && id.equals(n.toId(id, null))
                         && hull.equals(n.toId(hull, null)),
-                row + ": typed text: the name and the id both pick the ship, the editor shows the id, a typed hull id"
-                        + " stays raw text (flips if a hull many ships share launches a guessed one, or the editor shows"
-                        + " the name or the hull)");
+                row + ": typed text: the name and the id both pick the ship, the editor shows the kept name, a typed"
+                        + " hull id stays raw text (flips if a hull many ships share launches a guessed one, or the"
+                        + " editor shows the kept hash id or the hull)");
         n.replace(names, null);
-        check(id.equals(n.rowText(id)) && n.hullOrNull(id) == null,
-                row + ": a probe with no hulls drops the last one's and a named row reads the id alone (flips if a"
-                        + " stale hull lingers or the name paints in its place)");
+        check(name.equals(n.rowText(id)) && n.hullOrNull(id) == null,
+                row + ": a probe with no hulls drops the last one's and a kept named row reads the name alone (flips"
+                        + " if a stale hull lingers or the hash id paints in the name's place)");
         javax.swing.JComboBox<String> box = new javax.swing.JComboBox<>();
         ShipChoiceNames.install(box).replace(names, hulls);
-        check(labelTexts(box, id).equals(List.of(hull, dash + id))
+        check(labelTexts(box, id).equals(List.of(hull, dash + name))
                         && labelTexts(box, "lasher_CS").equals(List.of("lasher", dash + "lasher_CS"))
                         && labelTexts(box, "wolf_Assault").equals(List.of("wolf_Assault")),
-                row + ": the popup paints the hull bright and dash + id dim on every hulled row, named or not, and a"
-                        + " hull-less row as the id alone (flips if the renderer splits on the name again, paints the"
-                        + " name, or drops the hull)");
+                row + ": the popup paints the hull bright and dash + slot dim on every hulled row (the kept name, a"
+                        + " shipped id), and a hull-less row as the id alone (flips if the renderer paints the kept"
+                        + " hash id, splits on a shipped name, or drops the hull)");
 
         String frow = "fetcher_carries_hull_from_target_label";
         Path modDir = sidesKit(tmp, "ship-hulls", null);
@@ -1306,10 +1326,11 @@ final class JoinGuiSelftest {
             List<String> present = fetchedRowTexts(frow, fetcher, refresh, calls, 1, fbox, id);
             reply[0] = DoorProbe.Result.served(ids, 0, 3, null, List.of(), 0, true, names, Map.of());
             List<String> absent = fetchedRowTexts(frow, fetcher, refresh, calls, 2, fbox, id);
-            check(present.equals(List.of(hull, dash + id)) && absent.equals(List.of(id)),
-                    frow + ": the Swing fetcher's combo row carries the probe's hull, and a probe without one reads the"
-                            + " id alone (got " + present.size() + "/" + absent.size() + " labels; flips if apply drops"
-                            + " the result's hulls, keeps a stale one, or paints the name)");
+            check(present.equals(List.of(hull, dash + name)) && absent.equals(List.of(name)),
+                    frow + ": the Swing fetcher's combo row carries the probe's hull and the kept ship's name, and a"
+                            + " probe without a hull reads the name alone (got " + present.size() + "/" + absent.size()
+                            + " labels; flips if apply drops the result's hulls or names, keeps a stale hull, or paints"
+                            + " the kept hash id)");
             JoinBrowserUi ui = JoinBrowserUi.forSelftest(modDir, new JoinSettings("", "", "", "", "", true, "", ""));
             reply[0] = DoorProbe.Result.served(ids, 0, 3, null, List.of(), 0, true, names, hulls);
             String withHull = ui.probe("127.0.0.1", "7777", "pw-1pass");
@@ -1336,6 +1357,96 @@ final class JoinGuiSelftest {
         check(plain.served() && plain.hulls.isEmpty() && plain.names.isEmpty() && plain.ids.size() == 2,
                 frow + ": a ship listing with no targetLabel names no hull (flips if the collector invents a hull from"
                         + " another field)");
+    }
+
+    /**
+     * Row {@code join_choice_kept_ship_paints_typed_name}: a KEPT ship (the server's {@code kept-} id) that arrived
+     * with a name paints that name where its hash id painted; a shipped ship keeps hull + id; a blank or absent name
+     * keeps the id; only kept rows whose painted text another row of the same probe also paints add their id in
+     * parentheses (a same-name kept ship on another hull does not); every shown text maps back to the right id, a
+     * shared name never maps, and a probe that drops a twin's partner drops its id suffix. The pure mapping, then the
+     * real installed combo (renderer + editor + the Launch read through sanitizeShip). Fixture values only.
+     *
+     */
+    private static void selftestKeptShipNames() {
+        String row = "join_choice_kept_ship_paints_typed_name";
+        String dash = ShipChoiceNames.SEPARATOR;
+        String wasp = "kept-wasp-test-062fb5";
+        String twin = "kept-wasp-test-a1b2c3";
+        String otherHull = "kept-wasp-test-ffffff";
+        String blank = "kept-blank-000001";
+        String unnamed = "kept-unnamed-000002";
+        String shipped = "gryphon_Hammer";
+        Map<String, String> names = new LinkedHashMap<>();
+        names.put(wasp, "Wasp_test");
+        names.put(twin, "Wasp_test");
+        names.put(otherHull, "Wasp_test");
+        names.put(blank, "   ");
+        names.put(shipped, "Hammer");
+        Map<String, String> hulls = new LinkedHashMap<>();
+        for (String k : List.of(wasp, twin, blank, unnamed)) {
+            hulls.put(k, "astral");
+        }
+        hulls.put(otherHull, "wolf");
+        hulls.put(shipped, "gryphon");
+        ShipChoiceNames n = new ShipChoiceNames();
+        n.replace(Map.of(wasp, "Wasp_test"), Map.of(wasp, "astral"));
+        check(("astral" + dash + "Wasp_test").equals(n.rowText(wasp)) && "Wasp_test".equals(n.shown(wasp))
+                        && "astral".equals(n.headText(wasp)),
+                row + ": a lone kept row paints hull, dash and the typed name, the editor shows the name (flips if the"
+                        + " kept hash id paints, or an id suffix shows with no twin)");
+        check(wasp.equals(n.toId(n.shown(wasp), null)) && wasp.equals(n.toId(n.shown(wasp), wasp))
+                        && wasp.equals(n.toId("  wasp_TEST ", null)),
+                row + ": a picked kept name round-trips to its id, with or without the last-shown pick, by ASCII fold"
+                        + " (flips if Launch gets the name instead of the id)");
+        n.replace(names, hulls);
+        String twinTail = "Wasp_test (" + twin + ")";
+        check(("astral" + dash + "Wasp_test (" + wasp + ")").equals(n.rowText(wasp))
+                        && ("astral" + dash + twinTail).equals(n.rowText(twin)),
+                row + ": two same-name kept rows on one hull each carry their id after the name (flips if a twin"
+                        + " paints the bare name, so the two rows read the same)");
+        check(("wolf" + dash + "Wasp_test").equals(n.rowText(otherHull)) && "Wasp_test".equals(n.shown(otherHull)),
+                row + ": a same-name kept row on another hull paints no id (flips if the id suffix fires on a shared"
+                        + " name rather than on a shared painted row)");
+        check(("gryphon" + dash + shipped).equals(n.rowText(shipped)) && shipped.equals(n.shown(shipped)),
+                row + ": a shipped, named row stays hull + id, never its display name (flips if the kept-prefix gate"
+                        + " drops and a shipped name paints)");
+        check(("astral" + dash + blank).equals(n.rowText(blank)) && ("astral" + dash + unnamed).equals(n.rowText(unnamed))
+                        && unnamed.equals(n.shown(unnamed)),
+                row + ": a kept row whose name arrived blank or not at all paints its id (flips if a blank name paints"
+                        + " an empty slot or a guessed label)");
+        check(wasp.equals(n.toId(n.shown(wasp), null)) && twin.equals(n.toId(twinTail, null))
+                        && otherHull.equals(n.toId(n.shown(otherHull), otherHull))
+                        && "Wasp_test".equals(n.toId("Wasp_test", null)),
+                row + ": each twin's shown text maps back to its own id, the other-hull ship through its last-shown"
+                        + " pick, and the shared bare name never maps (flips if a shared name launches a guessed ship)");
+        javax.swing.JComboBox<String> box = new javax.swing.JComboBox<>();
+        box.setEditable(true);
+        ShipChoiceNames installed = ShipChoiceNames.install(box);
+        installed.replace(names, hulls);
+        for (String k : List.of(wasp, twin, otherHull, shipped, unnamed)) {
+            box.addItem(k);
+        }
+        check(labelTexts(box, twin).equals(List.of("astral", dash + twinTail))
+                        && labelTexts(box, otherHull).equals(List.of("wolf", dash + "Wasp_test"))
+                        && labelTexts(box, shipped).equals(List.of("gryphon", dash + shipped)),
+                row + ": the real popup paints the twin's id, the other-hull row's bare name and the shipped id (flips"
+                        + " if the renderer paints a different slot than the row text)");
+        box.setSelectedItem(twin);
+        Component editor = box.getEditor().getEditorComponent();
+        check(editor instanceof JTextComponent && twinTail.equals(((JTextComponent) editor).getText())
+                        && twin.equals(box.getEditor().getItem())
+                        && twin.equals(JoinLaunchPlan.sanitizeShip(String.valueOf(box.getEditor().getItem()))),
+                row + ": the picked twin shows its name and id, and the Launch read is its id through sanitizeShip"
+                        + " (flips if Launch gets the shown text or the other twin)");
+        installed.replace(Map.of(wasp, "Wasp_test"), Map.of(wasp, "astral"));
+        check(("astral" + dash + "Wasp_test").equals(installed.rowText(wasp)),
+                row + ": a probe without the twin's partner drops the id suffix (flips if a stale twin lingers)");
+        installed.replace(Map.of("kept-a-000001", "Wasp", "kept-b-000002", "wasp"), Map.of());
+        check("Wasp".equals(installed.rowText("kept-a-000001")) && "wasp".equals(installed.rowText("kept-b-000002"))
+                        && "Wasp".equals(installed.toId("Wasp", null)),
+                row + ": names that differ only in case paint no id (the painted texts differ) and still never map back"
+                        + " by text (flips if the twin test folds case, or a shared fold launches a guessed ship)");
     }
 
     /** The JLabel texts the combo's renderer paints for {@code value} (row 0, unselected): the component itself, else

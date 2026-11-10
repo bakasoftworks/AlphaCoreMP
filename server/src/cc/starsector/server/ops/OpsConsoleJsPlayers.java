@@ -36,6 +36,11 @@ package cc.starsector.server.ops;
  * from the status keys {@code customKeptIds} / {@code customInboxIds}, textContent only, the counts and
  * over-cap words in the two headings (row {@code page-kept}). Every send goes through the one {@code send}
  * path, so the server-minted confirm shows the way every verb confirm does.
+ * <p>A kept row whose status key {@code customKeptLabels} carries a name
+ * (by index against {@code customKeptIds}, paired before any non-string id is dropped) paints that typed name first
+ * ({@code .kept-name}, textContent) and keeps the stem visible in a dim style after it - two ships may share a name,
+ * and the row's Forget, the toolbar Forget and the confirm all stay on the stem; no name = today's row. The kept
+ * signature carries the names, so a renamed ship repaints.
  * <p>Ban address ({@code #btn-ban-ip}, {@code V.banIp}) sends {@code ban-ip}
  * + {@code key=} with the trimmed {@code #ban-ip-key} text (an empty box only notes), gated like the Bans list's
  * Unban ({@code gate.cmd}); its echo settles when the status ban count rises by one, and the box empties once the
@@ -708,18 +713,35 @@ final class OpsConsoleJsPlayers {
               };
               // kept for everyone + exported not kept yet: textContent only, counts and over-cap words in the headings
               const renderKept = (s) => {
-                const kept = idList(s.customKeptIds);
+                // a kept stem and its typed name share an index in the status: pair them BEFORE dropping a non-string
+                // id (its name drops with it), so no later name lands on the wrong stem; a non-string name = none
+                const ids = Array.isArray(s.customKeptIds) ? s.customKeptIds : [];
+                const names = Array.isArray(s.customKeptLabels) ? s.customKeptLabels : [];
+                const pairs = ids.map((stem, i) => [stem, typeof names[i] === 'string' ? names[i] : ''])
+                  .filter((p) => typeof p[0] === 'string');
+                const kept = pairs.map((p) => p[0]);
+                const labels = pairs.map((p) => p[1]);
                 const inbox = idList(s.customInboxIds);
                 put(CC.el('kept-title'), 'Kept for everyone (' + (s.customKept | 0) + ')'
                   + (s.customKeptOverCap === true ? OVER_CAP : ''));
                 put(CC.el('inbox-title'), 'Exported, not kept yet (' + inbox.length + ')'
                   + (s.customInboxOverCap === true ? OVER_CAP : ''));
-                const sig = JSON.stringify([kept, inbox]);
+                const sig = JSON.stringify([kept, labels, inbox]);
                 if (sig !== keptSig) {
                   keptSig = sig;
-                  CC.el('kept-list').replaceChildren(...kept.map((stem) => {
+                  CC.el('kept-list').replaceChildren(...kept.map((stem, i) => {
                     const li = CC.tpl('tpl-kept-row').firstElementChild;
                     CC.text(CC.q('.kept-label', li), stem);
+                    if (labels[i]) {
+                      // the typed name first, the stem kept visible (dim) after it: two ships may share a name, and
+                      // Forget acts on the stem
+                      const name = document.createElement('span');
+                      name.className = 'kept-name';
+                      CC.text(name, labels[i] + ' ');
+                      const cell = CC.q('.kept-label', li);
+                      cell.classList.add('dim');
+                      cell.before(name);
+                    }
                     CC.q('.forget', li).addEventListener('click', (e) => V.forgetRow(stem, e.currentTarget));
                     return li;
                   }));

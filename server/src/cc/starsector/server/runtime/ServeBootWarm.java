@@ -3,8 +3,8 @@ package cc.starsector.server.runtime;
 import java.util.List;
 
 /**
- * Boot-time pure-JVM warms for the npeer serve — every leg runs BEFORE the first round opens,
- * so no served frame pays a one-time JVM first-execution bill (classload / cold-interp /
+ * Boot-time pure-JVM warms for the npeer serve — every leg runs BEFORE the lobby wait, so neither the
+ * first admit nor a served frame pays this one-time JVM first-execution bill (classload / cold-interp /
  * LambdaForm spin). Extracted from {@code PersistentPilotIntentCombatServer} at the 5000-nb
  * PPICS anchor trip (deferred-refactors ledger); call order and behavior unchanged.
  * Legs 1-3 are state-neutral with zero engine contact: synthetic records, throwaway
@@ -18,7 +18,8 @@ import java.util.List;
  * an attribution rig measured the remaining un-warmed fan/capture lanes
  * (live proof: stall rows 1 → 0, in-round cc classload firsts
  * collapsed to sub-stall stragglers). Leg 3: the round-0 tick-1 first-apply
- * classes three live runs' serve JFRs named on the sim thread. Leg 4:
+ * classes three live runs' serve JFRs named on the sim thread, plus the owner-mark
+ * decode and first ad-hoc spawn classes. Leg 4:
  * the cold vanilla classes the first in-round ship death, missile, hit particle and fighter
  * escort pick loaded on the sim thread.
  */
@@ -254,6 +255,20 @@ final class ServeBootWarm {
      * {@code MountProbeLane$N} numbering follows source order, so each carries the
      * interface it must implement: a drifted number is a loud miss, never a silent warm of the
      * wrong closure. One summary row + one {@code warm_class_miss} row per miss.
+     *
+     * <p>The same leg (same idiom, same tally) also warms
+     * the cc.* classes two in-round paths still loaded cold:
+     * (i) the owner-mark decode, {@code MarkFrameCodec} + its
+     * {@code OwnerMark} record, first loaded on the datagram reader thread INSIDE the reliability
+     * core's monitor (about 84 ms there, which the snapshot emitter, the reliability timer and one
+     * sim frame waited out); (ii) the first ad-hoc foe spawn's {@code AdhocFoeSpawner.Entry} (op
+     * phase), {@code AdhocFoeDrain} + {@code WaveOfficerRowGuard} (wave phase) and the capture's
+     * {@code SeatHullParts}: about 74 ms of that spawn's 103 ms frame. CALLEE CHECK:
+     * {@code MarkFrameCodec}'s static init reads only the protocol registry's type code and the
+     * message's schema constant (pure tables: no engine, no socket, no frame sent);
+     * {@code SeatHullParts}'s builds an empty method cache; the other four have no static init.
+     * The spawn frame's two vanilla firsts (the spawned hull's ship-system class and its system
+     * AI) depend on which hull spawns, so they are not warmed here.
      */
     static PilotApplyWarmTally warmPilotApplyLaneClasses() {
         long warmStartNanos = System.nanoTime();
@@ -276,6 +291,13 @@ final class ServeBootWarm {
                 PilotAimFrameCodec.PilotAimRow.class,
                 AwsdSnapshotCodec.MountDelta.class,
                 RosterAppendCatchup.Cursor.class,
+                // In-round firsts off the tick-1 path: the owner-mark decode (reader thread) ...
+                MarkFrameCodec.class,
+                MarkFrameCodec.OwnerMark.class,
+                // ... and the first ad-hoc foe spawn (op enqueue, wave-phase drain, officer row).
+                AdhocFoeSpawner.Entry.class,
+                AdhocFoeDrain.class,
+                WaveOfficerRowGuard.class,
         };
         java.lang.invoke.MethodHandles.Lookup lookup = java.lang.invoke.MethodHandles.lookup();
         for (Class<?> first : firstApplyClasses) {
@@ -296,6 +318,8 @@ final class ServeBootWarm {
                         cc.starsector.server.bridge.PilotApplyState.MountReadinessProbe.class),
                 new NestedWarm("cc.starsector.server.bridge.OwnCarrierZeroFluxProbe", null),
                 new NestedWarm("cc.starsector.server.runtime.PilotAimFanLane$SeatState", null),
+                // The first ad-hoc spawn's capture: the roster rebuild's seat-hull parts walk.
+                new NestedWarm("cc.starsector.server.bridge.SeatHullParts", null),
         };
         for (NestedWarm nested : nestedFirstApply) {
             if (warmNestedOrMiss(nested.name(), nested.mustBe())) {
@@ -352,7 +376,9 @@ final class ServeBootWarm {
             new EngineFirstUse("com.fs.starfarer.combat.ai.missile.MissileAI", false),
             new EngineFirstUse("com.fs.starfarer.combat.ai.missile.MissileAI$o", false),
             new EngineFirstUse("com.fs.graphics.particle.GenericTextureParticle", false),
-            new EngineFirstUse("com.fs.starfarer.combat.ai.movement.maneuvers.EscortTargetManeuverV3$4", false));
+            new EngineFirstUse("com.fs.starfarer.combat.ai.movement.maneuvers.EscortTargetManeuverV3$4", false),
+            new EngineFirstUse("com.fs.starfarer.combat.ai.missile.HeatseekerAI", false),
+            new EngineFirstUse("com.fs.starfarer.combat.ai.ProximityFuseAI", false));
 
     /**
      * Boot warm leg 4 — the cold VANILLA first-use classes.
@@ -364,6 +390,10 @@ final class ServeBootWarm {
      * in-round vanilla firsts of 5 ms or more: {@code MissileAI} + its inner enum (first missile fire,
      * then its first advance), {@code GenericTextureParticle} (first hit particle) and
      * {@code EscortTargetManeuverV3$4} (first fighter escort pick).
+     * A later flight's serve JFR added two missile-AI
+     * firsts: {@code HeatseekerAI} (first heat-seeking missile launch, about 20 ms of an engine
+     * advance right after the first ad-hoc spawn) and {@code ProximityFuseAI} (first
+     * proximity-fuse missile advance, about 24 ms).
      * Paid HERE, once per process, before round 0 opens (boot, off the frame loop); a
      * re-simulation walks the same boot path, so a serve and its re-sim stay alike.
      *
@@ -388,6 +418,10 @@ final class ServeBootWarm {
      *     ({@code BaseParticle}) or interfaces, so init = load + link; the
      *     measured bill is the define.</li>
      * <li>{@code MissileAI}'s inner enum: INIT — its static init builds its four constants only.</li>
+     * <li>{@code HeatseekerAI}: INIT — no static init; {@code ProximityFuseAI}: INIT — its static
+     *     init only fetches its own log4j logger (no engine state, no settings read). Both extend
+     *     {@code Object}, and their interfaces declare no static state.
+     * </li>
      * </ul>
      * Loader = this class's loader = the serve's app loader, which carries the engine jars; a JVM
      * without them (the game-free contract suite) misses every name, by design. One summary row +

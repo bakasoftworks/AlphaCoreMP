@@ -592,16 +592,19 @@ public final class ListPickerLaw {
         return "/ship " + entry.token();
     }
 
-    /** A /ship row's display name — the ship row's OPTIONAL occupantLabel
-     *  (marks 0..2, the seat-name law at decode), else null. DISPLAY ONLY: the row's paste stays
-     *  {@code /ship <token>} ({@link #selectionCommand}); the picker lane leads the row text with it. */
-    public static String shipRowName(int kind, ClientListingRecord.Entry e) {
-        return kind == ClientListingReader.KIND_SHIP ? e.occupantLabel() : null;
+    /** SEARCH ONLY: the kinds whose rows name a ship, so the filter reads the row's ship name
+     *  (the OPTIONAL occupantLabel) and hull NAME there: the /ship list and the two spawn menus, whose kept rows
+     *  carry both labels. The paste stays the token ({@link #selectionCommand}); what a row PAINTS is the picker
+     *  lane's own law (its kept-name rule), never this. It replaces the /ship-only {@code shipRowName}, which
+     *  had lost its last painter. */
+    private static boolean shipSearchKind(int kind) {
+        return kind == ClientListingReader.KIND_SHIP || kind == ClientListingReader.KIND_SPAWNFOE
+                || kind == ClientListingReader.KIND_SPAWNFRIEND;
     }
 
     /** ASCII case-fold CONTAINS over token + targetLabel (the filter law), plus the occupantLabel
      *  on KIND_UNBAN (an /unban row's NAME lives there) and on a
-     *  /ship row, its display name per {@link #shipRowName} and its hull name ({@link #hullNameMatches}); the
+     *  /ship or spawn row ({@link #shipSearchKind}), its ship name and its hull name ({@link #hullNameMatches}); the
      *  fold mirrors the server grammar's ascii-fold — non-ASCII passes through unfolded, which only
      *  ever under-matches the unicode occupant labels every other kind deliberately does not search. */
     private void refilter() {
@@ -619,8 +622,10 @@ public final class ListPickerLaw {
                         || (kind == ClientListingReader.KIND_UNBAN && e.occupantLabel() != null
                                 && asciiLower(e.occupantLabel()).contains(needle))
                         // A /ship row's optional display name
-                        // rides the occupantLabel too, so the list is searchable by name
-                        || shipRowName(kind, e) != null && asciiLower(shipRowName(kind, e)).contains(needle)
+                        // rides the occupantLabel too, so the list is searchable by name; a spawn
+                        // row's kept-ship name rides the same slot (shipSearchKind)
+                        || shipSearchKind(kind) && e.occupantLabel() != null
+                                && asciiLower(e.occupantLabel()).contains(needle)
                         || hullNameMatches(e, needle)) {
                     out.add(e);
                 }
@@ -631,10 +636,10 @@ public final class ListPickerLaw {
         scrollTop = 0;
     }
 
-    /** A /ship row's hull NAME (resolved at landing) contains the
-     *  needle — the hull id itself rides targetLabel, which the token/targetLabel clause already searches. */
+    /** A /ship or spawn row's hull NAME (resolved at landing) contains
+     *  the needle — the hull id itself rides targetLabel, which the token/targetLabel clause already searches. */
     private boolean hullNameMatches(ClientListingRecord.Entry e, String needle) {
-        if (kind != ClientListingReader.KIND_SHIP || e.targetLabel() == null) {
+        if (!shipSearchKind(kind) || e.targetLabel() == null) {
             return false;
         }
         String hull = hullNames.get(e.targetLabel());

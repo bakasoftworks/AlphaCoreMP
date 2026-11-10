@@ -760,16 +760,106 @@ public final class PickableVariants {
      * becomes a pick by itself. One monitor hold for the whole walk (the two maps are guarded by {@code this}).
      */
     private synchronized List<String> matchingIn(View v, String raw) {
+        return matchingAmong(v.ids(), raw);
+    }
+
+    /** The {@link #matchingIn} rule over any id list of this instance (the views,
+     * the kept spawn ids): ids whose fold, remembered display name fold or remembered hull fold contains the folded
+     * {@code raw}, input order kept. Callers hold {@code this}. */
+    private List<String> matchingAmong(List<String> ids, String raw) {
         Objects.requireNonNull(raw, "raw");
         String fold = ChatCommands.asciiLower(raw);
         List<String> matches = new ArrayList<String>();
-        for (String id : v.ids()) {
+        for (String id : ids) {
             if (ChatCommands.asciiLower(id).contains(fold) || foldContains(displayNameOrNull(id), fold)
                     || foldContains(hullIdOrNull(id), fold)) {
                 matches.add(id);
             }
         }
         return matches;
+    }
+
+    /**
+     * The KEPT copies this listing holds now that the spawn verbs may offer, the
+     * newest keep first (a tie keeps listing order). WHY: the spawn catalogue is the engine registry copied once at
+     * boot, before any kept copy registers, so a host's own kept builds were never offered as foes or friends. An id
+     * qualifies when the live view lists it (a copy taken off the server or hidden has left the view, while its keep
+     * time stays remembered), it has a keep time ({@link #keptAtMsOrNull}: only a kept copy's registration records
+     * one, never a shipped or a dev-promoted id), and it is inside the operator-token grammar (a recorded spawn
+     * re-parses under it, the spawn view's own law). No hull is read here: a kept copy lists only after the
+     * custom-variant policy accepted its body, and that policy refuses station, station-base and station-module
+     * hulls on every tier.
+     */
+    public synchronized List<String> keptSpawnIds() {
+        List<String> kept = new ArrayList<String>();
+        for (String id : view.ids()) {
+            if (keptAtMsOrNull(id) != null && OperatorCommandFile.joinerDefaultTokenLawful(id)) {
+                kept.add(id);
+            }
+        }
+        kept.sort((a, b) -> Long.compare(keptAtMsOrNull(b), keptAtMsOrNull(a)));
+        return kept;
+    }
+
+    /** {@link #keptSpawnIds} narrowed by the {@link #matchingIn} rule, so a host
+     * finds a kept build by its id, the name they gave it or the hull it is built on; a name or a hull only SELECTS
+     * among the kept ids, never a pick by itself. */
+    public synchronized List<String> keptSpawnIdsMatching(String raw) {
+        return matchingAmong(keptSpawnIds(), raw);
+    }
+
+    /**
+     * The kept spawn id {@code raw} names exactly (ASCII fold), or null. The
+     * player's token passes the operator-token grammar BEFORE the lookup; the grammar holds both ASCII cases of a
+     * letter and the fold moves nothing else, so a lawful token can only find a lawful id. Only an id resolves here:
+     * a display name or a hull never does.
+     */
+    public synchronized String keptSpawnCanonicalIdOrNull(String raw) {
+        Objects.requireNonNull(raw, "raw");
+        if (!OperatorCommandFile.joinerDefaultTokenLawful(raw)) {
+            return null;
+        }
+        String canonical = canonicalIn(view, raw);
+        return canonical != null && keptAtMsOrNull(canonical) != null ? canonical : null;
+    }
+
+    /**
+     * The {@code /spawnfoe} and {@code /spawnfriend} picker ids. The kept copies
+     * {@code shipsOrNull} lists now ({@link #keptSpawnIds}, or {@link #keptSpawnIdsMatching} when
+     * {@code filterOrNull} is set) lead, then {@code debug}'s spawn view ({@link #spawnIds} /
+     * {@link #spawnIdsMatching}) minus any fold the kept part already holds, so one id never lists twice. Kept first
+     * because the registry part runs to hundreds of rows and the clients paint rows in wire order. A null
+     * {@code shipsOrNull} (a door with no ship list) or no kept copy = the spawn view's own list.
+     */
+    public static List<String> spawnListWithKept(PickableVariants debug, PickableVariants shipsOrNull,
+            String filterOrNull) {
+        Objects.requireNonNull(debug, "debug");
+        List<String> registry = filterOrNull == null ? debug.spawnIds() : debug.spawnIdsMatching(filterOrNull);
+        List<String> kept = shipsOrNull == null ? Collections.<String>emptyList()
+                : filterOrNull == null ? shipsOrNull.keptSpawnIds() : shipsOrNull.keptSpawnIdsMatching(filterOrNull);
+        if (kept.isEmpty()) {
+            return registry;
+        }
+        Set<String> keptFolds = new HashSet<String>();
+        for (String id : kept) {
+            keptFolds.add(ChatCommands.asciiLower(id));
+        }
+        List<String> out = new ArrayList<String>(kept.size() + registry.size());
+        out.addAll(kept);
+        for (String id : registry) {
+            if (!keptFolds.contains(ChatCommands.asciiLower(id))) {
+                out.add(id);
+            }
+        }
+        return out;
+    }
+
+    /** The spawn verbs' exact pick — {@code debug}'s spawn view first (as before),
+     * then a kept copy {@code shipsOrNull} lists now ({@link #keptSpawnCanonicalIdOrNull}); null = neither. */
+    public static String spawnCanonicalWithKeptOrNull(PickableVariants debug, PickableVariants shipsOrNull,
+            String raw) {
+        String canonical = debug.spawnCanonicalIdOrNull(raw);
+        return canonical != null || shipsOrNull == null ? canonical : shipsOrNull.keptSpawnCanonicalIdOrNull(raw);
     }
 
     /** true when {@code labelOrNull}'s ASCII fold contains {@code fold}. */

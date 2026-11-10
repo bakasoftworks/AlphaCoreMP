@@ -76,7 +76,7 @@ For Windows; on Linux, first do the steps under [Linux](#linux-x86-64), then sta
 
 ## The players' kit and the connect code
 
-- The kit is `cc-joiner-kit-<date>-<time>.zip` in the `kits` folder: the joiner kit this package was made with. Give it to every player once and leave it there: the server will not start without it. The server turns away any other kit: an older one is told to update, a newer one gets no answer. A newer kit comes with a newer server package (see [Updating to a newer package](#updating-to-a-newer-package)).
+- The kit is `cc-joiner-kit-<date>-<time>.zip` in the `kits` folder: the joiner kit this package was made with. Give it to every player once and leave it there: the server will not start without it. The server turns away any other kit. Most are told why: the join window reads "This kit is outdated" or "not the host's kit (a file differs)". A kit newer than the server can get no reply at all: its join window then reads "no reply from <address> (server not up yet, or wrong address/port)" although the server is running. Give that player this package's kit, or update the server. A newer kit comes with a newer server package (see [Updating to a newer package](#updating-to-a-newer-package)).
 - The kit is the game code only, so the same kit joins every match shape, on a Windows or a Linux server, for Windows and Linux players alike. It holds no secret (no match and no seat entry), so players may pass it on.
 - The connect code is the secret: keep it off streams and recordings. Without the ops GUI, type it yourself:
 

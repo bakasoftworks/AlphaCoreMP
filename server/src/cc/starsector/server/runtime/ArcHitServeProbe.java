@@ -7,12 +7,14 @@ import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
@@ -88,6 +90,12 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
     private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
     private static final String MISSILE_CLASS = "com.fs.starfarer.combat.entities.Missile";
     private static final String ARC_CLASS = "com.fs.starfarer.combat.systems.EmpArcEntity";
+    /** The engine's explosion entity: the param of every blast report (the applier sets it just before
+     *  {@code Ship.applyDamage}). */
+    private static final String BLAST_EXPLOSION_CLASS = "com.fs.starfarer.combat.entities.DamagingExplosion";
+    /** {@code BLAST_HIT} records one tick may carry; the excess is counted ({@code blast_over_cap=}). A fuse
+     *  burst names each victim once, so 32 = a dense swarm landing on many hulls in one frame. */
+    public static final int BLAST_TICK_CAP = 32;
     private static final String DAMAGE_LISTENER =
             "com.fs.starfarer.api.combat.listeners.DamageListener";
     private static final String LISTENER_MANAGER =
@@ -225,6 +233,54 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
     private int logRows;
     private int lashLogRows;
 
+    /**
+     * The fuse-burst lane ({@code BLAST_HIT}): a ship report whose param is a {@code DamagingExplosion}
+     * spawned by a fuse-family bomb's burst becomes one record, so the client can run the engine's own
+     * damage path (and its damage number) on the victim. Its handles resolve at install off the concrete
+     * explosion class; {@code blastClass == null} = the lane is inert and costs nothing per report.
+     * It owns its own try / catch and blind counter: a throw here never strikes the arc lane's
+     * fail-soft and never blinds the missile-impact memo feed. Sim thread only (capture, drain and the
+     * binding's per-walk index refresh), so no lock.
+     */
+    private Class<?> blastClass;
+    private Method blastGetSpec;
+    private Method blastGetLocation;
+    private Method blastGetDamageAmount;
+    private Method blastGetEmpAmount;
+    private Method blastGetDamageType;
+    private Method shipIsFighter;
+    private Field blastVecX;
+    private Field blastVecY;
+    /** The spec-object identity index the binding fills (one instance per probe; see {@link BlastSpecIndex});
+     *  replaced only by {@link #armBlastForTest}, before any fill. */
+    private BlastSpecIndex blastSpecs = new BlastSpecIndex();
+    /** This tick's admitted bursts, capture order; at most {@link #BLAST_TICK_CAP}. */
+    private final List<BlastRaw> blastPending = new ArrayList<>();
+    private Consumer<String> blastRowSink = System.out::println;
+    /** Ship reports whose param is an explosion (the lane's input volume). */
+    private long blastReports;
+    private long blastEmitted;
+    /** Explosion reports with no positive hull + armor + shield damage: the engine re-reports an
+     *  already-hit victim at zero on each of the explosion's collision passes (a null result counts here). */
+    private long blastZero;
+    private long blastFighterSkipped;
+    /** Explosions whose spec is a missile spec's top-level contact-blast singleton (never emitted). */
+    private long blastContactUnpresented;
+    private long blastUnattributed;
+    private long blastBadAmount;
+    private long blastBadPose;
+    private long blastBadType;
+    private long blastVictimUnresolved;
+    private long blastOverCap;
+    private long blastBlind;
+    private boolean blastBlindLogged;
+    private int blastLogRows;
+
+    /** One admitted burst report: the victim engine ref (its wire id resolves at the drain) + values only. */
+    private record BlastRaw(Object target, long bombId, int typeOrdinal, boolean shield, float x, float y,
+            float amount, float emp, float applied) {
+    }
+
     /** Open (un-flushed) beam-missile aggregates at most; a report whose key would
      *  open the 65th counts {@code beamOpenOverflow} and is not aggregated.
      * */
@@ -345,8 +401,31 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
      * binding's seat ships as an identity set) and {@code missileStableIds} (its NON-minting stable-id
      * peek) feed the beam-missile aggregate — {@link #beamDrain} runs in its OWN try/catch, also on a
      * quiet arc lane (open aggregates keep flushing).
+     *
+     * <p>The fuse-burst records ({@link #blastDrain}) follow the arc records in the SAME returned list
+     * (the one DOWN path), drained in their own try / catch, also on a quiet arc lane.
+     *
      */
     List<GameplayEdgeEvent> drain(long simTick, Supplier<Map<Object, Long>> shipsSupplier,
+            Supplier<Map<Long, Long>> wireIdByPositionShipId, Supplier<Set<Object>> seatShipsSupplier,
+            ToLongFunction<Object> missileStableIds) {
+        List<GameplayEdgeEvent> arcs = drainArcs(simTick, shipsSupplier, wireIdByPositionShipId,
+                seatShipsSupplier, missileStableIds);
+        List<GameplayEdgeEvent> blasts = blastDrain(simTick, shipsSupplier, wireIdByPositionShipId);
+        if (blasts.isEmpty()) {
+            return arcs;
+        }
+        if (arcs.isEmpty()) {
+            return blasts;
+        }
+        List<GameplayEdgeEvent> all = new ArrayList<>(arcs.size() + blasts.size());
+        all.addAll(arcs);
+        all.addAll(blasts);
+        return all;
+    }
+
+    /** The arc lane's half of {@link #drain} (the install, the beam feed, the {@code ARC_HIT} mint). */
+    private List<GameplayEdgeEvent> drainArcs(long simTick, Supplier<Map<Object, Long>> shipsSupplier,
             Supplier<Map<Long, Long>> wireIdByPositionShipId, Supplier<Set<Object>> seatShipsSupplier,
             ToLongFunction<Object> missileStableIds) {
         if (failSoft.quiet()) {
@@ -438,6 +517,60 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
         }
     }
 
+    /**
+     * The fuse-burst drain: take-and-clear this tick's admitted bursts, resolve each victim's wire id
+     * through the SAME supplier pair as the arc records, mint {@link GameplayEdgeEvent#blastHit} (family
+     * {@link GameplayEdgeEvent#BLAST_FAMILY_FUSE_BURST}) in capture order. An unresolved victim = counted
+     * skip ({@code blast_victim_unresolved=}); every value was bounded at capture, so the constructor
+     * cannot throw on an admitted record (a throw anyway = {@code blast_blind=}, that record alone).
+     * One numeric-only row per emit up to {@link #LOG_MAX}, then meters only. Never touches the arc
+     * lane's fail-soft.
+     */
+    private List<GameplayEdgeEvent> blastDrain(long simTick, Supplier<Map<Object, Long>> shipsSupplier,
+            Supplier<Map<Long, Long>> wireIdByPositionShipId) {
+        if (blastPending.isEmpty()) {
+            return List.of();
+        }
+        List<BlastRaw> taken = new ArrayList<>(blastPending);
+        blastPending.clear();
+        Map<Object, Long> ships;
+        Map<Long, Long> wireIds;
+        try {
+            ships = shipsSupplier.get();
+            wireIds = wireIdByPositionShipId.get();
+        } catch (Throwable failure) {
+            noteBlastBlind("drain", failure);
+            return List.of();
+        }
+        List<GameplayEdgeEvent> out = new ArrayList<>(taken.size());
+        for (BlastRaw raw : taken) {
+            long victim = ServeProbeSupport.wireIdOf(raw.target(), ships, wireIds);
+            if (victim <= 0L) {
+                blastVictimUnresolved++;
+                continue;
+            }
+            GameplayEdgeEvent event;
+            try {
+                event = GameplayEdgeEvent.blastHit(simTick, raw.bombId(), victim, raw.typeOrdinal(), raw.shield(),
+                        GameplayEdgeEvent.BLAST_FAMILY_FUSE_BURST, raw.x(), raw.y(), raw.amount(), raw.emp(),
+                        raw.applied());
+            } catch (RuntimeException failure) {
+                noteBlastBlind("mint", failure);
+                continue;
+            }
+            out.add(event);
+            blastEmitted++;
+            if (blastLogRows < LOG_MAX) {
+                blastLogRows++;
+                blastRowSink.accept("npeer-serve blast_hit tick=" + simTick + " bomb=" + raw.bombId()
+                        + " victim=" + victim + " code=" + event.blastCode() + " amount=" + raw.amount()
+                        + " applied=" + raw.applied()
+                        + (blastLogRows == LOG_MAX ? " [blast_hit row cap; meters only from here]" : ""));
+            }
+        }
+        return out;
+    }
+
     /** Arm the ledger's shield window (the {@code cc.server.shieldedRow} INSTRUMENT
      *  knob) — the capture then also reads {@code getDamageToShields} per ship-target report. */
     public void armShieldWindow(boolean on) {
@@ -468,6 +601,34 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
         return missileImpacts;
     }
 
+    /** The fuse-burst attribution index this probe reads; the binding fills it on its missile walk
+     *  ({@code EngineCombatBinding.setBlastSpecIndex}). */
+    public BlastSpecIndex blastSpecIndex() {
+        return blastSpecs;
+    }
+
+    /**
+     * The fuse-burst lane's meters (leading space), printed on its own round-tail line by
+     * {@link #flushHistTail}: emits, the input volume, every counted skip by name, the lane's blind
+     * count, then the index's fill meters ({@link BlastSpecIndex#meterTokens}).
+     */
+    public String blastMeterTokens() {
+        return " blast_hit_emitted=" + blastEmitted
+                + " blast_reports=" + blastReports
+                + " blast_zero=" + blastZero
+                + " blast_fighter_skipped=" + blastFighterSkipped
+                + " blast_contact_unpresented=" + blastContactUnpresented
+                + " blast_unattributed=" + blastUnattributed
+                + " blast_bad_amount=" + blastBadAmount
+                + " blast_bad_pose=" + blastBadPose
+                + " blast_bad_type=" + blastBadType
+                + " blast_victim_unresolved=" + blastVictimUnresolved
+                + " blast_over_cap=" + blastOverCap
+                + " blast_blind=" + blastBlind
+                + " blast_lane=" + (blastClass != null)
+                + blastSpecs.meterTokens();
+    }
+
     /** Emitted ARC_HIT events (cumulative, this probe). */
     long emitCount() {
         return emitted;
@@ -496,7 +657,8 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
     /**
      * Round end — print the last PARTIAL {@code arc_hit_hist} bucket (the drain
      * only closes a bucket when a later tick arrives). Idempotent; silent when empty.
-     * also flushes every open beam-missile aggregate ({@link #flushBeamTail}).
+     * also flushes every open beam-missile aggregate ({@link #flushBeamTail}), then prints the
+     * fuse-burst lane's cumulative counters line ({@link #blastMeterTokens}) on every call.
      */
     void flushHistTail() {
         String tail = hist.flush();
@@ -504,6 +666,7 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
             System.out.println(tail);
         }
         flushBeamTail();
+        System.out.println("npeer-serve blast-hit counters" + blastMeterTokens());
     }
 
     /**
@@ -641,6 +804,36 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
             floatsRead = false; // a partial read is never trusted by the hull-source record below
             missileImpacts.noteFeedBlind(feedFailure);
         }
+        // The fuse-burst lane, in its OWN try / catch (blast_blind=)
+        // and ahead of the quiet gate, so it neither strikes nor obeys the arc lane's fail-soft. A
+        // non-explosion report pays one isInstance and no invoke. The three result floats are read
+        // unconditionally here (the zero re-report test needs the shield part) and handed on, so the
+        // hull-source record below re-reads none of them.
+        if (shipTarget && blastClass != null) {
+            try {
+                if (!paramRead) {
+                    param = shipGetParam.invoke(target); // the feed's read threw: this lane re-reads, counted if it throws
+                    paramRead = true;
+                }
+                if (blastClass.isInstance(param)) {
+                    blastReports++;
+                    if (result == null) {
+                        blastZero++;
+                    } else {
+                        float bHull = ServeProbeSupport.floatOf(getDamageToHull.invoke(result));
+                        float bArmor = ServeProbeSupport.floatOf(getTotalDamageToArmor.invoke(result));
+                        float bShields = ServeProbeSupport.floatOf(getDamageToShields.invoke(result));
+                        dmgHull = bHull;
+                        dmgArmor = bArmor;
+                        dmgShields = bShields;
+                        floatsRead = true;
+                        captureBlast(target, param, bHull, bArmor, bShields);
+                    }
+                }
+            } catch (Throwable blastFailure) {
+                noteBlastBlind("capture", blastFailure);
+            }
+        }
         if (failSoft.quiet()) {
             hullSources.markBlind(); // R4: a quiet probe feeds nothing — rows read src=blind, never script
             // The beam feed below never sees this report — count it.
@@ -746,6 +939,92 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
                 hullSources.discardPreHit(target);
             }
             failSoft.fail("capture", -1L, failure);
+        }
+    }
+
+    /**
+     * The fuse-burst admission + value read, sim thread, inside {@link #capture}'s blast try / catch.
+     * Admits ONLY when every gate holds, each miss counted by name: positive hull + armor + shield damage
+     * ({@code blast_zero=}: the explosion re-reports an already-hit victim at zero on each of its
+     * collision passes, and its {@code getDamageAmount()} then reads the STALE last amount, so this test is
+     * what keeps one record per real hit); a non-fighter victim ({@code blast_fighter_skipped=}); a spec
+     * object the binding mapped to a live-listed fuse bomb ({@link BlastSpecIndex}: else
+     * {@code blast_contact_unpresented=} for a missile spec's top-level contact singleton,
+     * {@code blast_unattributed=} for the rest). Every value the record carries is bounded HERE, before
+     * any construction ({@code blast_bad_amount=} / {@code blast_bad_pose=} / {@code blast_bad_type=}), so
+     * the drain's constructor cannot throw on an admitted record; the tick cap counts its excess
+     * ({@code blast_over_cap=}). Values: centre = the explosion's location NOW, amount = the modified
+     * pre-armor {@code getDamageAmount()}, emp = {@code getEmpAmount()}, shield bit = shield damage
+     * {@code > 0} (the engine's shield and hull branches are exclusive), applied = shield damage on a
+     * shield hit, else hull + armor.
+     */
+    private void captureBlast(Object target, Object explosion, float hull, float armor, float shields)
+            throws ReflectiveOperationException {
+        float sum = hull + armor + shields;
+        if (!Float.isFinite(sum)) {
+            blastBadAmount++;
+            return;
+        }
+        if (sum <= 0f) {
+            blastZero++;
+            return;
+        }
+        if (Boolean.TRUE.equals(shipIsFighter.invoke(target))) {
+            blastFighterSkipped++;
+            return;
+        }
+        Object spec = blastGetSpec.invoke(explosion);
+        long bombId = blastSpecs.bombIdOf(spec);
+        if (bombId <= 0L) {
+            if (blastSpecs.isContactSpec(spec)) {
+                blastContactUnpresented++;
+            } else {
+                blastUnattributed++;
+            }
+            return;
+        }
+        if (blastPending.size() >= BLAST_TICK_CAP) {
+            blastOverCap++;
+            return;
+        }
+        float amount = ServeProbeSupport.floatOf(blastGetDamageAmount.invoke(explosion));
+        float emp = ServeProbeSupport.floatOf(blastGetEmpAmount.invoke(explosion));
+        boolean shield = shields > 0f;
+        float applied = shield ? shields : hull + armor;
+        if (!Float.isFinite(amount) || amount <= 0f || amount > GameplayEdgeEvent.BLAST_AMOUNT_CEIL
+                || !Float.isFinite(emp) || emp < 0f || emp > GameplayEdgeEvent.BLAST_AMOUNT_CEIL
+                || !Float.isFinite(applied) || applied < 0f || applied > GameplayEdgeEvent.BLAST_APPLIED_CEIL) {
+            blastBadAmount++;
+            return;
+        }
+        Object loc = blastGetLocation.invoke(explosion);
+        float x = loc == null ? Float.NaN : blastVecX.getFloat(loc);
+        float y = loc == null ? Float.NaN : blastVecY.getFloat(loc);
+        if (!Float.isFinite(x) || !Float.isFinite(y) || Math.abs(x) > GameplayEdgeEvent.BLAST_POSE_CEIL_SU
+                || Math.abs(y) > GameplayEdgeEvent.BLAST_POSE_CEIL_SU) {
+            blastBadPose++;
+            return;
+        }
+        Object type = blastGetDamageType.invoke(explosion);
+        int typeOrdinal = type instanceof Enum<?> e ? e.ordinal() : -1;
+        if (typeOrdinal < 0 || typeOrdinal > GameplayEdgeEvent.BLAST_TYPE_MASK) {
+            blastBadType++;
+            return;
+        }
+        blastPending.add(new BlastRaw(target, bombId, typeOrdinal, shield, x, y, amount, emp, applied));
+    }
+
+    /** Counts {@code blast_blind=}; logs the first fault once per probe (the engine-side cause, not the
+     *  reflective wrapper). Never a strike on the arc lane. */
+    private void noteBlastBlind(String site, Throwable failure) {
+        blastBlind++;
+        if (!blastBlindLogged) {
+            blastBlindLogged = true;
+            Throwable cause = failure instanceof InvocationTargetException && failure.getCause() != null
+                    ? failure.getCause() : failure;
+            System.out.println("arc-hit probe blast-hit lane fault site=" + site + " cause="
+                    + cause.getClass().getName()
+                    + " [counted blast_blind=; later faults count silently, this row prints once per probe]");
         }
     }
 
@@ -1043,6 +1322,35 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
         beamRowSink = sink;
     }
 
+    /** Test seam: arms the fuse-burst lane over a stand-in explosion class, resolving the SAME method
+     *  names the install resolves ({@link #resolveBlastHandles}; {@code isFighter} off the probe's ship
+     *  class), with an index whose fuse family is the stand-in AI class {@code fuseAi}.
+     * */
+    public void armBlastForTest(Class<?> blast, Class<?> fuseAi) throws ReflectiveOperationException {
+        resolveBlastHandles(blast, shipClass);
+        blastSpecs = BlastSpecIndex.forTest(fuseAi);
+    }
+
+    /** Test seam: redirect the {@code blast_hit} row sink (default {@code System.out::println}).
+     * */
+    public void setBlastRowSinkForTest(Consumer<String> sink) {
+        blastRowSink = sink;
+    }
+
+    /** Test seam: one fuse-burst counter by its round-line token name (an unknown name throws).
+     * */
+    public long blastCounterForTest(String token) {
+        String tokens = blastMeterTokens();
+        String key = " " + token + "=";
+        int at = tokens.indexOf(key);
+        if (at < 0) {
+            throw new IllegalArgumentException("no blast counter " + token);
+        }
+        int from = at + key.length();
+        int to = tokens.indexOf(' ', from);
+        return Long.parseLong(to < 0 ? tokens.substring(from) : tokens.substring(from, to));
+    }
+
     /** Test seam: the listener's {@code reportDamageApplied(source, target, result)} entry.
      * */
     public void captureForTest(Object source, Object target, Object result) {
@@ -1197,6 +1505,7 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
         vecY = vecClass.getField("y");
         resolveFlavorKeys(simTick, loader);
         resolveBeamFeed(simTick, loader);
+        resolveBlastLane(simTick, loader);
         ServeProbeSupport.installListener(loader, listenerClass, new Capture(), addListener, manager);
         installed = true;
         hullSources.markLive();
@@ -1209,7 +1518,8 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
                 + " missile_param=" + (missileGetParam != null)
                 + " missile_memo=" + (missileClass != null)
                 + " overmax_shield=" + (getOverMaxDamageToShields != null)
-                + " beam_feed=" + beamFeedLive);
+                + " beam_feed=" + beamFeedLive
+                + " blast_lane=" + (blastClass != null));
         hitCellTap.installHitCellTap(simTick, loader, manager, addListener, vecClass, ship);
     }
 
@@ -1238,6 +1548,211 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
             beamFeedLive = false;
             System.out.println("arc-hit probe beam_feed_unresolved tick=" + simTick
                     + " [no beam-missile-hit rows] " + beamMiss.getClass().getName());
+        }
+    }
+
+    /** The fuse-burst lane's install-time resolve; any miss leaves the lane inert ({@code blast_lane=false}
+     *  on the install line, one row here) and never fails the install. */
+    private void resolveBlastLane(long simTick, ClassLoader loader) {
+        try {
+            resolveBlastHandles(Class.forName(BLAST_EXPLOSION_CLASS, false, loader), shipClass);
+        } catch (Throwable blastMiss) {
+            blastClass = null;
+            System.out.println("arc-hit probe blast_lane_unresolved tick=" + simTick
+                    + " [no BLAST_HIT records] " + blastMiss.getClass().getName());
+        }
+    }
+
+    /**
+     * Resolves the fuse-burst handles ONCE (the {@code shipGetParam} idiom: cached {@link Method}s, never a
+     * per-report lookup) off the explosion class: {@code getExplosionSpecIfExplosion}, {@code getLocation}
+     * (and its vector's public {@code x}/{@code y}), {@code getDamageAmount}, {@code getEmpAmount},
+     * {@code getDamageType}; and {@code isFighter} off the ship class. All-or-nothing: {@link #blastClass}
+     * is set LAST, so a miss leaves the lane inert. Shared by the install and {@link #armBlastForTest}.
+     *
+     */
+    private void resolveBlastHandles(Class<?> blast, Class<?> ship) throws ReflectiveOperationException {
+        Method spec = accessible(blast.getMethod("getExplosionSpecIfExplosion"));
+        Method loc = accessible(blast.getMethod("getLocation"));
+        Method amount = accessible(blast.getMethod("getDamageAmount"));
+        Method emp = accessible(blast.getMethod("getEmpAmount"));
+        Method type = accessible(blast.getMethod("getDamageType"));
+        Method fighter = accessible(ship.getMethod("isFighter"));
+        Field x = loc.getReturnType().getField("x");
+        Field y = loc.getReturnType().getField("y");
+        blastGetSpec = spec;
+        blastGetLocation = loc;
+        blastGetDamageAmount = amount;
+        blastGetEmpAmount = emp;
+        blastGetDamageType = type;
+        shipIsFighter = fighter;
+        blastVecX = x;
+        blastVecY = y;
+        blastClass = blast;
+    }
+
+    /**
+     * Fuse-burst attribution by OBJECT IDENTITY, never by values. A fuse bomb's AI holds its own burst
+     * spec object ({@code explosionSpec} on the engine's {@code ProximityFuseAI} /
+     * {@code GuidedProximityFuseAI}), and the burst's explosion carries that SAME object
+     * ({@code getExplosionSpecIfExplosion()}; the spawn passes it through uncloned), so spec object ->
+     * the bomb's stable network id (the id its {@code MISSILE_END} carries) names the bomb.
+     *
+     * <p>The AI REPLACES the object on every {@code updateDamage()} (its constructor, a MIRV parent right
+     * after a child's spawn, or any mod: the call is public API), so the binding's missile walk re-reads
+     * the field of every live-listed fuse bomb on EVERY walk ({@link #retainLiveAndRefresh}: one cached
+     * {@link Field} read per live fuse bomb per walk) and re-puts on a change; it is never read once.
+     * Specs are keyed WEAKLY and never pruned at delist: a bomb is delisted at its burst, before the
+     * explosion's last report, and an entry dies with its spec object. {@code DamagingExplosionSpec}
+     * overrides neither {@code equals} nor {@code hashCode}, so the {@link WeakHashMap} is an identity map.
+     * A missile spec's top-level contact-blast spec (one shared object per missile spec) lands in a weak
+     * set instead, so a contact blast's neighbours count as {@code blast_contact_unpresented=}.
+     *
+     * <p>Sim thread only (the binding's walk, the capture listener and the drain share it), so no lock.
+     *
+     */
+    public static final class BlastSpecIndex {
+        /** The engine's two fuse-family AI classes; a subclass resolves through the hierarchy walk. */
+        static final Set<String> ENGINE_FUSE_AI_CLASSES = Set.of(
+                "com.fs.starfarer.combat.ai.ProximityFuseAI", "com.fs.starfarer.combat.ai.GuidedProximityFuseAI");
+        private static final String SPEC_FIELD = "explosionSpec";
+
+        private final Set<String> familyAiClassNames;
+        private final Map<Object, Long> bombIdBySpec = new WeakHashMap<>();
+        private final Set<Object> contactSpecs = Collections.newSetFromMap(new WeakHashMap<>());
+        /** Live-listed fuse bombs (strong refs, pruned to the live list every walk). */
+        private final IdentityHashMap<Object, FuseBomb> listed = new IdentityHashMap<>();
+        /** The spec field per AI class; a {@code null} value = not a fuse-family AI. */
+        private final Map<Class<?>, Field> specFieldByAiClass = new HashMap<>();
+        private long bombsListed;
+        private long specPuts;
+        private long specReplaced;
+        private long fillFaults;
+        private boolean fillFaultLogged;
+
+        public BlastSpecIndex() {
+            this(ENGINE_FUSE_AI_CLASSES);
+        }
+
+        private BlastSpecIndex(Set<String> familyAiClassNames) {
+            this.familyAiClassNames = familyAiClassNames;
+        }
+
+        /** Test factory: an index whose fuse family is the stand-in AI class {@code fuseAi}. */
+        public static BlastSpecIndex forTest(Class<?> fuseAi) {
+            return new BlastSpecIndex(Set.of(fuseAi.getName()));
+        }
+
+        private static final class FuseBomb {
+            final Object ai;
+            final Field specField;
+            final long bombId;
+            Object lastSpec;
+
+            FuseBomb(Object ai, Field specField, long bombId) {
+                this.ai = ai;
+                this.specField = specField;
+                this.bombId = bombId;
+            }
+        }
+
+        /** The binding, at a missile's FIRST listing: tracks it when its AI is fuse-family (a non-family
+         *  AI costs one class-keyed lookup); the spec itself is read by the walk's refresh. */
+        public void listBomb(Object bomb, Object ai, long bombId) {
+            if (bomb == null || ai == null || bombId <= 0L) {
+                return;
+            }
+            Field field = specField(ai.getClass());
+            if (field != null) {
+                listed.put(bomb, new FuseBomb(ai, field, bombId));
+                bombsListed++;
+            }
+        }
+
+        /** The binding, at a missile's first listing: its spec's top-level contact-blast spec ({@code null} ignored). */
+        public void noteContactSpec(Object topLevelSpec) {
+            if (topLevelSpec != null) {
+                contactSpecs.add(topLevelSpec);
+            }
+        }
+
+        /** The binding, after every missile walk: drops delisted bombs, then re-reads each live fuse
+         *  bomb's spec field and re-puts a changed object (a read fault is counted, that bomb only). */
+        public void retainLiveAndRefresh(Set<Object> liveMissiles) {
+            if (liveMissiles == null) {
+                return;
+            }
+            for (Iterator<Map.Entry<Object, FuseBomb>> it = listed.entrySet().iterator(); it.hasNext();) {
+                Map.Entry<Object, FuseBomb> entry = it.next();
+                if (!liveMissiles.contains(entry.getKey())) {
+                    it.remove();
+                    continue;
+                }
+                FuseBomb bomb = entry.getValue();
+                try {
+                    Object spec = bomb.specField.get(bomb.ai);
+                    if (spec != null && spec != bomb.lastSpec) {
+                        if (bomb.lastSpec != null) {
+                            specReplaced++;
+                        }
+                        bombIdBySpec.put(spec, bomb.bombId);
+                        specPuts++;
+                        bomb.lastSpec = spec;
+                    }
+                } catch (Throwable fault) {
+                    noteFillFault("refresh", fault);
+                }
+            }
+        }
+
+        /** Counts a fill fault ({@code blast_fill_faults=}); the first prints once per index. */
+        public void noteFillFault(String site, Throwable fault) {
+            fillFaults++;
+            if (!fillFaultLogged) {
+                fillFaultLogged = true;
+                Throwable cause = fault instanceof InvocationTargetException && fault.getCause() != null
+                        ? fault.getCause() : fault;
+                System.out.println("arc-hit probe blast-spec index fault site=" + site + " cause="
+                        + (cause == null ? "null" : cause.getClass().getName())
+                        + " [counted blast_fill_faults=; this row prints once per index]");
+            }
+        }
+
+        /** The bomb's stable id for this spec object, or {@code -1} when no live-listed fuse bomb held it. */
+        long bombIdOf(Object spec) {
+            Long id = spec == null ? null : bombIdBySpec.get(spec);
+            return id == null ? -1L : id.longValue();
+        }
+
+        boolean isContactSpec(Object spec) {
+            return spec != null && contactSpecs.contains(spec);
+        }
+
+        /** Fill meters (leading space): fuse bombs listed, spec puts (first + replaced), replacements, faults. */
+        String meterTokens() {
+            return " blast_bombs_listed=" + bombsListed + " blast_spec_puts=" + specPuts
+                    + " blast_spec_replaced=" + specReplaced + " blast_fill_faults=" + fillFaults;
+        }
+
+        private Field specField(Class<?> aiClass) {
+            if (specFieldByAiClass.containsKey(aiClass)) {
+                return specFieldByAiClass.get(aiClass);
+            }
+            Field found = null;
+            for (Class<?> c = aiClass; c != null && found == null; c = c.getSuperclass()) {
+                if (familyAiClassNames.contains(c.getName())) {
+                    try {
+                        Field f = c.getDeclaredField(SPEC_FIELD);
+                        f.setAccessible(true);
+                        found = f;
+                    } catch (NoSuchFieldException | RuntimeException miss) {
+                        noteFillFault("field", miss);
+                        break;
+                    }
+                }
+            }
+            specFieldByAiClass.put(aiClass, found);
+            return found;
         }
     }
 

@@ -136,7 +136,23 @@ public enum GameplayEdgeEventKind {
      * Appended LAST: within-tick canonical order is enum order, and the wire code is
      * v14-only ({@code ServerGameplayEdgeEventMessage.CRIT_MALFUNCTION_MIN_SCHEMA}).
      */
-    CRIT_MALFUNCTION(10);
+    CRIT_MALFUNCTION(10),
+
+    /**
+     * A BOMB's blast DAMAGED a ship server-side this tick (schema v17).
+     * One record per (bomb, victim): a single blast that hits several ships emits one record each.
+     * Payload: {@code entityId} = the BOMB missile network id; {@code targetWireId} = the VICTIM ship
+     * wire id (REQUIRED {@code > 0}, never a sentinel); {@code mountIndex} = the packed blast code
+     * {@code 0..0xFF} (bits 0-2 damage-type ordinal, bit 3 shield hit, bits 4-7 family code; unknown
+     * ordinals / families are legal, the consumer skips + counts them); {@code aimFacingDeg}/
+     * {@code flightBearingDeg} = the blast centre X/Y (finite, {@code |v| <= BLAST_POSE_CEIL_SU});
+     * {@code birthSpeed} = the pre-armor amount the engine applied to this victim ({@code (0, 1e5]});
+     * {@code muzzleX} = EMP ({@code [0, 1e5]}); {@code muzzleY} = applied hull + armor, or shield
+     * ({@code [0, 1e6]}, a meter). DOWN-only. Appended LAST: within-tick canonical order is enum order
+     * (ties within this kind break on {@code targetWireId}), and the wire code is v17-only
+     * ({@code ServerGameplayEdgeEventMessage.BLAST_HIT_MIN_SCHEMA}).
+     */
+    BLAST_HIT(11);
 
     private final int wireCode;
 

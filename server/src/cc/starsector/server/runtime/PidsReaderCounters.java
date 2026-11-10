@@ -229,17 +229,22 @@ public final class PidsReaderCounters {
     public volatile long helloV14Bounced;
     /** version-15 and version-16 HELLOs bounced as an outdated kit (those rungs
      *  of the bounce ladder), never folded into the version-1 default tally. Written under the door lock. Readers:
-     *  {@code PidsHello13GuardRows} hs15-18-f1-bounce, the door line. Delete trigger: none (door meters). */
+     *  {@code PidsHello13GuardRows} hs15-19-f1-bounce, the door line. Delete trigger: none (door meters). */
     public volatile long helloV15Bounced;
     public volatile long helloV16Bounced;
     /** The version-17 tally, the v15 / v16 shape — the hs-17 kit a host still
      *  runs after the door moved to 18 bounces at the frozen v17 rung and counts HERE, never under v1's default arm.
-     *  Readers: {@code PidsHello13GuardRows} hs15-18-f1-bounce, the door line. Delete trigger: none (a door meter). */
+     *  Readers: {@code PidsHello13GuardRows} hs15-19-f1-bounce, the door line. Delete trigger: none (a door meter). */
     public volatile long helloV17Bounced;
     /** The version-18 tally, the v17 shape — the hs-18 kit (every v0.4.0–v0.6.0
-     *  joiner kit) at the hs-19 door bounces at the frozen v18 rung and counts HERE, never under v1's default arm.
-     *  Readers: {@code PidsHello13GuardRows} hs15-18-f1-bounce, the door line. Delete trigger: none (a door meter). */
+     *  joiner kit) at an hs-19-or-later door bounces at the frozen v18 rung and counts HERE, never under v1's default
+     *  arm. Readers: {@code PidsHello13GuardRows} hs15-19-f1-bounce, the door line. Delete trigger: none (a door meter). */
     public volatile long helloV18Bounced;
+    /** The version-19 tally, the v18 shape — the hs-19 kit (every v0.6.1–v0.6.6
+     *  joiner kit) at the hs-20 door bounces at the frozen v19 rung and counts HERE, never under v1's default arm.
+     *  Written under the door lock. Readers: {@code PidsHello13GuardRows} hs15-19-f1-bounce + hs19-fp-bounce, the door
+     *  line. Delete trigger: none (a door meter). */
+    public volatile long helloV19Bounced;
     /** F2s whose secret the wrap proved but whose sealed body did not
      *  decode or authenticate (any body grammar; version-free), each answered {@code handshake_refused}. Expected
      *  0 on a clean door. Written under the door lock. Readers: {@code SeatTeamDoorContractRows}, the door line
@@ -425,6 +430,8 @@ public final class PidsReaderCounters {
                 + " hello_v16_bounced=" + helloV16Bounced
                 + " hello_v17_bounced=" + helloV17Bounced
                 // Appended LAST (appended-only grammar), a count only
-                + " hello_v18_bounced=" + helloV18Bounced);
+                + " hello_v18_bounced=" + helloV18Bounced
+                // Appended LAST (appended-only grammar), a count only
+                + " hello_v19_bounced=" + helloV19Bounced);
     }
 }

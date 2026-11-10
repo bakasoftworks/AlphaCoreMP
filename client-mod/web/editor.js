@@ -419,10 +419,11 @@
     if (h.gctrl) { h.gctrl.split('').forEach(function (c) { if (/^[1-7]$/.test(c)) { document.dispatchEvent(new KeyboardEvent('keydown', { key: c, ctrlKey: true, bubbles: true, cancelable: true })); } }); }
     
     
+    
     if (h.gpaint) {
       h.gpaint.split(',').filter(Boolean).forEach(function (pid, pi) {
         var prow = $('groups').querySelector('tr[data-slot="' + pid.replace(/"/g, '') + '"]'); if (!prow) { return; }
-        prow.dispatchEvent(new MouseEvent(pi === 0 ? 'mousedown' : 'mouseenter', { button: 0, buttons: 1, shiftKey: true, bubbles: pi === 0, cancelable: true }));
+        if (pi === 0) { prow.dispatchEvent(new MouseEvent('mousedown', { button: 0, buttons: 1, shiftKey: true, bubbles: true, cancelable: true })); } else { paintMoveAt(prow); }
       });
       document.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true, cancelable: true }));
     }
@@ -462,7 +463,7 @@
       var sel = pk === 'bpaint' ? '#wingsBody .wrow[data-bay="' : '#bays .bay[data-bay="';
       h[pk].split(',').filter(Boolean).forEach(function (bs, pi) {
         var node = document.querySelector(sel + (parseInt(bs, 10) || 0) + '"]'); if (!node) { return; }   
-        node.dispatchEvent(new MouseEvent(pi === 0 ? 'mousedown' : 'mouseenter', { button: 0, buttons: 1, shiftKey: true, bubbles: pi === 0, cancelable: true }));
+        if (pi === 0) { node.dispatchEvent(new MouseEvent('mousedown', { button: 0, buttons: 1, shiftKey: true, bubbles: true, cancelable: true })); } else { paintMoveAt(node); }   
       });
       document.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true, cancelable: true }));
     });
@@ -1180,8 +1181,7 @@
           dataset: { bay: String(bi) },   
           on: { click: function (ev) { if (S.dragClick) { S.dragClick = false; return; } if (ev.shiftKey) { shiftApplyWing(bi); return; } setTab('wings'); selectBay(bi); },
                 contextmenu: function (ev) { ev.preventDefault(); hideTip(); clearBay(bi); },
-                mousedown: function (ev) { if (ev.button === 0 && ev.shiftKey) { ev.preventDefault(); hideTip(); wingPaintStart('chips'); wingPaintOver(bi, true); } },
-                mouseenter: function (ev) { if (S.wingPaint && S.wingPaint.via === 'chips') { if (!(ev.buttons & 1) || !ev.shiftKey) { wingPaintEnd(); } else { wingPaintOver(bi); } } } } }, [
+                mousedown: function (ev) { if (ev.button === 0 && ev.shiftKey) { ev.preventDefault(); hideTip(); wingPaintStart('chips'); wingPaintOver(bi, true); } } } }, [   
           el('span', { class: 'n', text: String(builtIn.length + bi + 1) }), w ? wingImg(w) : el('span', { class: 'mark' })]);
         attachTip(chip, function () { return w ? wingTip(w, slotId + ' · click: pick a wing · right-click: clear') : [el('div', { class: 'h', text: 'Empty bay' }), el('div', { class: 'p hint', text: slotId + ' · click: pick a wing' + (S.lastWing && S.wingById[S.lastWing] ? ' · shift+click: ' + S.wingById[S.lastWing].name : '') })]; });
         box.appendChild(chip);
@@ -1268,6 +1268,31 @@
     var p = S.wingPaint; if (!p) { return; }
     S.wingPaint = null; document.body.dataset.wpainted = String(p.n);
     S.dragClick = true; setTimeout(function () { S.dragClick = false; }, 0);   
+  }
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  var PAINT_SEL = { chips: '#bays .bay[data-bay]', rows: '#wingsBody .wrow[data-bay]' }, GPAINT_SEL = '#groups tr[data-slot]:not(.locked)';
+  function rowPaintMove(ev) {
+    var gp = S.paint && S.paint.via === 'rows' ? S.paint : null, wp = S.wingPaint; if (!gp && !wp) { return; }
+    if (!(ev.buttons & 1) || !ev.shiftKey) { if (gp) { paintEnd(); } if (wp) { wingPaintEnd(); } return; }
+    var t = document.elementFromPoint(ev.clientX, ev.clientY), node = t && t.closest ? t.closest(gp ? GPAINT_SEL : PAINT_SEL[wp.via]) : null;
+    if (!node) { return; }
+    if (gp) { paintOver(node.dataset.slot); } else { wingPaintOver(parseInt(node.dataset.bay, 10)); }
+  }
+  
+  
+  function paintMoveAt(node) {
+    if (node.scrollIntoView) { node.scrollIntoView({ block: 'nearest' }); }
+    var r = node.getBoundingClientRect();
+    node.dispatchEvent(new MouseEvent('mousemove', { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, buttons: 1, shiftKey: true, bubbles: true, cancelable: true }));
   }
   function stageMove(ev) {
     if (S.drag) { return; }
@@ -2614,8 +2639,7 @@
           var brow = el('div', { class: 'wrow' + (w ? '' : ' bare') + (S.bayCursor === bi ? ' cur' : ''), dataset: { bay: String(bi) },
             on: { click: function (ev) { if (S.dragClick) { S.dragClick = false; return; } if (ev.shiftKey) { shiftApplyWing(bi); return; } selectBay(bi); },
                   contextmenu: function (ev) { ev.preventDefault(); hideTip(); clearBay(bi); },
-                  mousedown: function (ev) { if (ev.button === 0 && ev.shiftKey) { ev.preventDefault(); hideTip(); wingPaintStart('rows'); wingPaintOver(bi, true); } },
-                  mouseenter: function (ev) { if (S.wingPaint && S.wingPaint.via === 'rows') { if (!(ev.buttons & 1) || !ev.shiftKey) { wingPaintEnd(); } else { wingPaintOver(bi); } } } } }, [   
+                  mousedown: function (ev) { if (ev.button === 0 && ev.shiftKey) { ev.preventDefault(); hideTip(); wingPaintStart('rows'); wingPaintOver(bi, true); } } } }, [   
             w ? wingIcon(w) : el('div', { class: 'ico' }, [el('span', { class: 'mount bay' })]),
             el('div', { class: 'who' }, [
               el('div', { class: 'name', text: w ? w.name : 'Empty bay' }),
@@ -3165,7 +3189,7 @@
           on: { click: function (ev) { if (ev.shiftKey) { return; } sfx('ui_button_pressed'); S.armOrigin = r.id; setTab('arm'); selectSlot(r.id); },   
                 contextmenu: function (ev) { ev.preventDefault(); },   
                 mousedown: function (ev) { if (ev.button === 0 && ev.shiftKey) { ev.preventDefault(); paintStart('rows'); paintOver(r.id, true); } },
-                mouseenter: function (ev) { hoverMount(r.id, true); if (S.paint && S.paint.via === 'rows') { if (!(ev.buttons & 1) || !ev.shiftKey) { paintEnd(); } else { paintOver(r.id); } } }, mouseleave: function () { hoverMount(r.id, false); } } }, [
+                mouseenter: function () { hoverMount(r.id, true); }, mouseleave: function () { hoverMount(r.id, false); } } }, [   
           el('td', { class: 'wname', colspan: '8' }, [el('div', { class: 'wc' }, [   
             el('div', { class: 'ico sm' }, [el('span', { class: 'mount ' + (r.s.hardpoint ? 'hp' : 'tt'), style: 'border-color:' + color })]),
             el('span', { class: 'nm', text: 'empty · ' + mount.toLowerCase() }),
@@ -3179,7 +3203,7 @@
       function refuse() { sfx('ui_button_disabled_pressed'); flashGroups(name + ' is built into the hull'); }
       var tr = el('tr', { class: 'gw' + (bi ? ' locked' : ''), dataset: bi ? { slot: r.id, group: String(cur), builtin: biw()[r.id] } : { slot: r.id, group: String(cur) }, style: 'border-left-color:' + color,
         
-        on: { mouseenter: function (ev) { hoverMount(r.id, true); if (S.paint && S.paint.via === 'rows' && !bi) { if (!(ev.buttons & 1) || !ev.shiftKey) { paintEnd(); } else { paintOver(r.id); } } }, mouseleave: function () { hoverMount(r.id, false); },
+        on: { mouseenter: function () { hoverMount(r.id, true); }, mouseleave: function () { hoverMount(r.id, false); },   
               mousedown: function (ev) { if (ev.button === 0 && ev.shiftKey) { ev.preventDefault(); if (bi) { refuse(); return; } paintStart('rows'); paintOver(r.id, true); } },   
               
               contextmenu: function (ev) { ev.preventDefault(); if (bi) { refuse(); return; } hoverMount(r.id, false); clearMount(r.id); renderGroups(); },
@@ -4352,6 +4376,7 @@
     canvas.addEventListener('mousedown', stageDown);   
     document.addEventListener('mouseup', paintEnd);   
     document.addEventListener('mouseup', wingPaintEnd);   
+    document.addEventListener('mousemove', rowPaintMove);   
     
     $('mods').addEventListener('scroll', function () {
       var ml = $('mods'); if (!S.pinHeld || !Object.keys(S.pinHeld).length || ml.scrollTop <= 0) { return; }

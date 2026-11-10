@@ -1,5 +1,6 @@
 package cc.starsector.client.editor;
 
+import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.characters.MutableCharacterStatsAPI;
 import com.fs.starfarer.api.characters.PersonAPI;
 
@@ -18,9 +19,32 @@ final class EditorPersons {
     private EditorPersons() {
     }
 
+    /**
+     * A first mint asked before the game has a sector. WHY: every mint ends in the engine's
+     * {@code refreshCharacterStatsEffects}, whose first statement is {@code ListenerUtil
+     * .reportAboutToRefreshCharacterStatEffects()}, a read through {@code Global.getSector()}. The editor starts in {@code onApplicationLoad}, before the title screen has made its
+     * sector, so a request in that window died on a null read and the route answered HTTP 500 (the red roll:
+     * {@code data/hull/wolf?allSkills=1} 118 s into a slow boot). {@link EditorRoutes#handle} answers this 503 "not
+     * ready"; nothing is memoized, so the next request mints normally.
+     */
+    static final class NotReady extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        NotReady() {
+            super("the game has not finished starting yet");
+        }
+    }
+
+    private static void requireSector() {
+        if (Global.getSector() == null) {
+            throw new NotReady();
+        }
+    }
+
     static PersonAPI unionPerson() {
         PersonAPI p = unionPerson;
         if (p == null) {
+            requireSector();
             p = OfficerLoadout.mintUnionPersonDetached();
             unionPerson = p;
         }
@@ -31,6 +55,7 @@ final class EditorPersons {
     static PersonAPI captainPerson() {
         PersonAPI p = captainPerson;
         if (p == null) {
+            requireSector();
             p = OfficerLoadout.mintShipSkillsPersonDetached();
             captainPerson = p;
         }
@@ -43,6 +68,7 @@ final class EditorPersons {
     static PersonAPI commanderPerson() {
         PersonAPI p = commanderPerson;
         if (p == null) {
+            requireSector();
             p = OfficerLoadout.mintUnionPersonDetached();
             // The bastion union commander's shape (OfficerLoadout.mintPerson never clears skipRefresh): the token
             // install's refreshCharacterStatsEffects(false) stays a NO-OP, so the FLEET-type skill effects never walk

@@ -1337,8 +1337,10 @@ public final class OperatorCommandFile {
             case "spawn-foe":
             case "spawn-friend":
                 // `spawn-foe <variantId> [count]` — variant token = the
-                // set-joiner-default charset/length law (case preserved; the serve validates
-                // against the boot debug catalogue), count = strict digits
+                // set-joiner-default charset/length law (case preserved; no later step checks the
+                // id against a catalogue: the serve's operator switch reads only the count, the
+                // officer keyword and the pose, and an id the engine cannot resolve fails soft at
+                // the spawn drain as one adhoc_spawn_fail row), count = strict digits
                 // 1..ChatCommands.SPAWNFOE_MAX_COUNT (= AdhocFoeSpawner.MAX_PENDING). Malformed ⇒
                 // rejected (the file lane's fail-soft law: logged + ignored, never a throw).
                 // Optional LAST token `@x,y` (the chat grammar's ONE pose

@@ -750,6 +750,28 @@ final class MissilePoseLane {
          *  (it gates on {@code getAI() instanceof GuidedProximityFuseAI}). */
         final boolean mine;
 
+        /** The GENERIC FUSE BURST family ({@link FuseBurstLaw#classify}, read once at
+         *  mint): a bomb the engine flies on a {@code ProximityFuseAI} outside the named rows (vanilla:
+         *  the Wasp's {@code fragbomb_proj}). Its non-own twin skips the wire-FIZZLING relay, and its
+         *  FIZZLING / victimless-INTACT wire END draws the behaviour's own blast
+         *  ({@code SourcedMissileEndLane.presentFuseBurst}).
+         *
+         *  <p>Its body stays TANGIBLE — the spec's own collision class: a NONE missile is skipped by the
+         *  engine's PD target picker and is never put on the ray / collision grid,
+         * so the seat's own point
+         *  defence would ignore Wasp bombs and replica PD beams would pass through them. KNOWN RESIDUE of
+         *  tangible (measured: 6 local contacts + 15 local PD deaths in 189 bombs): a body that dies
+         *  LOCALLY first is pruned, re-mints by presence-adopt if the server's bomb lives on, and a server
+         *  BURST END that finds no body is refused {@code fuse_burst_bodyless} (drawn nothing). A cure that
+         *  hides the body from the engine would be engine-unfaithful: a design decision, never a quiet
+         *  change.
+         *
+         *  <p>The tangible law stands for a LIVE server bomb. A body whose server bomb a {@code BLAST_HIT}
+         *  record proved burst (a burst consumes the missile) is made NONE by {@link BlastHitLane} (a
+         *  non-own twin only), the same act the BURST END does itself ({@code SourcedMissileEndLane} sets
+         *  NONE before its burst). */
+        final boolean fuseBurst;
+
         Twin(MissileAPI missile, long sourceEntityId, int sourceMountIndex, long spawnTick,
                 boolean flare, String specId, boolean own) {
             this.missile = missile;
@@ -760,6 +782,7 @@ final class MissilePoseLane {
             this.specId = specId;
             this.own = own;
             this.mine = keepsNativeAi(missile);
+            this.fuseBurst = FuseBurstLaw.classify(missile, specId, this.mine);
         }
     }
 
@@ -988,6 +1011,12 @@ final class MissilePoseLane {
     private int bombAdopts;          // predict_missile_bomb_adopts (presence-adopt bombs KEPT —
                                      //   carved out of adopt_probe_ballistic's remove path)
     private int mineSpawnFx;         // predict_missile_mine_spawn_fx (fade+sound at adopt)
+    /** The generic fuse-burst family's relay / sourceless meters (round line; reader = the
+     *  arena rig proof: relay_skip against the reel's FIZZLING family ends). */
+    private int fuseRelaySkipped;    // predict_missile_fuse_relay_skip (wire FIZZLING not relayed to a family foe twin)
+    private int fuseSourcelessAdopts; // predict_missile_fuse_sourceless_adopt (family bodies adopted with no source)
+    private int fuseUnconfirmedRetired; // predict_missile_fuse_unconfirmed_retire (fire-presented, still UNLINKED at the
+                                        // leash: a spawn-step end, or a carried bomb whose record another twin took)
     /** The served Nova/Orion script-bomb adopt meters. */
     private int scriptBombAdopts;    // predict_missile_scriptbomb_adopts (sourceless script-bomb twins minted)
     private int scriptBombBinds;     // predict_missile_scriptbomb_binds (mirror bound to the replica's own script)
@@ -1586,6 +1615,12 @@ final class MissilePoseLane {
             // Counted, never relayed; t.fizzled stays FALSE so the wire-end
             // explode() door still fires.
             mineFizzleSkipped++;
+        } else if (rec.fizzling() && !t.fizzled && FuseBurstLaw.relaySkips(t.fuseBurst, t.own)) {
+            // A fuse bomb's wire FIZZLING is its fade, and vanilla's fuse bursts on the first
+            // fading frame — the relay's flameOut faded the sprite a tick before the END that bursts it.
+            // Counted, never relayed; t.fizzled stays FALSE and the body lives to its wire END (the
+            // phase-charge precedent above).
+            fuseRelaySkipped++;
         } else if (rec.fizzling() && !t.fizzled) {
             // Fizzle relay, one-shot: play the engine's OWN death arc (flameOut =
             // flightTime := max+1; burnout → glow-off → drift → fade)
@@ -1763,6 +1798,21 @@ final class MissilePoseLane {
                 twinByWireId.remove(t.wireId);
             } else if (own.ghostFadeDue(t, tick)) {
                 own.onGhostFade(t, tick); // GHOST-kill law in the own lane
+                it.remove();
+            } else if (FuseBurstLaw.unconfirmedDue(t.fuseBurst, t.own, t.wireId, t.spawnTick, tick)) {
+                // The server never carried this bomb (it ended inside its spawn step: no record, no END —
+                // FuseBurstLaw.UNCONFIRMED_TICKS = why + the number). Removed QUIETLY: no burst, no puff —
+                // the server's own end happened at the muzzle half a second ago. Held collision NONE first:
+                // a queued removal is still collidable for the rest of the frame.
+                fuseUnconfirmedRetired++;
+                laneFor(t).log("predict v13 fuse-unconfirmed RETIRE: src=" + t.sourceEntityId + " mount="
+                        + t.sourceMountIndex + " spawnTick=" + t.spawnTick + " tick=" + tick
+                        + " (unlinked " + FuseBurstLaw.UNCONFIRMED_TICKS + " ticks after the fire) -> remove"
+                        + (MISSILE_POSE_APPLY ? "" : " (meter)"));
+                if (MISSILE_POSE_APPLY && t.missile.getCollisionClass() != CollisionClass.NONE) {
+                    t.missile.setCollisionClass(CollisionClass.NONE);
+                }
+                retire(t);
                 it.remove();
             } else if (t.spawnTick < 0L || tick - t.spawnTick > LINK_WINDOW_TICKS) {
                 // Negative spawnTick (a legacy sentinel) is expiry-ELIGIBLE, never
@@ -2366,6 +2416,15 @@ final class MissilePoseLane {
         // client-side damage the server never dealt; (b) determinism: the end-burst arm keys on
         // the wire end, so no local collision may prune the twin first (the conversion lesson).
         // A script bomb too — vanilla spawnBomb sets NONE (C1-safe AND vanilla).
+        // A fuse-burst family body re-sighted with no source is NOT a station mine — before this it
+        // took the mine spawn fade + mine_spawn below and the mine det at its END (3 of 189 bombs in the measured
+        // run). Its body stays tangible like its sourced twin (Twin.fuseBurst's javadoc = why); its END bursts
+        // with or without a source hull on the wire (FuseBurstLaw.sourcelessBursts: the body carries the engine's
+        // own stand-in ship); its contact and shot-down ends stay the quiet legacy end when the wire names none. Counted.
+        boolean fuseFamily = FuseBurstLaw.classify(missile, specIdOf(missile), keepsNativeAi(missile));
+        if (fuseFamily) {
+            fuseSourcelessAdopts++;
+        }
         boolean intangible = STATION_MINE_INTANGIBLE || droneConversion || canister || scriptBomb;
         if (intangible) {
             // The conversion body is ALWAYS intangible — with both engine fizzle
@@ -2417,7 +2476,7 @@ final class MissilePoseLane {
                     // presentation nicety; the adopt itself stands
                 }
             }
-        } else if (MINE_FX && !droneConversion && !mote) {
+        } else if (MINE_FX && !droneConversion && !mote && !fuseFamily) {
             // Vanilla's own minefield spawn presentation, verbatim:
             // snap invisible, fade in over 1 s, mine_spawn at the body. The wire carries no
             // phase/windup state (poseFlags = VALID|FIZZLING only), so the spec timing
@@ -2441,7 +2500,8 @@ final class MissilePoseLane {
         // sourcelessMine means the STATION-MINE class specifically — canister opts
         // out like the conversion, which also opts it out of mine prime detection and the
         // mine end classifier (its INTACT ends presented the r250 mine det otherwise).
-        t.sourcelessMine = !droneConversion && !canister && !mote && !scriptBomb; // + script bomb
+        t.sourcelessMine = !droneConversion && !canister && !mote && !scriptBomb // + script bomb
+                && !t.fuseBurst; // + the fuse-burst family (never the mine det at its END)
         t.mintSourceNull = sourceShip == null; //
         t.wireId = id;
         t.lastWireX = rec.posX();
@@ -2888,7 +2948,12 @@ final class MissilePoseLane {
                 + " predict_missile_dict_defer_ok=" + dictDeferOk
                 + " predict_missile_dict_defer_expired=" + dictDeferExpired
                 + own.meterTokens()
-                + " twins=" + twins.size();
+                + " twins=" + twins.size()
+                // The fuse-burst family, appended (token order above is read by name only).
+                + " predict_missile_fuse_relay_skip=" + fuseRelaySkipped
+                + " predict_missile_fuse_sourceless_adopt=" + fuseSourcelessAdopts
+                + " predict_missile_fuse_classify_fault=" + FuseBurstLaw.classifyFaults
+                + " predict_missile_fuse_unconfirmed_retire=" + fuseUnconfirmedRetired;
     }
 
     /** The MISSILE_SPLIT presentation entry. The law lives in

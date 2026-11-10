@@ -192,10 +192,10 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
     /** The boot id table the VSUB/VCHK decoders resolve against (null = engine-less door). */
     private final IdTables idTables;
     /** The Main-minted boot mod set (null on a set-less rig door) the session fold carries. */
-    private final ModSet modSet;
+    final ModSet modSet;
     /** The client-optional set (mods.optional) — probe rows with MARK_MODSET_OPTIONAL; the door admits
      * the required set plus any subset of it (the lawful table). */
-    private final ModSet optionalModSet;
+    final ModSet optionalModSet;
     /** non-null = the PASSWORD-mode multi door — every HELLO's credential slot must
      * equal this ONE shared match password exactly; seats resolve per client-instance id through
      * {@link #passwordLedger}. Null = token mode (byte-identical). Paired with the ledger —
@@ -415,6 +415,8 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
     final PidsVariantCheck variantCheck = new PidsVariantCheck(this);
     /** The replay door's record-driven session verbs, carved to {@link PidsReplayDoor}; serve thread, this lock (the tenure-gate clear excepted). */
     final PidsReplayDoor replayDoor = new PidsReplayDoor(this);
+    /** The door PROBE's reply + its two document budget terms, carved to {@link PidsProbeReply}; called under this lock. */
+    final PidsProbeReply probeReply = new PidsProbeReply(this);
     /** Admin {@code /wave} verbs parked for the serve loop's operator drain
      * ({@link #drainAdminCommands}); own monitor, never this lock. */
     private final AdminWaveQueue adminWaves = new AdminWaveQueue();
@@ -656,6 +658,15 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
          * tenure law: a pick that does not seed clears the previous tenure's standing override). */
         private boolean pendingTenureApply;
         private final DatagramReliability reliability;
+        /**
+         * This pilot admission put a DIFFERENT occupant on {@link #seatId} than the session it
+         * replaced under the same table key (none, or one on another seat). The table key is
+         * the occupant identity on both doors (client id on the password door, seat token on
+         * the token door — the mute-carry rule), so no client-id compare. READER THREAD ONLY:
+         * written by {@code admitBranchesLocked}, read once by {@code handleHello}, which then
+         * drops the seat's stale arbiter label.
+         */
+        boolean seatNameOccupantChanged;
 
         // ---- mutable state (guarded by the endpoint lock) ----
         SeatNameFrameCodec.SeatNameAnnounce seatNameAnnounce;
@@ -3121,11 +3132,21 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
                 // over the LEAVER's standing override.
                 boolean applied = false;
                 try {
+                // A NEW occupant on the seat drops the
+                // leaver's arbiter label FIRST (inside the try, so the fail-open finally covers
+                // it; no lock held, the arbiter monitor stays a leaf), before the catch-up below
+                // re-notes every live name. The clear itself is fanned only after the posture
+                // block, which must stay every session's down-CTRL seq 1.
+                boolean seatNameForgotten = admitted.seatNameOccupantChanged
+                        && forgetSeatNameLabel(admitted.seatId, "admission");
                 // The once-per-admission PSTB posture block — FIRST, so it is
                 // every session's down-CTRL seq 1 (the contract the smoke/NPeer seq shifts pin);
                 // it stamps the serve's own experiment tag (or none) so the client sidelog
                 // + echo verdict key on the admission's server-set posture, not a local guess.
                 spoolPostureBlock(admitted);
+                if (seatNameForgotten) {
+                    fanSeatNameClear(admitted.seatId, admitted.shipId);
+                }
                 // Catch the newcomer up on the current name table
                 // (outside the admission lock — the fan family's lock-order rule).
                 spoolSeatNameCatchUp(admitted);
@@ -3348,6 +3369,9 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
             // The version-18 tally (never v1's) — the v0.4.0–v0.6.0 kits' rung;
             // it exists while the door's own version is above 18.
             case 18 -> readerCounters.helloV18Bounced++;
+            // The version-19 tally (never v1's) — the v0.6.1–v0.6.6 kits' rung; it
+            // exists while the door's own version is above 19.
+            case 19 -> readerCounters.helloV19Bounced++;
             default -> readerCounters.helloV1Bounced++;
         }
     }
@@ -3445,7 +3469,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         if (hello.probe()) {
             // The door PROBE — answered (or refused) BEFORE any claim, never
             // admitted as a join; the fingerprint pre-check above already ran (frozen order).
-            handleProbeLocked(hello, from, hs13);
+            probeReply.handleProbeLocked(hello, from, hs13);
             return null;
         }
         // The ADMISSION budget — AFTER the pure credential check (an
@@ -3612,6 +3636,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         }
         PeerSession session = admitLocked(hello, from, seatToken, sessionKey, seatId, boundShipId,
                 takeover ? existing : null, false, hs13);
+        session.seatNameOccupantChanged = existing == null || existing.seatId != seatId;
         if (passwordLedger != null && seatTeams != null) {
             // EVERY admitted password claim (CLAIMED, REJOINED and the
             // same-cid takeover alike) whose seat now plays for the other team (a cross-fill, a restored team, a
@@ -3769,7 +3794,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
      * posture as the blank-credential reject). Pure: claims nothing, touches nothing; shared
      * by the join path ({@link #resolvePasswordSeatLocked}) and the probe.
      */
-    private String passwordRejectReasonOrNull(HandshakeCodec.HelloPayload hello) {
+    String passwordRejectReasonOrNull(HandshakeCodec.HelloPayload hello) {
         String presented = hello.seatToken();
         if (presented == null || presented.isBlank()) {
             return DoorRejectReasons.MATCH_PASSWORD_REQUIRED;
@@ -3875,201 +3900,6 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
         printRejectSampledLocked(reason, () -> "pilot-datagram-admission REJECT client="
                 + PeerText.quoteCid(hello.clientId()) + " reason=" + reason + " from=" + from + suffix);
         sendRawDatagram(rejectedDatagram(hello.nonce(), reason), from);
-    }
-
-    /**
-     * The door PROBE — the joiner GUI's
-     * pre-launch {@code /ship} list fetch. Password-mode door ONLY (a token door answers
-     * {@code probe_unsupported}: its credential is a per-seat secret, the wrong shape to gate
-     * a shared listing). Runs the door's EXISTING pre-claim checks in their frozen order — the
-     * fingerprint pre-check already passed in the caller, then the password trio — and,
-     * BEFORE any ledger/authority claim, answers the listing RAW to the source and forgets
-     * the sender: no session, no seat, no spool, no state but the {@link DoorSourceBudget} LRU
-     * (keyed only AFTER the password passed). Reply = the in-session LSTD frames byte-for-byte
-     * ({@code ListingEmitter.shipEntries} with no marks; seatId 0, listingId
-     * {@link #PROBE_LISTING_ID}) on channel
-     * CTRL with sessionId 0 and seq = frame index, CAPPED at {@link #PROBE_MAX_FRAMES}.
-     * Failing checks take the existing REJECT WELCOME (≤~105 B reflector, unchanged) —
-     * including a door with NO pickables ({@code probe_no_pickables}: reachable + password
-     * OK + picking unavailable, the GUI's "server default only"). Budget denials are SILENT
-     * drops (counted), never a reply. Lock held (the budget + counters live under it).
-     * A probe whose {@code match=} term is stale on a door that serves a match document also asks the
-     * document budget ({@link #matchDocHeldLocked}) and, once served, gets the sealed DESC frames
-     * BEFORE the mod-set and ship listings.
-     * Every proven probe on a door holding a LunaSettings sheet also asks the sheet's budget
-     * ({@link #lunaDocHeldLocked}) and gets the sealed LUNA frames after any DESC frames, whatever its
-     * match term; the mod-set listing rides every proven reply, its FIRST row the sheet's announce.
-     *
-     */
-    private void handleProbeLocked(HandshakeCodec.HelloPayload hello, InetSocketAddress from, PidsHello13.Hs13 hs13) {
-        String reason;
-        // Every door lists the curated mod scan under the 4-frame cap (the debug-door widening
-        // + its 128-frame cap are DELETED).
-        List<String> ids = probeListingIds();
-        int frameCap = PROBE_MAX_FRAMES;
-        if (passwordLedger == null) {
-            reason = DoorRejectReasons.PROBE_UNSUPPORTED;
-        } else {
-            reason = passwordRejectReasonOrNull(hello);
-            if (reason == null && ids.isEmpty()) {
-                reason = DoorRejectReasons.PROBE_NO_PICKABLES;
-            }
-        }
-        // A wrong
-        // password is a plain REJECT. The hold on every attempt — correct guesses included — is
-        // LAWFUL because the source is cookie-verified (return-routable): the guess ledger ran in
-        // handleHelloMultiLocked after the resend and before this compare (per key 250 ms → 8 s
-        // backoff, ≈ 0.125 compares/s steady; global 16/s first-seen + 8/s suspect windows, a
-        // ceiling of ≈ 74 compares/s over any number of keys; cliff: first-timers held during a
-        // fresh-key flood), so a correct guess is never answered at line rate.
-        if (reason != null) {
-            sendRejectLocked(hello, from, reason, " (probe)", hs13);
-            return;
-        }
-        if (!hs13.budgetAsked) {
-            long now = nowMillis();
-            if (matchDocHeldLocked(hs13, from, now) || lunaDocHeldLocked(hs13, from, now)) {
-                return;
-            }
-            if (!probeBudget.admit(from.toString(), now)) {
-                readerCounters.probeDropped++;
-                return;
-            }
-        }
-        List<byte[]> frames;
-        try {
-            // The joiner default rides as the entry's NEXT_RESPAWN mark (the codec's
-            // existing override mark — no schema bump; the join window reads it as `default`).
-            // Each probe row carries the ship's display name for the
-            // join window's ship list; a null pickable never reaches here, its empty ids answer PROBE_NO_PICKABLES.
-            // The hull id rides the same rows' targetLabel: the join combo and the browser
-            // list show and search it, and only the server knows a kept build's hull.
-            // The kept copies list newest first; the base-first partition stands
-            frames = ListingEmitter.encodeListing(0, ListingFrameCodec.KIND_SHIP,
-                    PROBE_LISTING_ID, ListingEmitter.shipEntries(ListingEmitter.keptNewestFirst(ids,
-                            pickableVariants == null ? null : pickableVariants::keptAtMsOrNull), null,
-                            variantPicks.joinerDefaultVariantOrNull(),
-                            pickableVariants == null ? null : pickableVariants::displayNameOrNull,
-                            pickableVariants == null ? null : pickableVariants::hullIdOrNull));
-        } catch (RuntimeException codecLaw) {
-            // Fail-closed, never fatal: a listing-law violation (the emitter THROWS by design)
-            // must not kill the door's reader thread over a pre-admission nicety.
-            readerCounters.probeDropped++;
-            System.out.println("pilot-datagram-admission PROBE_ENCODE_FAILED src=" + from
-                    + " " + codecLaw);
-            return;
-        }
-        // The boot MOD SET rides the same reply FIRST
-        // as its own KIND_MODSET listing (seq = its own frame index, same listingId; a pre-rung-2
-        // kit ignores the kind) so the join page can name what the joiner lacks BEFORE a 60-s boot
-        // bounces at the door. Sent before the ship frames: the collector declares the reply done
-        // on the ship listing, so the set is on the wire by then.
-        // The listing rides EVERY proven reply, a set-less door's too, its
-        // FIRST row the LunaSettings announce (the sheet's digest and row count, or the no-sheet term), so a reader
-        // told a sheet exists holds for its chunks instead of reading a lost chunk as "no sheet".
-        String lunaTerm = lunaSheet == null ? LunaSheetCodec.NO_SHEET_TERM
-                : lunaSheet.digest16() + ":" + lunaSheet.rows();
-        List<byte[]> modFrames;
-        int optionalCount = optionalModSet == null ? 0 : optionalModSet.size();
-        try {
-            // Required rows first, then the published OPTIONAL rows (mark 27; the door admits any lawful subset)
-            modFrames = ListingEmitter.encodeListing(0, ListingFrameCodec.KIND_MODSET,
-                    PROBE_LISTING_ID, ListingEmitter.modSetEntriesWithAnnounce(lunaTerm, modSet, optionalModSet));
-        } catch (RuntimeException codecLaw) {
-            // the ship half still serves and the announce alone still rides (a lawful token + term); the door's
-            // fold names the mod skew
-            modFrames = ListingEmitter.encodeListing(0, ListingFrameCodec.KIND_MODSET,
-                    PROBE_LISTING_ID, ListingEmitter.modSetEntriesWithAnnounce(lunaTerm, null, null));
-            readerCounters.probeModsetEncodeFailed++; //
-            System.out.println("pilot-datagram-admission PROBE_MODSET_ENCODE_FAILED src=" + from
-                    + " " + codecLaw);
-        }
-        int modSent = Math.min(modFrames.size(), PROBE_MODSET_MAX_FRAMES);
-        // THIS probe's password is proven and both budgets granted, so a
-        // stale term draws the match document FIRST (seq = its own chunk index, sealed under this exchange's root;
-        // the kit trial-opens its player and admin roots). The collector finishes on the ship listing, so the chunks
-        // are on the wire before it; a probe presenting the served id gets none. Sent only after the listing encoded.
-        int docSent = 0;
-        if (hs13.matchStale && matchDoc != null) {
-            byte[][] doc = matchDoc.reply(hs13.root);
-            for (int i = 0; i < doc.length; i++) {
-                sendRawDatagram(DatagramFrameCodec.encode(DatagramFrameCodec.WireChannel.CTRL,
-                        roundId, 0L, i, 0L, 0, 0L, doc[i]), from);
-            }
-            docSent = doc.length;
-            readerCounters.probeDocServed++;
-        }
-        // The sheet rides EVERY proven reply, never gated on the match term
-        // (that gate would starve a returning player and every confirming re-probe), after DESC, before the listing.
-        int lunaSent = 0;
-        if (lunaSheet != null) {
-            byte[][] luna = lunaSheet.reply(hs13.root);
-            for (int i = 0; i < luna.length; i++) {
-                sendRawDatagram(DatagramFrameCodec.encode(DatagramFrameCodec.WireChannel.CTRL,
-                        roundId, 0L, i, 0L, 0, 0L, luna[i]), from);
-            }
-            lunaSent = luna.length;
-            readerCounters.probeLunaServed++;
-        }
-        for (int i = 0; i < modSent; i++) {
-            sendRawDatagram(DatagramFrameCodec.encode(DatagramFrameCodec.WireChannel.CTRL,
-                    roundId, 0L, i, 0L, 0, 0L, modFrames.get(i)), from);
-        }
-        int sent = Math.min(frames.size(), frameCap);
-        for (int i = 0; i < sent; i++) {
-            sendRawDatagram(DatagramFrameCodec.encode(DatagramFrameCodec.WireChannel.CTRL,
-                    roundId, 0L, i, 0L, 0, 0L, frames.get(i)), from);
-        }
-        readerCounters.helloProbed++;
-        System.out.println("pilot-datagram-admission PROBE client=" + PeerText.quoteCid(hello.clientId())
-                + " src=" + from + " frames=" + sent + " of=" + frames.size()
-                + " pickable=" + ids.size()
-                + " modset_frames=" + modSent + " of=" + modFrames.size()
-                + " mods=" + (modSet == null ? 0 : modSet.size())
-                + " optional=" + optionalCount
-                + " doc_frames=" + docSent
-                + " luna_frames=" + lunaSent);
-    }
-
-    /**
-     * The match document's budget term, asked at most ONCE per probe, IMMEDIATELY before whichever
-     * {@link #probeBudget} ask the probe reaches (the passed-key ask before the open, else the ask after it), and
-     * only for a stale-term probe on a door that serves a document. True = DENIED: counted
-     * {@code probe_doc_held} and the probe is dropped SILENTLY (nothing sent, the probe budget not asked, its
-     * passed-key flag not set), so the kit's next try meets an open gap; never the listing alone, because the kit
-     * finishes on the listing and would adopt "no document". The host's exempt addresses skip the per-key gap only.
-     * Lock held.
-     */
-    boolean matchDocHeldLocked(PidsHello13.Hs13 hs13, InetSocketAddress from, long now) {
-        if (matchDoc == null || !hs13.matchStale) {
-            return false;
-        }
-        if (docBudget.admit(DoorSourceBudget.sourceKey(from.getAddress()), now,
-                sourceSeatCap.exempt(from.getAddress()))) {
-            return false;
-        }
-        readerCounters.probeDocHeld++;
-        return true;
-    }
-
-    /**
-     * The LunaSettings sheet's budget term: {@link #matchDocHeldLocked}'s shape WITHOUT its match-term gate, asked at
-     * most ONCE per password-proven probe on a door holding a sheet, right after the document term and before the
-     * {@link #probeBudget} ask. True = DENIED: counted {@code probe_luna_held} and the probe dropped SILENTLY (nothing
-     * sent, nothing stamped beyond the document term's own grant), so the kit's next try meets an open gap; never the
-     * listing without the sheet, which a kit told of a sheet would hold on. Lock held.
-     *
-     */
-    boolean lunaDocHeldLocked(PidsHello13.Hs13 hs13, InetSocketAddress from, long now) {
-        if (lunaSheet == null) {
-            return false;
-        }
-        if (lunaDocBudget.admit(DoorSourceBudget.sourceKey(from.getAddress()), now,
-                sourceSeatCap.exempt(from.getAddress()))) {
-            return false;
-        }
-        readerCounters.probeLunaHeld++;
-        return true;
     }
 
     /** The probe listing's ids = the mod scan (canonical spelling); empty scan = no listing.
@@ -4473,15 +4303,47 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
     private final ArrayList<SeatNameFrameCodec.SeatNameRecord> seatNameFanStash = new ArrayList<>(2);
 
     /** Reader thread, right after {@code onDatagram} returned: fan every record the delivery
-     *  callback stashed (see {@link #seatNameFanStash}), outside every monitor. */
+     *  callback stashed (see {@link #seatNameFanStash}), outside every monitor. A nameless
+     *  record forgets the seat's arbiter label and fans the clear only when one was held. */
     private void fanStashedSeatNames() {
         if (seatNameFanStash.isEmpty()) {
             return;
         }
         for (int i = 0; i < seatNameFanStash.size(); i++) {
-            fans.fanSeatName(seatNameFanStash.get(i));
+            SeatNameFrameCodec.SeatNameRecord record = seatNameFanStash.get(i);
+            if (record.hasName()) {
+                fans.fanSeatName(record);
+            } else if (forgetSeatNameLabel(record.seatId(), "announce")) {
+                fanSeatNameClear(record.seatId(), record.shipId());
+            }
         }
         seatNameFanStash.clear();
+    }
+
+    /**
+     * Drop a seat's arbiter display name (the /transfer census label, the "taken by" replies, the
+     * return-home label) — reader thread, NO monitor held, so the arbiter's monitor stays a leaf.
+     * True only when a name was removed. The row prints the seat number and a fixed cause token,
+     * never a name.
+     */
+    private boolean forgetSeatNameLabel(int seatId, String cause) {
+        if (moduleSeats == null || seatId < 1 || !moduleSeats.forgetSeatName(seatId)) {
+            return false;
+        }
+        System.out.println("pilot-datagram-server seat_name_forget seat=" + seatId + " cause=" + cause);
+        return true;
+    }
+
+    /**
+     * Fan ONE nameless seat-name record for a seat whose label was just forgotten, so clients
+     * that drew the leaver's name on that hull can drop it. Server-originated only: it follows a
+     * forget that removed a name, which takes an admission (flood-guarded at the door) or a
+     * session's single stored announce, and a name must be re-taught before the next one.
+     * Clients that treat a nameless record as a no-op are unaffected (no wire change).
+     *
+     */
+    private void fanSeatNameClear(int seatId, long shipId) {
+        fans.fanSeatName(new SeatNameFrameCodec.SeatNameRecord(seatId, shipId, ""));
     }
 
     /** CTRL in-order delivery: route by the payload frame's magic (the table's UP column). */
@@ -4531,13 +4393,15 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
                     }
                     lock.notifyAll();
                 }
-                if (stored != null && stored.hasName()) {
-                    // Sentinel-resolved records are SKIPPED, not fanned: a name is never un-set
-                    // (the client's ""-no-op law), so a nameless record is pure wire noise — and
-                    // silence keeps no-name doors byte-quiet (the smoke legs' seq arithmetic).
+                if (stored != null) {
                     // STASHED, never fanned here: this callback runs
                     // under the session's reliability monitor and the fan takes the announcer's own
                     // admission-cursor monitor — the reader fans it after onDatagram returns.
+                    // A sentinel-resolved record (the ONE stored
+                    // announce is empty and no seat knob names it — a returning player who dropped
+                    // their name) is stashed too, but never fanned as such: the reader forgets the
+                    // seat's arbiter label and fans a clear only when one was held, so silence still
+                    // keeps no-name doors byte-quiet (the smoke legs' seq arithmetic).
                     seatNameFanStash.add(stored);
                 }
             } else if (magic == MatchReentryFrameCodec.MAGIC) {
@@ -5154,8 +5018,8 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
      * One session's resolved {@code SNMR} record (lock held; callers skip unbound
      * seats). The legacy SNMS fallback semantics, per seat: wire announce → the server-JVM
      * {@code cc.match.seat1Name}/{@code seat2Name} knobs for seats 1/2 → the {@code ""}
-     * no-override sentinel (which the fan/catch-up then SKIP — a name is never un-set, so a
-     * sentinel record says nothing a client could apply).
+     * no-override sentinel (which the fan/catch-up then SKIP; only a forget that removed an
+     * arbiter label fans a nameless record, the clear).
      */
     private SeatNameFrameCodec.SeatNameRecord resolvedSeatNameRecordLocked(PeerSession session) {
         SeatNameFrameCodec.SeatNameAnnounce announce = session.seatNameAnnounce;

@@ -516,16 +516,59 @@ public final class ListingEmitter {
 
     /** The {@code /spawnfriend} twin — the same rows under
      * {@link ListingFrameCodec#MARK_SPAWNFRIEND_PLAIN} (the picker pastes
-     * {@code /spawnfriend <token>}); {@code friendly=false} = {@link #spawnFoeEntries}. */
+     * {@code /spawnfriend <token>}); {@code friendly=false} = {@link #spawnFoeEntries}. Every row is
+     * ID-ONLY; {@link #spawnEntries(List, boolean, Function, Function)} is the labelled form. */
     public static List<ListingEntry> spawnEntries(List<String> ids, boolean friendly) {
+        return spawnEntries(ids, friendly, null, null);
+    }
+
+    /**
+     * The spawn rows with a ship's typed name (occupantLabel) and hull id
+     * (targetLabel) wherever {@code nameOrNull} / {@code hullOrNull} answer for an id; a null function or a null or
+     * blank answer = that label absent, so a row stays id-only unless asked. WHY: a kept ship's id reads
+     * {@code kept-<slug>-<hex>}, so without its name and hull the host cannot tell which copy to spawn. The labels
+     * pass the SAME emission sanitizers as the ship rows ({@link #shipEntries}): a name is folded to printable ASCII,
+     * trimmed and CUT to the occupant cap (a name that folds to nothing rides absent); a hull is folded and trimmed and
+     * rides ABSENT when still over its cap (never cut: a cut id would name another hull). So no name and no hull can
+     * make the listing throw. Display only: the token stays the id. The rows keep the PLAIN marks; the codec admits
+     * the same labels on the officer marks the client flips a row to.
+     *
+     * <p>Compatibility: a kit whose listing reader predates the spawn-row label law throws on a labelled spawn row,
+     * and a host serving with the content-fingerprint door check off admits a kit whose bytes differ, so the labels
+     * ride only together with the handshake version that refuses such a kit at the door
+     * ({@link HandshakeCodec#HANDSHAKE_VERSION} 20 on; that kit then reads "kit outdated" at the door instead).
+     */
+    public static List<ListingEntry> spawnEntries(List<String> ids, boolean friendly,
+            Function<String, String> nameOrNull, Function<String, String> hullOrNull) {
         Objects.requireNonNull(ids, "ids");
         int mark = friendly ? ListingFrameCodec.MARK_SPAWNFRIEND_PLAIN
                 : ListingFrameCodec.MARK_SPAWNFOE_PLAIN;
         List<ListingEntry> entries = new ArrayList<ListingEntry>(ids.size());
         for (String id : ids) {
-            entries.add(new ListingEntry(id, mark, false, null, null, 0));
+            String name = nameOrNull == null ? null : nameOrNull.apply(id);
+            String label = name == null || name.trim().isEmpty() ? null : VoiceMuteCommand.safeLabel(name);
+            String hull = shipHullLabelOrNull(hullOrNull == null ? null : hullOrNull.apply(id));
+            entries.add(new ListingEntry(id, mark, false, hull, label, 0));
         }
         return entries;
+    }
+
+    /**
+     * The spawn verbs' rows as the door emits them — {@code ids} labelled with the
+     * name and hull {@code shipsOrNull} remembers, for a KEPT id only (one with a keep time,
+     * {@link PickableVariants#keptAtMsOrNull}); every other row stays id-only. WHY the gate: the ship list also
+     * remembers a name and a hull for a promoted build that was never kept, and a registry row is already named by
+     * its id. A null {@code shipsOrNull} (a door with no ship list) = every row id-only. Each row reads the ship list's
+     * monitor two times (four for a kept row), never holding it across rows.
+     */
+    public static List<ListingEntry> keptLabelledSpawnEntries(List<String> ids, boolean friendly,
+            PickableVariants shipsOrNull) {
+        if (shipsOrNull == null) {
+            return spawnEntries(ids, friendly);
+        }
+        return spawnEntries(ids, friendly,
+                id -> shipsOrNull.keptAtMsOrNull(id) == null ? null : shipsOrNull.displayNameOrNull(id),
+                id -> shipsOrNull.keptAtMsOrNull(id) == null ? null : shipsOrNull.hullIdOrNull(id));
     }
 
     /** Peer-build sharing v2: the {@code /share} rows — the caller's OWN accepted ids

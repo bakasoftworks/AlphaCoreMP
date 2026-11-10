@@ -27,7 +27,7 @@ import java.util.function.Consumer;
  * registered wire type code and schema version of
  * {@code server.gameplay_edge_event}, so the bytes are the registered message,
  * not an ad-hoc one. Read is fail-closed: a wrong magic, type code, schema
- * (v16 or legacy v15/v14/v13/v12/v10/v9/v8/v7/v6/v5/v4/v3/v2/v1 only — v1 archives decode with
+ * (v17 or legacy v16/v15/v14/v13/v12/v10/v9/v8/v7/v6/v5/v4/v3/v2/v1 only — v1 archives decode with
  * {@code flightBearingDeg=NaN}, pre-v6 archives with {@code birthSpeed=NaN}, pre-v8
  * archives with the {@code muzzleX,muzzleY} pair {@code NaN}, pre-v9 archives with
  * {@code targetWireId=TARGET_ABSENT}),
@@ -43,6 +43,8 @@ import java.util.function.Consumer;
  * frame ({@code MISSILE_END_VICTIM_MIN_SCHEMA}; v14 legacy read accepted),
  * a {@code WEAPON_DISCHARGE} carrying a declared wait (slot not {@code TARGET_ABSENT}) in a pre-v16
  * frame ({@code DECLARED_WAIT_MIN_SCHEMA}; v15 legacy read accepted),
+ * a {@code BLAST_HIT} kind in a pre-v17 frame ({@code BLAST_HIT_MIN_SCHEMA}; v16 legacy read accepted),
+ *
  * unknown kind/phase code, kind/phase payload contradiction, or short read
  * throws {@link IOException} and yields no event.
  *
@@ -76,6 +78,10 @@ public final class GameplayEdgeEventCodec {
      *  declared wait on the {@code WEAPON_DISCHARGE} long slot — READ-only tolerance: no
      *  declared wait in its taxonomy). */
     public static final short SCHEMA_VERSION_V15 = (short) ServerGameplayEdgeEventMessage.SCHEMA_VERSION_V15;
+    /** v16 = the 66 B declared-wait schema every pre-v17 archive carries (v17 = same width, the
+     *  {@code BLAST_HIT} kind — READ-only tolerance, no {@code BLAST_HIT} in its taxonomy).
+     * */
+    public static final short SCHEMA_VERSION_V16 = (short) ServerGameplayEdgeEventMessage.SCHEMA_VERSION_V16;
     /** v13 = the 66 B ARC_HIT schema every pre-v14 archive carries (v14 = same width, the
      *  CRIT_MALFUNCTION kind — READ-only tolerance, no {@code CRIT_MALFUNCTION} in
      *  its taxonomy). */
@@ -233,7 +239,8 @@ public final class GameplayEdgeEventCodec {
                     + MESSAGE_TYPE_CODE + ", got " + typeCode);
         }
         short schema = data.readShort();
-        if (schema != SCHEMA_VERSION && schema != SCHEMA_VERSION_V15 && schema != SCHEMA_VERSION_V14
+        if (schema != SCHEMA_VERSION && schema != SCHEMA_VERSION_V16
+                && schema != SCHEMA_VERSION_V15 && schema != SCHEMA_VERSION_V14
                 && schema != SCHEMA_VERSION_V13 && schema != SCHEMA_VERSION_V12
                 && schema != SCHEMA_VERSION_V10 && schema != SCHEMA_VERSION_V9
                 && schema != SCHEMA_VERSION_V8
@@ -243,7 +250,8 @@ public final class GameplayEdgeEventCodec {
                 && schema != SCHEMA_VERSION_V4 && schema != SCHEMA_VERSION_V3
                 && schema != SCHEMA_VERSION_V2 && schema != SCHEMA_VERSION_V1) {
             throw new IOException("gameplay edge event schema version mismatch: expected "
-                    + SCHEMA_VERSION + " (or legacy " + SCHEMA_VERSION_V15 + "/" + SCHEMA_VERSION_V14 + "/"
+                    + SCHEMA_VERSION + " (or legacy " + SCHEMA_VERSION_V16 + "/"
+                    + SCHEMA_VERSION_V15 + "/" + SCHEMA_VERSION_V14 + "/"
                     + SCHEMA_VERSION_V13 + "/" + SCHEMA_VERSION_V12 + "/"
                     + SCHEMA_VERSION_V10 + "/" + SCHEMA_VERSION_V9 + "/"
                     + SCHEMA_VERSION_V8 + "/" + SCHEMA_VERSION_V7 + "/"
@@ -325,6 +333,13 @@ public final class GameplayEdgeEventCodec {
             throw new IOException("gameplay edge event kind CRIT_MALFUNCTION in a schema " + schema
                     + " frame (kind requires schema >= "
                     + ServerGameplayEdgeEventMessage.CRIT_MALFUNCTION_MIN_SCHEMA + ")");
+        }
+        // The CRIT_MALFUNCTION gate cloned for kind 11.
+        if (kind == GameplayEdgeEventKind.BLAST_HIT
+                && schema < ServerGameplayEdgeEventMessage.BLAST_HIT_MIN_SCHEMA) {
+            throw new IOException("gameplay edge event kind BLAST_HIT in a schema " + schema
+                    + " frame (kind requires schema >= "
+                    + ServerGameplayEdgeEventMessage.BLAST_HIT_MIN_SCHEMA + ")");
         }
         // The SEMANTIC pin — a pre-v15 MISSILE_END may neither name a victim
         // nor read SHIELD_ABSORBED (the MISSILE_END_SOURCED_MIN_SCHEMA idiom, enforced on read).
