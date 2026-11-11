@@ -19,8 +19,10 @@ import java.util.Map;
  * <p>Laws: only the author {@code server} on the slot's OWN seat id is read (the server stamps a receipt with the
  * caller's seat; a peer who names itself "server" speaks on its own seat, and an unknown own seat, -1, takes
  * nothing: so the editor neither arms a slot nor sends its line before its own seat is known, or the answer would
- * print in the host's chat). {@link #offer} returns {@code true} = CONSUMED for exactly two classes of line: a {@code shiplist } line
- * while the LIST slot is armed (the host's chat is not spammed with the card's list), and a {@code "<verb> <id>: "}
+ * print in the host's chat). {@link #offer} returns {@code true} = CONSUMED for exactly three classes of line: a {@code shiplist } line
+ * while the LIST slot is armed (the host's chat is not spammed with the card's list), a {@link #NAMES_HEAD} line
+ * with no list slot armed when the whole line is the names shape on the own seat once known (hex-coded machine data
+ * no chat line should show), and a {@code "<verb> <id>: "}
  * receipt (its QUEUED line or its final one) that lands on an ARMED verb slot - the editor's own verbs answer on the
  * card, and their heads carry ids no chat line should show. A receipt with no armed slot (a verb the host typed in
  * chat, or a line after its slot's wait ended), a sign-in reply and a terminal line return {@code false}, latched or
@@ -31,7 +33,8 @@ import java.util.Map;
  * working" line: the waiter keeps waiting for the ONE final line the server mails after the work (it answers within
  * 15 s, the "no result" line at worst). Every wait is bounded; the server drains chat only during a running round,
  * so a timeout is a normal answer. Bounded memory: at most {@link #MAX_VERB_SLOTS} verb slots and
- * {@link #MAX_LIST_LINES} list lines. B-clean: java.lang, java.util and the pure chat-law reply constants.
+ * {@link #MAX_LIST_LINES} list lines. B-clean: java.lang, java.util, the pure chat-law reply constants and the
+ * java.lang-only file-id law ({@link LocalVariantIdLaw}).
  * The consumed receipts:
  */
 public final class HostShipsLatch {
@@ -41,6 +44,20 @@ public final class HostShipsLatch {
     public static final String LIST_HEAD = "shiplist ";
     /** The list's last line. */
     public static final String LIST_END = "shiplist end";
+    /**
+     * The head of the list's names lines ({@code <stem>=<hullId>=<hex of the typed name>} entries): machine data for
+     * the editor's card, so {@link #offer} consumes a server line under this head with an armed slot or not (a
+     * {@code /shiplist} typed in chat, a reply after its wait ended), but unarmed only when the WHOLE line is the
+     * server's names shape ({@link #namesLineWhole}) on the session's own seat once that is known: the head alone is
+     * text a player can type into a seat name.
+     */
+    public static final String NAMES_HEAD = "shiplist names:";
+    /**
+     * A names entry's hex digits at most: two per char of the typed name, whose cap is the server's 24-char label law
+     * (the editor's {@code HostShips.MAX_WIRE_NAME_CHARS}; a row pins the two equal).
+     *
+     */
+    public static final int NAMES_HEX_MAX_DIGITS = 48;
     /** The tails of a QUEUED verdict ({@code "<verb> <id>: saving"} ...): the final line follows later. */
     static final String[] QUEUED_TAILS = {"saving", "removing", "restoring"};
     /**
@@ -200,7 +217,7 @@ public final class HostShipsLatch {
     }
 
     /** The waiting HTTP thread: the list for {@code gen} after its end line, a terminal line or {@code timeoutMs};
-     *  the slot is disarmed on return (later {@code shiplist } lines reach the chat feed). */
+     *  the slot is disarmed on return (later {@code shiplist } lines reach the chat feed, a names line excepted). */
     public static ListResult awaitList(long gen, long timeoutMs) {
         long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
         synchronized (LOCK) {
@@ -285,13 +302,26 @@ public final class HostShipsLatch {
 
     /**
      * Net thread, the receive choke: one relayed chat line. Returns {@code true} when the line was CONSUMED (a
-     * {@code shiplist } line for the armed LIST slot, or a receipt that landed on an armed verb slot: the caller
+     * {@code shiplist } line for the armed LIST slot, a server names line with no slot armed - see below - or a
+     * receipt that landed on an armed verb slot: the caller
      * passes it to no other reader); every other line returns {@code false}, latched or not. Never throws: a fault
      * is counted and the line flows on.
+     *
+     * <p>The unarmed names cut: a seat name is player text, and the server's own join line puts it at the HEAD of a
+     * server-authored line on the joiner's seat; so a {@link #NAMES_HEAD} head alone never makes a line machine data,
+     * and the cut needs the whole names shape ({@link #namesLineWhole}) plus the own seat.
+     *
+     *
+     * <p> {@code ownSeatOrMinusOne} = the receiving session's own seat AS OF THIS LINE
+     * (its {@code ownSeatIdOrMinusOne}), or -1 while it knows none - then the shape alone decides. WHY the caller
+     * passes it: the server stamps a reply with the asker's CURRENT seat, and the latch's only own knowledge was the
+     * seat of its last list arm, which a seat change (a rejoin past the hold, another server in the same game run)
+     * left stale - a hand-typed {@code /shiplist} then printed its names lines as hex until the editor's next list
+     * read. The armed slots keep the seat they were armed on (armed just before their line is sent).
      */
-    public static boolean offer(ClientChatMessage chat) {
+    public static boolean offer(ClientChatMessage chat, int ownSeatOrMinusOne) {
         try {
-            return offerUnbelted(chat);
+            return offerUnbelted(chat, ownSeatOrMinusOne);
         } catch (RuntimeException fault) {
             synchronized (LOCK) {
                 offerFaults++;
@@ -300,7 +330,7 @@ public final class HostShipsLatch {
         }
     }
 
-    private static boolean offerUnbelted(ClientChatMessage chat) {
+    private static boolean offerUnbelted(ClientChatMessage chat, int ownSeat) {
         if (chat == null) {
             return false;
         }
@@ -320,6 +350,15 @@ public final class HostShipsLatch {
                 }
                 linesConsumed++;
                 LOCK.notifyAll();
+                return true;
+            }
+            // A names line with no slot armed for it is still consumed; it is
+            // stored nowhere (only an armed read parses one) and never reaches the chat feed
+            // only a WHOLE names line on the own seat (any seat while
+            // none is known); a line that merely starts with the head flows on to chat. The own seat is the
+            // session's, read per line - never the last list arm's, which a seat change left stale
+            if ((ownSeat < 0 || seat == ownSeat) && namesLineWhole(text)) {
+                linesConsumed++;
                 return true;
             }
             boolean changed = false;
@@ -400,6 +439,96 @@ public final class HostShipsLatch {
             }
         }
         return false;
+    }
+
+    /**
+     * Whether {@code text} is WHOLE a server names line, exactly the shape the server packs: {@link #NAMES_HEAD}, ONE
+     * space, then one or more entries joined {@code ", "}, with nothing before, between or after them. An entry is
+     * {@code <stem>=<hullId>=<hex>}: exactly two {@code =}; stem and hull id each pass the file-id law
+     * ({@link LocalVariantIdLaw}, the editor's id law); the hex is LOWERCASE (the server's encoding), even-length,
+     * 2..{@link #NAMES_HEX_MAX_DIGITS} digits, every byte printable ASCII (0x20..0x7e), not all spaces. One failing
+     * entry, an empty body, a trailing separator or any tail (a join line's {@code " joined"}) refuses the WHOLE line.
+     * The editor's armed read ({@code HostShips.readNames}) stays the lenient parser: it drops a bad entry alone and
+     * also takes uppercase hex; every entry this check passes is one that parser reads (a row pins it). A repeated
+     * stem is not refused here: the server never sends one, and the parser keeps the first. WHY this shape: the line
+     * is wire input whose head a player can type, so it is bounded first (the chat cap, then every field's length
+     * before its copy), walked once with no regex, and no input makes it throw.
+     *
+     */
+    public static boolean namesLineWhole(String text) {
+        int head = NAMES_HEAD.length();
+        if (text == null || text.length() > ChatWriter.TEXT_MAX_CHARS || text.length() < head + 2
+                || !text.startsWith(NAMES_HEAD) || text.charAt(head) != ' ') {
+            return false;
+        }
+        int from = head + 1;
+        while (true) {
+            int comma = text.indexOf(',', from);
+            int to = comma < 0 ? text.length() : comma;
+            if (!namesEntryWhole(text, from, to)) {
+                return false;
+            }
+            if (comma < 0) {
+                return true;
+            }
+            if (comma + 1 >= text.length() || text.charAt(comma + 1) != ' ') {
+                return false;
+            }
+            from = comma + 2;
+        }
+    }
+
+    /** {@code text} from {@code from} to {@code to} as ONE names entry ({@link #namesLineWhole} holds the law). */
+    private static boolean namesEntryWhole(String text, int from, int to) {
+        int a = text.indexOf('=', from);
+        if (a < 0 || a >= to) {
+            return false;
+        }
+        int b = text.indexOf('=', a + 1);
+        if (b < 0 || b >= to) {
+            return false;
+        }
+        return idWhole(text, from, a) && idWhole(text, a + 1, b) && hexNameWhole(text, b + 1, to);
+    }
+
+    /** The span passes the file-id law; its length is checked before it is copied. */
+    private static boolean idWhole(String text, int from, int to) {
+        int len = to - from;
+        return len > 0 && len <= LocalVariantIdLaw.MAX_CHARS && LocalVariantIdLaw.isLawful(text.substring(from, to));
+    }
+
+    /** The span as lowercase hex of printable-ASCII bytes, not all spaces, checked in place (no buffer is built); a
+     *  third {@code =} lands here and fails as a non-hex digit. */
+    private static boolean hexNameWhole(String text, int from, int to) {
+        int digits = to - from;
+        if (digits <= 0 || (digits & 1) != 0 || digits > NAMES_HEX_MAX_DIGITS) {
+            return false;
+        }
+        boolean blank = true;
+        for (int i = from; i < to; i += 2) {
+            int hi = lowerHexDigit(text.charAt(i));
+            int lo = lowerHexDigit(text.charAt(i + 1));
+            if (hi < 0 || lo < 0) {
+                return false;
+            }
+            int c = (hi << 4) | lo;
+            if (c < 0x20 || c > 0x7e) {
+                return false;
+            }
+            blank &= c == ' ';
+        }
+        return !blank;
+    }
+
+    /** A lowercase ASCII hex digit's value, else -1. */
+    private static int lowerHexDigit(char c) {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        return -1;
     }
 
     /** host_lines_consumed (the chat round line's reader). */

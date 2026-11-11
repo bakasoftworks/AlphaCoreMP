@@ -84,6 +84,14 @@ public final class OpsSnapshot {
     private final long customKeptFailed;
     private final String customKeptLast;
     private final List<String> customInboxIds;
+    /** The OPTIONAL {@code custom.inbox_labels=} row decoded by
+     *  {@link #keptLabelRow} against {@link #customInboxIds} - the name each inbox file was typed with, index for
+     *  index; EMPTY when the row is absent (an older writer's file), else exactly that size ({@code ""} = no name). */
+    private final List<String> customInboxLabels;
+    /** The OPTIONAL {@code custom.inbox_leaves=} row decoded by
+     *  {@link #inboxLeavesRow} against {@link #customInboxIds} - the kept stem a Keep of each inbox file takes off
+     *  {@code /ship}, index for index; always that size ({@code ""} = none, and every slot of an older writer's file). */
+    private final List<String> customInboxLeaves;
     private final boolean customKeptOverCap;
     private final boolean customInboxOverCap;
     /** The OPTIONAL shipped-ships rows {@code OpsStatusFile} writes for the
@@ -249,6 +257,11 @@ public final class OpsSnapshot {
         String keptLast = kv.get("custom.kept_last");
         this.customKeptLast = keptLast == null || keptLast.isBlank() ? "-" : keptLast;
         this.customInboxIds = idRow(kv.get("custom.inbox_ids"));
+        // The inbox names ride the kept names' decoder and bounds; an absent
+        // row reads NO list (the page paints every file name as before), a present one exactly one slot per inbox id.
+        String inboxLabels = kv.get("custom.inbox_labels");
+        this.customInboxLabels = inboxLabels == null ? List.of() : keptLabelRow(inboxLabels, customInboxIds.size());
+        this.customInboxLeaves = inboxLeavesRow(kv.get("custom.inbox_leaves"), customInboxIds.size());
         this.customKeptOverCap = "1".equals(kv.get("custom.kept_over_cap"));
         this.customInboxOverCap = "1".equals(kv.get("custom.inbox_over_cap"));
         // The shipped-ships rows under the same optional-key law (a present
@@ -544,7 +557,8 @@ public final class OpsSnapshot {
      * and would shift every later label onto the wrong stem); extra slots are dropped, missing ones read {@code ""}.
      * The split is bounded by {@code size} BEFORE it runs: no ids = no split at all, else
      * at most {@code size + 1} pieces, the last one the unread remainder - a forged row of any length costs one scan,
-     * never an array of its commas. Pure; the result is exactly {@code size} long, never a null element.
+     * never an array of its commas. Pure; the result is exactly {@code size} long, never a null element. The same
+     * decoder reads {@code custom.inbox_labels=} against the inbox ids: both rows share one slot encoding.
      */
     static List<String> keptLabelRow(String row, int size) {
         if (size <= 0) {
@@ -579,6 +593,29 @@ public final class OpsSnapshot {
             sb.append((char) b);
         }
         return sb.toString();
+    }
+
+    /**
+     * {@code custom.inbox_leaves=} decoded against {@code size} inbox ids -
+     * one slot per id, same order: the kept stem a Keep of that inbox file takes off {@code /ship}, else {@code ""}.
+     * The status file is a trust boundary and a parse throw blanks the WHOLE snapshot, so this never throws: a slot
+     * that is {@code -}, empty or refused by the kept scan's stem law ({@link ServerOpsCore#keptStemLawful}, its
+     * console-safe twin) reads {@code ""} alone; an absent row (an older writer) or a slot count other than
+     * {@code size} reads EVERY slot {@code ""} - a mis-sized list cannot say which stem pairs with which file, and no
+     * ship is ever said to leave on a guess. The split is bounded by {@code size} before it runs (at most
+     * {@code size + 1} pieces). Pure; exactly {@code size} long, never a null element.
+     */
+    static List<String> inboxLeavesRow(String row, int size) {
+        if (size <= 0) {
+            return List.of();
+        }
+        String[] slots = row == null ? new String[0] : row.split(",", size + 1);
+        List<String> out = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            String slot = slots.length == size ? slots[i] : "";
+            out.add(ServerOpsCore.keptStemLawful(slot) ? slot : "");
+        }
+        return List.copyOf(out);
     }
 
     /** {@code c}'s value as a lowercase hex digit (the writer's alphabet), or -1. */
@@ -618,9 +655,24 @@ public final class OpsSnapshot {
     }
 
     /** {@code custom.inbox_ids=}: inbox files not kept yet (at most the writer's 64 = {@code OpsStatusFile.INBOX_ID_ROW_CAP},
-     *  the {@code kept-…} names first; empty when absent or {@code -}). */
+     *  both prefixes in one list, newest first; empty when absent or {@code -}). */
     public List<String> customInboxIds() {
         return customInboxIds;
+    }
+
+    /** {@code custom.inbox_labels=}: the typed name of each inbox file, by index
+     *  against {@link #customInboxIds()} - empty when the row is absent, else the same size ({@code ""} = none, never
+     *  null); a display text only, the Keep verb acts on the file name. */
+    public List<String> customInboxLabels() {
+        return customInboxLabels;
+    }
+
+    /** {@code custom.inbox_leaves=}: the kept stem a Keep of each inbox
+     *  file takes off {@code /ship} (that Keep is the removed ship's put back), by index against
+     *  {@link #customInboxIds()} - always that size ({@code ""} = none, never null); a confirm's display input only,
+     *  the Keep verb acts on the file name. */
+    public List<String> customInboxLeaves() {
+        return customInboxLeaves;
     }
 
     /** {@code custom.kept_over_cap=1}: the kept folder holds more than the listed ids. */

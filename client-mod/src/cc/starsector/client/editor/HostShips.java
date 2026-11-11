@@ -262,7 +262,8 @@ final class HostShips {
             if (!r.ended) {
                 return fail(r.lines.isEmpty() ? NO_ANSWER : "the list did not finish - try again");
             }
-            return withNames(parseList(r.lines)); //
+            java.util.Map<String, WireName> wire = new java.util.LinkedHashMap<>();
+            return withNames(parseList(r.lines, wire), REGISTRY, wire); //
         } finally {
             synchronized (GATE) {
                 verbInFlight = false;
@@ -273,9 +274,23 @@ final class HostShips {
     /**
      * The list lines into the route's object: the count line ({@code shiplist <n> listed, ...}) is {@code line};
      * each {@code shiplist <group>: a, b} line appends to its group (a group may span lines); ids failing the id
-     * law are skipped (never painted).
+     * law are skipped (never painted). A group keeps the order the server sent (kept and removed read newest
+     * first). The names lines ({@link HostShipsLatch#NAMES_HEAD}) carry no group; {@link #parseList(java.util.List,
+     * java.util.Map)} reads them.
      */
     static JSONObject parseList(java.util.List<String> lines) throws JSONException {
+        return parseList(lines, new java.util.LinkedHashMap<>());
+    }
+
+    /**
+     * {@link #parseList(java.util.List)}, and every {@code shiplist names: } entry into {@code wireNames} (stem to
+     * {@link WireName}, at most {@link #MAX_WIRE_NAMES}, first entry per stem wins; {@link #readNames} holds the
+     * entry law). WHY: a removed copy is gone from this JVM's registry and was never folded here when another host
+     * kept it, so its typed name and hull reach the card only on the list itself. A reply without names lines
+     * leaves {@code wireNames} empty and the object exactly as before.
+     */
+    static JSONObject parseList(java.util.List<String> lines, java.util.Map<String, WireName> wireNames)
+            throws JSONException {
         JSONObject o = new JSONObject();
         o.put("ok", true);
         String[] groups = {"listed", "hidden", "kept", "removed"};
@@ -287,6 +302,10 @@ final class HostShips {
         String count = "";
         for (String text : lines) {
             if (!text.startsWith(HostShipsLatch.LIST_HEAD)) {
+                continue;
+            }
+            if (text.startsWith(HostShipsLatch.NAMES_HEAD)) {
+                readNames(text.substring(HostShipsLatch.NAMES_HEAD.length()), wireNames);
                 continue;
             }
             String body = text.substring(HostShipsLatch.LIST_HEAD.length());
@@ -310,6 +329,103 @@ final class HostShips {
         }
         o.put("line", count);
         return o;
+    }
+
+    /** Names entries one list carries at most: the server's kept-list cap
+     *  ({@code CatalogPromotionLane.INBOX_LIST_CAP}). */
+    static final int MAX_WIRE_NAMES = 32;
+    /** A wire name's cap in chars after decode: the server's label cut ({@code safeLabel}, 24 printable ASCII). */
+    static final int MAX_WIRE_NAME_CHARS = 24;
+
+    /** One removed copy as the list names it: its hull id (id law) and its typed name (printable ASCII, not blank,
+     *  at most {@link #MAX_WIRE_NAME_CHARS}). Display data only: never a key, a path, a verb argument or a log
+     *  field. */
+    static final class WireName {
+        final String hullId;
+        final String name;
+
+        WireName(String hullId, String name) {
+            this.hullId = hullId;
+            this.name = name;
+        }
+    }
+
+    /**
+     * One names line's entries ({@code body} = the text after the head, {@code ", "}-joined) into {@code out}. An
+     * entry is {@code <stem>=<hullId>=<hex>}: exactly two {@code =}, stem and hull id each pass the id law, the hex is
+     * even-length, non-empty, at most {@code 2 * MAX_WIRE_NAME_CHARS} digits, and decodes byte for byte to printable
+     * ASCII (0x20..0x7e) that is not all blank. Any other entry is dropped ALONE, the rest kept; so is a repeated
+     * stem (the first stays) and every entry past {@link #MAX_WIRE_NAMES}. WHY these bounds: the name is player
+     * text arriving on the wire, so its length is checked before its decode buffer is sized, every char is held to
+     * the label law at decode (no control char, no DEL, nothing past ASCII), the work is linear in a line the latch
+     * already bounds in count, and no input makes this throw.
+     */
+    static void readNames(String body, java.util.Map<String, WireName> out) {
+        int from = 0;
+        while (from <= body.length() && out.size() < MAX_WIRE_NAMES) {
+            int comma = body.indexOf(',', from);
+            int to = comma < 0 ? body.length() : comma;
+            readNameEntry(body.substring(from, to).trim(), out);
+            if (comma < 0) {
+                return;
+            }
+            from = comma + 1;
+        }
+    }
+
+    private static void readNameEntry(String entry, java.util.Map<String, WireName> out) {
+        int a = entry.indexOf('=');
+        int b = a < 0 ? -1 : entry.indexOf('=', a + 1);
+        if (b < 0 || entry.indexOf('=', b + 1) >= 0) {
+            return;
+        }
+        String stem = entry.substring(0, a);
+        String hullId = entry.substring(a + 1, b);
+        if (!EditorText.isId(stem) || !EditorText.isId(hullId) || out.containsKey(stem)) {
+            return;
+        }
+        String name = hexNameOrNull(entry, b + 1);
+        if (name != null) {
+            out.put(stem, new WireName(hullId, name));
+        }
+    }
+
+    /** {@code s} from {@code from} to its end as lowercase or uppercase hex of printable-ASCII bytes, decoded; null
+     *  when odd, empty, longer than {@code 2 * MAX_WIRE_NAME_CHARS}, not hex, a byte outside 0x20..0x7e, or blank. */
+    static String hexNameOrNull(String s, int from) {
+        int digits = s.length() - from;
+        if (digits <= 0 || (digits & 1) != 0 || digits > 2 * MAX_WIRE_NAME_CHARS) {
+            return null;
+        }
+        char[] name = new char[digits / 2];
+        for (int i = 0; i < name.length; i++) {
+            int hi = hexDigit(s.charAt(from + 2 * i));
+            int lo = hexDigit(s.charAt(from + 2 * i + 1));
+            if (hi < 0 || lo < 0) {
+                return null;
+            }
+            int c = (hi << 4) | lo;
+            if (c < 0x20 || c > 0x7e) {
+                return null;
+            }
+            name[i] = (char) c;
+        }
+        String decoded = new String(name);
+        return decoded.isBlank() ? null : decoded;
+    }
+
+    /** An ASCII hex digit's value, else -1 (never {@link Character#digit}, which also takes non-ASCII digits). */
+    private static int hexDigit(char c) {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F') {
+            return c - 'A' + 10;
+        }
+        return -1;
     }
 
     /**
@@ -371,6 +487,18 @@ final class HostShips {
     };
 
     static JSONObject withNames(JSONObject o, ShipLookup lookup) throws JSONException {
+        return withNames(o, lookup, java.util.Collections.emptyMap());
+    }
+
+    /**
+     * {@link #withNames(JSONObject, ShipLookup)}, then a REMOVED id the lookup leaves without a name or a hull takes
+     * that field from {@code wireNames} (the list's own names lines): the name into {@code names}, the hull id into
+     * {@code hullIds}, and into {@code hulls} the hull's name through the same hull lookup, the hull id when no spec
+     * answers. The lookup always wins where it answers. Only the removed group reads the wire map: the list names
+     * removed copies alone, every other group's names this JVM already holds.
+     */
+    static JSONObject withNames(JSONObject o, ShipLookup lookup, java.util.Map<String, WireName> wireNames)
+            throws JSONException {
         JSONObject names = new JSONObject();
         JSONObject hulls = new JSONObject();
         JSONObject hullIds = new JSONObject();
@@ -382,11 +510,18 @@ final class HostShips {
                 if (!EditorText.isId(id) || !seen.add(id)) {
                     continue;
                 }
+                WireName wire = "removed".equals(group) ? wireNames.get(id) : null;
                 String name = safeOrNull(lookup.displayNameOrNull(id));
+                if (name == null && wire != null) {
+                    name = safeOrNull(wire.name);
+                }
                 if (name != null) {
                     names.put(id, name);
                 }
                 String hullId = lookup.hullIdOrNull(id);
+                if ((hullId == null || !EditorText.isId(hullId)) && wire != null) {
+                    hullId = wire.hullId;
+                }
                 if (hullId != null && EditorText.isId(hullId)) {
                     hullIds.put(id, hullId);
                     String hullName = safeOrNull(lookup.hullNameOrNull(hullId));

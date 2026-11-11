@@ -921,7 +921,8 @@ final class RosterAppendLane {
                 PilotWatchLog.info("predict roster-append: entity " + row.wireId()
                         + " absSide=" + row.side() + " -> side " + relSide
                         + " variant=" + FallbackAnnounce.sanitize(row.variantId(), 64)
-                        + " name=" + FallbackAnnounce.sanitize(row.shipName(), 64)
+                        // The RAPP name is a joiner's TYPED name since v0.6.8
+                        + " name=" + FallbackAnnounce.quote(row.shipName(), 64)
                         + " cr=" + row.crPerMille()
                         + (row.hasCarrier() ? " carrier=" + row.carrierWireId()
                                 + " bay=" + row.bayIndex() : "")

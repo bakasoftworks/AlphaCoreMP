@@ -1,5 +1,6 @@
 package cc.starsector.server.runtime;
 
+import cc.starsector.server.ops.PeerText;
 import cc.starsector.server.runtime.PersistentPilotIntentCombatServer.NPeerHooks;
 import java.io.IOException;
 import java.util.List;
@@ -37,12 +38,16 @@ public final class AdhocFoeDrain {
      * @param adhocEntry the entry {@code pollNextEntry} handed back for this unit
      * @param waveSpawn the engine hook ({@code hooks.waveSpawn()}, non-null by the caller's admission)
      * @param tick the sim tick the unit lands on ({@code lastSimTick + 1})
+     * @param shipsOrNull the door's ship list, read for the
+     *     hull's name ({@link AdhocFoeSpawner#spawnShipName}: a kept id's typed name, bounded, else
+     *     the id) - the engine spawn and the append row carry it; the row's variant field, the
+     *     officer key and every log token keep the id. Null = every hull named by its id.
      */
     public static AdhocFoeSpawner.Entry spawnOne(AdhocFoeSpawner adhocFoes,
             AdhocFoeSpawner.Entry adhocEntry, NPeerHooks.WaveSpawnHook waveSpawn,
             ShipNetworkIdRegistry stableIdRegistry, Set<String> growthKnownKeysOrNull,
             List<RosterAppendFrameCodec.AppendRow> appendRows, float mapHalf, int round,
-            long tick) {
+            long tick, PickableVariants shipsOrNull) {
         String adhocVariantId = adhocEntry.variantId();
         AdhocFoeSpawner.Entry adhocExhausted = null;
         // The poll→record discipline allows ONE record per polled unit —
@@ -85,9 +90,13 @@ public final class AdhocFoeDrain {
             // The row tail is read BEFORE the spawn (the record bumps k).
             String adhocUnitText = adhocEntry.unitLogText();
             float[] adhocPose = adhocEntry.spawnPoseForUnit(adhocEntry.sideFacing(), mapHalf);
+            // The hull's in-world name - a kept id's typed
+            // name (safeLabel-cut inside spawnShipName), else the id; read inside this try, so a
+            // lookup fault stays fail-soft like any spawn fault.
+            String adhocShipName = AdhocFoeSpawner.spawnShipName(adhocVariantId, shipsOrNull);
             NPeerHooks.WaveSpawnResult spawned = adhocOfficer == null
-                    ? waveSpawn.spawn(adhocSide, adhocVariantId, adhocVariantId, adhocPose)
-                    : waveSpawn.spawn(adhocSide, adhocVariantId, adhocVariantId, adhocPose,
+                    ? waveSpawn.spawn(adhocSide, adhocVariantId, adhocShipName, adhocPose)
+                    : waveSpawn.spawn(adhocSide, adhocVariantId, adhocShipName, adhocPose,
                             adhocOfficer);
             long adhocWireId = PersistentPilotIntentCombatServer.internWaveHull(
                     stableIdRegistry, growthKnownKeysOrNull, spawned, adhocVariantId);
@@ -95,7 +104,7 @@ public final class AdhocFoeDrain {
             // a mod hook rolled the hull — the /spawnfoe Aleste arm fork — else
             // the typed id; the captain re-keyed to it. The at-rest bit rides inside.
             appendRows.add(WaveOfficerRowGuard.fieldedRow(
-                    adhocWireId, adhocSide, adhocVariantId, adhocVariantId,
+                    adhocWireId, adhocSide, adhocVariantId, adhocShipName,
                     spawned, "adhoc", round, tick));
             // The receipt's captain tag = what was FIELDED (the 5-arg
             // attach reported the requested pick back), never the request flag
@@ -126,9 +135,11 @@ public final class AdhocFoeDrain {
             }
             // fielded=true = the hull IS in the world and recorded (only the row after the
             // record threw); false = nothing spawned for this unit.
+            // err= is quoted - the engine's message names the hull, and a kept hull's
+            // name is player text.
             System.out.println("npeer-serve adhoc_spawn_fail variant="
                     + adhocVariantId + " fielded=" + recorded
-                    + " err=" + adhocSpawnFailure.getMessage()
+                    + " err=" + PeerText.quote(adhocSpawnFailure.getMessage())
                     + " round=" + round + " tick=" + tick);
         }
         return adhocExhausted;

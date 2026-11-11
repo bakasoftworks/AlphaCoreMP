@@ -348,8 +348,8 @@ public final class SeatVariantPicks {
                 FallbackAnnounce.announceOnce("hello-pick-refused-seat-" + seatId,
                         "pick=" + PeerText.quote(echo)
                                 + " picking_unavailable=true (seat flies the descriptor row)");
-                notifier.chat(sessionId, seatId,
-                        "variant '" + echo + "' ignored - picking unavailable here; spawning default");
+                notifier.chat(sessionId, seatId, "variant '" + pickNoticeName(pickableVariants, pick, null)
+                        + "' ignored - picking unavailable here; spawning default");
                 tenureClear(seatId, freshTenure);
             }
             case UNKNOWN -> {
@@ -358,8 +358,8 @@ public final class SeatVariantPicks {
                 FallbackAnnounce.announceOnce("hello-pick-refused-seat-" + seatId, //
                         "pick=" + PeerText.quote(echo)
                                 + " not_pickable=true (seat flies the descriptor row)");
-                notifier.chat(sessionId, seatId,
-                        "variant '" + echo + "' not pickable - spawning default; /ship lists ids");
+                notifier.chat(sessionId, seatId, "variant '" + pickNoticeName(pickableVariants, pick, null)
+                        + "' not pickable - spawning default; /ship lists ids");
                 tenureClear(seatId, freshTenure);
             }
             case HELD -> {
@@ -368,7 +368,7 @@ public final class SeatVariantPicks {
                 // erase the tenure's own just-accepted custom.
                 tenureClear(seatId, freshTenure);
                 hold(sessionId, seatId, authorKey, pick, "hello");
-                notifier.chat(sessionId, seatId, pendingLine(echo));
+                notifier.chat(sessionId, seatId, pendingLine(pickNoticeName(pickableVariants, pick, null)));
             }
             case ALLOWLIST, OWN_CUSTOM -> {
                 Seed s = seeder.seed(seatId, r.canonical());
@@ -407,7 +407,8 @@ public final class SeatVariantPicks {
         FallbackAnnounce.announceOnce("custom-demoted-seed-seat-" + seatId,
                 "canonical=" + canonical + " source=" + source + " (demoted between resolve and seed; the standing pick is unchanged)");
         if (tellSeat) {
-            notifier.chat(sessionId, seatId, "variant '" + echo(pick) + "' was just demoted - not seeded; /ship lists ids");
+            notifier.chat(sessionId, seatId, "variant '" + pickNoticeName(pickableVariants, pick, canonical)
+                    + "' was just demoted - not seeded; /ship lists ids");
         }
     }
 
@@ -429,17 +430,19 @@ public final class SeatVariantPicks {
                 Seed s = seeder.seed(seatId, r.canonical());
                 if (!s.seeded()) {
                     seedRefused(sessionId, seatId, raw, r.canonical(), "ship", false);
-                    return List.of("variant '" + echo(raw) + "' was just demoted - not seeded; /ship lists ids");
+                    return List.of("variant '" + pickNoticeName(pickableVariants, raw, r.canonical())
+                            + "' was just demoted - not seeded; /ship lists ids");
                 }
                 System.out.println("pilot-datagram-admission VARIANT_CUSTOM seat=" + seatId
                         + " session=" + sessionId + " pick=" + PeerText.quote(raw)
                         + " canonical=" + r.canonical() + " source=ship"
                         + (s.claimCleared() ? " (module claim cleared)" : ""));
-                return List.of("next respawn: " + r.canonical() + (s.claimCleared() ? " (module claim cleared)" : ""));
+                return List.of("next respawn: '" + submittedName(r.canonical(), raw) + "'"
+                        + (s.claimCleared() ? " (module claim cleared)" : ""));
             }
             case HELD -> {
                 hold(sessionId, seatId, authorKey, raw, "ship");
-                return List.of(pendingLine(echo(raw)));
+                return List.of(pendingLine(pickNoticeName(pickableVariants, raw, null)));
             }
             default -> {
                 return null;
@@ -515,7 +518,7 @@ public final class SeatVariantPicks {
             System.out.println("pilot-datagram-admission VARIANT_HELD_RESOLVED seat=" + seatId
                     + " session=" + h.sessionId() + " pick=" + PeerText.quote(h.raw())
                     + " canonical=" + canonicalId + (s.claimCleared() ? " (module claim cleared)" : ""));
-            notifier.chat(h.sessionId(), seatId, "next respawn: " + canonicalId + " (pick confirmed)"
+            notifier.chat(h.sessionId(), seatId, "next respawn: '" + submittedName(canonicalId, localId) + "' (pick confirmed)"
                     + (s.claimCleared() ? " (module claim cleared)" : ""));
         }
         if (submitterSeat >= 0 && !submitterHit) {
@@ -550,6 +553,8 @@ public final class SeatVariantPicks {
      * The name the submitter's "next respawn" line shows - the allowlist's
      * remembered display name of {@code canonicalId}, else the local id the seat typed, else the minted id; bounded
      * by {@link CatalogPromotionLane#chatShipName} (a local id is the seat's own text, echoed back to it alone).
+     * Also names the own-custom /ship reply, the held pick's "pick confirmed" line and the standing pick a reject
+     * keeps (null local id = the stored id).
      */
     String submittedName(String canonicalId, String localIdOrNull) {
         PickableVariants pickable = pickableVariants;
@@ -602,9 +607,12 @@ public final class SeatVariantPicks {
                     "pick=" + PeerText.quote(echo) + " rejected=" + reason
                             + " standing=" + (standing == null ? "none" : standing)
                             + " (seat keeps its standing pick / descriptor row)");
-            notifier.chat(h.sessionId(), seatId, "variant '" + echo + "' rejected (" + reason + ") - "
+            // The chat names both ships (a stored kept stem reads by its typed
+            // name); the log row and the FALLBACK row above keep the ids
+            notifier.chat(h.sessionId(), seatId, "variant '" + pickNoticeName(pickableVariants, h.raw(), null)
+                    + "' rejected (" + reason + ") - "
                     + (standing == null ? "flying the server default (no standing pick)"
-                            : "keeping your standing pick: " + standing));
+                            : "keeping your standing pick: '" + submittedName(standing, null) + "'"));
         }
     }
 
@@ -637,7 +645,7 @@ public final class SeatVariantPicks {
             FallbackAnnounce.announceOnce("hello-pick-expired-seat-" + seatId,
                     "pick=" + PeerText.quote(echo) + " not_confirmed_in_ms=" + PENDING_HOLD_MILLIS
                             + " (seat keeps its standing pick / descriptor row)");
-            notifier.chat(h.sessionId(), seatId, "variant '" + echo + "' not confirmed in "
+            notifier.chat(h.sessionId(), seatId, "variant '" + pickNoticeName(pickableVariants, h.raw(), null) + "' not confirmed in "
                     + (PENDING_HOLD_MILLIS / 1000) + " s - keeping your standing pick");
         }
     }
@@ -679,6 +687,22 @@ public final class SeatVariantPicks {
 
     private static String echo(String peerText) {
         return peerText.length() <= 24 ? peerText : peerText.substring(0, 24);
+    }
+
+    /**
+     * The quoted part of a {@code variant '...'} pick notice - the remembered
+     * display name of the ship the token answers to (looked up by {@code canonicalOrNull} when the pick resolved, else
+     * by the token itself; the allowlist never forgets a name, so a kept copy that has since left /ship still reads by
+     * it), bounded by {@link CatalogPromotionLane#chatShipName} (printable ASCII, at most 24 chars); a token no ship
+     * answers to echoes back as typed, cut by {@link #echo}. WHY: a kept copy's stem ends in a hex tail no player
+     * should read back, while an unknown token is the player's own input. Only the quoted part moves: the client's
+     * /ship reply latch matches the fixed text before the quote. The log and FALLBACK rows keep the token.
+     */
+    static String pickNoticeName(PickableVariants pickableOrNull, String token, String canonicalOrNull) {
+        String raw = token == null ? "" : token;
+        String name = pickableOrNull == null ? null
+                : pickableOrNull.displayNameOrNull(canonicalOrNull != null ? canonicalOrNull : raw);
+        return name == null || name.trim().isEmpty() ? echo(raw) : CatalogPromotionLane.chatShipName(name, raw);
     }
 
     /** The pick allowlist's own ASCII fold — a typed local id matches its submission's case-insensitively. */

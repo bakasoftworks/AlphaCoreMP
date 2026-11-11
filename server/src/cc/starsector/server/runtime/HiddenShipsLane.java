@@ -375,6 +375,13 @@ final class HiddenShipsLane {
         if (floorRefuses(pickableOrNull, stem)) {
             return refused(head, LAST_LISTED);
         }
+        // The kept ship that is the live joiner default stays, as the
+        // shipped hide refuses it, BEFORE anything is queued - else the default names a ship off /ship and every
+        // fresh joiner flies the descriptor row. A supersede or a put back forgets its ship through forgetKept,
+        // never through this check.
+        if (isJoinerDefault(door, stem)) {
+            return refused(head, DEFAULT_SHIP);
+        }
         String answer = keptSide.shipRemoveKept(command, stem);
         if ((head + QUEUED_REMOVING).equals(answer)) {
             pendingForgets.add(stem);
@@ -501,7 +508,8 @@ final class HiddenShipsLane {
      * The supersede's settle hook - the catalog lane calls it on the sim thread once the copy LISTS (never before:
      * a refused or identical copy leaves X exactly as it was). ORDER: the standing picks on X MOVE to the copy
      * FIRST (no pick-clear line: the hide below then finds no pick naming X; a seat that picked X flies the copy at
-     * its next respawn), then X leaves {@code /ship} - a shipped X hides exactly as {@code ship-hide} does (the set,
+     * its next respawn), and a joiner default naming X with them ({@link #defaultFollows}), then X leaves
+     * {@code /ship} - a shipped X hides exactly as {@code ship-hide} does (the set,
      * the view, the persist), a kept X is forgotten through the kept half (QUEUED = pending for the floor, as Remove).
      * Returns whether X left (false = the receipt says "added" and a loud row names why). A kept X that leaves takes
      * its own {@code .meta} (and its {@code supersedes} link) into the inbox, where {@link #removedRootOf} reads it.
@@ -509,6 +517,7 @@ final class HiddenShipsLane {
     private boolean applySupersede(PilotIntentDatagramServer door, PickableVariants pickable, String replaced,
             boolean replacedKept, String copy) {
         int moved = door.moveSeatVariantOverrides(replaced, copy);
+        defaultFollows(door, replaced, copy); // the copy lists (this hook's contract), X has not left yet
         if (!replacedKept) {
             if (set.contains(replaced)) {
                 System.out.println("npeer-serve supersede_applied replaced=" + replaced + " copy=" + copy
@@ -584,6 +593,28 @@ final class HiddenShipsLane {
         return false;
     }
 
+    /**
+     * THE JOINER DEFAULT FOLLOWS THE SHIP. Beside each move of the
+     * standing picks from {@code from} to {@code to} (a supersede's settle, a put back), the server's joiner default
+     * moves the same way when it names {@code from} (by ASCII fold, as {@link #replaceRefusalOrNull} compares) -
+     * else the ship that leaves {@code /ship} takes the default with it and every fresh joiner flies the descriptor
+     * row. It moves ONLY through the door's canonicalising setter (the default never names a hull this server could
+     * not field), so {@code to} must LIST at the call: every caller runs once {@code to} lists and before
+     * {@code from} leaves (the kept put-back too, through its settle hook {@link #applyPutBack}). ONE audit
+     * row, machine ids only, no chat line (the picks move silently too); a setter refusal reads as
+     * {@code standing} != {@code to}.
+     * Sim thread (the catalog settle, the operator drain): one compare and at most one setter call per supersede or
+     * put back, nothing per tick.
+     */
+    private static void defaultFollows(PilotIntentDatagramServer door, String from, String to) {
+        String standing = door.joinerDefaultVariantOrNull();
+        if (standing == null || !HiddenShipSet.fold(standing).equals(HiddenShipSet.fold(from))) {
+            return;
+        }
+        String now = door.setJoinerDefaultVariant(to);
+        System.out.println("npeer-serve supersede_default_moved from=" + from + " to=" + to + " standing=" + now);
+    }
+
     /** The catalog lane behind the door's custom lane (the serve installs it on {@code variantSubmissionLane}), or
      *  null = no customs on this serve (a rig door, customs off): the supersede then keeps nothing special. */
     private static CatalogPromotionLane promoOrNull(PilotIntentDatagramServer door) {
@@ -596,9 +627,10 @@ final class HiddenShipsLane {
      * its place (the kept scan's {@code supersedes} link, {@link CatalogPromotionLane#copySupersedingOrNull}) is
      * forgotten and X is listed again - "'<name>' put back - the changed copy is gone"; the standing picks on the copy
      * move back to X first (a shipped X is shown BEFORE the move, or the seed would refuse a hidden id). A kept X is
-     * put back through the kept half first (so the listing never empties), then the copy leaves; its final body is
-     * the catalog lane's and reads the copy-gone tail from {@link CatalogPromotionLane#noteCopyGone}. No link = a
-     * plain put-back, as before.
+     * put back through the kept half first (so the listing never empties); the copy, its picks and a default naming
+     * it wait until X LISTS again ({@link #applyPutBack}, armed through
+     * {@link CatalogPromotionLane#expectPutBack}), and the final body is the catalog lane's: the copy-gone tail when
+     * that hook queued the copy's forget. No link = a plain put-back, as before.
      * A removed copy of a copy finds its stand-in through the ROOT its own
      * {@code .meta} names ({@link #removedRootOf}) and comes back carrying that link, so the root keeps ONE put-back
      * path; a root already back on {@code /ship} is a ship of its own, so the copy then comes back with no link.
@@ -633,6 +665,7 @@ final class HiddenShipsLane {
             return shown; // (a copy exists only for a hidden X, and showBase refuses only an unhidden one)
         }
         door.moveSeatVariantOverrides(copy, base);
+        defaultFollows(door, copy, base); // showBase above listed X again
         if (!forgetKept(copy, "put-back")) {
             return shown; // X is back; the copy stayed (loud above) - the receipt says so by omission
         }
@@ -655,13 +688,31 @@ final class HiddenShipsLane {
         String answer = keptSide.shipRestoreKept(command, removed, link);
         boolean queued = (HEAD_RESTORE + command.text() + ": " + QUEUED_RESTORING).equals(answer);
         String copy = promo != null && queued ? promo.copySupersedingOrNull(root) : null;
-        if (copy != null) {
-            door.moveSeatVariantOverrides(copy, removed);
-            if (forgetKept(copy, "put-back")) {
-                promo.noteCopyGone(removed);
-            }
+        if (promo != null && queued) {
+            // the re-keep above is only QUEUED: the copy, its picks and a default naming it stay until the ship
+            // LISTS again (applyPutBack, the catalog lane's settle); no copy = any older arm on this name is disarmed
+            // (the arm never refuses: at its cap the catalog lane clears the stale arms)
+            promo.expectPutBack(removed, copy, copy == null ? null : restored -> applyPutBack(door, copy, restored));
         }
         return new Verdict(answer, "custom_store");
+    }
+
+    /**
+     * The kept put-back's settle hook - the catalog lane calls it on the sim thread once
+     * the re-kept ship LISTS under {@code restored} (never before: a refused re-keep leaves the copy exactly as it
+     * was). The mirror of {@link #applySupersede}, in its ORDER: the standing picks on the copy move back to the ship
+     * FIRST, a joiner default naming the copy with them ({@link #defaultFollows}: the ship lists, the copy has not
+     * left yet, so no fresh joiner meets a default that names a ship off {@code /ship}), THEN the copy is forgotten
+     * through the kept half (QUEUED = pending for the floor, as Remove). Returns whether the copy left (false = the
+     * receipt says "put back" without the copy-gone tail and a loud row names why).
+     */
+    private boolean applyPutBack(PilotIntentDatagramServer door, String copy, String restored) {
+        int moved = door.moveSeatVariantOverrides(copy, restored);
+        defaultFollows(door, copy, restored);
+        boolean forgotten = forgetKept(copy, "put-back");
+        System.out.println("npeer-serve putback_applied restored=" + restored + " copy=" + copy
+                + " picks_moved=" + moved + " kept_forget=" + (forgotten ? "queued" : "refused"));
+        return forgotten;
     }
 
     /**
@@ -747,7 +798,9 @@ final class HiddenShipsLane {
     /** The listing a caller would see: one count line, then each group packed to the chat bound, then the end. */
     private Verdict list(PilotIntentDatagramServer door, PickableVariants pickableOrNull,
             OperatorCommandFile.Command command) {
-        List<String> lines = listLines(pickableOrNull, set, keptSide.hostParts());
+        CatalogPromotionLane promo = promoOrNull(door);
+        List<String> lines = listLines(pickableOrNull, set, keptSide.hostParts(),
+                promo == null ? java.util.Map.of() : promo.removedCopies());
         // every line but the last is delivered here; the last ('shiplist end') is the arm's receipt
         for (int i = 0; i < lines.size() - 1; i++) {
             if (command.receiptSessionId() != 0L) {
@@ -761,8 +814,17 @@ final class HiddenShipsLane {
 
     /** The /shiplist lines (pure: listed = the shipped ids on /ship, hidden = the set's shipped ids, kept /
      *  removed = the custom store's), each group sorted by fold but kept, which reads newest first
-     *  ({@link ListingEmitter#keptNewestFirst}); an empty group still prints its head. */
-    static List<String> listLines(PickableVariants pickableOrNull, HiddenShipSet hidden, HostParts parts) {
+     *  ({@link ListingEmitter#keptNewestFirst}); an empty group still prints its head.
+     *  {@code removedCopies} = the catalog's one removed-copies map
+     *  ({@link CatalogPromotionLane#removedCopies}; null reads empty). The removed group reads newest first by each
+     *  copy's keep time, the copies with no time after them in fold order; then, before the end line, the
+     *  {@code shiplist names:} lines carry each removed copy's hull and typed name ({@link #namesEntryOrNull}), packed
+     *  like every group - none when no removed copy has both. Kept stems get no entry: every client already holds
+     *  their names. */
+    static List<String> listLines(PickableVariants pickableOrNull, HiddenShipSet hidden, HostParts parts,
+            java.util.Map<String, CatalogPromotionLane.RemovedCopy> removedCopies) {
+        java.util.Map<String, CatalogPromotionLane.RemovedCopy> copies =
+                removedCopies == null ? java.util.Map.of() : removedCopies;
         List<String> listed = new ArrayList<>();
         List<String> hiddenIds = new ArrayList<>();
         if (pickableOrNull != null) {
@@ -787,6 +849,25 @@ final class HiddenShipsLane {
         // a copy with no known keep time follows the timed ones in fold order
         kept = ListingEmitter.keptNewestFirst(kept, pickableOrNull == null ? null : pickableOrNull::keptAtMsOrNull);
         removed.sort(FOLD_ORDER);
+        // the timed copies first (fold order), so the newest-first block starts the group and the untimed ones follow
+        java.util.function.Function<String, Long> keptAt = stem -> {
+            CatalogPromotionLane.RemovedCopy c = copies.get(stem);
+            return c == null ? null : c.keptAtMsOrNull();
+        };
+        List<String> timedFirst = new ArrayList<>(removed.size());
+        List<String> untimed = new ArrayList<>();
+        for (String stem : removed) {
+            (keptAt.apply(stem) != null ? timedFirst : untimed).add(stem);
+        }
+        timedFirst.addAll(untimed);
+        removed = ListingEmitter.keptNewestFirst(timedFirst, keptAt);
+        List<String> names = new ArrayList<>();
+        for (String stem : removed) {
+            String entry = namesEntryOrNull(stem, copies.get(stem));
+            if (entry != null) {
+                names.add(entry);
+            }
+        }
         List<String> out = new ArrayList<>();
         out.add(HEAD_LIST + listed.size() + " listed, " + hiddenIds.size() + " hidden, " + kept.size() + " kept, "
                 + removed.size() + " removed");
@@ -794,8 +875,61 @@ final class HiddenShipsLane {
         out.addAll(packGroup(HEAD_LIST + "hidden:", hiddenIds));
         out.addAll(packGroup(HEAD_LIST + "kept:", kept));
         out.addAll(packGroup(HEAD_LIST + "removed:", removed));
+        if (!names.isEmpty()) {
+            out.addAll(packGroup(HEAD_LIST + NAMES_GROUP, names));
+        }
         out.add(HEAD_LIST + "end");
         return out;
+    }
+
+    /** The names group's head after {@link #HEAD_LIST}. */
+    static final String NAMES_GROUP = "names:";
+
+    /**
+     * One names entry, {@code <stem>=<hullId>=<hex>}, the hex being the lowercase
+     * hex of the typed name's ASCII bytes (at most 24 chars, so at most 48 hex), or null when the copy lacks a lawful
+     * hull or name, or a field fails its law here again (the map is the only source, but a wire line never trusts a
+     * relayed value). The hex keeps the player's text out of the line grammar: no {@code ,} {@code =} space or quote
+     * survives in it.
+     * The entry always FITS one names line - at most the room {@link #packGroup}
+     * leaves after the head {@code shiplist names:} and its one space within {@link #LINE_MAX_CHARS} - so packGroup
+     * never drops it and the copy never falls back to its raw id. A long stem + hull cuts the NAME, never the stem or
+     * the hull: whole chars off its end, then any trailing spaces, down to the longest prefix whose entry fits; a name
+     * that would be cut below 4 chars yields no entry. The name law above already holds every char to printable ASCII,
+     * one byte each, so a char cut never splits a char and the hex stays two digits per char.
+     */
+    static String namesEntryOrNull(String stem, CatalogPromotionLane.RemovedCopy copyOrNull) {
+        if (copyOrNull == null || !CatalogPromotionLane.stemLawful(stem)
+                || !CatalogPromotionLane.stemLawful(copyOrNull.hullIdOrNull())) {
+            return null;
+        }
+        String name = copyOrNull.nameOrNull();
+        if (name == null || name.isEmpty() || name.length() > CatalogPromotionLane.CHAT_NAME_MAX_CHARS) {
+            return null;
+        }
+        // the room packGroup leaves one entry on a names line; each name char costs two hex digits
+        int room = LINE_MAX_CHARS - (HEAD_LIST + NAMES_GROUP).length() - 1;
+        int nameRoom = (room - stem.length() - copyOrNull.hullIdOrNull().length() - 2) / 2;
+        if (name.length() > nameRoom) {
+            final int cutFloor = 4; // a shorter cut no longer reads as the typed name
+            int end = Math.max(nameRoom, 0);
+            while (end > 0 && name.charAt(end - 1) == ' ') {
+                end--;
+            }
+            if (end < cutFloor) {
+                return null;
+            }
+            name = name.substring(0, end);
+        }
+        StringBuilder hex = new StringBuilder(name.length() * 2);
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c < 0x20 || c > 0x7E) {
+                return null;
+            }
+            hex.append(Character.forDigit(c >> 4, 16)).append(Character.forDigit(c & 0xF, 16));
+        }
+        return stem + "=" + copyOrNull.hullIdOrNull() + "=" + hex;
     }
 
     /** Ids joined {@code ", "} after {@code head}, a new line with the same head whenever the next id would
@@ -821,16 +955,32 @@ final class HiddenShipsLane {
     }
 
     /**
-     * The console's {@code custom-forget} through the same floor: the refusal line (its own head), or null
-     * when the forget may run. Sim thread.
+     * The console's {@code custom-forget} through the two checks the host's Remove runs BEFORE anything queues, in
+     * its order: the floor ({@link #LAST_LISTED}), then the live joiner default ({@link #DEFAULT_SHIP}). The refusal
+     * line (its own head), or null when the forget may run. Sim thread.
+     * WHY the default check sits here too: the ops GUI's "Forget kept" sends
+     * {@code custom-forget}, never {@code /shipremove}, so the check in {@link #remove} alone left the GUI able to
+     * take the default off {@code /ship} (every fresh joiner then flew the descriptor row). Only a KEPT stem is
+     * refused for it: any other name keeps the store's own "not a kept ship" answer.
      */
-    String customForgetFloorOrNull(PickableVariants pickableOrNull, String stem) {
-        if (pickableOrNull == null || stem == null || !floorRefuses(pickableOrNull, stem)) {
+    String customForgetRefusalOrNull(PilotIntentDatagramServer door, PickableVariants pickableOrNull, String stem) {
+        if (pickableOrNull == null || stem == null) {
             return null;
         }
-        String line = "custom-forget " + stem + ": " + LAST_LISTED;
+        String phrase = floorRefuses(pickableOrNull, stem) ? LAST_LISTED
+                : keptSide.keptStemOrNull(stem) != null && isJoinerDefault(door, stem) ? DEFAULT_SHIP : null;
+        if (phrase == null) {
+            return null;
+        }
+        String line = "custom-forget " + stem + ": " + phrase;
         last = line;
         return line;
+    }
+
+    /** True when {@code id} is the live joiner default, by ASCII fold (a null door has none). */
+    private static boolean isJoinerDefault(PilotIntentDatagramServer door, String id) {
+        String joinerDefault = door == null ? null : door.joinerDefaultVariantOrNull();
+        return joinerDefault != null && HiddenShipSet.fold(joinerDefault).equals(HiddenShipSet.fold(id));
     }
 
     /** After the console's {@code custom-forget} ran: a QUEUED answer makes its stem pending for the floor. */

@@ -860,10 +860,11 @@ final class JoinBrowserUi implements JoinRoutes.Session {
     }
 
     /** The probe's status line in this window's words: the door's content-print refusal reads {@link JoinLaunchGates#MSG_KIT_DIFFERS} (the folder is not
-     *  the host's kit); every other outcome is the shared {@link DoorProbe.Result#statusLine}. */
+     *  the host's kit); every other outcome is the shared {@link DoorProbe.Result#shownStatusLine} (the server default
+     *  by a kept ship's typed name, its id otherwise; the page's {@code defaultId} still carries the id). */
     static String windowLine(DoorProbe.Result result) {
         return "content_fingerprint_mismatch".equals(result.rejectReason)
-                ? "Ship list: " + JoinLaunchGates.MSG_KIT_DIFFERS : result.statusLine();
+                ? "Ship list: " + JoinLaunchGates.MSG_KIT_DIFFERS : result.shownStatusLine();
     }
 
     /**

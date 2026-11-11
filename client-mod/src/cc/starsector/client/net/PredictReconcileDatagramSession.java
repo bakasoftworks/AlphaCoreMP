@@ -1323,7 +1323,8 @@ public final class PredictReconcileDatagramSession implements PredictSession {
                 // the HUD feed and its length-only log row). A verdict line that settles an ARMED slot is CONSUMED too:
                 // the host's chat never shows the editor's own receipts, whose heads carry
                 // ids; a verdict with no armed slot and the sign-in lines are latched AND flow on.
-                if (!HostShipsLatch.offer(message.chatMessage())) {
+                // The latch reads the own seat as of THIS line, never one it remembered
+                if (!HostShipsLatch.offer(message.chatMessage(), ownSeatId)) {
                     ShipReplyLatch.offer(message.chatMessage()); // The editor's Fly reply
                     onChat.accept(message.chatMessage());
                 }
@@ -2067,17 +2068,18 @@ public final class PredictReconcileDatagramSession implements PredictSession {
 
     /** W15 v0: ONE {@code VSUB} on the reliable CTRL lane (the {@code sendSeatName}
      *  idiom; the frame is the VDEF-family envelope with a body-only CRC, never the SNAM shape).
-     *  The u16 seq wraps; a body over the budget throws BEFORE any byte is sent. */
+     *  The u16 seq wraps; a body over the budget throws BEFORE any byte is sent. Returns the seq minted. */
     @Override
-    public void sendVariantSubmit(ClientVariantDefinition variant) throws IOException {
-        sendVariantSubmit(variant, false);
+    public int sendVariantSubmit(ClientVariantDefinition variant) throws IOException {
+        return sendVariantSubmit(variant, false);
     }
 
     /** The one VSUB send, with the keep-only bit when
      *  {@code keepOnly}. A keep-only frame is NOT cached for the re-admit replay: that replay re-announces
-     *  the seat's HELLO pick, which a keep-only submission (the host's Promote) never changes. */
+     *  the seat's HELLO pick, which a keep-only submission (the host's Promote) never changes. Returns the seq it
+     *  minted (0..{@code SUBMIT_SEQ_MAX}), the one the frame carries and the {@code VACK} echoes. */
     @Override
-    public void sendVariantSubmit(ClientVariantDefinition variant, boolean keepOnly) throws IOException {
+    public int sendVariantSubmit(ClientVariantDefinition variant, boolean keepOnly) throws IOException {
         int seq = variantSubmitSeq.getAndIncrement() & VariantSubmitWriter.SUBMIT_SEQ_MAX;
         // Encoded against the boot id table (a missing table / unknown id = the writer's
         // loud IllegalArgumentException, caught by every submit caller beside the budget refusal).
@@ -2090,6 +2092,7 @@ public final class PredictReconcileDatagramSession implements PredictSession {
             keepOnlySeqs.set(seq, keepOnly); // a plain send on a wrapped seq clears a stale mark
         }
         ctrlSendBounded(frame, "variant submit");
+        return seq;
     }
 
     @Override

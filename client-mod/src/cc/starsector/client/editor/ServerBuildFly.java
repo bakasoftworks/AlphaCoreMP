@@ -87,7 +87,7 @@ final class ServerBuildFly {
             }
             if (!set) {
                 o.put("error", saved
-                        ? "saved as " + stem + " but it could not be made current"
+                        ? notCurrentLine(displayNameOrNull(published.optJSONArray("peers"), id), stem)
                         : message);
             }
             PilotWatchLog.info("editor fly (peer build): id=" + EditorText.sanitize(id, 64)
@@ -129,6 +129,27 @@ final class ServerBuildFly {
             return null;
         }
         return stem;
+    }
+
+    /**
+     * The refusal when a peer build's local copy could not be made current, in
+     * the words of {@link PeerBuilds#savedLine}: the build's typed name when one is known ({@link
+     * PeerBuilds#typedNameOrNull}: printable ASCII, at most 48), else its stem, the only thing that tells it apart.
+     */
+    static String notCurrentLine(String typedName, String stem) {
+        String name = cc.starsector.client.FallbackAnnounce.insideQuotes(PeerBuilds.typedNameOrNull(typedName)); // NCP-1
+        return "saved as local build " + (name == null ? stem : "'" + name + "'") + " but it could not be made current";
+    }
+
+    /** The {@code displayName} of the rendered row carrying exactly this id, or null (no such row, or no name). */
+    static String displayNameOrNull(JSONArray rows, String id) {
+        for (int i = 0; rows != null && i < rows.length(); i++) {
+            JSONObject row = rows.optJSONObject(i);
+            if (row != null && id.equals(row.optString("id", ""))) {
+                return row.optString("displayName", null);
+            }
+        }
+        return null;
     }
 
     /** True when one of the rendered rows carries exactly this id. */

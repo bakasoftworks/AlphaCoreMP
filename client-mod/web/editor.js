@@ -112,6 +112,7 @@
   S.catalogKnown = false; S.hostKey = ''; S.hostShips = null; S.hostLoading = false; S.hostSeq = 0;
   S.hostLine = null; S.hostBusy = false; S.hostSigning = false; S.hostSignMsg = null; S.loadedFrom = null; S.loadedSnap = null;
   S.hostAdopt = null;              
+  S.lastAccept = null;             
   S.groupsCursor = null;           
   S.biGroupOf = {};                
   S.hullFavs = savedHullFavs();    
@@ -218,10 +219,10 @@
     
     
     S.next = p.next ? String(p.next) : ''; S.nextSource = p.nextSource || 'none'; S.nextVerdict = p.nextVerdict || null;
-    var nextLine = S.next ? (S.session === 'live' ? ' · next connect: ' : ' · next spawn: ') + nextSpawnLabel(S.next) + (S.nextSource === 'pick' ? ' (join-window pick)' : '') : '';
+    var nextLine = S.next ? (S.session === 'live' ? ' · next connect: ' : ' · next spawn: ') + nextSpawnLabel(S.next, true) + (S.nextSource === 'pick' ? ' (join-window pick)' : '') : '';
     $('ping').textContent = where + ' · up ' + Math.round(p.uptimeMs / 1000) + ' s' + (S.session === 'live' ? ' · connected to a server' : '') + nextLine;
     var vst = S.nextVerdict ? String(S.nextVerdict.state || '') : '', cv = $('customVerdict');
-    cv.textContent = (vst === 'accepted' || vst === 'rejected') ? String(S.nextVerdict.line || '') : '';
+    cv.textContent = (vst === 'accepted' || vst === 'rejected') ? verdictLine(S.nextVerdict) : '';
     cv.className = 'sub' + (vst === 'accepted' ? ' ok' : vst === 'rejected' ? ' err' : '');
     var cur = p.current === undefined ? (S.currentBuild || '') : String(p.current || '');
     if (cur !== (S.currentBuild || '')) { S.currentBuild = cur; if (S.saved) { renderSaved(); } }   
@@ -3473,17 +3474,24 @@
   
   
   
+  
+  
+  
   function flyLine(r, id) {
     if (!r.flown) { return { text: 'not flown: ' + (r.error || 'refused'), cls: 'err' }; }
-    var label = nextSpawnLabel(String(r.current || id)), copy = r.stem ? ' (saved as local build ' + r.stem + ')' : '';
-    if (r.replyState === 'answered' && r.reply) { return { text: String(r.reply) + copy, cls: /^next respawn/.test(String(r.reply)) ? 'ok' : 'err' }; }
-    if (r.replyState === 'sent') { return { text: 'sent /ship ' + id + ' — no reply yet; the game’s chat shows it when it lands' + copy, cls: '' }; }
+    var label = nextSpawnLabel(String(r.current || id), true), nm = buildNameOf(String(id || ''));
+    var copy = r.stem ? ' (saved as local build ' + (nm ? '\'' + nm + '\'' : r.stem) + ')' : '';
+    if (r.replyState === 'answered' && r.reply) { return { text: namedRespawnLine(String(r.reply), String(id || ''), nm) + copy, cls: /^next respawn/.test(String(r.reply)) ? 'ok' : 'err' }; }
+    if (r.replyState === 'sent') { return { text: (nm ? 'asked the server for \'' + nm + '\'' : 'sent /ship ' + id) + ' — no reply yet; the game’s chat shows it when it lands' + copy, cls: '' }; }
     if (r.replyState === 'not-sent') { return { text: (r.error || 'not sent') + ' — ' + label + ' flies at your next connect' + copy, cls: 'err' }; }
     if (r.replyState === 'submitted' && r.submit) {
       var s = r.submit;
       if (!s.submitted) { return { text: 'not submitted: ' + (s.message || s.error || 'refused') + ' — ' + label + ' flies at your next connect' + copy, cls: 'err' }; }
       if (!s.answered) { return { text: 'sent — the server has not answered yet; the game’s chat shows the verdict when it lands' + copy, cls: '' }; }
-      if (s.accepted) { return { text: 'next respawn: ' + s.id + copy, cls: 'ok' }; }
+      if (s.accepted) {
+        if (nm && s.id) { S.lastAccept = { id: String(s.id), name: nm }; }
+        return { text: 'next respawn: ' + (nm || s.id) + copy, cls: 'ok' };
+      }
       return { text: 'rejected (' + s.reasonToken + ')' + (s.hint ? ': ' + s.hint : '') + ' — ' + label + ' flies at your next connect' + copy, cls: 'err' };
     }
     return { text: 'next spawn: ' + label + (S.session === 'live' ? ' (flies at your next connect)' : '') + copy + (r.stem || r.kind !== 'roster' ? stockNote() : ''), cls: '' };
@@ -3557,9 +3565,27 @@
   function repingSoon() { getJson('api/ping').then(showPing).catch(function () {}); }
   function nextSpawnLabel(next, nameOnly) {   
     if (!next) { return ''; }
-    var rows = (S.saved || []).concat(S.server || [], S.peers || []);   
-    for (var i = 0; i < rows.length; i++) { if (rows[i].id === next && rows[i].displayName) { return nameOnly ? rows[i].displayName : rows[i].displayName + ' (' + next + ')'; } }
-    return next;
+    var nm = buildNameOf(next);
+    return !nm ? next : nameOnly ? nm : nm + ' (' + next + ')';
+  }
+  
+  
+  
+  function buildNameOf(id) {
+    if (!id) { return ''; }
+    var rows = (S.saved || []).concat(S.server || [], S.peers || []);
+    for (var i = 0; i < rows.length; i++) { if (rows[i].id === id && rows[i].displayName) { return String(rows[i].displayName); } }
+    return hostMapped('names', id) || (S.lastAccept && S.lastAccept.id === id ? S.lastAccept.name : '');
+  }
+  
+  function namedRespawnLine(line, id, nm) {
+    var head = 'next respawn: ' + id;
+    return nm && id && (line === head || line.indexOf(head + ' ') === 0) ? 'next respawn: ' + nm + line.slice(head.length) : line;
+  }
+  
+  function verdictLine(v) {
+    var line = String((v && v.line) || ''), id = String((v && v.id) || '');
+    return v && v.state === 'accepted' ? namedRespawnLine(line, id, buildNameOf(id)) : line;
   }
   
   
@@ -3713,8 +3739,11 @@
     
     
     var hostKind = peer ? '' : hostGroupOf(r.id), onCard = hostKind === 'listed' || hostKind === 'kept' || hostKind === 'hidden';
-    var hostTip = onCard ? '; change it, then Promote replaces it for every player' + (hostKind === 'hidden' ? '; unchanged, Promote puts it back' : '')
-      : hostKind === 'removed' ? '; it was removed from /ship: change it, then Promote replaces the ship that took its place (or adds it if none did); unchanged, Promote puts it back' : '';
+    
+    
+    var hostTip = onCard ? '; change it and keep its name, then Promote replaces it for every player (a new name adds a new ship beside it)' + (hostKind === 'hidden' ? '; unchanged, Promote puts it back' : '')
+      : hostKind === 'removed' ? '; it was removed from /ship: change it and keep its name, then Promote replaces the ship that took its place (or adds it if none did); a new name adds a new ship; unchanged, Promote puts it back'
+      : peer || hostKind === 'gone' ? '; ' + HOST_SAME_NAME : '';
     var btn = el('button', { text: 'Load', title: ok ? 'load this server build as a draft — Save keeps it as a local build' + hostTip : why, on: { click: function () {
       sfx('ui_button_pressed');
       var g = peer ? '' : hostGroupOf(r.id), on = !peer && g !== 'gone';
@@ -3757,10 +3786,11 @@
     out.textContent = 'loading…';
     getJson((from === 'catalog' ? 'catalog/' : 'server/') + encodeURIComponent(id)).then(function (doc) {
       return pickHull(doc.hullId, { noDraft: true }).then(function () {
-        S.loadedFrom = from === 'host' && S.hull && S.hull.id === doc.hullId ? { id: id, kind: String(kind || ''), hullId: doc.hullId } : null;
+        S.loadedFrom = from === 'host' && S.hull && S.hull.id === doc.hullId ? { id: id, kind: String(kind || ''), hullId: doc.hullId, name: String(doc.displayName || '') } : null;   
         S.loadedSnap = null; S.hostAdopt = null;   
-        if (S.hull && S.hull.id === doc.hullId) { applyDocument(doc); S.loadedSnap = S.loadedFrom ? stateSnapshot() : null; out.textContent = 'loaded ' + what + ' ' + id + ' as a draft — Save keeps it as a local build'; }
-        else { out.textContent = 'cannot load ' + id + ': hull ' + doc.hullId + ' is not available here'; }
+        var nm = String(doc.displayName || '').trim().slice(0, 48), called = nm ? '\'' + nm + '\'' : id;   
+        if (S.hull && S.hull.id === doc.hullId) { applyDocument(doc); S.loadedSnap = S.loadedFrom ? stateSnapshot() : null; out.textContent = 'loaded ' + what + ' ' + called + ' as a draft — Save keeps it as a local build'; }
+        else { out.textContent = 'cannot load ' + called + ': hull ' + doc.hullId + ' is not available here'; }
       });
     }).catch(function (e) { out.textContent = 'load failed: ' + e.message; });
   }
@@ -3889,7 +3919,10 @@
   var HOST_DIM = 'Join your server to manage its ships here; the web console can too';
   
   
-  var HOST_PROMOTE_HELP = 'Promote adds your current build, or replaces the ship you loaded it from once you change it';
+  
+  
+  var HOST_SAME_NAME = 'Promote replaces the newest kept build with the same name on the same hull, or adds it when none has that name (a blank Name always adds); a replaced build waits under Removed builds, where Put back restores it';
+  var HOST_PROMOTE_HELP = 'Promote adds your current build for every player. It replaces a ship only when the name is the same: the ship you loaded it from, once you change it and keep its name, else your newest kept build with that name on that hull (never with a blank Name). A new name always adds a new ship. A replaced ship waits under Taken off or Removed builds, where Put back restores it';
   var HOST_HELP = 'Every player picks from this list with /ship. Remove takes a ship off it for everyone; Put back restores it; ' + HOST_PROMOTE_HELP + '; an unchanged ship you took off goes back as it was.';
   var HOST_NO_KEEP = 'Keeping ships is off on this server (custom.submissions)';
   var HOST_NO_ANSWER = 'no answer from the server - is a match running?';
@@ -3940,10 +3973,11 @@
       box.appendChild(el('div', { class: 'acts hostRetry' }, [el('button', { text: 'Read it again', on: { click: function () { sfx('ui_button_pressed'); loadHostShips(); } } })]));
       return true;
     }
+    var older = hostOlderCopies(sh);   
     HOST_GROUPS.forEach(function (gr) {
       if (!g[gr.key].length) { return; }
       box.appendChild(el('h4', { class: 'ghead', text: gr.head + ' (' + g[gr.key].length + ')', title: gr.title }));
-      g[gr.key].forEach(function (id) { box.appendChild(hostShipRow(id, gr.key)); });
+      g[gr.key].forEach(function (id) { box.appendChild(hostShipRow(id, gr.key, older[id] === true)); });
     });
     if (!g.listed.length && !g.kept.length && !g.hidden.length && !g.removed.length) { box.appendChild(el('div', { class: 'empty', text: 'The server listed no ships.' })); }
     return true;
@@ -4013,7 +4047,7 @@
   
   function hostBuildRow() {
     var noKeep = !S.host.submissions;
-    var prm = el('button', { class: 'primary hv', text: 'Promote', dataset: { keep: '1' }, title: noKeep ? HOST_NO_KEEP : 'adds this build to /ship for every player (your own respawn pick is unchanged)', on: { click: function () { hostPromote(); } } });
+    var prm = el('button', { class: 'primary hv', text: 'Promote', dataset: { keep: '1' }, title: noKeep ? HOST_NO_KEEP : 'adds this build to /ship for every player (your own respawn pick is unchanged); a changed draft that keeps the name of the ship it was loaded from replaces that ship, a new name adds a new ship, and a build loaded from no ship replaces your newest kept build with its name on its hull (never with a blank Name)', on: { click: function () { hostPromote(); } } });
     prm.disabled = noKeep || S.hostBusy;
     return el('div', { class: 'srow promote', dataset: { promote: 'current', stem: S.hull ? variantDocument().variantId : '' } }, [
       el('div', { class: 'who' }, [el('span', { class: 'name', text: S.hull ? (S.name || 'this build') : 'pick a hull first' }), el('span', { class: 'meta', text: S.hull ? S.hull.name : '' })]),
@@ -4035,15 +4069,67 @@
   }
   
   
-  function hostMapped(map, id) {
-    var m = (S.hostShips && S.hostShips[map]) || {};
+  function hostMapped(map, id) { return hostMapOf(S.hostShips, map, id); }
+  
+  function hostMapOf(sh, map, id) {
+    var m = (sh && sh[map]) || {};
     return Object.prototype.hasOwnProperty.call(m, id) && m[id] ? String(m[id]) : '';
   }
   
+  
+  
+  
+  function hostNameCut(s) {
+    var t = String(s == null ? '' : s).trim(), a = 0, b = t.length, out = '';
+    while (a < b && t.charCodeAt(a) <= 0x20) { a++; }
+    while (b > a && t.charCodeAt(b - 1) <= 0x20) { b--; }
+    t = t.slice(a, b);
+    var over = t.length > 48, keep = over ? 47 : t.length;
+    for (var i = 0; i < keep; i++) { var c = t.charCodeAt(i); out += c < 0x20 || c > 0x7e ? '?' : t.charAt(i); }
+    return over ? out + '~' : out;
+  }
+  
+  function hostNameFold(s) { return hostNameCut(s).replace(/[A-Z]/g, function (c) { return c.toLowerCase(); }); }
+  
+  
+  
+  
+  
+  
+  function hostSameNameKept(sh, hullId, typedName) {
+    var want = hostNameFold(typedName);
+    if (!want || !hullId || !sh || !Array.isArray(sh.kept)) { return null; }
+    for (var i = 0; i < sh.kept.length; i++) {
+      var id = String(sh.kept[i]);
+      if (hostMapOf(sh, 'hullIds', id) === String(hullId) && hostNameFold(hostMapOf(sh, 'names', id)) === want) { return id; }
+    }
+    return null;
+  }
+  
+  
+  
+  
+  function hostOlderCopies(sh) {
+    var out = Object.create(null), seen = Object.create(null);   
+    ['kept', 'removed'].forEach(function (g) {
+      (sh && Array.isArray(sh[g]) ? sh[g] : []).forEach(function (raw) {
+        var id = String(raw), h = hostMapOf(sh, 'hullIds', id), n = hostNameFold(hostMapOf(sh, 'names', id)), key = h + '\n' + n;
+        if (!h || !n) { return; }
+        if (Object.prototype.hasOwnProperty.call(seen, key)) { out[id] = true; } else { seen[key] = true; }
+      });
+    });
+    return out;
+  }
+  
+  
+  
+  function hostShowsId(id, name) { return !(name && /^(?:kept-|cc-v)/.test(String(id))); }
+  
   function hostName(id, fallback) { return hostMapped('names', id) || fallback || id; }
-  function hostShipRow(id, kind) {
+  
+  function hostShipRow(id, kind, older) {
     var gone = kind === 'removed', onShip = kind === 'listed' || kind === 'kept';
-    var load = el('button', { text: 'Load', title: gone ? 'not on this server any more' : 'load this ship into the editor as a draft' + (onShip ? ' — change it, then Promote replaces it for every player' : ''), on: { click: function () { sfx('ui_button_pressed'); loadServerBuild(id, 'host', kind); } } });
+    var load = el('button', { text: 'Load', title: gone ? 'not on this server any more' : 'load this ship into the editor as a draft' + (onShip ? ' — change it and keep its name, then Promote replaces it for every player; a new name adds a new ship' : ''), on: { click: function () { sfx('ui_button_pressed'); loadServerBuild(id, 'host', kind); } } });
     load.disabled = gone;
     var shown = hostMapped('names', id), named = shown || id;
     var verb = onShip
@@ -4059,9 +4145,11 @@
     
     
     
+    
+    
     return el('div', { class: 'srow hostRow' + (gone ? ' gone' : ''), dataset: { hid: id, kind: kind }, title: id + (gone ? ' — not on this server any more' : '') }, [
-      el('div', { class: 'who' }, [el('span', { class: 'name', text: named }), el('span', { class: 'meta', text: hostMapped('hulls', id) || hostMeta(id) })]),
-      el('span', { class: 'hid', text: id, title: id }),
+      el('div', { class: 'who' }, [el('span', { class: 'name', text: named + (older ? ' (older copy)' : '') }), el('span', { class: 'meta', text: hostMapped('hulls', id) || hostMeta(id) })]),
+      hostShowsId(id, shown) ? el('span', { class: 'hid', text: id, title: id }) : null,
       el('div', { class: 'acts' }, [load, verb, id === S.serverDefault ? el('span', { class: 'badge dflt', text: 'DEFAULT', title: 'the server\'s default spawn' }) : null]),
       hostLineEl(id)
     ]);
@@ -4139,6 +4227,7 @@
   
   
   
+  
   function hostPromote() {
     if (S.hostBusy) { return; }
     if (!S.host.submissions) { sfx('ui_button_disabled_pressed'); hostPaint(null, HOST_NO_KEEP, 'err'); return; }
@@ -4161,13 +4250,25 @@
       }
     }
     if (!S.verdict || !S.verdict.ok) { sfx('ui_button_disabled_pressed'); hostPaint(null, 'this build has problems — fix them first', 'err'); return; }
-    var replaces = lf ? lf.id : null;
-    var sh = S.hostShips, adopt = { name: String(S.name || '').trim(), hullId: S.hull.id, snap: stateSnapshot(), replaced: replaces,
+    
+    
+    
+    
+    
+    var lfName = lf ? hostNameFold(hostMapped('names', lf.id) || lf.name) : '';
+    var replaces = lf && lfName && hostNameFold(S.name) === lfName ? lf.id : null;
+    var sh = S.hostShips;
+    
+    
+    
+    var implied = replaces || !sh || !sh.ok ? null : hostSameNameKept(sh, S.hull.id, S.name);
+    if (implied) { replaces = implied; }
+    var adopt = { name: String(S.name || '').trim(), hullId: S.hull.id, snap: stateSnapshot(), replaced: replaces,
       before: sh && sh.ok && Array.isArray(sh.kept) ? sh.kept.map(String) : [] };
     var label = adopt.name || 'this build';
     sfx('ui_button_pressed');
     hostBusy(true);
-    hostPaint(null, 'submitting…', '');
+    hostPaint(null, implied ? 'replacing your kept \'' + hostName(implied, label) + '\'…' : 'submitting…', '');
     var hullId = S.hull.id, sink = el('span');
     
     
@@ -4223,9 +4324,11 @@
       if (isNew && (!n || n === a.name) && (!h || h === a.hullId)) { fresh.push(id); }
     });
     var exactNew = exact.filter(function (id) { return fresh.indexOf(id) >= 0; });
-    var pick = exactNew.length ? exactNew[exactNew.length - 1] : exact.length ? exact[exact.length - 1] : fresh.length === 1 ? fresh[0] : null;
     
-    S.loadedFrom = pick ? { id: pick, kind: 'kept', hullId: a.hullId, replaced: a.replaced || null } : null;
+    
+    var pick = exactNew.length ? exactNew[0] : exact.indexOf(a.replaced) >= 0 ? a.replaced : exact.length ? exact[0] : fresh.length === 1 ? fresh[0] : null;
+    
+    S.loadedFrom = pick ? { id: pick, kind: 'kept', hullId: a.hullId, replaced: a.replaced || null, name: a.name } : null;
     S.loadedSnap = pick ? a.snap : null;
   }
   
@@ -4302,7 +4405,7 @@
       return pickHull(doc.hullId, { noDraft: true }).then(function () {   
         S.loadedFrom = null; S.loadedSnap = null; S.hostAdopt = null;   
         if (S.hull && S.hull.id === doc.hullId) { applyDocument(doc); }
-        else { out.textContent = 'cannot load ' + id + ': hull ' + doc.hullId + ' is not available here'; }
+        else { out.textContent = 'cannot load ' + (String(doc.displayName || '').trim() ? '\'' + String(doc.displayName).trim().slice(0, 48) + '\'' : id) + ': hull ' + doc.hullId + ' is not available here'; }
       });
     }).catch(function (e) { out.textContent = 'load failed: ' + e.message; });
   }
@@ -4313,7 +4416,7 @@
     undoFloor();   
     renderAll();
     changed();
-    $('saveResult').textContent = 'loaded ' + (doc.id || S.name)
+    $('saveResult').textContent = 'loaded ' + (S.name.trim() ? '\'' + S.name.trim() + '\'' : doc.id || 'the build')   
       + (dropped.length ? ' — dropped (unknown here): ' + dropped.slice(0, 6).join(', ') + (dropped.length > 6 ? ' +' + (dropped.length - 6) + ' more' : '') : '');
   }
   

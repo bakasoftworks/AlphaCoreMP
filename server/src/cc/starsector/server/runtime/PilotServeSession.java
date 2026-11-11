@@ -1088,7 +1088,9 @@ public final class PilotServeSession {
         if (opsFile != null) {
             // Step 3(f): custom.count/rejected/banned/submissions rows (lane OFF = zeros/off);
             // + the rejected split, pending/cap, policy knobs, export readback.
-            opsFile.attachCustomStats(() -> CustomVariantOps.stats(customLaneOrNull, customConfig));
+            // the hidden lane's set is read at each compose (the lane swaps it on a load): the put back's own root test
+            opsFile.attachCustomStats(() -> CustomVariantOps.stats(customLaneOrNull, customConfig,
+                    hiddenShips.set()::contains));
             // The ships.* rows (the console's Hide / Show list), customs on or off.
             opsFile.attachShipStats(() -> hiddenShips.stats(pickableOrNull));
             // The ops GUI's MagicLib line + per-seat cell - the pilot mark's
@@ -3337,8 +3339,8 @@ public final class PilotServeSession {
         // serve with players on — the scheduled lane above keeps its descriptor-
         // authored fail-fast). Ids were door/parse-validated; the engine's own
         // preconditions (deployed round, descriptor serve, side-1 manager) surface
-        // through the same catch as adhoc_spawn_fail rows. shipName = the id: an
-        // honest debug label.
+        // through the same catch as adhoc_spawn_fail rows. The hull's name = a kept
+        // id's typed name, else the id (AdhocFoeSpawner.spawnShipName); logs keep the id.
         if (adhocFoes.hasPending() && hooks.waveSpawn() != null) {
             List<RosterAppendFrameCodec.AppendRow> adhocAppendRows = new ArrayList<>();
             while (waveSpawnsThisTick < waveSpawnPerTick && adhocFoes.hasPending()) {
@@ -3350,13 +3352,14 @@ public final class PilotServeSession {
                 // the worst-frame note, the receipt send and the RAPP fan.
                 AdhocFoeSpawner.Entry adhocExhausted = AdhocFoeDrain.spawnOne(adhocFoes,
                         adhocEntry, hooks.waveSpawn(), stableIdRegistry, growthKnownKeys,
-                        adhocAppendRows, mapHalf, round, lastSimTick + 1);
+                        adhocAppendRows, mapHalf, round, lastSimTick + 1, door.pickableVariants);
                 // The entry's ONE honest receipt at
-                // exhaustion — real outcome, chat deposits only (file/GUI = 0).
+                // exhaustion — real outcome, chat deposits only (file/GUI = 0); a kept
+                // id reads its typed name + hull (AdhocFoeSpawner.spawnReceiptLabel).
                 if (adhocExhausted != null
                         && adhocExhausted.receiptSessionId() != 0L) {
                     door.sendAdminReceipt(adhocExhausted.receiptSessionId(),
-                            adhocExhausted.receipt());
+                            adhocExhausted.receipt(door.pickableVariants));
                 }
             }
             if (!adhocAppendRows.isEmpty()) {
@@ -4987,9 +4990,10 @@ public final class PilotServeSession {
             // receipts ride the chat-reply path (waveReceipt) for a chat-sourced mint (none yet), rows print inside the helper.
             case CUSTOM_SUBMISSIONS, CUSTOM_REJECT, CUSTOM_BAN, CUSTOM_EXPORT, CUSTOM_ALLOW, CUSTOM_UNBAN, CUSTOM_KEEP, CUSTOM_KEEP_EXPORT, CUSTOM_FORGET -> {
                 // A forget passes the listing floor first (never the last
-                // ship on /ship), and a queued forget counts as pending for the next floor check.
+                // ship on /ship), and a queued forget counts as pending for the next floor check. The same
+                // call refuses the kept ship that is the joiner default, as the host's Remove does.
                 boolean forget = command.verb() == OperatorCommandFile.Verb.CUSTOM_FORGET;
-                String floorRefusal = forget ? hiddenShips.customForgetFloorOrNull(pickableOrNull, command.text()) : null;
+                String floorRefusal = forget ? hiddenShips.customForgetRefusalOrNull(door, pickableOrNull, command.text()) : null;
                 // The console's Keep of a kept ship the host REMOVED is that
                 // ship's Put back - the ship lane owns it (one path with /shiprestore: the copy standing in its place
                 // leaves, the link survives); null = any other custom verb or name, which the custom helper answers.

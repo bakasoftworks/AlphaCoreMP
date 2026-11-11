@@ -117,9 +117,40 @@ public final class OpsStatusFile {
             int pending, int capGlobal, String tier, int perSeat, String sModCap, String dMods,
             long exported, long exportFailed, int kept, List<String> keptIds, long keptFailed,
             String keptLast, List<String> inboxIds, boolean keptOverCap, boolean inboxOverCap,
-            int frameEncodeFailed, int vsubDecodeRefused, List<String> keptLabels) {
+            int frameEncodeFailed, int vsubDecodeRefused, List<String> keptLabels, List<String> inboxLabels,
+            List<String> inboxLeaves) {
         public static final CustomStats NONE = new CustomStats(0, 0, 0, false,
                 0, 0, 0, 0, 0, 0, "-", 0, "-", "-", 0L, 0L);
+
+        /** The 27-arg arity (before the inbox leaves): every leaves slot
+         *  writes {@code -}. {@code inboxLeaves} = the kept stem a Keep of each inbox name takes off {@code /ship},
+         *  index for index with {@code inboxIds} ({@code ""} = none). */
+        public CustomStats(int count, int rejected, int banned, boolean submissions,
+                int rejectedPolicy, int rejectedCaps, int rejectedEngine, int rejectedOperator,
+                int pending, int capGlobal, String tier, int perSeat, String sModCap, String dMods,
+                long exported, long exportFailed, int kept, List<String> keptIds, long keptFailed,
+                String keptLast, List<String> inboxIds, boolean keptOverCap, boolean inboxOverCap,
+                int frameEncodeFailed, int vsubDecodeRefused, List<String> keptLabels, List<String> inboxLabels) {
+            this(count, rejected, banned, submissions, rejectedPolicy, rejectedCaps, rejectedEngine, rejectedOperator,
+                    pending, capGlobal, tier, perSeat, sModCap, dMods, exported, exportFailed, kept, keptIds, keptFailed,
+                    keptLast, inboxIds, keptOverCap, inboxOverCap, frameEncodeFailed, vsubDecodeRefused, keptLabels,
+                    inboxLabels, List.of());
+        }
+
+        /** The 26-arg arity (before the inbox labels): every inbox label slot
+         *  writes {@code -}. {@code inboxLabels} = each inbox name's typed-name label, index for index with
+         *  {@code inboxIds} ({@code ""} = none). */
+        public CustomStats(int count, int rejected, int banned, boolean submissions,
+                int rejectedPolicy, int rejectedCaps, int rejectedEngine, int rejectedOperator,
+                int pending, int capGlobal, String tier, int perSeat, String sModCap, String dMods,
+                long exported, long exportFailed, int kept, List<String> keptIds, long keptFailed,
+                String keptLast, List<String> inboxIds, boolean keptOverCap, boolean inboxOverCap,
+                int frameEncodeFailed, int vsubDecodeRefused, List<String> keptLabels) {
+            this(count, rejected, banned, submissions, rejectedPolicy, rejectedCaps, rejectedEngine, rejectedOperator,
+                    pending, capGlobal, tier, perSeat, sModCap, dMods, exported, exportFailed, kept, keptIds, keptFailed,
+                    keptLast, inboxIds, keptOverCap, inboxOverCap, frameEncodeFailed, vsubDecodeRefused, keptLabels,
+                    List.of());
+        }
 
         /** The 25-arg arity (before the kept labels): every label slot
          *  writes {@code -}. */
@@ -153,6 +184,8 @@ public final class OpsStatusFile {
             Objects.requireNonNull(keptLast, "keptLast");
             inboxIds = List.copyOf(Objects.requireNonNull(inboxIds, "inboxIds"));
             keptLabels = blankNullSlots(keptLabels); // never null, never a null slot: the status compose must not throw
+            inboxLabels = blankNullSlots(inboxLabels);
+            inboxLeaves = blankNullSlots(inboxLeaves);
         }
 
         /** A copy of {@code labelsOrNull} with each null slot read as {@code ""}; null = empty.
@@ -188,8 +221,8 @@ public final class OpsStatusFile {
      *  ({@code KEPT_CAP}, 32) restated as the status file's bound. */
     public static final int KEPT_ID_ROW_CAP = 32;
     /** Ids per inbox status row = twice {@code INBOX_LIST_CAP} (32): the lane lists the inbox PER PREFIX -
-     *  {@code kept-…} names first, then the exports, each cut to 32 on its own - so a row bound of 32 would drop the last
-     *  exports with no over-cap word whenever both prefixes together pass 32; the contract row pins the
+     *  the {@code kept-…} names and the exports each cut to 32 on its own, then one list newest first - so a row bound
+     *  of 32 would drop names with no over-cap word whenever both prefixes together pass 32; the contract row pins the
      *  pair. The over-cap rows below also flip when a row cut happens here. */
     public static final int INBOX_ID_ROW_CAP = 64;
 
@@ -326,6 +359,8 @@ public final class OpsStatusFile {
      * Hex per slot keeps the player's typed text out of the row grammar ({@code ,} {@code =} and line breaks cannot
      * appear), so the row never rides {@link #sanitize}, whose whole-value cut would split a slot: at most
      * 32 x 106 + 31 chars.
+     * The same encoder writes {@code custom.inbox_labels} over
+     * {@code custom.inbox_ids} (cap {@link #INBOX_ID_ROW_CAP}: at most 64 x 106 + 63 chars).
      */
     static String keptLabelRow(List<String> ids, List<String> labels, int cap) {
         if (ids.isEmpty()) {
@@ -337,6 +372,32 @@ public final class OpsStatusFile {
                 row.append(',');
             }
             row.append(keptLabelSlot(i < labels.size() ? labels.get(i) : null));
+        }
+        return row.toString();
+    }
+
+    /**
+     * The {@code custom.inbox_leaves} value - one slot per id the
+     * {@code custom.inbox_ids} row WROTE ({@code ids} cut at the same {@code cap}, same order), each the kept stem a
+     * Keep of that inbox name takes off {@code /ship}, or {@code -} for none, a missing slot (a list shorter than the
+     * ids) or a stem the kept scan's stem law refuses ({@code CatalogPromotionLane.stemLawful}: at most 64 chars of
+     * {@code [A-Za-z0-9._-]}, a letter or digit first - so {@code -} is never a stem and {@code ,} {@code =} and line
+     * breaks never reach the row; that class is already loaded wherever a stem reaches here); no ids = {@code -}.
+     * At most 64 x 64 + 63 chars.
+     */
+    static String inboxLeavesRow(List<String> ids, List<String> leaves, int cap) {
+        if (ids.isEmpty()) {
+            return "-";
+        }
+        StringBuilder row = new StringBuilder();
+        for (int i = 0; i < ids.size() && i < cap; i++) {
+            if (i > 0) {
+                row.append(',');
+            }
+            String stem = i < leaves.size() ? leaves.get(i) : null;
+            boolean lawful = stem != null && !stem.isEmpty()
+                    && cc.starsector.server.runtime.CatalogPromotionLane.stemLawful(stem);
+            row.append(lawful ? stem : "-");
         }
         return row.toString();
     }
@@ -838,6 +899,11 @@ public final class OpsStatusFile {
         lines.add("custom.kept_failed=" + custom.keptFailed());
         lines.add("custom.kept_last=" + sanitize(custom.keptLast()));
         lines.add("custom.inbox_ids=" + keptIdRow(custom.inboxIds(), INBOX_ID_ROW_CAP));
+        // each inbox name's typed-name label, slot for slot with inbox_ids (the kept labels' hex encoder); optional key
+        lines.add("custom.inbox_labels=" + keptLabelRow(custom.inboxIds(), custom.inboxLabels(), INBOX_ID_ROW_CAP));
+        // The kept ship each inbox name's Keep takes off /ship, slot for
+        // slot with inbox_ids ('-' = none); additive optional key, no version bump - an older reader skips it
+        lines.add("custom.inbox_leaves=" + inboxLeavesRow(custom.inboxIds(), custom.inboxLeaves(), INBOX_ID_ROW_CAP));
         // A row cut here is an over-cap too (the ships.over_cap idiom below) - no list loses names silently.
         lines.add("custom.kept_over_cap=" + (custom.keptOverCap() || custom.keptIds().size() > KEPT_ID_ROW_CAP ? 1 : 0));
         lines.add("custom.inbox_over_cap=" + (custom.inboxOverCap() || custom.inboxIds().size() > INBOX_ID_ROW_CAP ? 1 : 0));

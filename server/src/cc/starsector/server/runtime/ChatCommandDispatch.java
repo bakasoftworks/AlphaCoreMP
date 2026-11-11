@@ -295,14 +295,19 @@ public final class ChatCommandDispatch {
                                     pickableVariants::displayNameOrNull, pickableVariants::hullIdOrNull));
                     return List.of();
                 }
+                boolean hiddenNow;
                 synchronized (this) {
                     // A demote's clear runs under THIS monitor after the
                     // overlay swap — re-check here so a resolve that raced the swap never stores.
-                    if (pickableVariants.isHidden(canonical)) {
-                        return List.of("unknown variant '" + boundEcho(parsed.arg())
-                                + "' - /ship lists ids");
+                    hiddenNow = pickableVariants.isHidden(canonical);
+                    if (!hiddenNow) {
+                        overrideBySeat.put(seatId, canonical);
                     }
-                    overrideBySeat.put(seatId, canonical);
+                }
+                // The reply's name lookup takes the allowlist's monitor, so it
+                // runs after this one is released, like the pick reply below
+                if (hiddenNow) {
+                    return List.of(hiddenPickReply(pickableVariants, canonical, parsed.arg()));
                 }
                 // W3-Q last-write-wins: the fly-in consumes a module
                 // claim BEFORE reading this override, so a standing /module claim would
@@ -373,6 +378,17 @@ public final class ChatCommandDispatch {
     static String pickReply(PickableVariants pickableOrNull, String canonical) {
         String name = pickableOrNull == null ? null : pickableOrNull.displayNameOrNull(canonical);
         return "next respawn: '" + CatalogPromotionLane.chatShipName(name, canonical) + "'";
+    }
+
+    /**
+     * The {@code /ship <id>} reply when the picked id was hidden between its
+     * resolve and the store. The head stays fixed text (the client's /ship reply latch matches it); the quoted part
+     * names the ship by its remembered display name, else echoes the typed argument cut to 24 chars
+     * ({@link SeatVariantPicks#pickNoticeName}): a kept copy's stem carries a hex tail no player should read back.
+     * Public so the tests reach the line this race-only branch returns.
+     */
+    public static String hiddenPickReply(PickableVariants pickableOrNull, String canonical, String arg) {
+        return "unknown variant '" + SeatVariantPicks.pickNoticeName(pickableOrNull, arg, canonical) + "' - /ship lists ids";
     }
 
     public List<String> debugShips(ChatCommands.Parsed parsed, int seatId,

@@ -5039,24 +5039,121 @@ public final class ServerOpsCoreSelftest {
         r = "status-json-kept";
         String keptJson =statusJson(keptSnap, null, "x", true, false, 10.0, 1L, List.of());
         String emptyKeys = "\"customKept\":0,\"customKeptIds\":[],\"customKeptLabels\":[],\"customKeptFailed\":0,"
-                + "\"customKeptLast\":\"-\",\"customInboxIds\":[],\"customKeptOverCap\":false,\"customInboxOverCap\":false";
+                + "\"customKeptLast\":\"-\",\"customInboxIds\":[],\"inboxLabels\":[],\"customKeptOverCap\":false,"
+                + "\"customInboxOverCap\":false";
         check(keptJson.contains("\"customKept\":2,\"customKeptIds\":[\"kept-my-wolf-1a2b3c\",\"kept-b-000001\"],"
                         + "\"customKeptLabels\":[\"\",\"\"],\"customKeptFailed\":1,\"customKeptLast\":\"forgot kept-c-000002\","
-                        + "\"customInboxIds\":[\"cc-v3-x\",\"kept-c-000002\"],\"customKeptOverCap\":false,"
-                        + "\"customInboxOverCap\":false")
+                        + "\"customInboxIds\":[\"cc-v3-x\",\"kept-c-000002\"],\"inboxLabels\":[],"
+                        + "\"customKeptOverCap\":false,\"customInboxOverCap\":false")
                         && statusJson(overSnap, null, "x", true, false, 10.0, 1L, List.of())
                                 .contains("\"customKeptOverCap\":true,\"customInboxOverCap\":true")
                         && statusJson(preSnap, null, "x", true, false, 10.0, 1L, List.of()).contains(emptyKeys)
                         && statusJson(null, null, "x", false, false, 10.0, 1L, List.of()).contains(emptyKeys),
-                r + ": the 8 kept keys from a kept snapshot, [] / '-' / false from a pre-kept one and none (flips if a"
+                r + ": the 9 kept keys from a kept snapshot, [] / '-' / false from a pre-kept one and none (flips if a"
                         + " key is dropped, renamed or reads another row): " + keptJson);
         List<String> quoteLines = new ArrayList<>(base);
         quoteLines.addAll(List.of("custom.kept=0", "custom.kept_last=a\"b"));
         check(statusJson(OpsSnapshot.parse(quoteLines), null, "x", true, false, 10.0, 1L, List.of())
                         .contains("\"customKeptLast\":\"a\\\"b\""),
                 r + ": customKeptLast rides jsonEscape (flips if a status string reaches the JSON raw)");
+
+        // custom.inbox_labels decoded beside the inbox ids from literal status
+        // file lines and handed to the page as inboxLabels, index for index; no fixture may throw (a throw blanks the
+        // whole snapshot) or move a name onto a neighbour's file name. Every row reads the page's JSON itself.
+        r = "status-inbox-labels";
+        String inbox3 = "cc-v3-x,kept-c-000002,cc-v4-y";
+        String inboxHead = "\"customInboxIds\":[\"cc-v3-x\",\"kept-c-000002\",\"cc-v4-y\"],\"inboxLabels\":";
+        String aligned = inboxJsonOf(inboxLabelLines(base, inbox3, "576f6c66,-,224222"));
+        check(aligned.contains(inboxHead + "[\"Wolf\",\"\",\"\\\"B\\\"\"],"),
+                r + ": a status file with the row hands the page one name per inbox id in the ids' order, the '-' in"
+                        + " the middle keeping its place (flips if inboxLabels is dropped, renamed, moved off the ids,"
+                        + " reads another row or is not sized by the inbox ids): " + aligned);
+        String noInboxRow = inboxJsonOf(inboxLabelLines(base, inbox3, null));
+        String noInboxIds = inboxJsonOf(inboxLabelLines(base, "-", "576f6c66"));
+        String noSnapJson = statusJson(null, null, "x", false, false, 10.0, 1L, List.of());
+        check(noInboxRow.contains(inboxHead + "[],")
+                        && noInboxIds.contains("\"customInboxIds\":[],\"inboxLabels\":[],")
+                        && noSnapJson.contains("\"customInboxIds\":[],\"inboxLabels\":[],"),
+                r + ": without the row (an older writer) the page gets an empty array, never one blank per id; no"
+                        + " inbox ids or no snapshot = an empty array even beside a stray slot (flips if a missing row"
+                        + " throws, reads null or pads, or the list is sized by the slots): " + noInboxRow + " / "
+                        + noInboxIds);
+        String wa = "576f6c66";
+        String wb = "224222";
+        for (String[] fx : new String[][] {
+                {"an odd-length slot", wa + ",22412," + wb, "Wolf", "", "\"B\""},
+                {"a non-hex slot", wa + ",22zz22," + wb, "Wolf", "", "\"B\""},
+                {"an uppercase-hex slot", wa + ",224A22," + wb, "Wolf", "", "\"B\""},
+                {"a 108-hex slot", wa + "," + "41".repeat(54) + "," + wb, "Wolf", "", "\"B\""},
+                {"a slot decoding to 0x7F", wa + ",227f22," + wb, "Wolf", "", "\"B\""},
+                {"a slot decoding to a newline", wa + ",220a22," + wb, "Wolf", "", "\"B\""},
+                {"a slot decoding to a byte >= 0x80", wa + ",22c322," + wb, "Wolf", "", "\"B\""},
+                {"an empty middle slot", wa + ",," + wb, "Wolf", "", "\"B\""},
+                {"more slots than ids", wa + ",-," + wb + ",224322", "Wolf", "", "\"B\""},
+                {"fewer slots than ids", wa, "Wolf", "", ""},
+                {"a row of only commas", ",,,,", "", "", ""},
+                {"the 106-hex cap and the 0x20 / 0x7E bounds", "41".repeat(53) + ",207e," + wb, "A".repeat(53),
+                        " ~", "\"B\""}}) {
+            String got = inboxJsonOf(inboxLabelLines(base, inbox3, fx[1]));
+            check(got.contains(inboxHead + jsonStringArray(List.of(fx[2], fx[3], fx[4])) + ","),
+                    r + ": " + fx[0] + " (flips if a bad slot throws, decodes, or shifts a neighbour, or the length"
+                            + " cap / byte bound is off by one): " + got);
+        }
+        // <i>Tom & "Jerry" as the writer encodes it: the page must receive the same characters, the quote
+        // JSON-escaped and nothing entity-encoded (it paints the name as text, never as markup)
+        String markup = inboxJsonOf(inboxLabelLines(base, inbox3, "-,3c693e546f6d202620224a6572727922,-"));
+        check(markup.contains(inboxHead + "[\"\",\"<i>Tom & \\\"Jerry\\\"\",\"\"],")
+                        && !markup.contains("&lt;") && !markup.contains("&amp;"),
+                r + ": a name holding '<', '&' and a quote reaches the page as the same text (flips if the name is"
+                        + " entity-encoded on the server, reaches the JSON with a bare quote, or a printable byte is"
+                        + " refused): " + markup);
+
+        // custom.inbox_leaves decoded beside the inbox ids from literal
+        // status lines - one server-minted stem per inbox id or "", never a throw, never a stem on another file
+        r = "status-inbox-leaves";
+        String s64 = "k" + "a".repeat(63);
+        for (String[] fx : new String[][] {
+                {"an aligned row, '-' = none", "-,kept-c-000009,-", "", "kept-c-000009", ""},
+                {"the stem law's own chars", "a.b,c_d,e-f", "a.b", "c_d", "e-f"},
+                {"no row (an older writer)", null, "", "", ""},
+                {"fewer slots than ids", "kept-a-1,kept-b-2", "", "", ""},
+                {"more slots than ids", "kept-a-1,kept-b-2,kept-c-3,kept-d-4", "", "", ""},
+                {"a '-' first char, an '=' and the 64-char cap", "-x,a=b," + s64, "", "", s64},
+                {"a space, a path and a 65-char stem", "a b,../x," + s64 + "a", "", "", ""},
+                {"empty slots", ",,", "", "", ""}}) {
+            List<String> got = inboxLeavesOf(base, inbox3, fx[1]);
+            check(List.of(fx[2], fx[3], fx[4]).equals(got),
+                    r + ": " + fx[0] + " (flips if a slot skips the stem law or its 64-char cap, a mis-sized or absent"
+                            + " row pairs any stem with a file, a slot shifts, or the decode throws): " + got);
+        }
+        List<String> noLeafIds = inboxLeavesOf(base, "-", "kept-a-1");
+        check(noLeafIds.isEmpty(), r + ": no inbox ids = no slots even beside a stray row (flips if the list is sized"
+                + " by the slots): " + noLeafIds);
+
+        // The put-back confirm and the Keep tips' clause, goldens
+        r = "put-back-texts";
+        check(("Put back 'kept-x-000001'? 'kept-y-000002' leaves the /ship list. 'kept-x-000001' joins it now and at"
+                        + " every start, until you press Forget kept.")
+                        .equals(ServerOpsCore.putBackConfirmText("kept-x-000001", null, "kept-y-000002", "")),
+                r + ": the put-back confirm golden (flips if it stops saying which ship leaves /ship, the two ships"
+                        + " swap, or the standing every-start sentence changes)");
+        // OGL-1: the same-name Promote's own case, both subjects under one label
+        String sameName = ServerOpsCore.putBackConfirmText("kept-wolf-1a2b3c", "\"Wolf\" (wolf)", "kept-wolf-4d5e6f",
+                "\"wolf\" (wolf)");
+        check(("Put back the removed copy of \"Wolf\" (wolf)? The copy in its place leaves the /ship list. The removed"
+                        + " copy joins it now and at every start, until you press Forget kept.").equals(sameName),
+                r + ": two ships under one name are told apart by role, the name said once (flips if the confirm goes"
+                        + " back to '\"Wolf\" (wolf) leaves ... \"Wolf\" (wolf) joins', which cannot say which build"
+                        + " leaves): " + sameName);
+        check(("Keep 'kept-x-000001' for every player? It joins the /ship list now and at every start, until you"
+                        + " press Forget kept.").equals(ServerOpsCore.keepConfirmText("kept-x-000001", null)),
+                r + ": the plain Keep confirm stays byte for byte (flips if the put back's wording leaks into it)");
+        String tipClause = " Keeping a removed copy puts it back; the copy in its place leaves /ship.";
+        check(ServerOpsCore.CUSTOM_KEEP_TIP_WEB.endsWith(tipClause) && ServerOpsCore.CUSTOM_KEEP_TIP.endsWith(tipClause),
+                r + ": both Keep tips end on the put-back clause (flips if a tip stops saying a Keep of a removed copy"
+                        + " takes the copy in its place off /ship)");
         System.out.println("  PASS keep-forget-minters customs-detail-kept pick-rows-kept status-kept-labels"
-                + " status-json-kept");
+                + " status-json-kept status-inbox-labels status-inbox-leaves put-back-texts");
     }
 
     /**
@@ -6594,6 +6691,43 @@ public final class ServerOpsCoreSelftest {
             return OpsSnapshot.parse(lines).customKeptLabels();
         } catch (RuntimeException e) {
             return List.of("threw " + e.getClass().getSimpleName());
+        }
+    }
+
+    /** Literal status-file lines for {@code status-inbox-labels} - {@code base}
+     *  + {@code custom.kept=0} + {@code custom.inbox_ids=<idsRow>} + {@code custom.inbox_labels=<labelsRow>} (null =
+     *  no labels line, as an older writer's file). */
+    private static List<String> inboxLabelLines(List<String> base, String idsRow, String labelsRow) {
+        List<String> lines = new ArrayList<>(base);
+        lines.addAll(List.of("custom.kept=0", "custom.inbox_ids=" + idsRow));
+        if (labelsRow != null) {
+            lines.add("custom.inbox_labels=" + labelsRow);
+        }
+        return lines;
+    }
+
+    /** The snapshot's decoded {@code custom.inbox_leaves} for literal
+     *  lines - {@code base} + {@code custom.kept=0} + the inbox ids + the leaves row (null = absent); a parse throw
+     *  reads as {@code ["threw <SimpleName>"]}, so a throwing decode fails its row by name. */
+    private static List<String> inboxLeavesOf(List<String> base, String idsRow, String leavesRow) {
+        List<String> lines = inboxLabelLines(base, idsRow, null);
+        if (leavesRow != null) {
+            lines.add("custom.inbox_leaves=" + leavesRow);
+        }
+        try {
+            return OpsSnapshot.parse(lines).customInboxLeaves();
+        } catch (RuntimeException e) {
+            return List.of("threw " + e.getClass().getSimpleName());
+        }
+    }
+
+    /** The page's status JSON for {@code lines}; a parse or compose throw reads
+     *  as {@code "threw <SimpleName>"}, so a throwing decode fails its row by name. */
+    private static String inboxJsonOf(List<String> lines) {
+        try {
+            return statusJson(OpsSnapshot.parse(lines), null, "x", true, false, 10.0, 1L, List.of());
+        } catch (RuntimeException e) {
+            return "threw " + e.getClass().getSimpleName();
         }
     }
 

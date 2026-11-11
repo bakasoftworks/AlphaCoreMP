@@ -233,7 +233,7 @@ final class ShipListFetcher {
         } else if (last.served()) {
             status.setText(ProbeCommitGate.ENTER_UNCHANGED_STATUS);
         } else if (last.rejectReason == null) {
-            status.setText(last.statusLine() + ProbeCommitGate.ENTER_RETRY_SUFFIX);
+            status.setText(last.shownStatusLine() + ProbeCommitGate.ENTER_RETRY_SUFFIX);
         }
     }
 
@@ -434,14 +434,14 @@ final class ShipListFetcher {
     private void apply(String host, int portNo, DoorProbe.Result result, JoinLaunchGates.Adopted adopted,
             boolean cacheCurrent, LocalCustoms localReport, List<String> verdictLines, JoinModStage.Diff modDiff) {
         refresh.setEnabled(true);
-        status.setText(result.statusLine());
+        status.setText(result.shownStatusLine());
         lastResult = result; // read by the unchanged-Enter hint
         if (!result.served()) {
             // The door's refusal (its own line) or no answer is what a Launch
             // with nothing staged for this pair shows; a held stage stands
             lastProbe = new JoinLaunchGates.ProbeOutcome(result.rejectReason != null
                     ? JoinLaunchGates.ProbeOutcome.Kind.REJECTED : JoinLaunchGates.ProbeOutcome.Kind.NO_REPLY,
-                    host, portNo, result.statusLine(), false, "", false);
+                    host, portNo, result.shownStatusLine(), false, "", false);
             return; // keep whatever the box holds (remembered/typed pick stays launchable)
         }
         // The adopt lands with its listing — a fetched document is this pair's
@@ -454,22 +454,24 @@ final class ShipListFetcher {
         }
         boolean stagedHere = stagedText != null
                 && JoinLaunchGates.samePair(stagedHost, stagedPort, host, String.valueOf(portNo));
-        String line = localReport.ids.isEmpty() ? result.statusLine()
-                : result.statusLine() + " + " + localReport.ids.size() + " local custom(s)";
+        String line = localReport.ids.isEmpty() ? result.shownStatusLine()
+                : result.shownStatusLine() + " + " + localReport.ids.size() + " local custom(s)";
         lastProbe = new JoinLaunchGates.ProbeOutcome(JoinLaunchGates.ProbeOutcome.Kind.SERVED, host, portNo, line,
                 stagedHere || cacheCurrent, adopted.line, cacheCurrent);
         // Remember the server's host-picked default so the
-        // Launch path can carry it, and label combo entry 0 with the concrete id when named.
+        // Launch path can carry it (the id), and label combo entry 0 with that ship when named.
         probed = new JoinLaunchGates.Probed(host, portNo, result.defaultId, modDiff); // the Launch gate + staging read it
-        String defaultLabel = result.defaultId != null
-                ? JoinProbe.serverDefaultLabel(result.defaultId)
-                : JoinProbe.SERVER_DEFAULT_LABEL;
         String current = JoinLaunchPlan.sanitizeShip(
                 String.valueOf(shipBox.getEditor().getItem()));
         // The served names replace the last probe's (read AFTER current, so the
         // old shown name maps back to its id first); local customs keep their bare ids (LocalCustoms has no names).
         // The hull ids ride the same replace: the rows read name · hull, none = as before
         shipNames.replace(result.names, result.hulls);
+        // Entry 0 is labelled AFTER the replace, so it paints the row text this
+        // probe's names give the default (a kept ship's typed name, never its hash id); Launch still resolves the id
+        String defaultLabel = result.defaultId != null
+                ? JoinProbe.serverDefaultLabel(result.defaultId, shipNames)
+                : JoinProbe.SERVER_DEFAULT_LABEL;
         shipBox.removeAllItems();
         shipBox.addItem(defaultLabel);
         for (String id : result.ids) {

@@ -280,8 +280,12 @@ public interface PredictSession extends AutoCloseable {
      * answered by a unicast {@code VACK} ({@link #takeVariantReceipts}). Sent once per connect
      * right after the session publish; no client retry (the lane is reliable, the server keys
      * dups by body CRC). Default: THROW — submissions ride the datagram CTRL lane only (the
-     * retired TCP twin never grows the feature); loud beats silent if that ever breaks. */
-    default void sendVariantSubmit(ClientVariantDefinition variant) throws IOException {
+     * retired TCP twin never grows the feature); loud beats silent if that ever breaks.
+     * <p>Returns the submit seq the frame carries
+     * (0..{@link VariantSubmitWriter#SUBMIT_SEQ_MAX}, the key the {@code VACK} echoes), so the caller can
+     * remember what the player named the build until its receipt lands; -1 = nothing was sent, or the
+     * transport mints no seq. The wire bytes are the same either way. */
+    default int sendVariantSubmit(ClientVariantDefinition variant) throws IOException {
         throw new IOException("transport has no custom-variant lane (VSUB is datagram-only)");
     }
     /**
@@ -292,12 +296,12 @@ public interface PredictSession extends AutoCloseable {
      * Default: a transport that does not override this cannot set the bit, so a keep-only ask THROWS
      * rather than going out as a plain submission that would change the pick behind the host's back.
      * The one-arg default is never routed here (no mutual default delegation, so a transport that
-     * overrides neither cannot recurse).
+     * overrides neither cannot recurse). Returns the seq as the one-arg send does (a plain submission
+     * returns exactly what the one-arg send returned).
      */
-    default void sendVariantSubmit(ClientVariantDefinition variant, boolean keepOnly) throws IOException {
+    default int sendVariantSubmit(ClientVariantDefinition variant, boolean keepOnly) throws IOException {
         if (!keepOnly) {
-            sendVariantSubmit(variant);
-            return;
+            return sendVariantSubmit(variant);
         }
         throw new IOException("transport cannot send a keep-only variant submission");
     }

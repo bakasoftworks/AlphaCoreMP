@@ -18,6 +18,8 @@ import java.nio.file.NotDirectoryException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
@@ -924,6 +926,7 @@ public final class CustomVariantPersistSink implements AutoCloseable {
                 Files.move(keptVariant, dstVariant, LinkOption.NOFOLLOW_LINKS);
             }
             moved = true;
+            stampRemovedAt(stem, dstVariant);
             dropKeptStem(stem);
             if (withMeta) {
                 Files.move(srcMeta, dstMeta, LinkOption.NOFOLLOW_LINKS, StandardCopyOption.REPLACE_EXISTING);
@@ -936,6 +939,30 @@ public final class CustomVariantPersistSink implements AutoCloseable {
             keptIoFailed("forget", stem, failure, "could not forget " + stem + " ("
                     + failure.getClass().getSimpleName() + ")");
             return moved;
+        }
+    }
+
+    /**
+     * A removed copy's inbox file takes the REMOVAL time as its modified
+     * time (writer thread, right after the move). WHY: a rename keeps the file's time, so without this the inbox would
+     * hold the KEEP time, and the inbox list's recency cut ({@code CatalogPromotionLane}: an over-full prefix keeps its
+     * most recently modified names) could drop the copy a Promote just replaced - a put back resolves only listed
+     * names. With it, newest in the inbox = removed last, on the plain move and the twin replace alike.
+     * NOFOLLOW (the inbox is host-writable; a link swapped in after the move is never followed). A failure never fails
+     * or undoes the forget: ONE row (the stem is a lawful machine id), and the copy keeps its keep time.
+     * Who reads the stamped time: the inbox list's cut, and nothing else in the server - the twin probe compares bytes,
+     * and a put back writes a FRESH kept copy ({@link #writeNoReplace}), so the kept scan's last-fallback keep time (a
+     * copy whose sidecar holds no time reads its file's modified time) never sees it. Residue: a removed copy moved
+     * back into the kept folder BY HAND carries its removal time there, so an untimed one orders as kept when it was
+     * removed - display order only, untimed copies only.
+     */
+    private static void stampRemovedAt(String stem, Path inboxVariant) {
+        try {
+            Files.getFileAttributeView(inboxVariant, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
+                    .setTimes(FileTime.fromMillis(System.currentTimeMillis()), null, null);
+        } catch (IOException | RuntimeException failure) {
+            System.out.println("custom-variant kept_forgot_stamp_failed stem=" + stem + " "
+                    + failure.getClass().getSimpleName());
         }
     }
 

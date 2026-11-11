@@ -16,11 +16,13 @@ import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -141,9 +143,20 @@ public final class CatalogPromotionLane {
     /** Kept stems read per scan — its OWN literal, by law (never ride {@link #OVERLAY_CAP}, so a raise of
      *  either bound never moves the other). */
     public static final int KEPT_CAP = 32;
-    /** Directory entries one scan visits (kept dir and inbox each) before it stops loud: a folder of junk
-     *  never turns one scan into an unbounded walk. */
+    /** Directory entries one scan of the KEPT dir visits before it stops loud: a folder of junk never turns one
+     *  scan into an unbounded walk (the inbox's own bound = {@link #INBOX_SCAN_MAX_ENTRIES}). */
     public static final int KEPT_SCAN_MAX_ENTRIES = 256;
+    /**
+     * Inbox entries one scan visits PER PREFIX before it stops loud. WHY its own, wider
+     * bound: nothing prunes the inbox (a removal moves a file in, a put back leaves its copy behind), so its names
+     * are a LIFETIME count, and a directory walk meets them in the folder's order, not by age - at the kept scan's
+     * 256 the copy a Promote just replaced could fall outside the walk however new it was. The walk keeps only the
+     * {@link #INBOX_LIST_CAP} newest names as it goes, so this bound buys TIME alone, never memory: one no-follow
+     * attribute read per entry on the kept writer's thread or the boot scan, never the sim thread (the measured
+     * price of a full walk = row {@code inbox-walk-bound}'s PASS line). Past it the listing is loud and can miss a
+     * name; deleting old removed copies to stop that is the host's decision, never this scan's.
+     */
+    public static final int INBOX_SCAN_MAX_ENTRIES = 4096;
     /** Inbox names listed per scan PER PREFIX ({@code kept-…} and {@code cc-v…} each, "Exported, not kept yet"); the
      *  status file carries them, so it is bounded. */
     public static final int INBOX_LIST_CAP = 32;
@@ -229,6 +242,11 @@ public final class CatalogPromotionLane {
      *  on the sim thread: a listed inbox {@code kept-} stem -> the {@code supersedes} link its {@code .meta} carries
      *  (a forget moves the kept sidecar into the inbox beside the body); a stem with no link is absent. */
     private volatile Map<String, String> supersedesByRemoved = Map.of();
+    /** Written by {@link #listInbox} just BEFORE {@link #inboxIdsLast} (beside
+     *  {@link #supersedesByRemoved}), read by any thread through {@link #removedCopies}: a listed inbox {@code kept-}
+     *  stem -> what its {@code .meta} says (hull, typed name, keep time, each validated); a stem whose sidecar yields
+     *  none of the three is absent. */
+    private volatile Map<String, RemovedCopy> removedCopiesByStem = Map.of();
     private volatile boolean keptOverCapLast;
     private volatile boolean inboxOverCapLast;
     private volatile int keptRefusedLast;
@@ -278,8 +296,9 @@ public final class CatalogPromotionLane {
      *  thread: the kept stems whose writer success waits for the listing (stem → the booking it settles), the last
      *  {@link #admit} exit's refusal token (null = listed / unchanged), and the mail faults the tick caught. */
     private volatile HostReceiptBook receiptsOrNull;
-    /** {@code supersedeOrNull} = the supersede this written copy settles once it lists. */
-    private record Await(String key, boolean restore, boolean forget, Supersede supersedeOrNull) {
+    /** {@code supersedeOrNull} = the supersede this written copy settles once it lists;
+     *  {@code putBackOrNull} = the put-back this re-kept ship settles once it lists. */
+    private record Await(String key, boolean restore, boolean forget, Supersede supersedeOrNull, PutBack putBackOrNull) {
     }
     private final Map<String, Await> awaiting = new HashMap<String, Await>();
 
@@ -297,9 +316,22 @@ public final class CatalogPromotionLane {
     /** Sim thread: custom id -> the supersede its keep carries, until the writer's outcome for that id arrives
      *  ({@link #receiptsTick} moves it onto the stem's {@link Await} or drops it). Bounded by {@link #KEPT_OUTCOMES_CAP}. */
     private final Map<String, Supersede> supersedes = new HashMap<String, Supersede>();
-    /** Sim thread: restore keys whose put-back also forgot the copy that superseded them - their final body reads
-     *  {@link HostReceiptBook#PUT_BACK_COPY_GONE} ({@link #noteCopyGone}). */
-    private final Set<String> putBackCopyGone = new HashSet<String>();
+    /** The hidden lane's settle of one kept put-back, on the sim thread: the copy that stood in the ship's place
+     *  leaves {@code /ship} (true: the final body reads {@link HostReceiptBook#PUT_BACK_COPY_GONE}) or stays (false:
+     *  {@link HostReceiptBook#PUT_BACK}). {@code restoredStem} = the kept stem the ship lists under again. */
+    public interface PutBackHook {
+        boolean apply(String restoredStem);
+    }
+
+    /** One armed put-back: the copy that leaves once the ship lists again, and the hook
+     *  that moves the picks and the joiner default back first. */
+    public record PutBack(String copyStem, PutBackHook hook) {
+    }
+
+    /** Sim thread: restore key (the inbox name the put-back booked) -> its armed put-back, until the writer's outcome
+     *  for that inbox name arrives ({@link #receiptsTick} moves it onto the stem's {@link Await} or drops it).
+     *  Bounded by {@link #KEPT_OUTCOMES_CAP}. */
+    private final Map<String, PutBack> putBacks = new HashMap<String, PutBack>();
     /** Written under {@link #scanLock} by every kept scan, read on the sim thread: kept copy stem -> the ship id /
      *  stem it supersedes (its {@code .meta}'s {@code supersedes}); a copy with no link is absent. */
     private volatile Map<String, String> supersedesByCopy = Map.of();
@@ -333,17 +365,39 @@ public final class CatalogPromotionLane {
         return true;
     }
 
-    /** A put-back ({@code restoreKey} = the restore's booking key, the inbox token) also forgot the copy that superseded
-     *  the ship: its final body is the copy-gone tail. Sim thread; bounded like the outcomes. */
-    public void noteCopyGone(String restoreKey) {
+    /**
+     * Arm a kept put-back: when the re-keep booked under {@code restoreKey} (the inbox
+     * name) is WRITTEN and its stem LISTS, {@code hook} runs on the sim thread - the picks and the joiner default move
+     * from {@code copyStem} back to the ship, THEN the copy leaves - and the booking settles "put back - the changed
+     * copy is gone". WHY the copy waits for the listing (the put-back used to forget it at once, while the
+     * re-keep was only queued): a joiner default naming the copy can move only to a ship that LISTS, and a re-keep the
+     * writer or the engine refuses after its queued answer must leave the copy, its picks and the default exactly as
+     * they were - else the ship is not back and its stand-in is gone too. Every other outcome (a writer refusal, an
+     * engine refusal, a ship that never lists) DROPS the put-back with one loud row and the copy stays. The price:
+     * the ship and its copy both list for one writer round, as a supersede's pair does. A null {@code hook} disarms
+     * the key (a put-back with no copy must not run an older arm). Sim thread. True = an arm now stands for the key
+     * (false = no key, or the disarm).
+     * THE CAP CLEARS, it never refuses: an arm leaves only with its outcome, so an arm
+     * whose outcome was lost (a dropped outcome, a mail fault) stays for the serve, and {@link #KEPT_OUTCOMES_CAP} of
+     * them once refused every later put-back. A host cannot hold that many put-backs in flight, so at the cap the
+     * arms are stale: they go with ONE loud row and the new arm stands (a put-back that WAS still in flight keeps
+     * its copy beside its ship, as an unarmed one did).
+     */
+    public boolean expectPutBack(String restoreKey, String copyStem, PutBackHook hook) {
         if (restoreKey == null) {
-            return;
+            return false;
         }
-        if (putBackCopyGone.size() >= KEPT_OUTCOMES_CAP) {
-            putBackCopyGone.clear();
-            System.out.println("catalog-kept copy_gone_notes_cleared cap=" + KEPT_OUTCOMES_CAP);
+        if (copyStem == null || hook == null) {
+            putBacks.remove(restoreKey);
+            return false;
         }
-        putBackCopyGone.add(restoreKey);
+        if (!putBacks.containsKey(restoreKey) && putBacks.size() >= KEPT_OUTCOMES_CAP) {
+            System.out.println("catalog-kept putback_arms_cleared count=" + putBacks.size() + " reason=cap cap="
+                    + KEPT_OUTCOMES_CAP + " (stale arms; a put back still in flight keeps its copy on /ship)");
+            putBacks.clear();
+        }
+        putBacks.put(restoreKey, new PutBack(copyStem, hook));
+        return true;
     }
 
     /** The kept copy whose {@code supersedes} link names {@code replacedId} (ASCII fold), or null = none kept now.
@@ -406,7 +460,25 @@ public final class CatalogPromotionLane {
      * bounded read. {@code supersedesOrNull} = the supersede link; {@code keptAtMsOrNull} = the keep time (epoch ms,
      * &gt; 0); {@code unreadable} = a sidecar was there but could not be read (counted into the scan's one row).
      */
-    private record KeptMeta(String supersedesOrNull, Long keptAtMsOrNull, boolean unreadable) {
+    private record KeptMeta(String supersedesOrNull, Long keptAtMsOrNull, boolean unreadable, String hullIdOrNull,
+            String nameOrNull) {
+        /** A sidecar that yields no fields (absent or unreadable). */
+        static KeptMeta empty(boolean unreadable) {
+            return new KeptMeta(null, null, unreadable, null, null);
+        }
+    }
+
+    /**
+     * What a REMOVED kept copy's inbox {@code .meta} says about it - the ONE source
+     * every reader of the removed group uses (the host list's names lines and newest-first order, the status file's
+     * inbox labels). Each field is null when the sidecar lacks it or it fails its law: {@code hullIdOrNull} passes the
+     * strict stem law ({@link #stemLawful}: no separator, no {@code ..}, never a path); {@code nameOrNull} is the typed
+     * name ({@code displayName}) cut by {@link VoiceMuteCommand#safeLabel} (printable ASCII, trimmed, at most 24 chars)
+     * and only when the stored name is itself lawful (every char 0x20-0x7E, at most the definition law's
+     * {@value VariantDefinitionFrameCodec#DISPLAY_NAME_MAX_CHARS}); {@code keptAtMsOrNull} = the keep time, epoch ms
+     * &gt; 0. The name is PLAYER TEXT: it reaches a chat line or a status row only hex-armoured.
+     */
+    public record RemovedCopy(String hullIdOrNull, String nameOrNull, Long keptAtMsOrNull) {
     }
 
     /**
@@ -416,29 +488,61 @@ public final class CatalogPromotionLane {
      * The same parse yields the keep time: {@code keptAtMs} (a kept
      * export's), else {@code acceptedAtMs} (a keep's), each only as a whole number &gt; 0; a damaged sidecar costs
      * the time too (the scan then falls back to the file's modified time). Never throws.
+     * The same parse yields the copy's hull and typed name
+     * ({@link #metaHullOrNull}, {@link #metaNameOrNull}); only the inbox listing uses them.
      */
     private static KeptMeta readKeptMeta(Path realDir, String stem) {
         Path meta = realDir.resolve(stem + CustomVariantPersistSink.META_EXT);
         try {
             if (!Files.isRegularFile(meta, LinkOption.NOFOLLOW_LINKS)) {
-                return new KeptMeta(null, null, false); // no sidecar: no link, no time, nothing wrong
+                return KeptMeta.empty(false); // no sidecar: no link, no time, nothing wrong
             }
             if (!realDir.equals(meta.toRealPath().getParent())) {
-                return new KeptMeta(null, null, true);
+                return KeptMeta.empty(true);
             }
             byte[] body = readBounded(meta, META_MAX_BYTES);
             if (nestingExceeds(body, MAX_JSON_DEPTH)) {
-                return new KeptMeta(null, null, true);
+                return KeptMeta.empty(true);
             }
             JSONObject o = new JSONObject(new String(body, StandardCharsets.UTF_8));
             Object v = o.opt(CustomVariantPersistSink.SUPERSEDES_KEY);
             String supersedes = v instanceof String s && OperatorCommandFile.joinerDefaultTokenLawful(s) ? s : null;
             Long at = epochMsOrNull(o.opt(CustomVariantPersistSink.KEPT_AT_KEY));
             return new KeptMeta(supersedes, at != null ? at : epochMsOrNull(o.opt(CustomVariantPersistSink.ACCEPTED_AT_KEY)),
-                    false);
+                    false, metaHullOrNull(o.opt(META_HULL_KEY)), metaNameOrNull(o.opt(META_NAME_KEY)));
         } catch (IOException | JSONException | RuntimeException | StackOverflowError bad) {
-            return new KeptMeta(null, null, true);
+            return KeptMeta.empty(true);
         }
+    }
+
+    /** The two {@code .meta} keys a removed copy's hull and typed name are read from (both writers put them there). */
+    static final String META_HULL_KEY = "hullId";
+    static final String META_NAME_KEY = "displayName";
+
+    /** A sidecar hull value when it is a string under the strict stem law
+     *  ({@link #stemLawful}), else null - the folder is host-writable, so a path-shaped value never survives. */
+    static String metaHullOrNull(Object v) {
+        return v instanceof String s && stemLawful(s) ? s : null;
+    }
+
+    /**
+     * A sidecar typed name as {@link RemovedCopy#nameOrNull} holds it, else null.
+     * The stored value must be lawful AS WRITTEN - a string of 1..{@value VariantDefinitionFrameCodec#DISPLAY_NAME_MAX_CHARS}
+     * chars, each 0x20-0x7E (the definition law every kept body passed) - so a sidecar carrying a control char, a
+     * non-ASCII char or an over-long value yields NO name rather than a folded one; a lawful name is then cut by
+     * {@link VoiceMuteCommand#safeLabel} (trimmed, at most 24 chars; null when blank).
+     */
+    static String metaNameOrNull(Object v) {
+        if (!(v instanceof String s) || s.isEmpty() || s.length() > VariantDefinitionFrameCodec.DISPLAY_NAME_MAX_CHARS) {
+            return null;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < 0x20 || c > 0x7E) {
+                return null;
+            }
+        }
+        return VoiceMuteCommand.safeLabel(s);
     }
 
     /** A sidecar time value as epoch ms when it is a whole number
@@ -1039,7 +1143,7 @@ public final class CatalogPromotionLane {
     /**
      * The inbox's export + forgotten-kept NAMES
      * — {@code cc-v…} / {@code kept-…} stems of regular {@code *.variant} files, whose
-     * bodies are NEVER opened; ≤ {@link #KEPT_SCAN_MAX_ENTRIES} entries visited, ≤ {@link #INBOX_LIST_CAP} listed, each per
+     * bodies are NEVER opened; ≤ {@link #INBOX_SCAN_MAX_ENTRIES} entries visited, ≤ {@link #INBOX_LIST_CAP} listed, each per
      * prefix (over = loud).
      * Listed whether or not the kept folder exists yet (the first Keep from an export needs this list).
      * A listing fault empties the list (and the links below) for this scan and never stops the kept read. Caller holds
@@ -1048,9 +1152,18 @@ public final class CatalogPromotionLane {
      * {@code supersedes} link ({@link #readKeptMeta}: the kept scan's bounded read, NOFOLLOW, the real parent; never
      * an export's), published as {@link #supersedesByRemoved} before the names; unreadable sidecars = ONE count row.
      * The bounds hold PER PREFIX ({@link #listPrefix}) - the {@code kept-…}
-     * names first, then the {@code cc-v…} names, each walked, sorted and cut on its own - so a busy match's exports
+     * names first, then the {@code cc-v…} names, each walked and cut on its own - so a busy match's exports
      * never push a removed kept ship (its put back and its link) out of the list; the list holds at most twice
-     * {@link #INBOX_LIST_CAP} names.
+     * {@link #INBOX_LIST_CAP} names. An over-full prefix keeps its most
+     * recently modified names (a removal stamps its time, so the copy removed last lists while its prefix holds at
+     * most {@link #INBOX_SCAN_MAX_ENTRIES} names - past that walk bound the loud row says a name can be missed).
+     * The survivors of BOTH prefixes publish as ONE list, NEWEST FIRST
+     * ({@link #INBOX_CUT_ORDER}: the modified time each walk already read, equal times by case-insensitive name then
+     * exact spelling), so index 0 is the copy removed or exported last. WHY: the ops page marks a same-name row
+     * {@code " (older copy)"} by its place in this list; in name order a kept stem's content-hash tail, not its age,
+     * decided which copy read older. Only the publish order changed: each prefix's walk, cap and rows stand.
+     * The same sidecar read publishes {@link #removedCopies} (hull, typed name,
+     * keep time) for the listed {@code kept-…} stems alone, so it holds at most {@link #INBOX_LIST_CAP} entries.
      */
     private void listInbox(Path inbox) {
         List<String> names = new ArrayList<String>();
@@ -1059,16 +1172,20 @@ public final class CatalogPromotionLane {
         try {
             if (inbox != null && Files.isDirectory(inbox)) {
                 inboxReal = inbox.toRealPath();
-                List<String> exports = new ArrayList<String>();
-                over = listPrefix(inbox, INBOX_KEPT_PREFIX, names);
-                over |= listPrefix(inbox, INBOX_PREFIX, exports);
-                names.addAll(exports);
+                List<InboxName> listed = new ArrayList<InboxName>();
+                over = listPrefix(inbox, INBOX_KEPT_PREFIX, listed);
+                over |= listPrefix(inbox, INBOX_PREFIX, listed);
+                listed.sort(INBOX_CUT_ORDER); // newest first across both prefixes: the times the walks read, no re-stat
+                for (InboxName n : listed) {
+                    names.add(n.stem());
+                }
             }
         } catch (IOException | RuntimeException fault) {
             names.clear();
             System.out.println("catalog-kept inbox_fault " + fault.getClass().getSimpleName() + " (no inbox names this scan)");
         }
         Map<String, String> links = new HashMap<String, String>();
+        Map<String, RemovedCopy> copies = new HashMap<String, RemovedCopy>();
         int metaUnread = 0;
         for (String stem : names) {
             if (inboxReal != null && stem.startsWith(INBOX_KEPT_PREFIX)) {
@@ -1077,47 +1194,106 @@ public final class CatalogPromotionLane {
                 if (meta.supersedesOrNull() != null) {
                     links.put(stem, meta.supersedesOrNull());
                 }
+                // The same one read keeps the copy's hull, typed name and keep
+                // time for every reader of the removed group; nothing usable = no entry
+                if (meta.hullIdOrNull() != null || meta.nameOrNull() != null || meta.keptAtMsOrNull() != null) {
+                    copies.put(stem, new RemovedCopy(meta.hullIdOrNull(), meta.nameOrNull(), meta.keptAtMsOrNull()));
+                }
             }
         }
         if (metaUnread > 0) {
             System.out.println("catalog-kept inbox_meta_unread=" + metaUnread);
         }
         supersedesByRemoved = Map.copyOf(links);
+        removedCopiesByStem = Map.copyOf(copies);
         inboxIdsLast = List.copyOf(names);
         inboxOverCapLast = over;
     }
 
     /**
-     * One prefix's inbox names into {@code into} - ≤ {@link #KEPT_SCAN_MAX_ENTRIES}
-     * matching entries visited, sorted case-insensitively, cut to {@link #INBOX_LIST_CAP}; each overrun prints ONE row
-     * naming the prefix (a constant, never a file name). True = an overrun. Caller holds {@link #scanLock}.
+     * One prefix's inbox names into {@code into} - ≤ {@link #INBOX_SCAN_MAX_ENTRIES}
+     * matching entries visited, cut to {@link #INBOX_LIST_CAP}, each with the modified time its walk read, appended in
+     * no set order (the caller orders the published list once, {@link #listInbox}); each overrun prints ONE row naming
+     * the prefix (a constant, never a file name). True = an overrun. Caller holds {@link #scanLock}.
+     * The cut is by RECENCY - an over-full prefix keeps its
+     * {@link #INBOX_LIST_CAP} most recently modified names (equal times: the case-insensitive name order, then the exact
+     * spelling, so every scan cuts alike), so a reader sees a different SET only on an overflow. WHY: a put back
+     * leaves its inbox copy behind, so the names are a lifetime count, and a name-order cut could drop the copy a
+     * Promote just replaced - the one ship the
+     * host most needs to put back (a put back resolves only LISTED names). A removal stamps its inbox file with the
+     * removal time ({@link CustomVariantPersistSink}'s forget), so newest = removed last. The time is host input (a
+     * host-writable folder), compared with {@link Long#compare} (a future date only leads the cut, a negative one
+     * only trails it). Never opens a body.
+     * The cut runs INSIDE the walk (a heap of at most the cap + 1 names), so the walk's
+     * bound is no longer the count a recency cut can see: the newest name lists wherever the folder's order puts it,
+     * up to {@link #INBOX_SCAN_MAX_ENTRIES} entries. ONE no-follow attribute read per entry answers both "a regular
+     * file?" and its time; an entry whose attributes cannot be read is NOT listed (what it is cannot be told),
+     * counted into ONE {@code inbox_entry_unread} row per prefix, never a listing fault.
      */
-    private static boolean listPrefix(Path inbox, String prefix, List<String> into) throws IOException {
+    private static boolean listPrefix(Path inbox, String prefix, List<InboxName> into) throws IOException {
         boolean over = false;
         int entries = 0;
+        int accepted = 0;
+        int unread = 0;
+        // the walk's survivors, never more than the cap + the one being weighed: the head is the name the cut drops next
+        PriorityQueue<InboxName> newest = new PriorityQueue<InboxName>(INBOX_LIST_CAP + 1, INBOX_CUT_ORDER.reversed());
         try (DirectoryStream<Path> listing = Files.newDirectoryStream(inbox, prefix + "*" + KEPT_SUFFIX)) {
             for (Path p : listing) {
-                if (++entries > KEPT_SCAN_MAX_ENTRIES) {
+                if (++entries > INBOX_SCAN_MAX_ENTRIES) {
                     over = true;
-                    System.out.println("catalog-kept inbox_over_cap prefix=" + prefix + " entries>=" + KEPT_SCAN_MAX_ENTRIES
+                    System.out.println("catalog-kept inbox_over_cap prefix=" + prefix + " entries>=" + INBOX_SCAN_MAX_ENTRIES
                             + " dir=" + PeerText.quote(inbox.toString()) + " (only names among the first entries list)");
                     break;
                 }
                 String name = p.getFileName().toString();
                 String stem = name.endsWith(KEPT_SUFFIX) ? name.substring(0, name.length() - KEPT_SUFFIX.length()) : null;
-                if (stemLawful(stem) && stem.startsWith(prefix) && Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)) {
-                    into.add(stem);
+                if (!stemLawful(stem) || !stem.startsWith(prefix)) {
+                    continue;
+                }
+                long ms;
+                try {
+                    // ONE no-follow read answers both "a regular file?" and its time (a link is never followed)
+                    BasicFileAttributes at = Files.readAttributes(p, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                    if (!at.isRegularFile()) {
+                        continue;
+                    }
+                    ms = at.lastModifiedTime().toMillis();
+                } catch (IOException | RuntimeException unreadable) {
+                    unread++; // what it is cannot be told, so it is not listed: this prefix's ONE inbox_entry_unread row
+                    continue;
+                }
+                accepted++;
+                newest.add(new InboxName(stem, ms));
+                if (newest.size() > INBOX_LIST_CAP) {
+                    newest.poll();
                 }
             }
         }
-        into.sort(String.CASE_INSENSITIVE_ORDER);
-        if (into.size() > INBOX_LIST_CAP) {
-            over = true;
-            System.out.println("catalog-kept inbox_over_cap prefix=" + prefix + " names=" + into.size() + " cap=" + INBOX_LIST_CAP);
-            into.subList(INBOX_LIST_CAP, into.size()).clear();
+        if (unread > 0) {
+            System.out.println("catalog-kept inbox_entry_unread prefix=" + prefix + " names=" + unread + " (not listed)");
         }
+        if (accepted > INBOX_LIST_CAP) {
+            over = true;
+            System.out.println("catalog-kept inbox_over_cap prefix=" + prefix + " names=" + accepted + " cap=" + INBOX_LIST_CAP);
+        }
+        into.addAll(newest);
         return over;
     }
+
+    /** One inbox name the walk weighs: its stem and its file's modified time, epoch ms (host input, compared only). */
+    private record InboxName(String stem, long ms) {
+    }
+
+    /** The inbox cut's order, BEST first: the newest time, then the case-insensitive name, then the exact spelling
+     *  (a total order, so every scan cuts alike). */
+    private static final Comparator<InboxName> INBOX_CUT_ORDER = (a, b) -> {
+        int byTime = Long.compare(b.ms(), a.ms());
+        if (byTime != 0) {
+            return byTime;
+        }
+        int byName = String.CASE_INSENSITIVE_ORDER.compare(a.stem(), b.stem());
+        return byName != 0 ? byName : a.stem().compareTo(b.stem());
+    };
 
     /**
      * True when {@code [}/{@code {}/{@code (} nesting outside quoted strings exceeds {@code max} — this
@@ -1302,19 +1478,26 @@ public final class CatalogPromotionLane {
                     // The keep's armed supersede rides to the stem's Await on "written" alone; every other
                     // outcome drops it (an identical body hides nothing - ruling viii), one row each
                     Supersede supersede = supersedes.remove(key);
+                    // The armed put-back rides the same way, taken ONLY by a keep-export outcome (its inbox
+                    // name): a removal's outcome is keyed by a stem, which a re-kept ship's inbox name can equal
+                    PutBack putBack = o.tokenOrNull() != null ? putBacks.remove(o.tokenOrNull()) : null;
                     if ("already_kept".equals(o.reason())) {
                         // The same body kept again is a SUCCESS - the ship
                         // is on /ship as asked; the body names it (a kept stem is registered, so its name is known)
                         supersedeDropped(supersede, key, o.reason());
+                        putBackDropped(putBack, key, o.reason());
                         settleReceipt(key, HostReceiptBook.alreadyKept(shipNameOf(o.stemOrNull(), key)));
                     } else if (!success) {
                         supersedeDropped(supersede, key, o.reason());
+                        putBackDropped(putBack, key, o.reason());
                         settleReceipt(key, hostOutcomePhrase(o.reason()));
                     } else if (o.stemOrNull() != null && awaiting.size() < KEPT_OUTCOMES_CAP * 2) {
+                        boolean written = "written".equals(o.reason());
                         awaiting.put(o.stemOrNull(), new Await(key, o.tokenOrNull() != null, "forgot".equals(o.reason()),
-                                "written".equals(o.reason()) ? supersede : null));
+                                written ? supersede : null, written ? putBack : null));
                     } else {
                         supersedeDropped(supersede, key, "awaiting_cap");
+                        putBackDropped(putBack, key, "awaiting_cap");
                     }
                 }
             }
@@ -1335,13 +1518,21 @@ public final class CatalogPromotionLane {
         }
     }
 
+    /** A put-back that will not run: the copy stays on {@code /ship} with its picks and the default; ONE row. */
+    private static void putBackDropped(PutBack p, String key, String why) {
+        if (p != null) {
+            System.out.println("catalog-kept putback_dropped key=" + key + " copy=" + p.copyStem() + " reason=" + why
+                    + " (the copy stays on /ship)");
+        }
+    }
+
     /** A kept candidate the walk did not list: the booking waiting on its stem gets the exit's phrase. */
     private void settleAdmitRefusal(String stem, String exit) {
         Await a = awaiting.get(stem);
         if (a != null && !a.forget()) {
             awaiting.remove(stem);
             supersedeDropped(a.supersedeOrNull(), a.key(), exit);
-            putBackCopyGone.remove(a.key());
+            putBackDropped(a.putBackOrNull(), a.key(), exit);
             settleReceipt(a.key(), hostOutcomePhrase(exit));
         }
     }
@@ -1359,7 +1550,6 @@ public final class CatalogPromotionLane {
             // Every success body opens with the ship's quoted NAME (the stem
             // registered this serve, so the name is remembered even after it left the listing), never the stem
             String name = shipNameOf(stem, a.key());
-            boolean copyGone = putBackCopyGone.remove(a.key());
             if (a.forget()) {
                 if (!listed) {
                     settleReceipt(a.key(), HostReceiptBook.named(name, HostReceiptBook.REMOVED));
@@ -1371,6 +1561,9 @@ public final class CatalogPromotionLane {
                     settleReceipt(a.key(), runSupersede(a.supersedeOrNull(), stem) ? HostReceiptBook.changed(name)
                             : HostReceiptBook.added(name));
                 } else if (a.restore()) {
+                    // The ship lists again: NOW its picks and the default come back and
+                    // the copy leaves (the hidden lane's hook, its own catch - a fault leaves the copy listed)
+                    boolean copyGone = a.putBackOrNull() != null && runPutBack(a.putBackOrNull(), stem);
                     settleReceipt(a.key(), HostReceiptBook.named(name,
                             copyGone ? HostReceiptBook.PUT_BACK_COPY_GONE : HostReceiptBook.PUT_BACK));
                 } else {
@@ -1378,10 +1571,28 @@ public final class CatalogPromotionLane {
                 }
             } else {
                 supersedeDropped(a.supersedeOrNull(), a.key(), "not_listed");
+                putBackDropped(a.putBackOrNull(), a.key(), "not_listed");
                 settleReceipt(a.key(), hostOutcomePhrase("not_listed"));
             }
         }
         awaiting.clear();
+    }
+
+    /** The put-back's hook in its own catch: true = the copy left {@code /ship}. Sim thread. */
+    private static boolean runPutBack(PutBack p, String restoredStem) {
+        try {
+            boolean gone = p.hook().apply(restoredStem);
+            if (!gone) {
+                System.out.println("catalog-kept putback_failed restored=" + restoredStem + " copy=" + p.copyStem()
+                        + " (the ship is back; its copy stays - remove it by hand)");
+            }
+            return gone;
+        } catch (RuntimeException hookFault) {
+            System.out.println("catalog-kept putback_failed restored=" + restoredStem + " copy=" + p.copyStem()
+                    + " " + hookFault.getClass().getSimpleName() + ": "
+                    + PeerText.quote(PeerText.bound(String.valueOf(hookFault.getMessage()), REFUSAL_MESSAGE_MAX_CHARS)));
+            return false;
+        }
     }
 
     /** The supersede's hook in its own catch: true = X left {@code /ship}. Sim thread. */
@@ -1774,10 +1985,98 @@ public final class CatalogPromotionLane {
         }
     }
 
-    /** The inbox's forgotten-kept then export stems the last scan listed (≤ {@link #INBOX_LIST_CAP} of each prefix;
-     *  no body opened). */
+    /** The inbox's forgotten-kept and export stems the last scan listed (≤ {@link #INBOX_LIST_CAP} of each prefix: an
+     *  over-full prefix keeps its most recently modified names), both prefixes in ONE list NEWEST FIRST by modified
+     *  time (equal times: case-insensitive name, then exact spelling; {@link #listInbox}); no body opened. */
     public List<String> inboxIds() {
         return inboxIdsLast;
+    }
+
+    /**
+     * The last scan's removed kept copies - each listed inbox {@code kept-…} stem
+     * (exact spelling, as {@link #inboxIds} holds it) -> its {@link RemovedCopy}; a stem whose {@code .meta} is
+     * absent, unreadable or yields no lawful field has no entry. Immutable, at most {@link #INBOX_LIST_CAP} entries,
+     * never null; any thread. Bodies are never opened for it.
+     */
+    public Map<String, RemovedCopy> removedCopies() {
+        return removedCopiesByStem;
+    }
+
+    /**
+     * The status label of each of {@code ids} (the caller's one {@link #inboxIds}
+     * read, so labels and ids pair slot for slot) - {@link #keptLabelOf} over the copy's typed name and hull from
+     * {@link #removedCopies}, {@code ""} for an export, a stem with no name, or a null id. Same size and order, never
+     * a null slot; a null list reads empty. Lock-free, never throws (the serve thread's status compose).
+     */
+    public List<String> inboxLabels(List<String> ids) {
+        if (ids == null) {
+            return List.of();
+        }
+        Map<String, RemovedCopy> copies = removedCopiesByStem;
+        List<String> labels = new ArrayList<String>(ids.size());
+        for (String id : ids) {
+            RemovedCopy c = id == null ? null : copies.get(id);
+            labels.add(c == null || c.nameOrNull() == null ? "" : keptLabelOf(c.nameOrNull(), c.hullIdOrNull()));
+        }
+        return List.copyOf(labels);
+    }
+
+    /**
+     * For each of {@code ids} (the caller's one {@link #inboxIds} read, so
+     * the two pair slot for slot), the kept copy that leaves {@code /ship} if that inbox name were kept now, else
+     * {@code ""}. WHY: a Keep of a REMOVED kept ship is that ship's put back, which forgets the copy standing in its
+     * place, and the confirm must say so. The mirror of the hidden lane's put back ({@code restoreRemoved} over
+     * {@code removedRootOf}): only a {@code kept-} inbox name no kept stem holds is a put back; its own link is the
+     * root while that root is off {@code /ship} (held by {@code hostHidden}, or a removed name itself), else the name
+     * is its own root; the copy = the kept copy whose link names the root, the first entry winning as in
+     * {@link #copySupersedingOrNull} (ASCII fold throughout). Reads only the maps the last scans published - no scan,
+     * no file read; each map is folded once. Same size and order, never a null slot; a null list reads empty.
+     * Lock-free, never throws (the status compose, once a second).
+     * {@code hostHidden} = the hidden lane's OWN set ({@code HiddenShipSet.contains}, the
+     * test {@code removedRootOf} runs), null = no hidden lane. NEVER {@code pickable.isHidden}: the pick surface also
+     * hides a demoted promoted stem and drops a set id no shipped ship holds, so the confirm would name a copy the put
+     * back keeps, or none where one leaves.
+     */
+    public List<String> inboxLeaves(List<String> ids, Predicate<String> hostHidden) {
+        if (ids == null) {
+            return List.of();
+        }
+        Map<String, String> copyLinks = supersedesByCopy;
+        if (copyLinks.isEmpty()) {
+            return java.util.Collections.nCopies(ids.size(), ""); // no kept copy stands in any ship's place
+        }
+        Set<String> keptFolds = new HashSet<String>();
+        for (String stem : keptIdsLast) {
+            keptFolds.add(ChatCommands.asciiLower(stem));
+        }
+        Set<String> removedFolds = new HashSet<String>();
+        for (String id : ids) {
+            if (id != null && id.startsWith(INBOX_KEPT_PREFIX) && !keptFolds.contains(ChatCommands.asciiLower(id))) {
+                removedFolds.add(ChatCommands.asciiLower(id));
+            }
+        }
+        Map<String, String> linkByRemoved = new HashMap<String, String>();
+        for (Map.Entry<String, String> e : supersedesByRemoved.entrySet()) {
+            linkByRemoved.putIfAbsent(ChatCommands.asciiLower(e.getKey()), e.getValue());
+        }
+        Map<String, String> copyByRoot = new HashMap<String, String>();
+        for (Map.Entry<String, String> e : copyLinks.entrySet()) {
+            copyByRoot.putIfAbsent(ChatCommands.asciiLower(e.getValue()), e.getKey());
+        }
+        List<String> leaves = new ArrayList<String>(ids.size());
+        for (String id : ids) {
+            String fold = id == null ? null : ChatCommands.asciiLower(id);
+            String copy = null;
+            if (fold != null && removedFolds.contains(fold)) {
+                String link = linkByRemoved.get(fold);
+                String linkFold = link == null ? null : ChatCommands.asciiLower(link);
+                boolean rootOff = link != null
+                        && ((hostHidden != null && hostHidden.test(link)) || removedFolds.contains(linkFold));
+                copy = copyByRoot.get(rootOff ? linkFold : fold);
+            }
+            leaves.add(copy == null ? "" : copy);
+        }
+        return List.copyOf(leaves);
     }
 
     /** The last kept scan stopped at {@link #KEPT_SCAN_MAX_ENTRIES} entries or cut to {@link #KEPT_CAP} stems. */

@@ -277,6 +277,8 @@ final class OpsConsoleSelftest {
         row(fails, "page-pilotreplicas", () -> pilotReplicasPageRow(html, js));
         row(fails, "status-magic-line", () -> statusMagicLineRow(html, js));
         row(fails, "status-magic-cell", () -> statusMagicCellRow(html, js));
+        row(fails, "page-seat-ship-name", () -> seatShipNameRow(js));
+        row(fails, "page-customs-detail-names", () -> customsDetailNamesRow(js));
         row(fails, "status-pilot-line", () -> statusPilotLineRow(html, js));
         row(fails, "page-pvp", () -> pvpPageRow(html, js));
         row(fails, "page-lease", () -> pageLeaseRow(html, js));
@@ -717,6 +719,64 @@ final class OpsConsoleSelftest {
         }
         if (!js.contains("td.dataset.col === 'MagicLib'") || !js.contains("r.cell('MagicLib why')")) {
             bad.add("the script no longer reads the MagicLib why into the MagicLib cell's title");
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /**
+     * {@code page-seat-ship-name} - the seat table's ship cell reads a kept or
+     * exported ship's typed name: every status builds the ship names first and hands their stem map to
+     * {@code renderSeats}; the ship cell paints the name when the map holds the fielded id (else the id, as before)
+     * and its hover is the id exactly when a name is painted, so a person reads the name and the stem stays one hover
+     * away. The name never lands in the hover.
+     */
+    static String seatShipNameRow(String js) {
+        List<String> bad = new ArrayList<>();
+        String flat = js.replaceAll("\\s+", " "); // a wrapped statement reads as one line
+        for (String[] want : new String[][] {
+                {"const ships = shipNames(s); renderSeats(s, ships.byStem);",
+                        "the seat table stops getting this status's names, or gets them after it paints"},
+                {"const renderSeats = (s, shipName) => {", "renderSeats drops the name map"},
+                {"const v = r.cell(td.dataset.col); if (td.dataset.col === 'ship') { const name = shipName.get(v);"
+                        + " put(td, name === undefined ? v : name); const tip = name === undefined ? '' : v;"
+                        + " if (td.title !== tip) { td.title = tip; } } else { put(td, v); }",
+                        "the ship cell paints the raw stem again, the stem leaves its hover, a name lands in the"
+                        + " hover, or another cell starts reading names"}}) {
+            if (!flat.contains(want[0])) {
+                String clip = want[0].length() <= 80 ? want[0] : want[0].substring(0, 80) + "...";
+                bad.add("script lacks '" + clip + "' (flips if " + want[1] + ")");
+            }
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /**
+     * {@code page-customs-detail-names} - the dock's customs line ("kept for
+     * everyone: ...", "exported, not kept yet: ...", "last: kept as ...") names each ship the lists name: the stem map
+     * holds every stem a kept or inbox row paints by name (an exported copy's too, so a forgotten ship's "forgot ..."
+     * reads its name), each WHOLE id run is swapped in ONE pass (a swapped-in name is never read again, and a stem
+     * inside a longer id is never touched), the result is painted by textContent, and the server's raw line is the
+     * hover exactly when a swap happened.
+     */
+    static String customsDetailNamesRow(String js) {
+        List<String> bad = new ArrayList<>();
+        String flat = js.replaceAll("\\s+", " "); // a wrapped statement reads as one line
+        for (String[] want : new String[][] {
+                {"for (const r of inbox.filter((x) => !keptStems.has(x.stem)).concat(kept)) {"
+                        + " if (r.text !== r.stem) { byStem.set(r.stem, r.text); } }",
+                        "the stem map loses the kept or the exported names, maps a stem to itself, or a kept ship's"
+                        + " own leftover file maps its stem to the list's ' (already kept)' words"},
+                {"const ID_RUN = /([A-Za-z0-9_-]+)/;", "the id run splits a stem or swallows the line's punctuation"},
+                {"const line = raw.split(ID_RUN).map((t, i) => (i % 2 === 1 && shipName.has(t) ? shipName.get(t) : t))"
+                        + ".join('');", "the swap stops working by whole id in one pass"},
+                {"put(detail, line); const tip = line === raw ? '' : raw;"
+                        + " if (detail.title !== tip) { detail.title = tip; }",
+                        "the dock line paints the raw stems again, or the server's own line leaves the hover"},
+                {"renderCustoms(s, ships.byStem);", "the dock line stops getting this status's names"}}) {
+            if (!flat.contains(want[0])) {
+                String clip = want[0].length() <= 80 ? want[0] : want[0].substring(0, 80) + "...";
+                bad.add("script lacks '" + clip + "' (flips if " + want[1] + ")");
+            }
         }
         return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
     }

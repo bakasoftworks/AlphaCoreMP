@@ -81,8 +81,10 @@ public final class SameKeyHulkRename {
             ids.append(ids.length() == 0 ? "" : ",").append(id);
         }
         if (renamed > 0 || live > 0) {
-            System.out.println("same-key-hulk site=" + site + " key='" + key
-                    + "' hulks_renamed=" + renamed + " ids=" + ids
+            // The key is Ship.toString and holds a kept ship's TYPED name (player
+            // text), so it rides PeerText.quote, never bare quotes
+            System.out.println("same-key-hulk site=" + site + " key=" + cc.starsector.server.ops.PeerText.quote(key)
+                    + " hulks_renamed=" + renamed + " ids=" + ids
                     + " live_same_key=" + live);
         }
         return new Sweep(renamed, live);

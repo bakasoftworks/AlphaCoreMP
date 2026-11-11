@@ -1415,8 +1415,9 @@ public final class ServerOpsCore {
      *  prefix, case-folded) in the caller. WHY a twin: the console JVM runs on {@code server\classes} alone and a call
      *  into that runtime class links {@code org.json} (measured as a {@code NoClassDefFoundError} in
      *  the server-ops build gate); drift is pinned by the {@code keep-forget-minters} golden
-     *  {@code custom-forget my_wolf} + its {@code bad id!} refusal. */
-    private static boolean keptStemLawful(String s) {
+     *  {@code custom-forget my_wolf} + its {@code bad id!} refusal.
+     *  Package-visible: {@link OpsSnapshot#inboxLeavesRow} checks each status slot with it. */
+    static boolean keptStemLawful(String s) {
         if (s == null || s.isEmpty() || s.length() > 64 || !keptStemChar(s.charAt(0), true)) {
             return false;
         }
@@ -1441,7 +1442,7 @@ public final class ServerOpsCore {
 
     /** The page's kept names = the status file's decoded
      * {@code custom.kept_labels}, index for index with {@link #keptPickRows} ({@code ""} = none); empty without a
-     * snapshot. A display text only: the Forget pick, its confirm and the verb line all keep the stem. */
+     * snapshot. A display text only: the Forget pick, its confirm key and the verb line all keep the stem. */
     public static List<String> keptLabelRows(OpsSnapshot snapOrNull) {
         return snapOrNull == null ? List.of() : snapOrNull.customKeptLabels();
     }
@@ -1450,6 +1451,14 @@ public final class ServerOpsCore {
      * page's "Exported, not kept yet" list) = the status file's {@code custom.inbox_ids}; empty without one. */
     public static List<String> inboxPickRows(OpsSnapshot snapOrNull) {
         return snapOrNull == null ? List.of() : snapOrNull.customInboxIds();
+    }
+
+    /** The page's inbox names = the status file's decoded
+     * {@code custom.inbox_labels}, index for index with {@link #inboxPickRows} ({@code ""} = none); empty without a
+     * snapshot or without the row. A display text only: the Keep pick, its confirm key and the verb line keep the
+     * file name. */
+    public static List<String> inboxLabelRows(OpsSnapshot snapOrNull) {
+        return snapOrNull == null ? List.of() : snapOrNull.customInboxLabels();
     }
 
     /** The page's "Ships that come with the server" rows = the status file's
@@ -1465,16 +1474,20 @@ public final class ServerOpsCore {
     }
 
     /** The kept-ship texts, ONE home for both shells (the designed
-     * texts verbatim, except {@link #CUSTOM_KEEP_TIP_WEB}'s typed-id clause and
-     * {@link #NOTHING_TO_KEEP_TEXT}, written beyond the design). */
+     * texts verbatim, except {@link #CUSTOM_KEEP_TIP_WEB}'s typed-id clause,
+     * {@link #KEEP_PUT_BACK_TIP} and {@link #NOTHING_TO_KEEP_TEXT}, written beyond the design). */
     public static final String CUSTOM_KEEP_LABEL = "Keep for everyone";
     public static final String CUSTOM_FORGET_LABEL = "Forget kept";
+    /** Both Keep tips' last clause - a Keep of a removed kept copy is its
+     *  put back, and the copy standing in its place leaves {@code /ship} (the confirm then names that ship). */
+    private static final String KEEP_PUT_BACK_TIP = " Keeping a removed copy puts it back; the copy in its place"
+            + " leaves /ship.";
     public static final String CUSTOM_KEEP_TIP = "Keeps the picked seat's flying custom ship for every player:"
             + " it joins the /ship list within seconds and at every start, until you forget it. With no seat"
-            + " picked, choose an exported ship.";
+            + " picked, choose an exported ship." + KEEP_PUT_BACK_TIP;
     public static final String CUSTOM_KEEP_TIP_WEB = "Keeps the typed Custom id, else the picked seat's flying"
             + " custom ship, for every player: it joins the /ship list within seconds and at every start, until"
-            + " you forget it. With neither, choose an exported ship in the list under the seats.";
+            + " you forget it. With neither, choose an exported ship in the list under the seats." + KEEP_PUT_BACK_TIP;
     public static final String CUSTOM_FORGET_TIP = "Takes one kept ship off the /ship list; its file moves back"
             + " to variants-inbox. A player flying it keeps it until their next respawn.";
     public static final String NO_KEPT_TEXT = "No kept ships yet.";
@@ -1484,14 +1497,58 @@ public final class ServerOpsCore {
     /** The Keep confirm, {@code id} = the minted
      * token (a seat's custom id or an inbox file name). */
     public static String keepConfirmText(String id) {
-        return "Keep '" + id + "' for every player? It joins the /ship list now and at every start, until you"
-                + " press Forget kept.";
+        return keepConfirmText(id, null);
+    }
+
+    /** The Keep confirm naming the ship - {@code labelOrNull} = the status file's
+     * decoded typed name for {@code id} (shape {@code "<name>" (<hull>)}, printable ASCII), said in place of the
+     * quoted id; null or blank = the 1-arg text byte for byte. A display text only: the confirm key and the verb
+     * line keep {@code id}. */
+    public static String keepConfirmText(String id, String labelOrNull) {
+        return "Keep " + confirmSubject(id, labelOrNull) + " for every player? It joins the /ship list now and at"
+                + " every start, until you press Forget kept.";
+    }
+
+    /** The Keep confirm when that Keep is a PUT BACK - {@code id} = the
+     * inbox file of a removed kept copy, {@code leaves} = the kept copy standing in its place, which the put back takes
+     * off {@code /ship}; each label = the status file's decoded typed name for its token, said as
+     * {@link #keepConfirmText(String, String)} says one (null or blank = the quoted token). A display text only: the
+     * confirm key and the verb line keep {@code id}.
+     *
+     * <p>OGL-1: when the two subjects read the SAME (ASCII case aside) the confirm names
+     * the ship once and tells the two builds apart by role, in the Keep tip's own words ("the removed copy" / "the
+     * copy in its place"). WHY: the editor's Promote replaces only a ship of the same name and hull, so the copy
+     * that leaves nearly always carries the label of the ship put back, and naming both read
+     * {@code "Wolf" (wolf) leaves ... "Wolf" (wolf) joins}. */
+    public static String putBackConfirmText(String id, String labelOrNull, String leaves, String leavesLabelOrNull) {
+        String ship = confirmSubject(id, labelOrNull);
+        String leaving = confirmSubject(leaves, leavesLabelOrNull);
+        if (ship.equalsIgnoreCase(leaving)) {
+            return "Put back the removed copy of " + ship + "? The copy in its place leaves the /ship list. The removed"
+                    + " copy joins it now and at every start, until you press Forget kept.";
+        }
+        return "Put back " + ship + "? " + leaving + " leaves the /ship list. "
+                + ship + " joins it now and at every start, until you press Forget kept.";
     }
 
     /** The Forget confirm, {@code stem} = the
      * minted kept stem. */
     public static String forgetConfirmText(String stem) {
-        return "Forget '" + stem + "'? It leaves /ship now; its file moves back to variants-inbox.";
+        return forgetConfirmText(stem, null);
+    }
+
+    /** The Forget confirm naming the ship - {@code labelOrNull} = the status
+     * file's decoded typed name for {@code stem}, said in place of the quoted stem; null or blank = the 1-arg text
+     * byte for byte. The confirm key and the verb line keep the stem. */
+    public static String forgetConfirmText(String stem, String labelOrNull) {
+        return "Forget " + confirmSubject(stem, labelOrNull) + "? It leaves /ship now; its file moves back to"
+                + " variants-inbox.";
+    }
+
+    /** The ship a Keep / Forget confirm names: the typed-name label as given (it carries its own quotes), else the
+     * minted token in single quotes. */
+    private static String confirmSubject(String token, String labelOrNull) {
+        return labelOrNull == null || labelOrNull.isBlank() ? "'" + token + "'" : labelOrNull;
     }
 
     /** The shipped-ships texts, ONE home for the page (its heading and empty
@@ -2474,12 +2531,15 @@ public final class ServerOpsCore {
         // every string through jsonEscape; the page renders them as textContent only.
         // customKeptLabels = the typed names, the same length and order as
         // customKeptIds ("" = none) - the page paints each beside its stem; every verb still takes the stem.
+        // inboxLabels = the inbox files' typed names, index for index with
+        // customInboxIds ("" = none, [] without the status row) - a display text; the Keep verb takes the file name.
         sb.append(",\"customKept\":").append(snap == null ? 0 : snap.customKept())
                 .append(",\"customKeptIds\":").append(jsonStringArray(keptPickRows(snap)))
                 .append(",\"customKeptLabels\":").append(jsonStringArray(keptLabelRows(snap)))
                 .append(",\"customKeptFailed\":").append(snap == null ? 0L : snap.customKeptFailed())
                 .append(",\"customKeptLast\":\"").append(jsonEscape(snap == null ? "-" : snap.customKeptLast()))
                 .append("\",\"customInboxIds\":").append(jsonStringArray(inboxPickRows(snap)))
+                .append(",\"inboxLabels\":").append(jsonStringArray(inboxLabelRows(snap)))
                 .append(",\"customKeptOverCap\":").append(snap != null && snap.customKeptOverCap())
                 .append(",\"customInboxOverCap\":").append(snap != null && snap.customInboxOverCap());
         // The page's shipped-ships list - OpsSnapshot's optional ships rows

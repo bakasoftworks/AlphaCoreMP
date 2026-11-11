@@ -102,6 +102,21 @@ public final class FallbackAnnounce {
         return b.append('\'').toString();
     }
 
+    /**
+     * NCP-1. The DISPLAY twin of {@link #quote}: another player's text as a player-facing
+     * line paints it INSIDE {@code '...'} - every {@code '} becomes a backtick; null stays null; the caller adds the
+     * quotes and has already cut the text. WHY: a build name holding a quote closed the line's own quote, so the
+     * words after it read as the line's verdict ({@code saved as local build 'X' (now your current build)' ...} when
+     * nothing was made current). A same-length swap, never {@link #quote}'s backslash escape: these lines are clamped
+     * by char offsets, and a cut through an escape pair would leave a backslash that eats the closing quote. Lives
+     * HERE, not in {@code editor.PeerBuilds}: the picker's game-free rows load this class without org.json.
+     * Callers: {@code PeerBuilds.savedLine} / {@code allTakenLine}, {@code ServerBuildFly.notCurrentLine},
+     * {@code ListPickerLane.buildLine}.
+     */
+    public static String insideQuotes(String name) {
+        return name == null ? null : name.replace('\'', '`');
+    }
+
     /** The SINK fold every {@link PilotWatchLog}
      *  row rides, kit twin of the server's {@code ops/PeerText.bound}: a char {@link WireTextLaw}
      *  rejects becomes {@code ?}, text past {@code max} is cut with a visible ellipsis, null reads "null".

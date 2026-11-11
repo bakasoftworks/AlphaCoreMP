@@ -90,10 +90,17 @@ final class PidsProbeReply {
             // The hull id rides the same rows' targetLabel: the join combo and the browser
             // list show and search it, and only the server knows a kept build's hull.
             // The kept copies list newest first; the base-first partition stands
+            // The capped window then shares its rows between base and promoted ids, reserveRows
+            List<String> newestFirst = ListingEmitter.keptNewestFirst(ids,
+                    door.pickableVariants == null ? null : door.pickableVariants::keptAtMsOrNull);
+            // The default is read ONCE, so the row the reserve keeps inside the window
+            // and the row shipEntries marks are the same id (the kit reads the default from that marked row alone)
+            String joinerDefault = door.variantPicks.joinerDefaultVariantOrNull();
             frames = ListingEmitter.encodeListing(0, ListingFrameCodec.KIND_SHIP,
-                    PilotIntentDatagramServer.PROBE_LISTING_ID, ListingEmitter.shipEntries(ListingEmitter.keptNewestFirst(ids,
-                            door.pickableVariants == null ? null : door.pickableVariants::keptAtMsOrNull), null,
-                            door.variantPicks.joinerDefaultVariantOrNull(),
+                    PilotIntentDatagramServer.PROBE_LISTING_ID, ListingEmitter.shipEntries(door.pickableVariants == null
+                            ? newestFirst : ListingEmitter.reserveRows(newestFirst, door.pickableVariants::baseHoldsFold,
+                                    frameCap * ListingFrameCodec.ENTRIES_PER_FRAME, joinerDefault), null,
+                            joinerDefault,
                             door.pickableVariants == null ? null : door.pickableVariants::displayNameOrNull,
                             door.pickableVariants == null ? null : door.pickableVariants::hullIdOrNull));
         } catch (RuntimeException codecLaw) {

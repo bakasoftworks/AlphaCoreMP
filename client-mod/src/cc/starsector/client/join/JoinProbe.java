@@ -29,12 +29,24 @@ final class JoinProbe {
 
     //
     /** Combo entry-0 label when the SERVER named a default ship (probe mark
-     * {@code ClientListingReader#MARK_SHIP_NEXT_RESPAWN}) — {@code "(server default: <id>)"}.
+     * {@code ClientListingReader#MARK_SHIP_NEXT_RESPAWN}) — {@code "(server default: <shown>)"}, {@code shown}
+     * being the text that ship paints (see {@link #serverDefaultLabel(String, ShipChoiceNames)}).
      * {@link JoinLaunchPlan#sanitizeShip} maps ANY {@code (server default…} label back to an
      * empty pick (so selecting it persists {@code ""} and the next open re-fetches), while the
      * Launch path resolves the concrete id via {@link JoinLaunchPlan#resolveLaunchShip}. */
-    static String serverDefaultLabel(String id) {
-        return "(server default: " + id + ")";
+    static String serverDefaultLabel(String shown) {
+        return "(server default: " + shown + ")";
+    }
+
+    /**
+     * Combo entry 0 for the server's default ship {@code id}: the row text that ship paints in the list
+     * ({@link ShipChoiceNames#rowText}: its hull, then a kept ship's typed name, its id only when no name came), so the
+     * entry reads like the join page's own default row. {@code names} null = the bare id. The label is display only:
+     * picking it still launches the id (sanitizeShip, then resolveLaunchShip).
+     *
+     */
+    static String serverDefaultLabel(String id, ShipChoiceNames names) {
+        return serverDefaultLabel(names == null ? id : names.rowText(id));
     }
 
     private JoinProbe() {

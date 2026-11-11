@@ -164,8 +164,8 @@ public final class PeerBuilds {
     }
 
     /**
-     * v2: a picker row's label for a folded custom — {@code "<name>" (<Hull>)},
-     * the author's name sanitized DATA (≤ 48) — or {@code null} when the id is not a folded,
+     * v2: a picker row's label for a folded custom ({@link #labelText}: {@code "<name>" (<Hull>)}, or
+     * {@code <id> (<Hull>)} for a build with no name) — or {@code null} when the id is not a folded,
      * registered, hull-bearing body (the lane then SKIPS the row fail-soft). Render thread;
      * SettingsAPI reads only. Never throws.
      */
@@ -178,12 +178,70 @@ public final class PeerBuilds {
             if (v == null) {
                 return null;
             }
-            return "\"" + EditorText.sanitize(String.valueOf(v.getDisplayName()), 48) + "\" ("
-                    + EditorText.sanitize(String.valueOf(v.getHullSpec().getHullName()), 32) + ")";
+            return labelText(id, v.getDisplayName(), String.valueOf(v.getHullSpec().getHullName()));
         } catch (RuntimeException fault) {
             PilotWatchLog.info("peer builds: row label failed: " + fault);
             return null;
         }
+    }
+
+    /**
+     * The label text, game-free: a named build reads {@code "<name>" (<Hull>)};
+     * a build with no name (none, or blank) keeps its id, {@code <id> (<Hull>)}, so the row still says which build it
+     * is. The name is ANOTHER player's text: {@link #typedNameOrNull} cuts it before it is painted; the hull name is
+     * cut to 32 and the id to the id law's 64 by the same {@link EditorText#sanitize}.
+     */
+    public static String labelText(String id, String displayName, String hullName) {
+        String name = typedNameOrNull(displayName);
+        return (name == null ? EditorText.sanitize(String.valueOf(id), 64) : "\"" + name + "\"")
+                + " (" + EditorText.sanitize(String.valueOf(hullName), 32) + ")";
+    }
+
+    /**
+     * The "saved as" line, game-free: it names the build by its typed name, not
+     * its stem; copy {@code n} (2..9, the stem's {@code -n} suffix) says it is the n-th copy of that name instead of
+     * showing the suffixed stem; a build with no name keeps the stem. The name passes {@link #typedNameOrNull} first;
+     * {@link Result} clamps the whole line to the chat cap.
+     */
+    public static String savedLine(String typedName, String stem, int copy, boolean current) {
+        String name = cc.starsector.client.FallbackAnnounce.insideQuotes(typedNameOrNull(typedName)); // NCP-1
+        String what;
+        if (name == null) {
+            what = "local build " + stem;
+        } else if (copy < 2) {
+            what = "local build '" + name + "'";
+        } else if (copy - 2 < COPY_ORDINALS.length) {
+            what = COPY_ORDINALS[copy - 2] + " copy of '" + name + "'";
+        } else {
+            what = "copy " + copy + " of '" + name + "'";
+        }
+        return "saved as " + what + (current ? " (now your current build)" : " - fly it from the join window or the editor");
+    }
+
+    /**
+     * The refusal when every stem a save may take already exists, game-free: it
+     * names the build by its typed name ({@link #typedNameOrNull}) the way {@link #savedLine} does; a build with no
+     * name keeps the stem range it showed before. At most 110 chars with the 48-char name cut.
+     */
+    public static String allTakenLine(String typedName, String baseStem) {
+        String name = cc.starsector.client.FallbackAnnounce.insideQuotes(typedNameOrNull(typedName)); // NCP-1
+        int all = PeerBuildVerbLaw.MAX_STEM_SUFFIX;
+        return name == null
+                ? "not saved: local builds " + baseStem + " .. -" + all + " all exist - delete one in the editor"
+                : "not saved: all " + all + " copies of '" + name + "' exist - delete one in the editor";
+    }
+
+    /** Copy 2..9 in words (the stem suffix's whole range, {@code PeerBuildVerbLaw.MAX_STEM_SUFFIX}). */
+    private static final String[] COPY_ORDINALS = {"a second", "a third", "a fourth", "a fifth", "a sixth",
+        "a seventh", "an eighth", "a ninth"};
+
+    /** A build's typed name as it may be painted ({@link EditorText#sanitize}: printable ASCII, at most 48), or null
+     *  when it has none (null or blank). */
+    static String typedNameOrNull(String displayName) {
+        if (displayName == null || displayName.trim().isEmpty()) {
+            return null;
+        }
+        return EditorText.sanitize(displayName, 48);
     }
 
     /**
@@ -213,6 +271,7 @@ public final class PeerBuilds {
             SettingsAPI settings = Global.getSettings();
             JSONObject o;
             String stem;
+            int copy = 0;
             synchronized (EditorOracle.LOCK) {
                 // the refusal and the write share the lock: a same-stem editor save cannot slip between
                 // them (EditorOracle.save overwrites unconditionally)
@@ -221,11 +280,11 @@ public final class PeerBuilds {
                     String candidate = PeerBuildVerbLaw.suffixedStem(baseStem, n);
                     if (!settings.fileExistsInCommon("cc_variants/" + candidate + ".variant")) {
                         stem = candidate;
+                        copy = n;
                     }
                 }
                 if (stem == null) {
-                    return new Result(false, baseStem, "not saved: local builds " + baseStem + " .. -"
-                            + PeerBuildVerbLaw.MAX_STEM_SUFFIX + " all exist - delete one in the editor");
+                    return new Result(false, baseStem, allTakenLine(doc.optString("displayName", ""), baseStem));
                 }
                 doc.put("variantId", stem);
                 ClientVariantDefinition def = ClientVariantJson.parse(doc.toString()); // the reader's law
@@ -234,8 +293,7 @@ public final class PeerBuilds {
             boolean current = o.optBoolean("autoSelected", false);
             PilotWatchLog.info("peer builds: saved peer custom " + EditorText.sanitize(id, 64) + " as " + stem
                     + (current ? " (auto-selected current)" : ""));
-            return new Result(true, stem, "saved as local build " + stem
-                    + (current ? " (now your current build)" : " - fly it from the join window or the editor"));
+            return new Result(true, stem, savedLine(doc.optString("displayName", ""), stem, copy, current));
         } catch (IllegalArgumentException | IllegalStateException | JSONException | IOException fault) {
             PilotWatchLog.info("peer builds: save of " + EditorText.sanitize(id, 64) + " refused: " + fault);
             return new Result(false, null, "not saved: " + EditorText.sanitize(String.valueOf(fault.getMessage()), 70));

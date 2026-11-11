@@ -185,6 +185,17 @@ public final class AdhocFoeSpawner {
          * boot-warmed table / the row guard dropped the spec / the attach reported no captain),
          * {@code (officer on K)} for a split. */
         public String receipt() {
+            return receipt(null);
+        }
+
+        /**
+         * {@link #receipt()} with the ship named by
+         * {@link #spawnReceiptLabel} - a kept id reads its typed name (and hull), every other id
+         * (or a null ship list) reads exactly as {@link #receipt()}. The ship list's monitor is
+         * read at most three times, once per exhausted entry.
+         */
+        public String receipt(PickableVariants shipsOrNull) {
+            String ship = spawnReceiptLabel(variantId, shipsOrNull);
             String at = pose == null ? "" : " at " + formatPose(pose);
             String who = side == SIDE_FRIEND ? "friendly " : "";
             String captain = ""; //
@@ -194,9 +205,9 @@ public final class AdhocFoeSpawner {
                         : " (officer on " + officered + ")";
             }
             if (failed == 0) {
-                return "spawned " + who + count + "x " + variantId + captain + at;
+                return "spawned " + who + count + "x " + ship + captain + at;
             }
-            return "spawned " + who + spawned + " of " + count + "x " + variantId + captain + at
+            return "spawned " + who + spawned + " of " + count + "x " + ship + captain + at
                     + " (spawn failed)";
         }
     }
@@ -290,12 +301,69 @@ public final class AdhocFoeSpawner {
     /** The side-naming twin — a friendly drop reads "friendly spawn dropped". */
     public static String queueFullReceipt(String variantId, int accepted, int requested,
             boolean friendly) {
+        return queueFullReceipt(variantId, accepted, requested, friendly, null);
+    }
+
+    /**
+     * The queue-full receipt with the ship named by
+     * {@link #spawnReceiptLabel} - a kept id reads its typed name (and hull), every other id (or a
+     * null ship list) reads exactly as the four-argument form.
+     */
+    public static String queueFullReceipt(String variantId, int accepted, int requested,
+            boolean friendly, PickableVariants shipsOrNull) {
+        String ship = spawnReceiptLabel(variantId, shipsOrNull);
         if (accepted == 0) {
             return (friendly ? "friendly" : "foe") + " spawn dropped (queue full): " + requested
-                    + "x " + variantId;
+                    + "x " + ship;
         }
-        return "queued " + accepted + " of " + requested + "x " + variantId
+        return "queued " + accepted + " of " + requested + "x " + ship
                 + " (queue full) - remainder dropped";
+    }
+
+    /**
+     * The name a spawned hull of {@code variantId} carries in
+     * the world - the engine member's name and the roster-append row's, so every window, the HUD and
+     * the {@code /transfer} list read it: a KEPT id's typed name ({@link #keptNameOrNull}), else
+     * {@code variantId} unchanged. WHY: the kept stem is the machine key (the row's variant field,
+     * every log token, every verb keeps it), but what a player reads on the hull is the name the
+     * builder typed, never the stem's random hex.
+     */
+    public static String spawnShipName(String variantId, PickableVariants shipsOrNull) {
+        String name = keptNameOrNull(variantId, shipsOrNull);
+        return name == null ? variantId : name;
+    }
+
+    /**
+     * The ship as a spawn receipt names it - a KEPT id's typed
+     * name ({@link #keptNameOrNull}) plus {@code " (<hull id>)"} when its hull is known and lawful
+     * ({@link ListingEmitter#shipHullLabelOrNull}, the ship rows' own hull law), else
+     * {@code variantId}, the text every receipt printed before. Chat text only; never a log token.
+     */
+    public static String spawnReceiptLabel(String variantId, PickableVariants shipsOrNull) {
+        String name = keptNameOrNull(variantId, shipsOrNull);
+        if (name == null) {
+            return variantId;
+        }
+        String hull = ListingEmitter.shipHullLabelOrNull(shipsOrNull.hullIdOrNull(variantId));
+        return hull == null ? name : name + " (" + hull + ")";
+    }
+
+    /**
+     * The typed name of a KEPT id, or null. Kept = a known keep
+     * time ({@link PickableVariants#keptAtMsOrNull}), the gate the spawn listing's labels use: a
+     * shipped variant's file name ("Assault") stays off its hull, so a stock spawn keeps its id.
+     * The name is player text bound for chat and the wire, so it is cut by
+     * {@link VoiceMuteCommand#safeLabel} (printable ASCII 0x20-0x7E, trimmed, at most 24 chars)
+     * BEFORE any caller prints or sends it. Null for a null ship list or id, an id that is not
+     * kept, no stored name, or a name with nothing printable in it. Two ship-list monitor reads at
+     * most (no I/O): the serve loop calls it once per spawned unit, beside a multi-ms engine spawn.
+     */
+    static String keptNameOrNull(String variantId, PickableVariants shipsOrNull) {
+        if (shipsOrNull == null || variantId == null || shipsOrNull.keptAtMsOrNull(variantId) == null) {
+            return null;
+        }
+        String raw = shipsOrNull.displayNameOrNull(variantId);
+        return raw == null ? null : VoiceMuteCommand.safeLabel(raw);
     }
 
     private final ArrayDeque<Entry> pending = new ArrayDeque<Entry>();

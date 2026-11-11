@@ -37,6 +37,7 @@ import com.fs.starfarer.api.util.Misc;
 
 import cc.starsector.client.CcClientModPlugin;
 import cc.starsector.client.PilotWatchLog;
+import cc.starsector.client.VariantReceiptLane;
 import cc.starsector.client.net.ClientVariantDefinition;
 import cc.starsector.client.net.ClientVariantJson;
 import cc.starsector.client.net.ClientVariantReceipt;
@@ -1278,13 +1279,17 @@ final class EditorOracle {
             seen.add(r.submitSeq());
         }
         int bodyBytes;
+        int seq;
         try {
             bodyBytes = VariantSubmitWriter.bodyBytes(canonical, cc.starsector.server.runtime.IdTables.installedOrNull());
-            session.sendVariantSubmit(canonical, keepOnly);
+            seq = session.sendVariantSubmit(canonical, keepOnly);
         } catch (IOException | RuntimeException notSent) {
             PilotWatchLog.error("editor submit: id=" + stem + " NOT sent", notSent);
             return refused(o, "not-sent", "not sent: " + EditorText.sanitize(nz(notSent.getMessage()), 120));
         }
+        // The chat's receipt toast names the build by the name typed here, keyed
+        // by the seq this send returned (a negative seq stores nothing; the name is cut before it is kept, never logged)
+        VariantReceiptLane.noteSubmitted(seq, stem, def.displayName());
         PilotWatchLog.info("editor submit: vsub_sent local_id=" + stem + " hull=" + EditorText.sanitize(def.hullId(), 64)
                 + " body_bytes=" + bodyBytes + "/" + VariantSubmitWriter.MAX_BODY_BYTES + " keep_only=" + keepOnly);
         o.put("submitted", true);

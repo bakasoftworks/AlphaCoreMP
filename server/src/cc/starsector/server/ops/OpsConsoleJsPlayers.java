@@ -37,10 +37,28 @@ package cc.starsector.server.ops;
  * over-cap words in the two headings (row {@code page-kept}). Every send goes through the one {@code send}
  * path, so the server-minted confirm shows the way every verb confirm does.
  * <p>A kept row whose status key {@code customKeptLabels} carries a name
- * (by index against {@code customKeptIds}, paired before any non-string id is dropped) paints that typed name first
- * ({@code .kept-name}, textContent) and keeps the stem visible in a dim style after it - two ships may share a name,
- * and the row's Forget, the toolbar Forget and the confirm all stay on the stem; no name = today's row. The kept
- * signature carries the names, so a renamed ship repaints.
+ * (by index against {@code customKeptIds}, paired before any non-string id is dropped) paints that typed name
+ * (textContent); the row's Forget, the toolbar Forget and the confirm all stay on the stem. The kept signature
+ * carries the names, so a renamed ship repaints.
+ * <p>A person reads the TYPED NAME wherever this part paints a kept or removed
+ * ship, and the stem stays every verb's key and moves to the hover ({@code title}, set as a property from the stem,
+ * never a name). {@code shipNames} reads one status once: the kept rows (the kept name, else the exported copy's
+ * name for the same stem, else the stem), the inbox rows from the optional {@code inboxLabels} index for index with
+ * {@code customInboxIds} (absent, short or a non-string slot = the stem), newest first as the server lists them, a
+ * named copy whose name a kept ship or an earlier copy already shows suffixed {@code " (older copy)"} with its own
+ * row and Keep (nothing merged or hidden), and {@code byStem} for the seat table's ship cell (the name, the fielded
+ * id as hover) and the dock's customs line (each whole id swapped in one pass; the server's raw line is the hover).
+ * <p>The server lists the inbox newest first by file time (it used to
+ * list it by name, so the older-copy mark followed a content hash, not age). An inbox row whose stem is also a kept
+ * stem is that kept ship's own file, left behind because a put back copies and never moves: it reads
+ * {@code "<name or stem> (already kept)"}, is never marked older, claims no name for a later copy, and gives
+ * {@code byStem} nothing (its kept row names the stem). The stem compare is exact: a kept stem is minted in lower
+ * case from the copy's content, so its own leftover file carries the same spelling.
+ * Every name reaches the page through textContent. The {@code sent '<line>'} note and the joiner-default field keep
+ * the id: the first is the command line as the server took it, the second is parsed by the server. The Forget and
+ * Keep confirms are minted by the server, so their names are the server's to word (rows {@code page-kept},
+ * {@code page-inbox-names}, {@code page-names-as-text}, {@code page-seat-ship-name},
+ * {@code page-customs-detail-names}).
  * <p>Ban address ({@code #btn-ban-ip}, {@code V.banIp}) sends {@code ban-ip}
  * + {@code key=} with the trimmed {@code #ban-ip-key} text (an empty box only notes), gated like the Bans list's
  * Unban ({@code gate.cmd}); its echo settles when the status ban count rises by one, and the box empties once the
@@ -114,6 +132,45 @@ final class OpsConsoleJsPlayers {
               const SHIPS_SAVE_FAILED = 'The hidden list could not be saved, so a change may not last past a restart. Failed saves: ';
               // a status list of strings (anything else reads as empty)
               const idList = (v) => Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+              // a status list of ids and their typed names, paired index for index BEFORE a non-string id drops (its
+              // name drops with it, so no later name lands on the wrong id); a missing, short or non-string name = ''
+              const pairUp = (ids, names) => (Array.isArray(ids) ? ids : [])
+                .map((id, i) => [id, Array.isArray(names) && typeof names[i] === 'string' ? names[i] : ''])
+                .filter((p) => typeof p[0] === 'string');
+              const OLDER = ' (older copy)';
+              const KEPT_ALREADY = ' (already kept)';
+              // one status's ship names. kept and inbox are the two lists' rows {stem, text}: text is what a person
+              // reads (the typed name, else the stem); the stem stays every verb's key and every row's hover. A kept
+              // ship with no name of its own reads its exported copy's name when the status carries one. The server
+              // lists the exported copies newest first (by file time): a copy whose stem is also a kept stem is that
+              // kept ship's own file left behind by its put back, so it reads ' (already kept)', never older, and
+              // claims no name; any other named copy whose name a kept ship or an EARLIER copy already shows reads
+              // ' (older copy)', and every copy keeps its own row (nothing is merged or hidden). byStem = stem -> text
+              // for each stem a name paints (the seat table and the dock line read it).
+              const shipNames = (s) => {
+                const inboxPairs = pairUp(s.customInboxIds, s.inboxLabels);
+                const inboxName = new Map(inboxPairs.filter((p) => p[1] !== ''));
+                const kept = pairUp(s.customKeptIds, s.customKeptLabels)
+                  .map(([stem, name]) => ({stem, text: name || inboxName.get(stem) || stem}));
+                const seen = new Set(kept.map((r) => r.text));
+                const keptStems = new Set(kept.map((r) => r.stem));
+                const inbox = inboxPairs.map(([stem, name]) => {
+                  if (keptStems.has(stem)) {
+                    return {stem, text: (name || stem) + KEPT_ALREADY};
+                  }
+                  const text = name !== '' && seen.has(name) ? name + OLDER : (name || stem);
+                  seen.add(name || stem);
+                  return {stem, text};
+                });
+                const byStem = new Map();
+                // a kept ship's own leftover file names nothing here: its kept row names that stem
+                for (const r of inbox.filter((x) => !keptStems.has(x.stem)).concat(kept)) {
+                  if (r.text !== r.stem) {
+                    byStem.set(r.stem, r.text);
+                  }
+                }
+                return {kept, inbox, byStem};
+              };
               // a refusal already showed the core's dialog; unreachable / wrong key show on the strip
               const ignore = () => {};
 
@@ -180,7 +237,7 @@ final class OpsConsoleJsPlayers {
                 }
               };
 
-              const renderSeats = (s) => {
+              const renderSeats = (s, shipName) => {
                 const rows = seatRows(s);
                 const focusIn = body.contains(document.activeElement);
                 const dim = s.seatsRemembered === true;
@@ -196,7 +253,19 @@ final class OpsConsoleJsPlayers {
                   }
                   used.add(tr);
                   for (const td of tr.children) {
-                    put(td, r.cell(td.dataset.col));
+                    const v = r.cell(td.dataset.col);
+                    // the ship cell reads a kept or exported ship's typed name and keeps the fielded id (its stem) as
+                    // the hover; any other ship reads its id, with no hover
+                    if (td.dataset.col === 'ship') {
+                      const name = shipName.get(v);
+                      put(td, name === undefined ? v : name);
+                      const tip = name === undefined ? '' : v;
+                      if (td.title !== tip) {
+                        td.title = tip;
+                      }
+                    } else {
+                      put(td, v);
+                    }
                     // the MagicLib cell's hover says why a reporting seat is not followed ('' = no title)
                     if (td.dataset.col === 'MagicLib') {
                       const why = r.cell('MagicLib why');
@@ -711,44 +780,33 @@ final class OpsConsoleJsPlayers {
                   CC.show(empty, rows.length === 0);
                 }
               };
-              // kept for everyone + exported not kept yet: textContent only, counts and over-cap words in the headings
-              const renderKept = (s) => {
-                // a kept stem and its typed name share an index in the status: pair them BEFORE dropping a non-string
-                // id (its name drops with it), so no later name lands on the wrong stem; a non-string name = none
-                const ids = Array.isArray(s.customKeptIds) ? s.customKeptIds : [];
-                const names = Array.isArray(s.customKeptLabels) ? s.customKeptLabels : [];
-                const pairs = ids.map((stem, i) => [stem, typeof names[i] === 'string' ? names[i] : ''])
-                  .filter((p) => typeof p[0] === 'string');
-                const kept = pairs.map((p) => p[0]);
-                const labels = pairs.map((p) => p[1]);
-                const inbox = idList(s.customInboxIds);
+              // kept for everyone + exported not kept yet (the rows shipNames made): each row reads its text by
+              // textContent, its stem is the row's hover and its button's key; counts and over-cap words in the headings
+              const renderKept = (s, ships) => {
+                const kept = ships.kept;
+                const inbox = ships.inbox;
                 put(CC.el('kept-title'), 'Kept for everyone (' + (s.customKept | 0) + ')'
                   + (s.customKeptOverCap === true ? OVER_CAP : ''));
                 put(CC.el('inbox-title'), 'Exported, not kept yet (' + inbox.length + ')'
                   + (s.customInboxOverCap === true ? OVER_CAP : ''));
-                const sig = JSON.stringify([kept, labels, inbox]);
+                // the rows carry their texts, so a renamed ship repaints
+                const sig = JSON.stringify([kept, inbox]);
                 if (sig !== keptSig) {
                   keptSig = sig;
-                  CC.el('kept-list').replaceChildren(...kept.map((stem, i) => {
+                  CC.el('kept-list').replaceChildren(...kept.map((r) => {
                     const li = CC.tpl('tpl-kept-row').firstElementChild;
-                    CC.text(CC.q('.kept-label', li), stem);
-                    if (labels[i]) {
-                      // the typed name first, the stem kept visible (dim) after it: two ships may share a name, and
-                      // Forget acts on the stem
-                      const name = document.createElement('span');
-                      name.className = 'kept-name';
-                      CC.text(name, labels[i] + ' ');
-                      const cell = CC.q('.kept-label', li);
-                      cell.classList.add('dim');
-                      cell.before(name);
-                    }
-                    CC.q('.forget', li).addEventListener('click', (e) => V.forgetRow(stem, e.currentTarget));
+                    const label = CC.q('.kept-label', li);
+                    CC.text(label, r.text);
+                    label.title = r.stem;
+                    CC.q('.forget', li).addEventListener('click', (e) => V.forgetRow(r.stem, e.currentTarget));
                     return li;
                   }));
-                  CC.el('inbox-list').replaceChildren(...inbox.map((name) => {
+                  CC.el('inbox-list').replaceChildren(...inbox.map((r) => {
                     const li = CC.tpl('tpl-inbox-row').firstElementChild;
-                    CC.text(CC.q('.inbox-label', li), name);
-                    CC.q('.keep', li).addEventListener('click', (e) => V.keepRow(name, e.currentTarget));
+                    const label = CC.q('.inbox-label', li);
+                    CC.text(label, r.text);
+                    label.title = r.stem;
+                    CC.q('.keep', li).addEventListener('click', (e) => V.keepRow(r.stem, e.currentTarget));
                     return li;
                   }));
                 }
@@ -794,9 +852,21 @@ final class OpsConsoleJsPlayers {
                 put(lastEl, line);
                 CC.show(lastEl, line !== '');
               };
-              const renderCustoms = (s) => {
+              // a run of id characters in the dock's customs line: a kept stem or a custom id (lowercase letters, digits,
+              // '-') is one whole run, so the line's spaces, commas, colons and full stops part the ids
+              const ID_RUN = /([A-Za-z0-9_-]+)/;
+              const renderCustoms = (s, shipName) => {
                 put(CC.el('customs-summary'), s.customs || 'customs: -');
-                put(CC.el('customs-detail'), s.customsDetail || '-');
+                // the line names each ship the lists name: every whole id byStem knows is swapped for the lists' text,
+                // in one pass (a swapped-in name is never read again); the server's own line, ids and all, is the hover
+                const raw = String(s.customsDetail || '-');
+                const line = raw.split(ID_RUN).map((t, i) => (i % 2 === 1 && shipName.has(t) ? shipName.get(t) : t)).join('');
+                const detail = CC.el('customs-detail');
+                put(detail, line);
+                const tip = line === raw ? '' : raw;
+                if (detail.title !== tip) {
+                  detail.title = tip;
+                }
                 const box = CC.el('customs-accept');
                 if (box.getAttribute('aria-busy') !== 'true') {
                   box.checked = s.customSubmissions === true;
@@ -820,11 +890,13 @@ final class OpsConsoleJsPlayers {
               CC.register({
                 name: 'players',
                 onStatus: (s) => {
-                  renderSeats(s);
+                  // the ship names first: the seat table, the two lists and the dock line all read them
+                  const ships = shipNames(s);
+                  renderSeats(s, ships.byStem);
                   renderBans(s);
-                  renderKept(s);
+                  renderKept(s, ships);
                   renderShips(s);
-                  renderCustoms(s);
+                  renderCustoms(s, ships.byStem);
                   renderMagicSeam(s);
                   renderPilotShip(s);
                   noteWatch(s);

@@ -53,6 +53,15 @@ public final class OpsConsoleFormsSelftest {
         row(fails, "forms-verb-grammar", OpsConsoleFormsSelftest::verbGrammar);
         row(fails, "forms-verb-occupant", OpsConsoleFormsSelftest::verbOccupant);
         row(fails, "forms-verb-confirm", OpsConsoleFormsSelftest::verbConfirm);
+        // The Forget / exported-row Keep confirms name the ship
+        row(fails, "confirm-forget-named", OpsConsoleFormsSelftest::confirmForgetNamed);
+        row(fails, "confirm-keep-export-named", OpsConsoleFormsSelftest::confirmKeepExportNamed);
+        row(fails, "confirm-unnamed-is-todays-text", OpsConsoleFormsSelftest::confirmUnnamedIsTodaysText);
+        row(fails, "confirm-key-stays-stem", OpsConsoleFormsSelftest::confirmKeyStaysStem);
+        row(fails, "confirm-label-hostile", OpsConsoleFormsSelftest::confirmLabelHostile);
+        // An inbox Keep that is a put back names the ship that leaves
+        row(fails, "confirm-keep-put-back", OpsConsoleFormsSelftest::confirmKeepPutBack);
+        row(fails, "confirm-put-back-guarded", OpsConsoleFormsSelftest::confirmPutBackGuarded);
         row(fails, "forms-custom-reject", OpsConsoleFormsSelftest::customReject);
         row(fails, "forms-custom-typed-id", OpsConsoleFormsSelftest::customTypedId);
         row(fails, "forms-ship-hide-show", OpsConsoleFormsSelftest::shipHideShow);
@@ -324,6 +333,194 @@ public final class OpsConsoleFormsSelftest {
                                 OpsConsoleForms.errorJson("Verb refused", "a\nb"))
                         && "{\"error\":\"\",\"title\":\"\"}".equals(OpsConsoleForms.errorJson(null, null)),
                 "ok/error keep the July shapes, escaped, null = \"\" (flips if a key is renamed or reordered)");
+    }
+
+    /** The Forget / Keep confirms' fixed tails (today's texts after the named subject). */
+    private static final String FORGET_TAIL = "? It leaves /ship now; its file moves back to variants-inbox.";
+    private static final String KEEP_TAIL = " for every player? It joins the /ship list now and at every start, until"
+            + " you press Forget kept.";
+    /** A kept / exported ship's label in the writer's shape. */
+    private static final String WOLF = "\"My Wolf\" (wolf)";
+
+    /** Forget names the kept ship by the label paired with ITS stem - the middle
+     *  of three ids, so a lookup reading a neighbour's slot (or the first) misses it. */
+    static void confirmForgetNamed() {
+        OpsSnapshot snap = keptSnapshot("kept-a-000001,kept-my-wolf-1a2b3c,kept-c-000003",
+                "-," + hex(WOLF) + "," + hex("\"Other\" (lasher)"), null, null);
+        String want = "Forget \"My Wolf\" (wolf)? It leaves /ship now; its file moves back to variants-inbox.";
+        OpsConsoleForms.ConfirmSpec spec = confirm("verb=custom-forget&stem=kept-my-wolf-1a2b3c", snap);
+        need(spec != null && want.equals(spec.message()),
+                "Forget kept-my-wolf-1a2b3c asked " + spec + ", want '" + want + "' (flips if the Forget confirm"
+                        + " says the raw stem again or reads a slot other than the stem's own)");
+        need(want.equals(ServerOpsCore.forgetConfirmText("kept-my-wolf-1a2b3c", WOLF)),
+                "forgetConfirmText(stem, label) = '" + ServerOpsCore.forgetConfirmText("kept-my-wolf-1a2b3c", WOLF)
+                        + "' (flips if the 2-arg text drops the label or re-quotes it)");
+    }
+
+    /** An exported row's Keep names the ship by the INBOX label paired with its
+     *  file name; the kept list's names and a seat's Keep never reach it. */
+    static void confirmKeepExportNamed() {
+        OpsSnapshot snap = keptSnapshot("kept-c-000003", hex("\"Kept C\" (lasher)"),
+                "cc-v2-brawl,kept-c-000003,kept-my-wolf-1a2b3c",
+                hex("\"Brawl\" (wolf)") + ",-," + hex(WOLF));
+        String want = "Keep \"My Wolf\" (wolf) for every player? It joins the /ship list now and at every start,"
+                + " until you press Forget kept.";
+        OpsConsoleForms.ConfirmSpec spec = confirm("verb=custom-keep-export&exportName=kept-my-wolf-1a2b3c", snap);
+        need(spec != null && want.equals(spec.message()),
+                "Keep kept-my-wolf-1a2b3c asked " + spec + ", want '" + want + "' (flips if the exported row's Keep"
+                        + " says the raw file name again or reads a slot other than its own)");
+        OpsConsoleForms.ConfirmSpec crossed = confirm("verb=custom-keep-export&exportName=kept-c-000003", snap);
+        need(crossed != null && ("Keep 'kept-c-000003'" + KEEP_TAIL).equals(crossed.message()),
+                "Keep kept-c-000003 (no inbox name, a kept name) asked " + crossed + " (flips if the inbox Keep reads"
+                        + " the kept list's names)");
+        for (String seatForm : List.of("verb=custom-keep&seat=2", "verb=custom-keep&id=cc-v2-brawl")) {
+            OpsConsoleForms.ConfirmSpec seat = confirm(seatForm, snap);
+            need(seat != null && ("Keep 'cc-v2-brawl'" + KEEP_TAIL).equals(seat.message()),
+                    seatForm + " asked " + seat + " (flips if a seat's or a typed id's Keep takes the inbox name"
+                            + " its id happens to carry)");
+        }
+    }
+
+    /** The guard: no name = today's texts byte for byte - a null snapshot, no kept
+     *  rows, an absent labels row, a {@code -} slot, a blank slot, and the 1-arg forms. */
+    static void confirmUnnamedIsTodaysText() {
+        String forget = "Forget 'kept-my-wolf-1a2b3c'? It leaves /ship now; its file moves back to variants-inbox.";
+        String keep = "Keep 'kept-my-wolf-1a2b3c' for every player? It joins the /ship list now and at every start,"
+                + " until you press Forget kept.";
+        String blank = hex("   ");
+        List<OpsSnapshot> snaps = new ArrayList<>(List.of(SNAP_A,
+                keptSnapshot("kept-my-wolf-1a2b3c", null, "kept-my-wolf-1a2b3c", null),
+                keptSnapshot("kept-my-wolf-1a2b3c", "-", "kept-my-wolf-1a2b3c", "-"),
+                keptSnapshot("kept-my-wolf-1a2b3c", blank, "kept-my-wolf-1a2b3c", blank)));
+        snaps.add(null);
+        for (OpsSnapshot snap : snaps) {
+            OpsConsoleForms.ConfirmSpec f = confirm("verb=custom-forget&stem=kept-my-wolf-1a2b3c", snap);
+            OpsConsoleForms.ConfirmSpec k = confirm("verb=custom-keep-export&exportName=kept-my-wolf-1a2b3c", snap);
+            need(f != null && forget.equals(f.message()) && k != null && keep.equals(k.message()),
+                    "an unnamed ship asked " + f + " / " + k + " (flips if a missing / '-' / blank name or a null"
+                            + " snapshot stops reading today's text, or throws)");
+        }
+        for (String none : new String[] {null, "", "   "}) {
+            need(forget.equals(ServerOpsCore.forgetConfirmText("kept-my-wolf-1a2b3c", none))
+                            && keep.equals(ServerOpsCore.keepConfirmText("kept-my-wolf-1a2b3c", none)),
+                    "label '" + none + "' changed the text (flips if a null / blank label is said)");
+        }
+        need(forget.equals(ServerOpsCore.forgetConfirmText("kept-my-wolf-1a2b3c"))
+                        && keep.equals(ServerOpsCore.keepConfirmText("kept-my-wolf-1a2b3c")),
+                "the 1-arg forms drifted (flips if the shared Forget / Keep wording changes)");
+    }
+
+    /** An inbox Keep the status file links to a kept copy is a PUT BACK -
+     *  the confirm names the copy that leaves /ship by its kept label, read from the pressed file's OWN slot (the
+     *  middle of three, both neighbours linked to another kept ship); the key stays the file name. */
+    static void confirmKeepPutBack() {
+        String two = "\"Wolf Two\" (wolf)";
+        OpsSnapshot snap = keptSnapshot("kept-a-000001,kept-wolf-2-4d5e6f", "-," + hex(two),
+                "cc-v2-brawl,kept-my-wolf-1a2b3c,kept-c-000003", hex("\"Brawl\" (wolf)") + "," + hex(WOLF) + ",-",
+                "kept-a-000001,kept-wolf-2-4d5e6f,kept-a-000001");
+        String want = "Put back \"My Wolf\" (wolf)? \"Wolf Two\" (wolf) leaves the /ship list. \"My Wolf\" (wolf)"
+                + " joins it now and at every start, until you press Forget kept.";
+        OpsConsoleForms.ConfirmSpec spec = confirm("verb=custom-keep-export&exportName=kept-my-wolf-1a2b3c", snap);
+        need(spec != null && want.equals(spec.message())
+                        && "custom-keep-export:kept-my-wolf-1a2b3c".equals(spec.key())
+                        && ServerOpsCore.CUSTOM_KEEP_LABEL.equals(spec.title()),
+                "the put back of kept-my-wolf-1a2b3c asked " + spec + ", want '" + want + "' keyed on the file name"
+                        + " (flips if the Keep confirm stops naming the ship that leaves, reads a neighbour's slot,"
+                        + " names it by its stem over its kept label, or the key takes the leaving stem)");
+        String bare = "Put back 'kept-c-000003'? 'kept-a-000001' leaves the /ship list. 'kept-c-000003' joins it now"
+                + " and at every start, until you press Forget kept.";
+        OpsConsoleForms.ConfirmSpec unnamed = confirm("verb=custom-keep-export&exportName=kept-c-000003", snap);
+        need(unnamed != null && bare.equals(unnamed.message()),
+                "an unnamed put back asked " + unnamed + ", want '" + bare + "' (flips if a ship with no label is"
+                        + " said other than as its quoted token)");
+        need(want.equals(ServerOpsCore.putBackConfirmText("kept-my-wolf-1a2b3c", WOLF, "kept-wolf-2-4d5e6f", two))
+                        && bare.equals(ServerOpsCore.putBackConfirmText("kept-c-000003", " ", "kept-a-000001", null)),
+                "putBackConfirmText drifted from the confirm (flips if its wording or a subject changes)");
+    }
+
+    /** The guard: a Keep says a ship leaves ONLY for a lawful slot, in a
+     *  list sized to the inbox ids, naming a ship on the kept list, on the exported row's Keep - else today's Keep
+     *  text byte for byte. Each unlawful stem below IS on the kept list, so only the slot law can refuse it. */
+    static void confirmPutBackGuarded() {
+        String long65 = "k" + "a".repeat(64);
+        String kept = "kept-a-000001," + long65 + ",-x,a=b";
+        String ids = "cc-v2-brawl,kept-my-wolf-1a2b3c,kept-c-000003";
+        String labels = "-," + hex(WOLF) + ",-";
+        String keep = "Keep " + WOLF + KEEP_TAIL;
+        String[][] cases = {
+                {"a link to a ship not on the kept list", "-,kept-gone-999999,-"},
+                {"no leaves row (an older writer)", null},
+                {"a 65-char stem", "-," + long65 + ",-"},
+                {"a stem with a non-alphanumeric first char", "-,-x,-"},
+                {"a stem holding '='", "-,a=b,-"},
+                {"fewer slots than ids", "-,kept-a-000001"},
+                {"more slots than ids", "-,kept-a-000001,-,-"}};
+        for (String[] c : cases) {
+            OpsConsoleForms.ConfirmSpec spec = confirm("verb=custom-keep-export&exportName=kept-my-wolf-1a2b3c",
+                    keptSnapshot(kept, null, ids, labels, c[1]));
+            need(spec != null && keep.equals(spec.message()),
+                    c[0] + " asked " + spec + " (flips if a stale, unlawful or mis-sized leaves row still says a ship"
+                            + " leaves, or throws)");
+        }
+        OpsSnapshot seatLinked = keptSnapshot(kept, null, ids, labels, "kept-a-000001,-,-");
+        for (String seatForm : List.of("verb=custom-keep&seat=2", "verb=custom-keep&id=cc-v2-brawl")) {
+            OpsConsoleForms.ConfirmSpec seat = confirm(seatForm, seatLinked);
+            need(seat != null && ("Keep 'cc-v2-brawl'" + KEEP_TAIL).equals(seat.message()),
+                    seatForm + " asked " + seat + " (flips if a seat's or a typed id's Keep - never a put back on the"
+                            + " server - reads the inbox leaves row)");
+        }
+    }
+
+    /** A NAMED confirm still keys and mints on the stem - the name rides the
+     *  message alone. */
+    static void confirmKeyStaysStem() {
+        OpsSnapshot snap = keptSnapshot("kept-my-wolf-1a2b3c", hex(WOLF), "kept-my-wolf-1a2b3c", hex(WOLF));
+        String[][] cases = {
+                {"verb=custom-forget&stem=kept-my-wolf-1a2b3c", "custom-forget:kept-my-wolf-1a2b3c",
+                        ServerOpsCore.CUSTOM_FORGET_LABEL, "custom-forget kept-my-wolf-1a2b3c"},
+                {"verb=custom-keep-export&exportName=kept-my-wolf-1a2b3c", "custom-keep-export:kept-my-wolf-1a2b3c",
+                        ServerOpsCore.CUSTOM_KEEP_LABEL, "custom-keep-export kept-my-wolf-1a2b3c"}};
+        for (String[] c : cases) {
+            OpsConsoleForms.ConfirmSpec spec = confirm(c[0], snap);
+            String line = OpsConsoleForms.verbLine(OpsConsoleForms.decodeForm(c[0]), snap);
+            need(spec != null && spec.message().contains(WOLF) && c[1].equals(spec.key())
+                            && c[2].equals(spec.title()) && c[3].equals(line),
+                    c[0] + " asked " + spec + " minting '" + line + "', want key " + c[1] + " and line " + c[3]
+                            + " with the name in the message (flips if the name is not said, or reaches the key,"
+                            + " the title or the verb line)");
+        }
+    }
+
+    /** A host-edited label carrying quotes / markup / a backslash stays the same
+     *  text in the message and is escaped (never re-shaped) in the JSON; the page paints that message as text; a
+     *  short labels row names its listed slot only, never a neighbour's. */
+    static void confirmLabelHostile() {
+        String hostile = "\"<b onclick=x>W</b>\" & 'q' \\ (wolf)";
+        OpsSnapshot snap = keptSnapshot("kept-a-000001,kept-b-000002,kept-c-000003", hex(hostile),
+                "cc-v1-a,cc-v1-b", hex(hostile));
+        OpsConsoleForms.ConfirmSpec spec = confirm("verb=custom-forget&stem=kept-a-000001", snap);
+        need(spec != null && ("Forget " + hostile + FORGET_TAIL).equals(spec.message())
+                        && "custom-forget:kept-a-000001".equals(spec.key()),
+                "the hostile-named Forget asked " + spec + " (flips if the label is altered, dropped or reaches the"
+                        + " key)");
+        String json = OpsConsoleForms.needsConfirmJson(List.of(spec));
+        String wantJson = "{\"needsConfirm\":[{\"key\":\"custom-forget:kept-a-000001\",\"title\":\"Forget kept\","
+                + "\"message\":\"Forget \\\"<b onclick=x>W</b>\\\" & 'q' \\\\ (wolf)" + FORGET_TAIL + "\"}]}";
+        need(wantJson.equals(json), "the hostile confirm's JSON was " + json + " (flips if a quote or backslash in a"
+                + " name breaks out of the message string)");
+        need(OpsConsoleJsCore.JS.contains("CC.text(CC.el('confirm-text'), spec.message"),
+                "the confirm dialog no longer paints spec.message through CC.text (flips if the message sink leaves"
+                        + " textContent)");
+        for (String stem : List.of("kept-b-000002", "kept-c-000003")) {
+            OpsConsoleForms.ConfirmSpec f = confirm("verb=custom-forget&stem=" + stem, snap);
+            need(f != null && ("Forget '" + stem + "'" + FORGET_TAIL).equals(f.message()),
+                    stem + " (past a one-slot labels row) asked " + f + " (flips if a short row lends a neighbour's"
+                            + " name)");
+        }
+        OpsConsoleForms.ConfirmSpec k = confirm("verb=custom-keep-export&exportName=cc-v1-b", snap);
+        need(k != null && ("Keep 'cc-v1-b'" + KEEP_TAIL).equals(k.message()),
+                "cc-v1-b (past a one-slot inbox labels row) asked " + k + " (flips if a short row lends a neighbour's"
+                        + " name)");
     }
 
     /**
@@ -666,13 +863,63 @@ public final class OpsConsoleFormsSelftest {
     }
 
     private static OpsSnapshot snapshot(String seat2Client) {
+        return OpsSnapshot.parse(snapshotLines(seat2Client));
+    }
+
+    private static List<String> snapshotLines(String seat2Client) {
         List<OpsStatusFile.SeatRow> seats = List.of(
                 new OpsStatusFile.SeatRow(2, seat2Client, "127.0.0.1:2", "wolf_Assault", true, 0L, 0L, 0,
                         "Ann", "cc-v2-brawl", "wolf", 10, "Brawl"),
                 new OpsStatusFile.SeatRow(3, "c3", "203.0.113.9:3", "lasher_CS", true, 0L, 0L, 0, "Bob"));
-        return OpsSnapshot.parse(OpsStatusFile.composeLines(1L, 1L, "run", "127.0.0.1", 51337, 7, 1, 2,
+        return OpsStatusFile.composeLines(1L, 1L, "run", "127.0.0.1", 51337, 7, 1, 2,
                 2L, 4, 60.0, 12.5, 3.2, 1000L, 500L, 100L, 50L, 0, 0.0, 0L, "cmd", seats,
-                new long[][] {{0L, 0L}, {0L, 0L}}, PhaseWindowStats.Snapshot.EMPTY));
+                new long[][] {{0L, 0L}, {0L, 0L}}, PhaseWindowStats.Snapshot.EMPTY);
+    }
+
+    /** SNAP_A's table plus literal kept / inbox rows as a status file carries
+     *  them - ids comma-joined, labels as the writer's hex slots ({@code -} = none); a {@code null} row is absent
+     *  (an older writer's file). Literal lines, so a row pins the reader's pairing, never the writer's encoder. */
+    private static OpsSnapshot keptSnapshot(String keptIds, String keptLabels, String inboxIds, String inboxLabels) {
+        return keptSnapshot(keptIds, keptLabels, inboxIds, inboxLabels, null);
+    }
+
+    /** The same plus a literal {@code custom.inbox_leaves=} row (null =
+     *  absent, as an older writer's file). */
+    private static OpsSnapshot keptSnapshot(String keptIds, String keptLabels, String inboxIds, String inboxLabels,
+            String inboxLeaves) {
+        List<String> lines = new ArrayList<>(snapshotLines("c2"));
+        lines.removeIf(l -> l.startsWith("custom.kept") || l.startsWith("custom.inbox")); // only the rows given here
+        if (keptIds != null) {
+            lines.add("custom.kept=" + keptIds.split(",").length);
+            lines.add("custom.kept_ids=" + keptIds);
+        }
+        if (keptLabels != null) {
+            lines.add("custom.kept_labels=" + keptLabels);
+        }
+        if (inboxIds != null) {
+            lines.add("custom.inbox_ids=" + inboxIds);
+        }
+        if (inboxLabels != null) {
+            lines.add("custom.inbox_labels=" + inboxLabels);
+        }
+        if (inboxLeaves != null) {
+            lines.add("custom.inbox_leaves=" + inboxLeaves);
+        }
+        return OpsSnapshot.parse(lines);
+    }
+
+    /** One label's slot as the writer encodes it: lowercase hex of each (ASCII) char. */
+    private static String hex(String ascii) {
+        StringBuilder sb = new StringBuilder(ascii.length() * 2);
+        for (int i = 0; i < ascii.length(); i++) {
+            sb.append(String.format(Locale.ROOT, "%02x", (int) ascii.charAt(i)));
+        }
+        return sb.toString();
+    }
+
+    /** The confirm {@code form} asks against {@code snap} (writer pid 0). */
+    private static OpsConsoleForms.ConfirmSpec confirm(String form, OpsSnapshot snap) {
+        return OpsConsoleForms.verbConfirm(OpsConsoleForms.decodeForm(form), snap, 0L);
     }
 
     public static void main(String[] args) {

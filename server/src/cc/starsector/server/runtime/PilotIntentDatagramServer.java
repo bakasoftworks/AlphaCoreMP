@@ -3263,7 +3263,10 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
     }
 
     /** {@link SeatVariantPicks.Notifier}: one server chat line to a session by id — resolved
-     * under the lock, sent outside it (the {@link #sendVariantReceipt} shape); gone = dropped. */
+     * under the lock, sent outside it (the {@link #sendVariantReceipt} shape); gone = dropped.
+     * The line is held to the chat law HERE ({@link #noticeFrameOrNull}), the one seam every pick notice
+     * reaches; a line that still cannot encode is dropped with one counted row (ids and a length, never the
+     * text) instead of throwing into the caller. */
     private void chatToSession(long sessionId, int seatId, String line) {
         PeerSession target;
         synchronized (lock) {
@@ -3272,7 +3275,37 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
                 return;
             }
         }
-        sendCtrlToSession(target, ChatFrameCodec.encodeDown(seatId, "server", line));
+        byte[] frame = noticeFrameOrNull(seatId, line);
+        if (frame == null) {
+            System.out.println("pilot-datagram-server chat_notice_dropped session=" + sessionId + " seat=" + seatId
+                    + " chars=" + (line == null ? -1 : line.length()) + " dropped=" + chatNoticesDropped.incrementAndGet());
+            return;
+        }
+        sendCtrlToSession(target, frame);
+    }
+
+    /** Pick notices {@link #chatToSession} dropped as unencodable (any thread). */
+    private final AtomicLong chatNoticesDropped = new AtomicLong();
+
+    /**
+     * NSE-1: one server pick notice as a {@code CHTD} frame, or null when it cannot be
+     * one. The line is clipped to the chat law first ({@link #clipReceipt}: trimmed, cut to
+     * {@link ChatFrameCodec#TEXT_MAX_CHARS}); the encoder's {@link IllegalArgumentException} (a bad seat, a byte
+     * cap, a char the law refuses) answers null. WHY: {@code SeatVariantPicks}' held-pick reject line names two
+     * ships (at most 24 chars each) plus the reject token, so a joiner's long names made it 128 chars; the
+     * unclipped encode threw on the SIM thread out of the custom drain and ended the serve for every seat. Never
+     * throws. Pure; public for the contract row.
+     */
+    public static byte[] noticeFrameOrNull(int seatId, String line) {
+        String text = clipReceipt(line);
+        if (text == null || text.isEmpty()) {
+            return null;
+        }
+        try {
+            return ChatFrameCodec.encodeDown(seatId, "server", text);
+        } catch (IllegalArgumentException unencodable) {
+            return null;
+        }
     }
 
     /**
@@ -3908,8 +3941,8 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
      * PARTITIONED — the BASE ids first in their listing order, then the overlay's promoted ids (dev
      * promotions + kept ships) in theirs; {@link PickableVariants#ids} already leads with the base (root
      * rank, then the promoted), so this is an order-keeping partition of ONE snapshot (the base is immutable:
-     * {@link PickableVariants#baseHoldsFold} splits it), never a new id. The probe's first 28 are base ships (when the base lists that many); a
-     * kept id past the cap stays typable. */
+     * {@link PickableVariants#baseHoldsFold} splits it), never a new id. An overflowing listing's 28-row window = {@link ListingEmitter#reserveRows}
+     * (each class is owed half; before it the first 28 were base ships); an id past the cap stays typable. */
     public List<String> probeListingIds() {
         if (pickableVariants == null) {
             return List.of();

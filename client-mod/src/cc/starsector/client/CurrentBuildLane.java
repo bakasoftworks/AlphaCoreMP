@@ -276,7 +276,10 @@ final class CurrentBuildLane {
             }
             int bodyBytes = cc.starsector.client.net.VariantSubmitWriter.bodyBytes(def,
                     cc.starsector.server.runtime.IdTables.installedOrNull());
-            session.sendVariantSubmit(def);
+            int seq = session.sendVariantSubmit(def);
+            // The receipt toast names the build by the name in its file, keyed by
+            // the seq this send returned (a negative seq stores nothing; the name is cut before it is kept, never logged)
+            VariantReceiptLane.noteSubmitted(seq, def.variantId(), def.displayName());
             PilotWatchLog.info("predict custom-variant: vsub_sent local_id=" + def.variantId()
                     + " hull=" + def.hullId() + " body_bytes=" + bodyBytes + "/"
                     + cc.starsector.client.net.VariantSubmitWriter.MAX_BODY_BYTES

@@ -445,7 +445,7 @@ final class AdminWaveVerbs {
             waveReceipt(door, command,
                     AdhocFoeSpawner.queueFullReceipt(spawnParts[0],
                             spawnCount - spawnDropped, spawnCount,
-                            spawnFriendly));
+                            spawnFriendly, door.pickableVariants));
         }
         System.out.println("npeer-serve operator_" + spawnRow
                 + " variant=" + spawnParts[0] + " count=" + spawnCount

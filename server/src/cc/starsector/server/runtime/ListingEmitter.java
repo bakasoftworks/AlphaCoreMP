@@ -196,6 +196,70 @@ public final class ListingEmitter {
         return out;
     }
 
+    /**
+     * THE DOOR PROBE WINDOW'S ROW RESERVE. The probe's
+     * reply is cut at {@code rows} ids ({@code PROBE_MAX_FRAMES} frames, 28) and the listing leads with the BASE ids: a
+     * kit root of 23 left a host's sixth kept ship off both join lists, and a mod set of 28 base ids left every kept
+     * ship off. Kept-first would only turn it around (the kept cap, 32, also exceeds the window). So when the listing
+     * OVERFLOWS the window each class is owed half of it ({@code rows / 2}), and rows one class cannot fill go to the
+     * other. The window then reads: the leading base ids, then the leading promoted ids (kept copies arrive newest
+     * first, {@link #keptNewestFirst}); the ids cut from it follow in the same two-class order, still counted by
+     * {@code totalAvailable} and still typable. A listing that FITS comes back as given (the same list: the reply is
+     * byte-identical to the pre-reserve one). Pure: no id is added, dropped or renamed, and the frame count and every
+     * wire bound are unchanged. {@code isBase} = {@link PickableVariants#baseHoldsFold}.
+     */
+    public static List<String> reserveRows(List<String> ordered, java.util.function.Predicate<String> isBase, int rows) {
+        return reserveRows(ordered, isBase, rows, null);
+    }
+
+    /**
+     * {@link #reserveRows(List, java.util.function.Predicate, int)} that also keeps the JOINER DEFAULT's row inside the
+     * window. WHY: the kit learns which ship is the server default ONLY from a row inside
+     * the window that carries the NEXT_RESPAWN mark ({@link #shipEntries} marks {@code id.equals(default)}; the kit's
+     * reader = {@code DoorProbe}), so a default the reserve cut (23 base + 6 kept cut the 23rd base id) left the join
+     * window with a bare "(server default)" and a placeholder ship. A default the window WOULD cut is moved into the
+     * LAST shown slot of its own class, and the id it displaces leads that class's cut ids; a class holding no slot at
+     * all (only a one-row window) takes the window's last row from the other class. A null default, one that is not in
+     * the listing ({@code equals}, the mark's own compare) and one already inside change nothing against the 3-arg
+     * result. Still pure and a permutation; a listing that FITS still comes back as given.
+     */
+    public static List<String> reserveRows(List<String> ordered, java.util.function.Predicate<String> isBase, int rows,
+            String defaultIdOrNull) {
+        if (rows <= 0 || ordered.size() <= rows) {
+            return ordered;
+        }
+        List<String> base = new ArrayList<String>(ordered.size());
+        List<String> promoted = new ArrayList<String>();
+        for (String id : ordered) {
+            (isBase.test(id) ? base : promoted).add(id);
+        }
+        int promotedShown = Math.min(promoted.size(), Math.max(rows / 2, rows - base.size()));
+        int baseShown = Math.min(base.size(), rows - promotedShown);
+        if (defaultIdOrNull != null) {
+            int b = base.indexOf(defaultIdOrNull);
+            int p = b >= 0 ? -1 : promoted.indexOf(defaultIdOrNull);
+            if (b >= baseShown) { // a base default the window would cut (-1 = not a base id, never >= a count)
+                if (baseShown == 0) {
+                    promotedShown--;
+                    baseShown = 1;
+                }
+                base.add(baseShown - 1, base.remove(b));
+            } else if (p >= promotedShown) { // a promoted default the window would cut
+                if (promotedShown == 0) {
+                    baseShown--;
+                    promotedShown = 1;
+                }
+                promoted.add(promotedShown - 1, promoted.remove(p));
+            }
+        }
+        List<String> out = new ArrayList<String>(ordered.size());
+        out.addAll(base.subList(0, baseShown));
+        out.addAll(promoted.subList(0, promotedShown));
+        out.addAll(base.subList(baseShown, base.size()));
+        out.addAll(promoted.subList(promotedShown, promoted.size()));
+        return out;
+    }
+
     /** The door probe's KIND_MODSET rows — one per record of the boot mod set
      * (the set's own ordinal-id order): token = the mod id (the id law is a subset of the token
      * law), targetLabel = {@link ModSet#versionLabel}, hullWireId = {@link ModSet#filesPrefix} (jars word + data word),

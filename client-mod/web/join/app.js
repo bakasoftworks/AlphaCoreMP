@@ -100,8 +100,15 @@
     ships.names = labelMap(names);
     ships.hulls = labelMap(hulls);
     ships.twins = keptTwins(ships.server);
+    paintBuild();
     if ($('ship').value) { pickShip($('ship').value, { quiet: true }); } 
     if (shipUi.open) { renderShipList($('shipSearch').value); }
+  }
+  
+  
+  function paintBuild() {
+    setText('build', ships.current ? 'Current build: ' + shipLabel(ships.current) + ' (flies unless you pick the server default above - that clears it)'
+      : 'Current build: none - the ship above (or the server default) flies', false);
   }
   function setShipDefault(id) {
     ships.defaultId = id || '';
@@ -144,8 +151,8 @@
     var known = {};
     ships.server.concat(ships.local).forEach(function (id) { known[id] = 1; });
     if (!q) { addOpt('', defaultLabel(ships.defaultId), 'default', 'dflt', 'dflt'); }
-    if (ships.current && !known[ships.current] && match(ships.current)) { addHead('Current build', 1); addOpt(ships.current, ships.current, 'current', null, null); }
-    if (cur && !known[cur] && cur !== ships.current && match(cur)) { addHead('Picked', 1); addOpt(cur, cur, null, null, 'typed'); }
+    if (ships.current && !known[ships.current] && match(ships.current)) { addHead('Current build', 1); addOpt(ships.current, shipLabel(ships.current), 'current', null, null); }
+    if (cur && !known[cur] && cur !== ships.current && match(cur)) { addHead('Picked', 1); addOpt(cur, shipLabel(cur), null, null, 'typed'); }
     if (srv.length) { addHead('Server ships', srv.length); srv.forEach(function (id) { addOpt(id, shipLabel(id), id === ships.current ? 'current' : (id === ships.defaultId ? 'default' : null), id === ships.current ? null : 'dflt', null); }); }
     if (loc.length) { addHead('Local customs', loc.length); loc.forEach(function (id) { addOpt(id, id, id === ships.current ? 'current' : null, null, null); }); }
     if (q && !known[q] && !known[$('shipSearch').value.trim()]) {
@@ -458,7 +465,7 @@
     $('form').hidden = true; $('face').hidden = false; $('launch').hidden = true; $('cancel').hidden = true;
     status('launched - Starsector is starting');
     setText('facePick', 'Joining ' + (pick.host || '') + ':' + (pick.port || '') + (pick.name ? ' as ' + pick.name : '')
-      + ' - ship: ' + (pick.ship || 'server default'), false);
+      + ' - ship: ' + (pick.ship ? shipLabel(pick.ship) : 'server default'), false);
     if (st && st.face) { setText('facePurpose', st.face.purpose); setText('faceHint', st.face.hint); }
     setText('faceLine', (st && st.companion && st.companion.line) || 'Starsector: starting...', false);
   }
@@ -583,9 +590,7 @@
     setText('kit', s.kitCredential ? 'match: a saved copy is beside join-cc.bat - the server is asked whether it is current'
       : 'match: none saved yet - the server sends it once the password checks out', false);
     
-    setText('build', s.currentBuild ? 'Current build: ' + s.currentBuild + ' (flies unless you pick the server default above - that clears it)'
-      : 'Current build: none - the ship above (or the server default) flies', false);
-    fillShips([], s.localCustoms);
+    fillShips([], s.localCustoms);   
     showCustoms(s.customsNotes);
     setText('shipStatus', s.notReadyLine || '', false);
     setText('pasteStatus', s.staged ? stagedLine(s.staged) : '', false);

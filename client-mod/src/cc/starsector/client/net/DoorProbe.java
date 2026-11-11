@@ -98,6 +98,25 @@ public final class DoorProbe {
     private DoorProbe() {
     }
 
+    /** The server's fixed prefix of a kept ship's id ({@code kept-<slug>-<6 hex>}, the hex a content hash). */
+    public static final String KEPT_PREFIX = "kept-";
+
+    /**
+     * How a person reads ship {@code id}: the name the probe carried for it when it is a KEPT ship (its id ends in a
+     * content hash nobody can read), else the id itself. A shipped ship keeps its id because the name it carries is a
+     * generic display word many ships share (the pick lists paint its id for the same reason). The name was checked at
+     * decode (at most 24 printable ASCII, the seat-name law); a blank or absent one = the id. DISPLAY ONLY: the launch
+     * path, the stored pick and the HELLO all carry the id. Null id = null.
+     *
+     */
+    public static String shownShip(String id, Map<String, String> names) {
+        if (id == null || names == null || !id.startsWith(KEPT_PREFIX)) {
+            return id;
+        }
+        String name = names.get(id);
+        return name == null || name.isBlank() ? id : name;
+    }
+
     /**
      * Only ids the launch path can carry are ever offered/adopted: join-cc.bat's {@code :vguard}
      * charset {@code ^[0-9A-Za-z][0-9A-Za-z._:-]*$} (the value rides a bare {@code %VAR%} into the
@@ -147,9 +166,12 @@ public final class DoorProbe {
             case "content_fingerprint_mismatch":
             case "content_fingerprint_required":
                 // The ONE copy of the kit-differs line (both join windows read it
-                // through here); the fix is the host's kit again — the match itself comes from the server, never a paste
-                return "This CC_Client folder is not the host's kit (a file differs) - extract the host's kit zip"
-                        + " again, then press Refresh.";
+                // through here); the fix is the host's kit again — the match itself comes from the server, never a paste.
+                // The steps are the launcher's own FIX line (delete the folder FIRST). WHY: a
+                // kit copied OVER an old CC_Client keeps a file the new kit no longer ships, the print still differs,
+                // and "extract the zip again, then press Refresh" could never clear it.
+                return "This CC_Client folder is not the host's kit (a file differs) - close this window, delete the"
+                        + " CC_Client folder from mods, copy in the one from the host's kit zip, then run join-cc again.";
             case "client_id_required":
                 // The door's pre-claim HELLO checks can mint this on
                 // a probe too (blank cid) — a sentence, never the raw token.
@@ -361,8 +383,23 @@ public final class DoorProbe {
             return rejectReason == null && error == null;
         }
 
-        /** The one line under the picker. */
+        /** The picker's line with the server default painted by its ID: the machine form (the probe CLI prints it);
+         *  both join windows paint {@link #shownStatusLine} instead. */
         public String statusLine() {
+            return statusLine(defaultId);
+        }
+
+        /**
+         * The one line under the picker, as a person reads it: the server default painted by {@link #shownShip} (a
+         * kept ship's typed name, else its id). Both join windows paint this line; what Launch sends stays the id.
+         *
+         */
+        public String shownStatusLine() {
+            return statusLine(defaultId == null ? null : shownShip(defaultId, names));
+        }
+
+        /** The line with {@code defaultText} (null = no default named) as its trailing sentence. */
+        private String statusLine(String defaultText) {
             if (rejectReason != null) {
                 return "Ship list: " + rejectMessage(rejectReason);
             }
@@ -381,8 +418,8 @@ public final class DoorProbe {
             }
             s.append('.');
             // The host-picked default, as its own trailing sentence
-            if (defaultId != null) {
-                s.append(" Server default: ").append(defaultId).append('.');
+            if (defaultText != null) {
+                s.append(" Server default: ").append(defaultText).append('.');
             }
             return s.toString();
         }
@@ -1023,8 +1060,10 @@ public final class DoorProbe {
                     + " held: another join from this address, or several recent wrong passwords"
                     + " - wait ~10 s and retry"));
         }
+        // A door OLDER than this kit drops a newer HELLO silently (its bounce ladder knows only the grammars before its
+        // own), so silence is also what an older server looks like from here
         return collector.documentResult(collector.result("no reply from " + host + ":" + port
-                + " (server not up yet, or wrong address/port)"));
+                + " (server not up yet, wrong address/port, or a server older than this kit)"));
     }
 
     /**

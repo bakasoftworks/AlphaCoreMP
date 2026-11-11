@@ -157,6 +157,8 @@ public final class OpsConsolePageSelftest {
         row(fails, "page-js-text-law", () -> jsTextLaw(js));
         row(fails, "page-js-ids-bound", () -> jsIdsBound(html, js));
         row(fails, "page-kept", () -> pageKept(html, js));
+        row(fails, "page-inbox-names", () -> pageInboxNames(js));
+        row(fails, "page-names-as-text", () -> pageNamesAsText(js));
         row(fails, "page-ships", () -> pageShips(html, css, js));
         row(fails, "page-map-row-ids", () -> pageMapRow(html, js));
         row(fails, "page-n-ids", () -> pageNIds(html, js));
@@ -1315,9 +1317,12 @@ public final class OpsConsolePageSelftest {
      * Unban custom), defines {@code renderKept} and calls it on every status, paints the ids by textContent, sends
      * the per-row verbs by their own keys, and its empty-list text is {@link ServerOpsCore#NO_KEPT_TEXT}.
      * <p>The typed names - read from {@code customKeptLabels} by index
-     * against the ids, painted through {@code CC.text} only, the stem still painted (dim) beside each, the kept
-     * signature carrying the names; the row's Forget CALL SITE, the toolbar Forget and its verb stay on the stem, and
-     * no title / data attribute / attribute write in {@code renderKept} can carry a name.
+     * against the ids, painted through {@code CC.text} only, the kept signature carrying the names; the row's Forget
+     * CALL SITE, the toolbar Forget and its verb stay on the stem, and no data attribute / attribute write in
+     * {@code renderKept} can carry a name.
+     * <p>The stem is each kept row's hover, written as {@code label.title =
+     * r.stem;} (the one title write {@code renderKept} may make); a kept row with no name of its own falls back to its
+     * exported copy's name, then the stem.
      */
     static String pageKept(String html, String js) {
         List<String> bad = new ArrayList<>();
@@ -1362,8 +1367,9 @@ public final class OpsConsolePageSelftest {
                 "CC.el('btn-keep-custom').addEventListener('click', () => V.customVerb('custom-keep', 'btn-keep-custom'));",
                 "CC.el('btn-forget-custom').addEventListener('click', V.forgetKept);",
                 "['btn-keep-custom', gate.custom], ['btn-forget-custom', gate.cmd]",
-                "const renderKept = (s) => {", "renderKept(s);",
-                "CC.text(CC.q('.kept-label', li), stem);", "CC.text(CC.q('.inbox-label', li), name);",
+                "const renderKept = (s, ships) => {", "renderKept(s, ships);",
+                "const label = CC.q('.kept-label', li); CC.text(label, r.text);",
+                "const label = CC.q('.inbox-label', li); CC.text(label, r.text);",
                 "{verb: 'custom-forget', stem}", "{verb: 'custom-keep-export', exportName: name}",
                 "'" + ServerOpsCore.NO_KEPT_TEXT + "'")) {
             if (!flatJs.contains(literal)) {
@@ -1372,30 +1378,137 @@ public final class OpsConsolePageSelftest {
                         + " per-row verb sends another key, or the empty text leaves the core's)");
             }
         }
-        // The typed names beside the stems; every action keeps the stem.
+        // The typed names paint and the stem is each
+        // row's hover (no longer a visible dim span); every action keeps the stem.
         for (String literal : List.of(
-                "const names = Array.isArray(s.customKeptLabels) ? s.customKeptLabels : [];",
-                "const pairs = ids.map((stem, i) => [stem, typeof names[i] === 'string' ? names[i] : ''])"
-                        + " .filter((p) => typeof p[0] === 'string');",
-                "const sig = JSON.stringify([kept, labels, inbox]);",
-                "CC.text(name, labels[i] + ' ');", "cell.classList.add('dim');", "cell.before(name);",
-                "CC.q('.forget', li).addEventListener('click', (e) => V.forgetRow(stem, e.currentTarget));",
+                "const kept = pairUp(s.customKeptIds, s.customKeptLabels)"
+                        + " .map(([stem, name]) => ({stem, text: name || inboxName.get(stem) || stem}));",
+                "const sig = JSON.stringify([kept, inbox]);",
+                "CC.text(label, r.text); label.title = r.stem;"
+                        + " CC.q('.forget', li).addEventListener('click', (e) => V.forgetRow(r.stem, e.currentTarget));",
                 "const ids = idList(CC.status && CC.status.customKeptIds);",
                 "send('/api/verb', {verb: 'custom-forget', stem: ids[0]}, CC.el('btn-forget-custom'));")) {
             if (!flatJs.contains(literal)) {
-                bad.add("script lacks '" + clip(literal) + "' (flips if the names leave customKeptLabels or pair by a"
-                        + " filtered index, a renamed ship no longer repaints, a name paints by markup or hides the"
-                        + " stem, or a Forget sends the name instead of the stem)");
+                bad.add("script lacks '" + clip(literal) + "' (flips if the names leave customKeptLabels, a kept row"
+                        + " without a name stops falling back to its exported copy's name then its stem, a renamed"
+                        + " ship no longer repaints, the stem leaves the row's hover, or a Forget sends the name"
+                        + " instead of the stem)");
             }
         }
-        int rk = flatJs.indexOf("const renderKept = (s) => {");
+        int rk = flatJs.indexOf("const renderKept = (s, ships) => {");
         int rkEnd = rk < 0 ? -1 : flatJs.indexOf("const renderShips", rk);
-        String keptBody = rkEnd < 0 ? "" : flatJs.substring(rk, rkEnd);
+        // the one hover write renderKept may make carries the stem, never a name
+        String keptBody = rkEnd < 0 ? "" : flatJs.substring(rk, rkEnd).replace("label.title = r.stem;", "");
         for (String sink : List.of(".title", "dataset", "setAttribute", "textContent", "innerText", "data-")) {
             if (keptBody.isEmpty() || keptBody.contains(sink)) {
                 bad.add("renderKept " + (keptBody.isEmpty() ? "body not found" : "writes '" + sink + "'")
                         + " (flips if a typed name reaches an attribute / tooltip or bypasses CC.text)");
                 break;
+            }
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /**
+     * {@code page-inbox-names} - the "Exported, not kept yet" rows read the typed
+     * names. {@code inboxLabels} pairs index for index with {@code customInboxIds} before a non-string id drops, and a
+     * missing, short or non-string slot reads the stem; the rows keep the server's newest-first order, a named copy
+     * whose name a kept ship or an earlier copy already shows gains {@code " (older copy)"}, and every copy keeps its
+     * own row (nothing between the pairs and the rows filters or merges one away), its text by {@code CC.text}, its
+     * stem as the hover and as its Keep's {@code exportName}.
+     * A row whose stem is also a kept stem (the kept ship's own file a put
+     * back leaves behind) reads {@code "<name or stem> (already kept)"}, is never marked older and adds nothing to
+     * {@code seen}; the stem set is built before the rows (the rows' body still holds no filter or set).
+     */
+    static String pageInboxNames(String js) {
+        List<String> bad = new ArrayList<>();
+        String flat = js.replaceAll("\\s+", " ");
+        for (String[] want : new String[][] {
+                {"const pairUp = (ids, names) => (Array.isArray(ids) ? ids : [])"
+                        + " .map((id, i) => [id, Array.isArray(names) && typeof names[i] === 'string' ? names[i] : ''])"
+                        + " .filter((p) => typeof p[0] === 'string');",
+                        "a name pairs by a filtered index, or a missing / short inboxLabels stops reading as no name"},
+                {"const inboxPairs = pairUp(s.customInboxIds, s.inboxLabels);",
+                        "the inbox rows stop reading inboxLabels beside customInboxIds"},
+                {"const OLDER = ' (older copy)';", "the older-copy words change"},
+                {"const KEPT_ALREADY = ' (already kept)';", "the already-kept words change"},
+                {"const seen = new Set(kept.map((r) => r.text));",
+                        "a copy sharing a kept ship's name stops reading as an older copy"},
+                {"const keptStems = new Set(kept.map((r) => r.stem));",
+                        "a kept ship's own leftover file stops being told by its stem (by its name, or not at all)"},
+                {"const inbox = inboxPairs.map(([stem, name]) => { if (keptStems.has(stem)) { return {stem, text:"
+                        + " (name || stem) + KEPT_ALREADY}; } const text = name !== '' && seen.has(name)"
+                        + " ? name + OLDER : (name || stem); seen.add(name || stem); return {stem, text}; });",
+                        "a kept ship's own leftover file reads ' (older copy)' beside its kept row or claims its name"
+                        + " in seen, a second same-name copy loses ' (older copy)', or a row with no name stops"
+                        + " reading its stem"},
+                {"const inbox = ships.inbox;", "renderKept stops painting every row shipNames made"},
+                {"CC.el('inbox-list').replaceChildren(...inbox.map((r) => { const li = CC.tpl('tpl-inbox-row')"
+                        + ".firstElementChild; const label = CC.q('.inbox-label', li); CC.text(label, r.text);"
+                        + " label.title = r.stem; CC.q('.keep', li).addEventListener('click', (e) =>"
+                        + " V.keepRow(r.stem, e.currentTarget)); return li; }));",
+                        "a row paints by markup, its stem leaves the hover, or its Keep sends the name instead of the"
+                        + " stem"}}) {
+            if (!flat.contains(want[0])) {
+                bad.add("script lacks '" + clip(want[0]) + "' (flips if " + want[1] + ")");
+            }
+        }
+        int from = flat.indexOf("const inbox = inboxPairs.map(");
+        int to = from < 0 ? -1 : flat.indexOf("const byStem", from);
+        String rows = to < 0 ? "" : flat.substring(from, to);
+        for (String drop : List.of(".filter(", ".find(", "new Map(", "new Set(", "continue", ".splice(")) {
+            if (rows.isEmpty() || rows.contains(drop)) {
+                bad.add((rows.isEmpty() ? "the inbox rows' body not found" : "the inbox rows use '" + drop + "'")
+                        + " (flips if a same-name copy is hidden or merged instead of listed)");
+                break;
+            }
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /** A {@code .title} write in the flattened script; group 1 = what it assigns. */
+    private static final Pattern TITLE_WRITE = Pattern.compile("\\.title = ([^;]*);");
+    /** One plain name or member chain ({@code tip}, {@code r.stem}): no operator, call, quote or template. */
+    private static final Pattern PLAIN_REF = Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)*");
+
+    /**
+     * {@code page-names-as-text} - a typed name holding {@code <}, {@code &} or
+     * a quote renders as text. The four name paints (the two list rows, the seat ship cell, the dock line) go through
+     * {@code CC.text} / {@code put}, and {@code CC.text} writes {@code textContent}; every {@code .title} write in the
+     * script assigns one plain name or member chain (never a string built by concatenation or a template), no
+     * attribute is set by name, and no markup sink appears.
+     */
+    static String pageNamesAsText(String js) {
+        List<String> bad = new ArrayList<>();
+        String flat = js.replaceAll("\\s+", " ");
+        int listPaints = flat.split(Pattern.quote("CC.text(label, r.text);"), -1).length - 1;
+        if (listPaints != 2) {
+            bad.add("'CC.text(label, r.text);' found " + listPaints + " time(s), want 2 (flips if a kept or inbox row"
+                    + " paints its name another way)");
+        }
+        for (String paint : List.of("put(td, name === undefined ? v : name);", "put(detail, line);",
+                "el.textContent = s === null || s === undefined ? '' : String(s);")) {
+            if (!flat.contains(paint)) {
+                bad.add("script lacks '" + clip(paint) + "' (flips if the seat cell or the dock line paints a name"
+                        + " other than by textContent, or CC.text stops writing textContent)");
+            }
+        }
+        Matcher m = TITLE_WRITE.matcher(flat);
+        int titles = 0;
+        while (m.find()) {
+            titles++;
+            if (!PLAIN_REF.matcher(m.group(1).trim()).matches()) {
+                bad.add("a title is written from '" + clip(m.group(1)) + "' (flips if an attribute is built by string"
+                        + " concatenation or a template)");
+            }
+        }
+        if (titles < 5) {
+            bad.add(titles + " title write(s) found, want at least 5 (flips if the reader misses the hover writes)");
+        }
+        for (String sink : List.of("setAttribute('title'", "setAttribute(\"title\"", "innerHTML", "outerHTML",
+                "insertAdjacentHTML", "document.write")) {
+            if (flat.contains(sink)) {
+                bad.add("script carries '" + sink + "' (flips if a name can land as markup or a named attribute)");
             }
         }
         return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);

@@ -348,9 +348,38 @@ public final class CustomVariantLane implements PilotIntentDatagramServer.Varian
             long sessionId, int seatId) {
         AcceptListener l = acceptListenerOrNull;
         if (l != null) {
-            l.onAccepted(authorKey, canonicalId, localId, sessionId, seatId);
+            try {
+                l.onAccepted(authorKey, canonicalId, localId, sessionId, seatId);
+            } catch (RuntimeException fault) {
+                listenerFault("accepted", fault);
+            }
         }
     }
+
+    /**
+     * NSE-1's fault net: a listener that throws never leaves the lane. WHY: the drain
+     * runs on the SIM thread with nothing above it but {@code serve()}, so a throw out of a pick notice (a chat line
+     * past the 120-char law, composed from a joiner's names) ended the match for every seat; on a reader thread
+     * the same throw cut the submitter's session. The verdict, the ledger row and the VACK are all done BEFORE the
+     * listener runs, so swallowing its fault loses only the seed / notice, said loud here. The row carries the
+     * exception's class and its message through {@link PeerText#quote}, never a raw peer field.
+     */
+    private void listenerFault(String kind, RuntimeException fault) {
+        int n = ++listenerFaults;
+        System.out.println("custom-variant listener_fault kind=" + kind + " fault="
+                + PeerText.quote(fault.getClass().getSimpleName() + ": " + fault.getMessage()) + " faults=" + n);
+        FallbackAnnounce.announceOnce("custom-variant-listener-fault-" + kind,
+                "custom variant " + kind + " listener threw " + fault.getClass().getSimpleName()
+                        + " (the verdict stands; the seat's seed / notice for it is lost)");
+    }
+
+    /** Listener throws the net above swallowed (contract rows; written by the sim thread and the readers
+     * unlocked like this lane's other counters, so a racy count is fine). */
+    public int listenerFaults() {
+        return listenerFaults;
+    }
+
+    private int listenerFaults;
 
     /** Install (or clear) the reject listener; thread-agnostic. */
     public void setRejectListener(RejectListener listenerOrNull) {
@@ -361,7 +390,11 @@ public final class CustomVariantLane implements PilotIntentDatagramServer.Varian
     private void notifyRejected(String authorKey, String localId, String reasonToken) {
         RejectListener l = rejectListenerOrNull;
         if (l != null) {
-            l.onRejected(authorKey == null ? "" : authorKey, localId, reasonToken);
+            try {
+                l.onRejected(authorKey == null ? "" : authorKey, localId, reasonToken);
+            } catch (RuntimeException fault) {
+                listenerFault("rejected", fault);
+            }
         }
     }
 

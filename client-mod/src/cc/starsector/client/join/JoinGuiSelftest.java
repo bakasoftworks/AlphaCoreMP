@@ -455,6 +455,7 @@ final class JoinGuiSelftest {
         selftestShipChoiceNames(); //
         selftestShipChoiceHulls(tmp); //
         selftestKeptShipNames();
+        selftestServerDefaultNamed();
         selftestModStageLazy(tmp);
         selftestModStageDigestOnce(tmp);
         selftestModStageLinks(tmp);
@@ -1010,11 +1011,12 @@ final class JoinGuiSelftest {
                 "content_fingerprint_mismatch")) && refused.statusLine().equals(JoinBrowserUi.windowLine(refused)),
                 "w3-one-copy: the window constant, the door's reject text and both windows' lines are one string (flips"
                         + " if either copy is re-worded alone)");
-        check(door.contains("is not the host's kit") && door.contains("press Refresh")
-                && !door.contains("Refresh list")
+        check(door.contains("is not the host's kit") && door.contains("delete the CC_Client folder from mods")
+                && door.endsWith("then run join-cc again.") && !door.contains("Refresh")
                 && !door.contains("credential") && !door.toLowerCase(java.util.Locale.ROOT).contains("paste"),
-                "w3-one-copy: the text names the host's kit and Refresh, no match paste (flips if the dead paste"
-                        + " hint returns or the old button name 'Refresh list' comes back)");
+                "w3-one-copy: the text names the host's kit and says to DELETE the folder before copying the kit in,"
+                        + " no match paste (flips if the dead paste hint returns, or the advice goes back to 'extract"
+                        + " again, then press Refresh', which cannot clear a stale file left by a copy-over)");
     }
 
     /** The selftest descriptor under {@code matchId}, its seat tokens as the strict placeholders the receive law
@@ -1447,6 +1449,74 @@ final class JoinGuiSelftest {
                         && "Wasp".equals(installed.toId("Wasp", null)),
                 row + ": names that differ only in case paint no id (the painted texts differ) and still never map back"
                         + " by text (flips if the twin test folds case, or a shared fold launches a guessed ship)");
+    }
+
+    /**
+     * Row {@code join_names_server_default}: the server's default ship reads by the name its probe carried. The Swing
+     * combo's entry 0 paints that ship's row text (hull, then a kept ship's typed name) and both windows' status line
+     * ends with the typed name, while the machine status line (the probe CLI's) keeps the id; a kept default with no
+     * name, a shipped default, or no names at all fall back to the id (a shipped ship's display word never paints);
+     * and what Launch sends is still the id: entry 0 sanitizes to the empty pick, which resolves to the default's id,
+     * which is the plan file's ship row, through the real installed combo as well. Fixture values only.
+     *
+     */
+    private static void selftestServerDefaultNamed() {
+        String row = "join_names_server_default";
+        String dash = ShipChoiceNames.SEPARATOR;
+        String kept = "kept-wasp-test-062fb5";
+        String unnamed = "kept-unnamed-000002";
+        String shipped = "wolf_Assault";
+        Map<String, String> names = new LinkedHashMap<>();
+        names.put(kept, "Wasp_test");
+        names.put(shipped, "Assault");
+        Map<String, String> hulls = new LinkedHashMap<>();
+        hulls.put(kept, "astral");
+        hulls.put(shipped, "wolf");
+        List<String> ids = List.of(kept, unnamed, shipped);
+        ShipChoiceNames n = new ShipChoiceNames();
+        n.replace(names, hulls);
+        String keptLabel = JoinProbe.serverDefaultLabel(kept, n);
+        check(("(server default: astral" + dash + "Wasp_test)").equals(keptLabel) && !keptLabel.contains("062fb5"),
+                row + ": Swing entry 0 names a kept default by hull and typed name (flips if entry 0 paints the kept"
+                        + " hash id again, or is labelled before this probe's names land)");
+        DoorProbe.Result served = DoorProbe.Result.served(ids, 0, ids.size(), kept, List.of(), 0, true, names, hulls);
+        check(served.shownStatusLine().endsWith(" Server default: Wasp_test.")
+                        && JoinBrowserUi.windowLine(served).equals(served.shownStatusLine())
+                        && served.statusLine().endsWith(" Server default: " + kept + "."),
+                row + ": both windows' status line ends with the typed name, the machine line keeps the id (flips if"
+                        + " a window line paints the hash id, or the CLI's machine line loses the id)");
+        DoorProbe.Result noName = DoorProbe.Result.served(ids, 0, ids.size(), unnamed, List.of(), 0, true, names,
+                hulls);
+        DoorProbe.Result shippedDefault = DoorProbe.Result.served(ids, 0, ids.size(), shipped, List.of(), 0, true,
+                names, hulls);
+        check(("(server default: " + unnamed + ")").equals(JoinProbe.serverDefaultLabel(unnamed, n))
+                        && noName.shownStatusLine().endsWith(" Server default: " + unnamed + ".")
+                        && ("(server default: wolf" + dash + shipped + ")").equals(JoinProbe.serverDefaultLabel(shipped, n))
+                        && shippedDefault.shownStatusLine().endsWith(" Server default: " + shipped + ".")
+                        && ("(server default: " + kept + ")").equals(JoinProbe.serverDefaultLabel(kept, null))
+                        && kept.equals(DoorProbe.shownShip(kept, null))
+                        && unnamed.equals(DoorProbe.shownShip(unnamed, Map.of(unnamed, "   ")))
+                        && DoorProbe.Result.served(ids, 0, ids.size(), kept).shownStatusLine()
+                                .endsWith(" Server default: " + kept + "."),
+                row + ": an id with no name falls back to the id, a shipped default paints its id never its display"
+                        + " word (flips if a missing name paints blank or a guess, or the kept-prefix gate drops)");
+        String resolved = JoinLaunchPlan.resolveLaunchShip(JoinLaunchPlan.sanitizeShip(keptLabel), served.defaultId);
+        String plan = JoinLaunchPlan.planFileContent("127.0.0.1", "47001", "Pilot", "", "", false, resolved);
+        javax.swing.JComboBox<String> box = new javax.swing.JComboBox<>();
+        box.setEditable(true);
+        ShipChoiceNames installed = ShipChoiceNames.install(box);
+        installed.replace(names, hulls);
+        String boxLabel = JoinProbe.serverDefaultLabel(kept, installed);
+        box.addItem(boxLabel);
+        for (String id : ids) {
+            box.addItem(id);
+        }
+        box.setSelectedItem(boxLabel);
+        String picked = JoinLaunchPlan.sanitizeShip(String.valueOf(box.getEditor().getItem()));
+        check(kept.equals(resolved) && plan.contains("ship=" + kept + "\r\n") && !plan.contains("Wasp_test")
+                        && picked.isEmpty() && kept.equals(JoinLaunchPlan.resolveLaunchShip(picked, kept)),
+                row + ": the named entry 0 still launches the default's id, in the plan file and through the real"
+                        + " combo (flips if Launch sends the shown name or label instead of the id)");
     }
 
     /** The JLabel texts the combo's renderer paints for {@code value} (row 0, unselected): the component itself, else

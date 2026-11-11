@@ -127,8 +127,17 @@ final class ListPickerLane {
     private java.util.Map<String, String> shipHullNames = java.util.Map.of();
     /** The kept tokens of the latest /ship or spawn listing whose ship label
      *  another row of that SAME listing also paints ({@link #keptNameTwins}, worked out at landing beside
-     *  {@link #shipHullNames}); only those rows add their id after the name. Render thread. */
+     *  {@link #shipHullNames}); only those rows add their id after the name. Render thread.
+     *  Plus the own-custom tokens whose {@link #customLabels} label another row
+     *  of that listing also paints ({@link #labelTwins}); the two prefixes never meet, so one set holds both. */
     private java.util.Set<String> shipNameTwins = java.util.Set.of();
+    /** Token → {@code "<name>" (<Hull>)} for the latest /ship-kind listing's
+     *  own-custom rows: the server lists a {@code cc-v} id (the /customs reply) with no labels, so the typed name
+     *  comes from this client's own fold of that build ({@link #resolveCustomLabels}, once at landing). Render thread. */
+    private java.util.Map<String, String> customLabels = java.util.Map.of();
+    /** The /share or /builds tokens whose label another row of the SAME listing
+     *  also paints ({@link #labelTwins}, worked out in {@link #resolveBuildRows}); only those rows add their id. */
+    private java.util.Set<String> buildTwins = java.util.Set.of();
     /** Hull ids the game's own specs could not name since load (the row shows the id instead). */
     private int hullNameMisses;
     /** The /builds row token whose FLY NEXT cell reads YES (at most one — {@code current.data}
@@ -420,7 +429,14 @@ final class ListPickerLane {
             // An empty listing leaves both maps alone: the picker ignores an empty offer and keeps the shown one.
             shipHullNames = ListPickerLaw.resolveShipHullNames(ClientListingReader.KIND_SHIP, entries,
                     this::hullNameOrId);
-            shipNameTwins = keptNameTwins(entries, shipHullNames);
+            customLabels = resolveCustomLabels(entries);
+            java.util.Set<String> twins = keptNameTwins(entries, shipHullNames);
+            java.util.Set<String> customTwins = labelTwins(entries, customLabels);
+            if (!customTwins.isEmpty()) {
+                twins = new java.util.HashSet<>(twins);
+                twins.addAll(customTwins);
+            }
+            shipNameTwins = twins;
         }
         if (ON) {
             if (asmKind == ClientListingReader.KIND_UNBAN && unbanMenuOpensAtLift) {
@@ -471,6 +487,7 @@ final class ListPickerLane {
             buildLabels.put(e.token(), label);
             kept.add(e);
         }
+        buildTwins = labelTwins(kept, buildLabels);
         if (skipped > 0) {
             PilotWatchLog.info("picker builds: kind=" + kind + " skipped " + skipped + "/" + entries.size()
                     + " row(s) with no resident body (kept " + kept.size() + ")");
@@ -493,10 +510,16 @@ final class ListPickerLane {
         } else {
             cc.starsector.client.editor.PeerBuilds.Result res =
                     cc.starsector.client.editor.PeerBuilds.saveFromRegistry(id, null);
+            String name = labelName(buildLabels.get(id));
             if (res.saved) {
                 plugin.chat.notePeerSaved();
             }
-            line = res.message;
+            // A save names the build by its typed name (a -2..-9 stem reads as
+            // "a second copy of" it); with no resolved name, or on a refusal, the save path's own line stands
+            line = res.saved && name != null && res.stem != null
+                    ? buildLine("saved as ", true, name, res.stem, res.stem.equals(CcClientModPlugin.currentBuild())
+                            ? " (now your current build)" : " - fly it from the join window or the editor")
+                    : res.message;
         }
         try {
             plugin.chat.enqueueChatMessage(new cc.starsector.client.net.ClientChatMessage(
@@ -510,15 +533,17 @@ final class ListPickerLane {
      * Left/Right on a /builds row flips its FLY NEXT cell. YES = that build is
      * the ship at the next connect: saved locally first unless this round already saved it (the Enter-save
      * budget, the -2 suffix law), then {@code current.data} names the stem — a new YES retires the old one.
-     * NO = the stem stops being current. The outcome is a {@code customs} line, never a send.
+     * NO = the stem stops being current. The outcome is a {@code customs} line, never a send; it names the build by
+     * its typed name ({@link #buildLine}; the stem only when the row had no resolved name).
      */
     private void applyFlyNextToggle(String token) {
         String stem = flyStems.get(token);
+        String name = labelName(buildLabels.get(token));
         String line;
         if (token.equals(flyYesToken)) {
             CcClientModPlugin.clearCurrentBuildIf(stem);
             flyYesToken = null;
-            line = "fly next: NO - local build " + stem + " is no longer your next ship";
+            line = buildLine("fly next: NO - ", false, name, stem, " is no longer your next ship");
         } else if (stem == null && !plugin.chat.peerSaveAllowed()) {
             line = PeerBuildVerbLaw.LIMIT_REACHED;
         } else {
@@ -537,9 +562,9 @@ final class ListPickerLane {
             if (stem != null) {
                 if (CcClientModPlugin.setCurrentBuild(stem)) {
                     flyYesToken = token;
-                    line = "fly next: YES - local build " + stem + " is your ship at the next connect";
+                    line = buildLine("fly next: YES - ", false, name, stem, " is your ship at the next connect");
                 } else {
-                    line = "fly next: not set - local build " + stem + " could not be made current";
+                    line = buildLine("fly next: not set - ", false, name, stem, " could not be made current");
                 }
             }
         }
@@ -711,7 +736,7 @@ final class ListPickerLane {
         for (int i = 0; i < window.size() && i < rowLabels.length; i++) {
             LabelAPI label = rowLabels[i];
             RowText rt = rowTextFor(law.kind(), window.get(i));
-            String shown = clampVisual(rt.text);
+            String shown = clampRow(rt);
             String key = rt.lead + "|" + rt.value + "|" + shown;
             label.getPosition().setSize(PANEL_WIDTH - 12f, rowTextH); // before setText (see the header note)
             label.getPosition().setLocation(x0 + 9f, rowY(yTop, i));
@@ -1047,39 +1072,205 @@ final class ListPickerLane {
         final String text;
         final String value;
         final boolean lead;
+        /** The typed name's {@code [nameStart, nameEnd)} inside {@link #text}
+         *  ({@code -1} = the row paints no name): the part {@link #clampRow} cuts first, so a twin's id and the
+         *  row's mark or SET value stay whole under the visual clamp. */
+        final int nameStart;
+        final int nameEnd;
 
         RowText(String text, String value, boolean lead) {
+            this(text, value, lead, -1, -1);
+        }
+
+        RowText(String text, String value, boolean lead, int nameStart, int nameEnd) {
             this.text = text;
             this.value = value;
             this.lead = lead;
+            this.nameStart = nameStart;
+            this.nameEnd = nameEnd;
         }
     }
 
-    /** v2: the build kinds render {@code <id> "<name>" (<Hull>) [<state>]} from the label map; a
-     *  /builds row LEADS with its FLY NEXT cell, so the visual clamp never hides it. */
+    /** A /builds row LEADS with its FLY NEXT cell, so the visual clamp never hides it. The build kinds
+     *  read the landed label map ({@link #buildRowText}); every other kind takes {@link #rowText}, the /customs rows
+     *  with their landed labels. A map get per drawn row, nothing resolved here. */
     private RowText rowTextFor(int kind, ClientListingRecord.Entry e) {
         if (kind == ClientListingReader.KIND_SHARE || kind == ClientListingReader.KIND_BUILDS) {
-            String label = buildLabels.get(e.token());
-            StringBuilder out = new StringBuilder(96);
-            String value = null;
-            if (kind == ClientListingReader.KIND_BUILDS) {
-                value = e.token().equals(flyYesToken) ? "YES" : "NO";
-                out.append("FLY NEXT: ").append(value).append("  ");
-            }
-            out.append(e.token());
-            if (label != null) {
-                out.append(' ').append(label);
-            }
-            if (e.markCode() == ClientListingReader.MARK_SHARE_ON) {
-                value = "(shared)";
-                out.append(' ').append(value);
-            } else if (e.markCode() == ClientListingReader.MARK_SHARE_OFF) {
-                value = "(not shared)";
-                out.append(' ').append(value);
-            }
-            return new RowText(out.toString(), value, kind == ClientListingReader.KIND_BUILDS);
+            return buildRowText(kind, e, buildLabels.get(e.token()), buildTwins.contains(e.token()),
+                    e.token().equals(flyYesToken));
         }
-        return rowText(kind, e, shipHullNames, shipNameTwins);
+        return rowText(kind, e, shipHullNames, shipNameTwins, customLabels);
+    }
+
+    /**
+     * One /share or /builds row: {@code [FLY NEXT: YES|NO  ]<slot>[ (shared)|
+     * (not shared)]}, the slot = the build's label {@code "<name>" (<Hull>)} (a twin adds its id), or the token for
+     * a row with no label. What a human reads is the typed name; Enter still pastes the token
+     * ({@code ListPickerLaw.selectionCommand} reads the entry, never this text). Pure.
+     */
+    private static RowText buildRowText(int kind, ClientListingRecord.Entry e, String label, boolean twin,
+            boolean flyYes) {
+        StringBuilder out = new StringBuilder(96);
+        String value = null;
+        if (kind == ClientListingReader.KIND_BUILDS) {
+            value = flyYes ? "YES" : "NO";
+            out.append("FLY NEXT: ").append(value).append("  ");
+        }
+        int at = out.length();
+        int nameEnd = appendLabelSlot(out, e.token(), label, twin);
+        if (e.markCode() == ClientListingReader.MARK_SHARE_ON) {
+            value = "(shared)";
+            out.append(' ').append(value);
+        } else if (e.markCode() == ClientListingReader.MARK_SHARE_OFF) {
+            value = "(not shared)";
+            out.append(' ').append(value);
+        }
+        return new RowText(out.toString(), value, kind == ClientListingReader.KIND_BUILDS,
+                nameEnd < 0 ? -1 : at + 1, nameEnd < 0 ? -1 : at + nameEnd);
+    }
+
+    /**
+     * Appends a labelled row's slot: the label, plus {@code " (<token>)"} for a
+     * twin (two rows of one listing that would paint the same label), or the token alone when there is no label.
+     * Answers the typed name's end offset inside the label ({@link #labelNameEnd}; the name starts one past the
+     * slot's start, after the opening quote), or {@code -1} when the slot paints no name.
+     */
+    private static int appendLabelSlot(StringBuilder out, String token, String label, boolean twin) {
+        if (label == null) {
+            out.append(token);
+            return -1;
+        }
+        out.append(label);
+        if (twin) {
+            out.append(" (").append(token).append(')');
+        }
+        return labelNameEnd(label);
+    }
+
+    /** Where the typed name ends inside a build label {@code "<name>" (<Hull>)}
+     *  (the shape {@code PeerBuilds.rowLabel} composes; the hull is a game hull name, so the LAST quote-space-paren
+     *  closes the name even when the name holds one), or {@code -1} for any other shape. */
+    private static int labelNameEnd(String label) {
+        int q = label.startsWith("\"") ? label.lastIndexOf("\" (") : -1;
+        return q >= 1 ? q : -1;
+    }
+
+    /** The typed name inside a build label, or null for no label, an empty
+     *  name or another shape (the caller then falls back to the stem). */
+    private static String labelName(String label) {
+        int end = label == null ? -1 : labelNameEnd(label);
+        return end > 1 ? label.substring(1, end) : null;
+    }
+
+    /** The ordinal of a {@code -n} copy, index = n (2..9). */
+    private static final String[] COPY_ORDINALS = {
+        null, null, "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth",
+    };
+
+    /**
+     * One /builds outcome line: {@code <head><ref>'<name>'<tail>}, the ref =
+     * {@code local build } for the plain stem or {@code [a|an|the] <second..ninth> copy of } for a {@code -2..-9}
+     * copy ({@link #copyNumber}; {@code article} picks a/an, else "the"). A line longer than the chat cap cuts the
+     * NAME first ({@link #clampNameFirst}), never the copy word or the tail. With no name the line names the stem,
+     * the wording these lines had before. Pure.
+     */
+    private static String buildLine(String head, boolean article, String name, String stem, String tail) {
+        int max = cc.starsector.client.net.ChatWriter.TEXT_MAX_CHARS;
+        if (name == null || stem == null) {
+            return clampNameFirst(head + "local build " + stem + tail, -1, -1, max);
+        }
+        int n = copyNumber(stem, name);
+        String ref = n == 1 ? "local build "
+                : (!article ? "the " : n == 8 ? "an " : "a ") + COPY_ORDINALS[n] + " copy of ";
+        int at = head.length() + ref.length() + 1;
+        // NCP-1: a quote inside another player's name never closes the line's own quote
+        String shown = FallbackAnnounce.insideQuotes(name);
+        return clampNameFirst(head + ref + "'" + shown + "'" + tail, at, at + shown.length(), max);
+    }
+
+    /**
+     * Which copy a saved stem is: {@code n} (2..9) when it ends in the save
+     * path's {@code -n} clash suffix, else 1. A name whose own slug ends in {@code -<digit>} ("Flash 2" saves as
+     * {@code <hull>_flash-2}) is told apart by the slug: the part after the stem's last {@code _} (a slug holds none)
+     * that is still a prefix of {@code _<slug>} is the plain stem, cut or not. A cut copy whose suffix happens to equal
+     * the slug's own next two chars reads as the plain stem: the line then omits the copy word, never invents one.
+     */
+    private static int copyNumber(String stem, String name) {
+        int len = stem.length();
+        int u = stem.lastIndexOf('_');
+        char d = len < 2 ? ' ' : stem.charAt(len - 1);
+        if (u < 0 || len - u < 3 || stem.charAt(len - 2) != '-' || d < '2' || d > '9') {
+            return 1;
+        }
+        return ("_" + saveSlug(name)).startsWith(stem.substring(u)) ? 1 : d - '0';
+    }
+
+    /** The editor's save-stem slug, mirrored for {@link #copyNumber} only: the
+     *  name lower-cased, each run of non-{@code [a-z0-9]} one {@code -} (none leading or trailing), empty = custom.
+     *A drift here can only mislabel the copy word of a chat line. */
+    private static String saveSlug(String name) {
+        StringBuilder slug = new StringBuilder(name.length());
+        boolean pendingDash = false;
+        for (int i = 0; i < name.length(); i++) {
+            char c = Character.toLowerCase(name.charAt(i));
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+                if (pendingDash && slug.length() > 0) {
+                    slug.append('-');
+                }
+                pendingDash = false;
+                slug.append(c);
+            } else {
+                pendingDash = true;
+            }
+        }
+        return slug.length() == 0 ? "custom" : slug.toString();
+    }
+
+    /**
+     * The /ship-kind landing's labels for the caller's own customs: a
+     * {@code cc-v} token the server sent with no hull label (the /customs reply carries none) whose build this client
+     * folded gets {@code PeerBuilds.rowLabel}'s {@code "<name>" (<Hull>)}; any other row, or a build not folded here,
+     * keeps its token. Called at landing, never per frame. An empty answer is the shared empty map.
+     */
+    private static java.util.Map<String, String> resolveCustomLabels(List<ClientListingRecord.Entry> entries) {
+        java.util.HashMap<String, String> out = null;
+        for (ClientListingRecord.Entry e : entries) {
+            if (e.token().startsWith("cc-v") && e.targetLabel() == null) {
+                String label = cc.starsector.client.editor.PeerBuilds.rowLabel(e.token());
+                if (label != null) {
+                    if (out == null) {
+                        out = new java.util.HashMap<>();
+                    }
+                    out.put(e.token(), label);
+                }
+            }
+        }
+        return out == null ? java.util.Map.of() : out;
+    }
+
+    /** The tokens of one landed listing whose label (from {@code labels}) another
+     *  row of the SAME listing also has; only those rows add their id (the kept-name twin rule, {@link #keptNameTwins},
+     *  for label-map rows). Called at landing, never per frame. An empty answer is the shared empty set. */
+    private static java.util.Set<String> labelTwins(List<ClientListingRecord.Entry> entries,
+            java.util.Map<String, String> labels) {
+        if (labels.isEmpty()) {
+            return java.util.Set.of();
+        }
+        java.util.HashMap<String, Integer> seen = new java.util.HashMap<>();
+        for (ClientListingRecord.Entry e : entries) {
+            String label = labels.get(e.token());
+            if (label != null) {
+                seen.merge(label, 1, Integer::sum);
+            }
+        }
+        java.util.HashSet<String> twins = new java.util.HashSet<>();
+        for (ClientListingRecord.Entry e : entries) {
+            String label = labels.get(e.token());
+            if (label != null && seen.get(label) > 1) {
+                twins.add(e.token());
+            }
+        }
+        return twins.isEmpty() ? java.util.Set.of() : twins;
     }
 
     /**
@@ -1131,6 +1322,14 @@ final class ListPickerLane {
      *  row that carries a hull id or a kept ship's name takes {@link #shipHullRowText}; any other row is unchanged. */
     private static RowText rowText(int kind, ClientListingRecord.Entry e, java.util.Map<String, String> hullNames,
             java.util.Set<String> twins) {
+        return rowText(kind, e, hullNames, twins, java.util.Map.of());
+    }
+
+    /** The 4-arg row text plus the landed own-custom labels
+     *  ({@link #customLabels}): a /customs row whose token has a label paints that label (a twin adds its id) where
+     *  it painted the token; its mark is unchanged. */
+    private static RowText rowText(int kind, ClientListingRecord.Entry e, java.util.Map<String, String> hullNames,
+            java.util.Set<String> twins, java.util.Map<String, String> labels) {
         if (shipLabelKind(kind) && (e.targetLabel() != null || keptName(e) != null)) {
             return shipHullRowText(e, e.targetLabel() == null ? null
                     : hullNames.getOrDefault(e.targetLabel(), e.targetLabel()), twins);
@@ -1156,7 +1355,9 @@ final class ListPickerLane {
         // here (shipHullRowText), so a /ship row here is a hull-less shipped or unnamed one: its id plus the mark
         // (a shipped ship's display name never paints; the filter still matches it), and the targetLabel append
         // below never prints a hull id. A spawn row with no label is its id plus the officer cell, as before.
-        out.append(e.token());
+        // A /customs row (an own-custom token the landing labelled) paints its label in the token's place.
+        String label = shipLabelKind(kind) ? labels.get(e.token()) : null;
+        int nameEnd = appendLabelSlot(out, e.token(), label, label != null && twins.contains(e.token()));
         if (e.targetLabel() != null) {
             out.append(' ').append(e.targetLabel());
         }
@@ -1229,7 +1430,7 @@ final class ListPickerLane {
         if (e.claimedNextRespawn()) {
             out.append(" (next respawn)");
         }
-        return new RowText(out.toString(), value, false);
+        return new RowText(out.toString(), value, false, nameEnd < 0 ? -1 : 1, nameEnd);
     }
 
     /**
@@ -1238,7 +1439,8 @@ final class ListPickerLane {
      * the id, except a kept ship that arrived with a name paints that name ({@link #shipLabel}); a shipped ship's
      * display name never paints (the filter still matches it). The separator is ASCII on purpose: the picker font
      * (victor10.fnt) maps U+00B7 to a 1-px blank cell, like the guillemets noted at the header hint. The hull name
-     * comes from the landing's map, never a lookup here. A long slot can push the mark past the 60-char clamp.
+     * comes from the landing's map, never a lookup here. A long kept name is what the 60-char clamp cuts first
+     * ({@link #clampRow}); a long shipped id can still push the mark past it.
      *
      * Also a hull-less kept row ({@code hull} null = the slot alone) and a spawn
      * row that carries labels, which keeps its officer cell (a SET value, cyan, as on an unlabelled spawn row).
@@ -1267,7 +1469,11 @@ final class ListPickerLane {
             default:
                 break; // MARK_SHIP_PLAIN
         }
-        return new RowText(out.toString(), value, false);
+        // The kept name's span (it follows "<hull> - ", or leads a hull-less
+        // row), so the visual clamp cuts the name before a twin's id or the mark; the text itself is unchanged
+        String name = keptName(e);
+        int nameStart = name == null ? -1 : hull == null ? 0 : hull.length() + 3;
+        return new RowText(out.toString(), value, false, nameStart, name == null ? -1 : nameStart + name.length());
     }
 
     /** The kinds whose rows name a ship: /ship and the two spawn menus. */
@@ -1322,6 +1528,31 @@ final class ListPickerLane {
     /** Pure visual clamp (the bubble-lane idiom) — wire strings are never re-filtered. */
     private static String clampVisual(String s) {
         return s.length() > VISUAL_MAX_CHARS ? s.substring(0, VISUAL_MAX_CHARS - 3) + "..." : s;
+    }
+
+    /** One drawn row under the visual clamp: its typed name, when it paints one,
+     *  is cut first ({@link #clampNameFirst}), so a twin's id and the mark or SET value after it stay whole. */
+    private static String clampRow(RowText rt) {
+        return clampNameFirst(rt.text, rt.nameStart, rt.nameEnd, VISUAL_MAX_CHARS);
+    }
+
+    /**
+     * {@code text} cut to {@code max} chars by shortening the NAME span
+     * {@code [nameStart, nameEnd)} first, to its head plus {@code ...}, down to {@code ...} alone; only a text still
+     * over {@code max} after that (or one with no span, {@code nameStart < 0}) is cut at its tail, the
+     * {@link #clampVisual} way. A text within {@code max} is returned as is. Pure.
+     */
+    private static String clampNameFirst(String text, int nameStart, int nameEnd, int max) {
+        if (text.length() <= max) {
+            return text;
+        }
+        String out = text;
+        int nameLen = nameEnd - nameStart;
+        if (nameStart >= 0 && nameLen > 3) {
+            int keep = Math.max(0, nameLen - (text.length() - max) - 3);
+            out = text.substring(0, nameStart + keep) + "..." + text.substring(nameEnd);
+        }
+        return out.length() <= max ? out : out.substring(0, max - 3) + "...";
     }
 
     private static boolean parseOnOff(String raw) {

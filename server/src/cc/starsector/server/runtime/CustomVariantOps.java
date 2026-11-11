@@ -252,7 +252,8 @@ public final class CustomVariantOps {
      * ({@code config} — the boot-line facts, static for the serve) and the export readback.
      * + the kept store — the catalog lane's listing counts / ids /
      * over-cap flags (no catalog lane = zeros) and the writer's kept verdict + failures (no sink = "-"). */
-    public static OpsStatusFile.CustomStats stats(CustomVariantLane laneOrNull, CustomVariantConfig config) {
+    public static OpsStatusFile.CustomStats stats(CustomVariantLane laneOrNull, CustomVariantConfig config,
+            java.util.function.Predicate<String> hostHidden) {
         if (laneOrNull == null) {
             return OpsStatusFile.CustomStats.NONE;
         }
@@ -266,6 +267,9 @@ public final class CustomVariantOps {
         // The kept ids are read ONCE and that same list keys the labels, so
         // the two rows always pair slot for slot; the label read is lock-free and never throws (this is the serve thread)
         java.util.List<String> keptIds = promo == null ? java.util.List.of() : promo.keptIds();
+        // The inbox names the same way - ONE read keys their labels (a removed
+        // copy's typed name from its .meta, through the catalog's one removed-copies map), slot for slot
+        java.util.List<String> inboxIds = promo == null ? java.util.List.of() : promo.inboxIds();
         return new OpsStatusFile.CustomStats(ledger.acceptedCount(),
                 policy + caps + engine + operator,
                 ledger.bannedCount(), laneOrNull.accepting(),
@@ -279,11 +283,16 @@ public final class CustomVariantOps {
                 keptIds,
                 laneOrNull.keptFailed(),
                 sink == null ? "-" : sink.keptLast(),
-                promo == null ? java.util.List.of() : promo.inboxIds(),
+                inboxIds,
                 promo != null && promo.keptOverCap(),
                 promo != null && promo.inboxOverCap(),
                 laneOrNull.submitFrameEncodeFailed(), laneOrNull.vsubDecodeRefused(),
-                promo == null ? java.util.List.of() : promo.keptLabels(keptIds));
+                promo == null ? java.util.List.of() : promo.keptLabels(keptIds),
+                promo == null ? java.util.List.of() : promo.inboxLabels(inboxIds),
+                // The kept copy each inbox name's Keep takes off /ship,
+                // keyed by the SAME inbox read; the catalog's published link maps only (no scan, no file read);
+                // hostHidden = the hidden lane's own set, the put back's own root test
+                promo == null ? java.util.List.of() : promo.inboxLeaves(inboxIds, hostHidden));
     }
 
     /** Dispatch one drained custom verb; returns the one-line receipt (the D5 lane's text). */

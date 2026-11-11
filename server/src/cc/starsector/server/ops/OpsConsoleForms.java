@@ -378,14 +378,26 @@ final class OpsConsoleForms {
                 // the key binds the MINTED id / file name (a changed pick mints another key and asks again).
                 String line = verbLine(form, snap);
                 String id = line.substring(line.indexOf(' ') + 1);
-                return new ConfirmSpec(verb + ":" + id, ServerOpsCore.CUSTOM_KEEP_LABEL,
-                        ServerOpsCore.keepConfirmText(id));
+                // An exported row's Keep names the ship by the inbox file's
+                // typed name; a seat's (or a typed id's) Keep keeps the id text. The key stays the minted id.
+                String label = "custom-keep-export".equals(verb) && snap != null
+                        ? pairedLabelOrNull(snap.customInboxIds(), snap.customInboxLabels(), id) : null;
+                // An inbox Keep that is a removed ship's put back says
+                // which kept ship leaves /ship (named by its kept label); the key and the verb line stay the id.
+                String leaves = "custom-keep-export".equals(verb) && snap != null ? leavesStemOrNull(snap, id) : null;
+                return new ConfirmSpec(verb + ":" + id, ServerOpsCore.CUSTOM_KEEP_LABEL, leaves == null
+                        ? ServerOpsCore.keepConfirmText(id, label)
+                        : ServerOpsCore.putBackConfirmText(id, label, leaves,
+                                pairedLabelOrNull(snap.customKeptIds(), snap.customKeptLabels(), leaves)));
             }
             case "custom-forget": {
-                // the page asks before a Forget (the Swing pick dialog's OK is its confirm); keyed by the stem
+                // the page asks before a Forget (the Swing pick dialog's OK is its confirm); keyed by the stem,
+                // worded with the kept ship's typed name when the status file pairs one with it
                 String stem = verbLine(form, snap).substring("custom-forget ".length());
+                String label = snap == null ? null
+                        : pairedLabelOrNull(snap.customKeptIds(), snap.customKeptLabels(), stem);
                 return new ConfirmSpec("custom-forget:" + stem, ServerOpsCore.CUSTOM_FORGET_LABEL,
-                        ServerOpsCore.forgetConfirmText(stem));
+                        ServerOpsCore.forgetConfirmText(stem, label));
             }
             case "ship-hide": {
                 // Hide asks first, keyed by the MINTED shipped id (another
@@ -397,6 +409,34 @@ final class OpsConsoleForms {
             default:
                 return null;
         }
+    }
+
+    /** The typed name the status file pairs with {@code id} - {@code labels[i]}
+     * for the FIRST {@code ids[i]} equal to it, index for index - or null when the id is not listed, the labels row is
+     * shorter (an absent row reads empty) or the slot is blank. The labels are {@link OpsSnapshot}'s decoded rows
+     * (printable ASCII, bounded, never null): player text, so it goes only into a confirm's message - never its key,
+     * a verb line, a path or a log row. Pure. */
+    static String pairedLabelOrNull(List<String> ids, List<String> labels, String id) {
+        int i = ids.indexOf(id);
+        if (i < 0 || i >= labels.size()) {
+            return null;
+        }
+        String label = labels.get(i);
+        return label == null || label.isBlank() ? null : label;
+    }
+
+    /** The kept ship the status file says leaves {@code /ship} if inbox
+     * file {@code id} is kept now - the leaves slot paired with the FIRST inbox id equal to it - or null when the id is
+     * not listed, its slot is empty, or that stem is not on the snapshot's kept list (a stale link never names a ship
+     * that is not there to leave). Server-minted stems only ({@link OpsSnapshot#customInboxLeaves}). Pure. */
+    static String leavesStemOrNull(OpsSnapshot snap, String id) {
+        int i = snap.customInboxIds().indexOf(id);
+        List<String> leaves = snap.customInboxLeaves();
+        if (i < 0 || i >= leaves.size()) {
+            return null;
+        }
+        String stem = leaves.get(i);
+        return stem.isEmpty() || !snap.customKeptIds().contains(stem) ? null : stem;
     }
 
     // ---- (e) the Start fields ----------------------------------------------------------------

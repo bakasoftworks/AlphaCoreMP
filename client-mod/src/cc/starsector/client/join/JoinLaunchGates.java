@@ -438,9 +438,10 @@ final class JoinLaunchGates {
     static final String TITLE_TEAM = "Team pick rejected";
     static final String MSG_TEAM = "Pick a team: let the server pick, South team or North team.";
 
-    /** No probe answered (or none ran) for the launch's pair. */
+    /** No probe answered (or none ran) for the launch's pair. A server OLDER than this kit is silent too: its door
+     *  drops a newer HELLO without a reply, so the text names that cause beside the address. */
     static final String MSG_NO_ANSWER = "No answer from the server yet - press Refresh; if it repeats,"
-            + " check the address and port with the host.";
+            + " check the address and port with the host (a server older than this kit also gives no answer).";
     /** The door refused this folder's content print ({@code content_fingerprint_mismatch}): ONE copy, the door
      *  probe's own reject text (the join window reads the net layer's words, never the reverse), so the line a
      *  refused probe shows and the line a window composes cannot drift apart. */

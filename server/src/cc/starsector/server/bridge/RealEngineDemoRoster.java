@@ -2191,7 +2191,11 @@ public final class RealEngineDemoRoster {
                             stockVariant, h.getVariant.invoke(member));
                 }
             } catch (ReflectiveOperationException | RuntimeException | LinkageError realizeMiss) {
-                System.out.println("real-engine-demo-roster " + site + " name=" + shipName
+                // shipName may be a kept ship's TYPED name (player text) since the
+                // name fleet, so it prints QUOTED beside its key at every row of this method that carries it (this
+                // one, the deploy CR seed's site argument and the ai-pick row; the hulk sweep quotes its own key)
+                System.out.println("real-engine-demo-roster " + site + " name="
+                        + cc.starsector.server.ops.PeerText.quote(shipName)
                         + " realized_loadout=unread " + realizeMiss.getClass().getSimpleName());
             }
             long mintEndNanos = System.nanoTime();
@@ -2268,14 +2272,16 @@ public final class RealEngineDemoRoster {
             float deployCr = deployedDescriptor.deployCr();
             float computedCr = ((Number) h.statGetModifiedValue.invoke(
                     h.getMaxCombatReadiness.invoke(h.getMutableStats.invoke(ship)))).floatValue();
+            // The typed name rides this row's site argument too, so it is QUOTED here
             float chosenCr = chooseDeployCr(computedCr, deployCr,
-                    site + " " + shipName);
+                    site + " " + cc.starsector.server.ops.PeerText.quote(shipName));
             CrDeploySeam.applyDeployCr(ship, chosenCr);
             TerrainStatSeam.applyToShip(ship); //
             // WHICH ship AI the engine picked for this hull + the personality
             // it resolves to (+ the ModManager plugin list once) — the vanilla-personality seam
             // evidence ({@link AiPickEvidence} javadoc = the why). Spawn-time only, read-only.
-            System.out.println("ai-pick " + site + " hull=" + shipName + " variant=" + variantId
+            System.out.println("ai-pick " + site + " hull=" + cc.starsector.server.ops.PeerText.quote(shipName)
+                    + " variant=" + variantId
                     + " " + AiPickEvidence.describe(ship)
                     + AiPickEvidence.pluginListOnce(ship.getClass().getClassLoader()));
 
@@ -2297,7 +2303,7 @@ public final class RealEngineDemoRoster {
             System.out.println("real-engine-demo-roster " + site + " side=" + side
                     + " variant=" + variantId
                     + (fieldedVariantId.equals(variantId) ? "" : " fielded=" + fieldedVariantId)
-                    + " name=" + shipName + " stableId=" + stable
+                    + " name=" + cc.starsector.server.ops.PeerText.quote(shipName) + " stableId=" + stable
                     + " burnDur=" + burnDur + " spawn=" + spawnX + "," + spawnY
                     + " mapHalfY=" + mapHalfY + " modules=" + moduleStableIds.size()
                     + hullPhys(h.shipClass, ship)
