@@ -245,6 +245,11 @@ public final class PidsReaderCounters {
      *  Written under the door lock. Readers: {@code PidsHello13GuardRows} hs15-19-f1-bounce + hs19-fp-bounce, the door
      *  line. Delete trigger: none (a door meter). */
     public volatile long helloV19Bounced;
+    /** F1s at a version byte ABOVE the door's own, each answered {@code server_outdated} (the newer-kit rung,
+     *  {@code HandshakeBounceLadder.classifyNewerOrNull}) — its own tally, never a stale tier's. Written under the
+     *  door lock. Readers: {@code PidsHello13GuardRows} hs-newer-bounce, the door line's {@code hello_newer_bounced=}.
+     *  Delete trigger: none (a door meter). */
+    public volatile long helloNewerBounced;
     /** F2s whose secret the wrap proved but whose sealed body did not
      *  decode or authenticate (any body grammar; version-free), each answered {@code handshake_refused}. Expected
      *  0 on a clean door. Written under the door lock. Readers: {@code SeatTeamDoorContractRows}, the door line
@@ -306,7 +311,9 @@ public final class PidsReaderCounters {
         } else if (DoorRejectReasons.CONTENT_FINGERPRINT_REQUIRED.equals(reason)
                 || DoorRejectReasons.CONTENT_FINGERPRINT_MISMATCH.equals(reason)) {
             rejectFp++;
-        } else if (DoorRejectReasons.KIT_OUTDATED.equals(reason)) {
+        } else if (DoorRejectReasons.KIT_OUTDATED.equals(reason)
+                || DoorRejectReasons.SERVER_OUTDATED.equals(reason)) {
+            // Both are version-skew refusals; hello_newer_bounced= on the door line tells them apart.
             rejectKit++;
         } else {
             rejectOther++;
@@ -432,6 +439,8 @@ public final class PidsReaderCounters {
                 // Appended LAST (appended-only grammar), a count only
                 + " hello_v18_bounced=" + helloV18Bounced
                 // Appended LAST (appended-only grammar), a count only
-                + " hello_v19_bounced=" + helloV19Bounced);
+                + " hello_v19_bounced=" + helloV19Bounced
+                // Appended LAST (appended-only grammar), a count only
+                + " hello_newer_bounced=" + helloNewerBounced);
     }
 }

@@ -2765,10 +2765,23 @@ public final class PredictReconcileDatagramSession implements PredictSession {
 
     /** Sends the echo of the server's BYE at most once, whichever of the reader, the timer and
      * {@link #goodbye()} claims it first; a no-op before the BYE latch. The same envelope-only
-     * BYE as every other goodbye send. */
+     * BYE as every other goodbye send.
+     *
+     * <p>THE CLAIM AND THE SEND ARE ONE STEP UNDER {@code sendLock} (the build's DF-NOOP
+     * flake, diagnosed from its door lines): claimed outside the lock, the timer could win the claim,
+     * {@link #goodbye()}'s own call then did nothing, and {@link #close()} closed the socket before the
+     * timer reached its send; the send's IOException is swallowed, so the echo was lost and the server
+     * held the seat for its whole fan bound (5 s of BYE resends). Under the lock a claimed echo is on
+     * the wire before {@code close()} can take the socket, and {@code goodbye()} waits out a timer that
+     * is mid-send. {@code sendLock} stays a leaf: the encode is pure and the send re-enters it. */
     private void echoPeerByeOnce() {
-        if (peerSaidBye && peerByeEcho.compareAndSet(false, true)) {
-            sendEnvelopeOnly(DatagramFrameCodec.WireChannel.BYE);
+        if (!peerSaidBye) {
+            return;
+        }
+        synchronized (sendLock) {
+            if (peerByeEcho.compareAndSet(false, true)) {
+                sendEnvelopeOnly(DatagramFrameCodec.WireChannel.BYE);
+            }
         }
     }
 

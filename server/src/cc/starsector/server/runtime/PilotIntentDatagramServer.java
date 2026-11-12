@@ -3325,6 +3325,11 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
      * bounce. {@code DoorCookie} is self-synchronized; the reader thread is its one caller here.
      */
     private void bounceStaleHello(DatagramFrameCodec.Frame frame, InetSocketAddress from) {
+        HandshakeBounceLadder.NewerHello newer = HandshakeBounceLadder.classifyNewerOrNull(frame.payload());
+        if (newer != null) {
+            bounceNewerHello(newer, from);
+            return;
+        }
         HandshakeBounceLadder.StaleHello stale = HandshakeBounceLadder.classifyOrNull(frame.payload());
         if (stale == null) {
             readerCounters.droppedMalformedHello++;
@@ -3369,6 +3374,31 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
                     + from + " (v" + stale.version() + " HELLO at the v"
                     + Handshake13.VERSION + " door)");
             sendRawDatagram(HandshakeBounceLadder.encodeReject(stale, roundId,
+                    welcomeTickRate, serverLife), from);
+        }
+    }
+
+    /**
+     * The NEWER-kit rung, ahead of the stale ladder: a WELL-FORMED F1 at a version byte ABOVE the door's own (a kit
+     * released after this server; the gate = {@link HandshakeBounceLadder#classifyNewerOrNull}, parsed outside the
+     * lock) earns ONE readable {@code server_outdated} REJECT at THAT kit's byte, so its player reads "this server
+     * is older than this kit" instead of a connect timeout. The 13..19 rungs' posture exactly: pre-admission (only a
+     * version byte and a nonce leave the parse; nothing is compared or stored), no budget, cookie leg or ledger (the
+     * reply is constant and never larger than the request), the print sampled like every REJECT, garbage silent.
+     * An un-armed door answers too: the rung reads no door state. The print names the door's version from the
+     * constant, never a literal.
+     */
+    private void bounceNewerHello(HandshakeBounceLadder.NewerHello newer, InetSocketAddress from) {
+        synchronized (lock) {
+            if (closed) {
+                return;
+            }
+            readerCounters.helloNewerBounced++;
+            printRejectSampledLocked(DoorRejectReasons.SERVER_OUTDATED,
+                    () -> "pilot-datagram-admission REJECT reason=server_outdated from="
+                    + from + " (v" + newer.version() + " HELLO at the v"
+                    + Handshake13.VERSION + " door)");
+            sendRawDatagram(HandshakeBounceLadder.encodeServerOutdated(newer, roundId,
                     welcomeTickRate, serverLife), from);
         }
     }

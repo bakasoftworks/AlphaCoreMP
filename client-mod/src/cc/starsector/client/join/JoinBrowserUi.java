@@ -932,6 +932,13 @@ final class JoinBrowserUi implements JoinRoutes.Session {
             return new JoinJson().put("ok", true).put("status", "stale").toString();
         }
         if (!result.served()) {
+            // A content-print refusal DROPS the cached print, so the next probe re-reads the folder. WHY: the print
+            // lived as long as this JVM, which outlives its tab, so a folder corrected under a live window kept
+            // presenting the old print and met the same refusal.
+            if ("content_fingerprint_mismatch".equals(result.rejectReason)
+                    || "content_fingerprint_required".equals(result.rejectReason)) {
+                fingerprint.set(null);
+            }
             String line = windowLine(result);
             lastProbe = new JoinLaunchGates.ProbeOutcome(result.rejectReason != null
                     ? JoinLaunchGates.ProbeOutcome.Kind.REJECTED : JoinLaunchGates.ProbeOutcome.Kind.NO_REPLY,

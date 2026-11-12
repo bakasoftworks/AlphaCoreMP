@@ -173,6 +173,14 @@ public final class Handshake13 {
      * {@code WireChannel.HELLO}, as {@code HelloPayload.encode} does) — exactly {@value #OPEN_PAYLOAD_BYTES} B: the
      * pad is 112 zero bytes so the framed F1 (159 B) is never smaller than the COOKIE13 it earns (the 32 B cookie
      * cap). Bytes 0..10 are FROZEN across versions ({@code [10] == 0} = "an OPEN, no credential follows").
+     *
+     * <p>THE FREEZE, as law since v0.6.9: an OLDER door answers this F1 with
+     * {@code server_outdated} only while every later kit keeps (1) the whole datagram around it — magic
+     * {@code 0xCCDA}, framing version 1, channel HELLO 0 / WELCOME 1, the 32 B header + CRC32 (a moved envelope is
+     * dropped as undecodable before any rung sees it); (2) this payload — byte 0 the kit's version, 1..8 the nonce,
+     * 9 flags, 10 = 0, a zero pad, 123 B or more; (3) the reply's reader — {@code HandshakeCodec.WelcomePayload
+     * .decodeRejectedOrNull} at the kit's OWN byte with its decode laws. A bump that needs one of them changed gives
+     * up that answer at every v0.6.9-or-later server still running.
      */
     public static byte[] encodeOpen(long nonce, int flags) {
         if ((flags & ~FLAGS_DEFINED) != 0) {

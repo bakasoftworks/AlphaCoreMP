@@ -2,6 +2,15 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.6.9 - 2026-11-11
+
+- In a joined player's game, some shots the server sends without the weapon that fired them, such as a flare from a fighter that has since landed or been destroyed, or a missile or torpedo still flying after the ship that fired it retreated or its wreck was destroyed, could appear with a minefield mine's fade-in and sound and end with a mine's explosion and sound. Only real mines look and explode like mines now. A proximity charge in that case now bursts with its own explosion, and an Unstable Fragment, which could show a mine's explosion instead of its own, or both, now bursts once with its own. An ordinary missile in that case now ends without an explosion.
+- The join window's "This CC_Client folder is not the host's kit (a file differs)" message now says "press Cancel" where it said "close this window": closing the join window's browser tab left it running, so running join-cc again re-opened that same window, which kept its first reading of the folder. The browser join window also reads the folder again on its next ship-list check after this message now. The kit's README says to press Cancel in the join window and close the game before replacing the `CC_Client` folder.
+- A kit too new for the server to talk to is now told so: its join window reads "This server is older than this kit - ask the host to update it, or for the kit their server came with." and in the game the line reads "this server is OLDER than your kit - ask the host". Only a 0.6.9 or later server answers this way; an older server still gives such a kit no reply at all. No such kit exists yet: a 0.6.9 kit at a 0.6.8 server reads "not the host's kit (a file differs)", as in the last point below.
+- At the end of a match, a kit's answer to the server's goodbye could, rarely, be lost to a timing fault inside the kit, and the server's end-of-match wrap-up then waited several seconds for that kit before finishing. The fault is fixed.
+- The joiner kit and the server must be updated together: a 0.6.8 kit cannot join a 0.6.9 server, and a 0.6.9 kit cannot join a 0.6.8 server. Either way the join window reads "This CC_Client folder is not the host's kit (a file differs)". A player who sees it on the 0.6.8 kit: press Cancel in the join window and close the game before replacing the folder.
+- 0.6.9 is the last release for Starsector 0.98a.
+
 ## 0.6.8 - 2026-11-11
 
 - A test ship, "Smoke Wolf" (`wolf_smoke-wolf`), shipped in 0.6.7 by mistake. It is removed from the game data. A server folder drops the file at its first start after the update. Players: delete the old `mods\CC_Client` folder before copying the new one in, as the kit's README says; a new kit copied over the old folder leaves the test ship's file behind (the server no longer offers the ship).

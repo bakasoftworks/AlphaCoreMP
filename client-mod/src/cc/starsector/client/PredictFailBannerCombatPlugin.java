@@ -555,6 +555,10 @@ public class PredictFailBannerCombatPlugin extends BaseEveryFrameCombatPlugin {
             case "kit_outdated":
                 return "your joiner kit is OUTDATED (the server runs a newer build) - get the"
                         + " current kit";
+            case "server_outdated":
+                // 49 chars - the mission briefing clips a row at 57
+                // (PredictDialLane); a longer sentence would lose its tail there.
+                return "this server is OLDER than your kit - ask the host";
             case "match_password_required":
                 return "this server needs a match password and none was sent";
             case "match_password_mismatch":
@@ -688,6 +692,9 @@ public class PredictFailBannerCombatPlugin extends BaseEveryFrameCombatPlugin {
         }
         switch (reason) {
             case "kit_outdated":
+            // No re-HELLO from this kit changes the server's version - without this
+            // case the dial would spend its whole attempt budget "still retrying".
+            case "server_outdated":
             case "match_password_required":
             case "match_password_mismatch":
             case "seat_token_required":

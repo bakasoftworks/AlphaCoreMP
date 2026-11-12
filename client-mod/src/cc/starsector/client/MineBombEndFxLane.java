@@ -241,6 +241,11 @@ final class MineBombEndFxLane {
     /** The served Nova/Orion script-bomb end meters. */
     private int scriptBombDoor;      // predict_missile_scriptbomb_door (engine door ran on a script bomb)
     private int scriptBombPaint;     // predict_missile_scriptbomb_paint (M11 per-spec paint: null mint source)
+    /** The fuse-det stand-in paint route and the plain sourceless END. */
+    private int fuseDetStandInPaint;     // predict_missile_fuse_det_stand_in_paint (fuse-det END on a null mint source: painted)
+    private int sourcelessPlainRelay;    // predict_missile_sourceless_plain_relay (plain END: the ONE own-det relay)
+    private int sourcelessPlainQuietEnd; // predict_missile_sourceless_plain_quiet_end (plain END: draws nothing)
+    private int sourcelessPlainEndFault; // predict_missile_sourceless_plain_end_fault (presentPlainEnd threw)
     /** The carved-out canister end-of-life sub-collaborator (knob, family
      *  gate, classifier + snap, meter tokens); this lane keeps the kind-6 store + geometry
      *  helpers it borrows back. */
@@ -345,6 +350,7 @@ final class MineBombEndFxLane {
     void onTrackEnd(MissilePoseLane.Twin t, long tick) {
         WireEnd wireEnd = wireEnds.remove(Long.valueOf(t.wireId));
         presentMineEndFx(t, tick, wireEnd);
+        presentPlainEnd(t, tick, wireEnd);
         presentBombEndFx(t, tick, wireEnd);
         presentConversionEndDet(t, tick, wireEnd);
         canister.presentEndFx(t, tick, wireEnd);
@@ -373,8 +379,12 @@ final class MineBombEndFxLane {
      *  Timing: the FX lands at the G=6 absence confirm, ~0.1-0.2 s after the server det — the
      *  standing absence-grace class. */
     private void presentMineEndFx(MissilePoseLane.Twin t, long tick, WireEnd wireEnd) {
-        if (!MissilePoseLane.MINE_FX || !MissilePoseLane.MISSILE_POSE_APPLY || !t.sourcelessMine
-                || t.fizzled) {
+        // The arm is SourcelessClassLaw.mineEndArm's (pinned by its row table);
+        // the four wire-cause meters below keep their own cause tests, in their order, ahead of the QUIET return.
+        int arm = SourcelessClassLaw.mineEndArm(MissilePoseLane.MINE_FX, MissilePoseLane.MISSILE_POSE_APPLY,
+                t.sourcelessMine, t.fizzled, wireEnd != null && wireEnd.cause
+                        == cc.starsector.client.net.ClientGameplayEdgeEvent.END_CAUSE_DESTROYED, t.mine);
+        if (arm == SourcelessClassLaw.MINE_END_NONE) {
             return;
         }
         try {
@@ -383,19 +393,21 @@ final class MineBombEndFxLane {
             } else if (wireEnd.cause
                     == cc.starsector.client.net.ClientGameplayEdgeEvent.END_CAUSE_DESTROYED) {
                 mineEndWireDestroyed++;
-                mineEndQuiet++; // wire-verified hp-death — the death pop rode the wire fizzle/
-                return;         // removal arc, never this lane; silence stays honest here
             } else if (wireEnd.cause
                     == cc.starsector.client.net.ClientGameplayEdgeEvent.END_CAUSE_FIZZLING) {
                 mineEndWireFizzling++;
             } else {
                 mineEndWireIntact++;
             }
+            if (arm == SourcelessClassLaw.MINE_END_QUIET) {
+                mineEndQuiet++; // wire-verified hp-death — the death pop rode the wire fizzle/
+                return;         // removal arc, never this lane; silence stays honest here
+            }
             // Det pose: the kind-6 floats are the server's last authoritative missile pose —
             // prefer them over the client's last-seen wire sample (one feed-gap fresher).
             Vector2f loc = wireEnd != null ? new Vector2f(wireEnd.x, wireEnd.y)
                     : new Vector2f(t.lastWireX, t.lastWireY);
-            if (t.mine) {
+            if (arm == SourcelessClassLaw.MINE_END_ENGINE_DOOR) {
                 // The ENGINE door. The body kept its fuse AI,
                 // so MissileAPI.explode() IS vanilla's own det — removeObject + the spec's
                 // DamagingExplosion (mine_explosion sound, detailed explosion, damage dealt to
@@ -424,6 +436,7 @@ final class MineBombEndFxLane {
                 }
                 return;
             }
+            // arm == MINE_END_PAINTED: the painted det
             Vector2f still = new Vector2f();
             mpl.plugin.engine.spawnExplosion(loc, still, MINE_DET_FX_COLOR, MINE_DET_FX_SIZE,
                     MINE_DET_FX_SECONDS);
@@ -462,8 +475,8 @@ final class MineBombEndFxLane {
         // the Nova/Orion script bomb, re-classed out of sourcelessMine at adopt); every painted
         // fallback below dispatches through presentFuseDetPainted (never phase-charge constants
         // on a script bomb).
-        if (!BOMB_END_FX || !MissilePoseLane.MISSILE_POSE_APPLY || t.sourcelessMine
-                || !isFuseDetSpec(t.specId)) {
+        if (!SourcelessClassLaw.bombEndAdmits(BOMB_END_FX, MissilePoseLane.MISSILE_POSE_APPLY, t.sourcelessMine,
+                isFuseDetSpec(t.specId))) {
             return;
         }
         if (!PROX_ENGINE_DOOR) {
@@ -517,11 +530,14 @@ final class MineBombEndFxLane {
             proxDoorOwnLocalFirst++;
             return;
         }
-        if (scriptBombEndPainted(isScriptBombSpec(t.specId), t.mintSourceNull)) {
-            // A script bomb minted with NO wire
-            // source replica carries the engine's SYNTHETIC source (never re-sided for a non-mine),
-            // so getSource() != null would route a wrong-sided fuse through the door — paint instead.
-            presentScriptBombEndPainted(t, tick, wireEnd);
+        if (SourcelessClassLaw.fuseDetEndPainted(isFuseDetSpec(t.specId), t.mintSourceNull)) {
+            // A fuse-det body
+            // (prox charge or script bomb) minted with NO wire source replica carries the engine's SYNTHETIC
+            // source (never re-sided for a non-mine), so getSource() != null would route a wrong-sided fuse
+            // through the door and deal local damage the server never dealt — paint instead (a script bomb to
+            // its own painter, a prox charge to the painted bomb end and its ONE own-det relay).
+            fuseDetStandInPaint++;
+            presentFuseDetPainted(t, tick, wireEnd);
             return;
         }
         boolean sourceKnown;
@@ -545,11 +561,38 @@ final class MineBombEndFxLane {
         presentProxDoor(t, tick, wireEnd);
     }
 
-    /** The script-bomb paint route, pure (selftest row): a script bomb
-     *  whose adopt minted with NO wire source replica paints (M11); everything else continues to
-     *  {@link #doorRoute}. */
-    static boolean scriptBombEndPainted(boolean scriptBomb, boolean mintSourceNull) {
-        return scriptBomb && mintSourceNull;
+    /** The END of an ordinary sourceless body (class PLAIN: ordnance whose
+     *  mount is not on the wire — a fighter's flare, a swarmer or a torpedo whose launcher died). It is no mine,
+     *  so it takes no mine det; its server end dealt whatever damage it dealt. ONE relay survives: a swarmer's
+     *  own-hull damage number ({@link OwnDetLane#isPlainRelaySpec}) at the wire END pose (else the last wire
+     *  pose, the painted mine arm's rule) — NO explosion, NO sound, NO hit flashes. Any other non-fizzled,
+     *  non-shot-down END with a wire record draws nothing and is counted. Verdicts =
+     *  {@link SourcelessClassLaw#plainRelays} / {@link SourcelessClassLaw#plainQuietEnd}; a throw is counted and
+     *  announced once. */
+    private void presentPlainEnd(MissilePoseLane.Twin t, long tick, WireEnd wireEnd) {
+        try {
+            boolean wireDestroyed = wireEnd != null
+                    && wireEnd.cause == cc.starsector.client.net.ClientGameplayEdgeEvent.END_CAUSE_DESTROYED;
+            boolean relaySpec = OwnDetLane.isPlainRelaySpec(t.specId);
+            if (SourcelessClassLaw.plainRelays(MissilePoseLane.MISSILE_POSE_APPLY, t.sourcelessClass, relaySpec,
+                    t.fizzled, wireDestroyed)) {
+                Vector2f loc = wireEnd != null ? new Vector2f(wireEnd.x, wireEnd.y)
+                        : new Vector2f(t.lastWireX, t.lastWireY);
+                mpl.plugin.ownDetLane.onDet(loc, t.specId, mpl.plugin.ownDetLane.ownSourced(t));
+                sourcelessPlainRelay++;
+                mpl.lane.log("predict v16 sourceless plain END relay: id=" + t.wireId + " spec=" + t.specId
+                        + " tick=" + tick + " at=" + (int) loc.x + "," + (int) loc.y
+                        + " cause=" + (wireEnd == null ? "none" : String.valueOf(wireEnd.cause)));
+            } else if (SourcelessClassLaw.plainQuietEnd(MissilePoseLane.MISSILE_POSE_APPLY, t.sourcelessClass,
+                    relaySpec, t.fizzled, wireEnd != null, wireDestroyed)) {
+                sourcelessPlainQuietEnd++;
+            }
+        } catch (Throwable e) {
+            sourcelessPlainEndFault++;
+            FallbackAnnounce.announceOnce("sourceless-plain-end",
+                    "sourceless plain END threw " + e.getClass().getSimpleName()
+                    + " (first id=" + t.wireId + ") -> no relay for this end");
+        }
     }
 
     /** The prox-charge ENGINE DOOR body (all
@@ -1397,6 +1440,11 @@ final class MineBombEndFxLane {
                 + " predict_missile_bomb_paint_failures=" + paintFailures
                 // The served script-bomb end meters, appended.
                 + " predict_missile_scriptbomb_door=" + scriptBombDoor
-                + " predict_missile_scriptbomb_paint=" + scriptBombPaint;
+                + " predict_missile_scriptbomb_paint=" + scriptBombPaint
+                // The stand-in paint route + the plain END, appended.
+                + " predict_missile_fuse_det_stand_in_paint=" + fuseDetStandInPaint
+                + " predict_missile_sourceless_plain_relay=" + sourcelessPlainRelay
+                + " predict_missile_sourceless_plain_quiet_end=" + sourcelessPlainQuietEnd
+                + " predict_missile_sourceless_plain_end_fault=" + sourcelessPlainEndFault;
     }
 }

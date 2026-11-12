@@ -703,6 +703,10 @@ final class MissilePoseLane {
          *  source replica ({@code sourceShip == null}: the engine substituted its synthetic source).
          *  A script-bomb END on it paints (M11) instead of running a wrong-sided engine door. */
         boolean mintSourceNull;
+        /** The sourceless class ({@link SourcelessClassLaw#classOf}), read by
+         *  the plain END and the unstable same-tick serve. Written only in {@code adoptSourceless}; an own mine
+         *  enrolled by the handoff lane keeps the default and its own {@code sourcelessMine} write. */
+        int sourcelessClass = SourcelessClassLaw.NOT_SOURCELESS;
         /** conversion-twin forensics (droneconv twins only; the round-6 no-silent-lane
          *  audit): closest wire-pose approach to the own ship over the twin's adopted life (su;
          *  MAX_VALUE = never sampled), and when. */
@@ -1015,6 +1019,11 @@ final class MissilePoseLane {
      *  arena rig proof: relay_skip against the reel's FIZZLING family ends). */
     private int fuseRelaySkipped;    // predict_missile_fuse_relay_skip (wire FIZZLING not relayed to a family foe twin)
     private int fuseSourcelessAdopts; // predict_missile_fuse_sourceless_adopt (family bodies adopted with no source)
+    /** predict_missile_sourceless_cls_&lt;class&gt;: the apply-arm sourceless
+     *  adopts per class (index = the class; their sum = predict_missile_sourceless_adopts on the apply arm), and
+     *  predict_missile_sourceless_class_read_fault: the spec-type read that threw (read as "not a mine"). */
+    private final int[] sourcelessClassAdopts = new int[SourcelessClassLaw.CLASS_SLOTS];
+    private int sourcelessClassReadFault;
     private int fuseUnconfirmedRetired; // predict_missile_fuse_unconfirmed_retire (fire-presented, still UNLINKED at the
                                         // leash: a spawn-step end, or a carried bomb whose record another twin took)
     /** The served Nova/Orion script-bomb adopt meters. */
@@ -1905,11 +1914,13 @@ final class MissilePoseLane {
                 // by vanilla) — fall through: the twin's normal fizzle relay plays
                 // the death arc AFTER the conversion FX lane got its input.
             }
-            // A SOURCELESS record — source pair (0,-1) — is no longer dropped here.
-            // It is the station-minefield class: the server emits every engine.getMissiles() body
-            // unconditionally and only DEGRADES the pair when getWeapon()==null
-            // (the server's pair read), so a hullmod-minted mine crosses fully identified
-            // (contentKey='minelayer_mine', pose valid) and only this gate hid it.
+            // A SOURCELESS record — mount -1 — is no longer dropped here. The server emits
+            // every engine.getMissiles() body unconditionally and only loses the MOUNT when getWeapon()==null
+            // (the server's pair read).
+            // a null-weapon mint whose source lives (a station's minefield mine, a system-script spawn) crosses
+            // as (source, -1), fully identified (contentKey='minelayer_mine', pose valid);
+            // a body whose launcher is gone (a dead fighter's flare, a dead ship's swarmer) crosses as (0,-1).
+            // Only this gate hid them; adoptSourceless sorts them by class (a real mine is only one class).
             // The ballistic blacklist is a per-MOUNT memory, so it can only be consulted when there
             // IS a mount; pairKey(0,-1) would otherwise alias every sourceless body onto one entry.
             // A WEAPONLESS-SOURCED record (src N, mount -1 — a system-script
@@ -2216,11 +2227,15 @@ final class MissilePoseLane {
     }
 
     /**
-     * The SOURCELESS presence-adopt: the station-minefield class. The server emits
+     * The SOURCELESS presence-adopt: every body with no mount on the wire. The server emits
      * these bodies already (they are ordinary {@code engine.getMissiles()} members); what it cannot
-     * emit is a MOUNT, because the minting call is
+     * emit is a MOUNT — a station's minefield mint is
      * {@code spawnProjectile(station, NULL weapon, "minelayer1", …)} and the server's pair read is
-     * weapon-keyed. So this arm reconstructs the body from
+     * weapon-keyed. A
+     * null-weapon mint whose source lives arrives as (station, -1) — a station mine is NOT sourceless on the
+     * source axis — while a body whose launcher is gone (a fighter's flare, a swarmer or a torpedo whose
+     * launcher died) arrives as (0,-1); the body is sorted by class ({@link SourcelessClassLaw}), and only a
+     * real mine takes the mine treatment. So this arm reconstructs the body from
      * what the wire DOES carry — stable id, owner, position, the v16 pose, and the true spec via the
      * content catalog — with a weaponless, sourceless mint the engine explicitly supports
      * (a null source is substituted with a synthetic {@code Ship},
@@ -2422,10 +2437,17 @@ final class MissilePoseLane {
         // with or without a source hull on the wire (FuseBurstLaw.sourcelessBursts: the body carries the engine's
         // own stand-in ship); its contact and shot-down ends stay the quiet legacy end when the wire names none. Counted.
         boolean fuseFamily = FuseBurstLaw.classify(missile, specIdOf(missile), keepsNativeAi(missile));
+        // ONE class sort (SourcelessClassLaw); intangible, the dressing and
+        // sourcelessMine below all read it, so the routing is pinned by the law's row table. Only a real mine is a
+        // mine: a PHASE_MINE spec (native fuse or not), never plain ordnance; a prox charge and an unstable fragment
+        // take their own classes (their own END presenters).
+        int cls = SourcelessClassLaw.classOf(scriptBomb, canister, droneConversion, mote, fuseFamily,
+                keepsNativeAi(missile), specTypeIsMine(missile, id), MineBombEndFxLane.isFuseDetSpec(trueSpec),
+                SourcedMissileEndLane.isUnstableFragmentSpec(trueSpec));
         if (fuseFamily) {
             fuseSourcelessAdopts++;
         }
-        boolean intangible = STATION_MINE_INTANGIBLE || droneConversion || canister || scriptBomb;
+        boolean intangible = SourcelessClassLaw.intangible(cls, STATION_MINE_INTANGIBLE);
         if (intangible) {
             // The conversion body is ALWAYS intangible — with both engine fizzle
             // axes dead (maxRange=0 null-weapon mint + the 1e9 flight pin) this makes its
@@ -2449,7 +2471,8 @@ final class MissilePoseLane {
         // The conversion spec skips the mine FX/end-classification and pairs in the FX lane
         // below; the canister spec skips them for its own arm — mine fade+sound on
         // a flak round was the mislabeled-FX defect (1 s fade hid its short flight).
-        if (scriptBomb) {
+        int dress = SourcelessClassLaw.dressing(cls, MINE_FX);
+        if (dress == SourcelessClassLaw.DRESS_SCRIPT_FADE) {
             // Vanilla spawnBomb verbatim — fadeOutThenIn
             // over the bound script's p.bombFadeInTime (Nova 1.0 / Orion 0.15; unbound = the
             // vanilla ctor value), NO mine_spawn (vanilla plays none; the system's useSound rides
@@ -2462,7 +2485,7 @@ final class MissilePoseLane {
                         "script-bomb spawn fade threw " + e.getClass().getSimpleName()
                         + " (first id=" + id + ") -> the body shows without the vanilla fade-in");
             }
-        } else if (canister) {
+        } else if (dress == SourcelessClassLaw.DRESS_CANISTER) {
             canisterAcqSourceless++; // per-door acquisition meter
             if (MineBombEndFxLane.CANISTER_FX) {
                 // launch-truth compromise — no mount ⇒ no muzzle flash,
@@ -2476,7 +2499,7 @@ final class MissilePoseLane {
                     // presentation nicety; the adopt itself stands
                 }
             }
-        } else if (MINE_FX && !droneConversion && !mote && !fuseFamily) {
+        } else if (dress == SourcelessClassLaw.DRESS_MINE_SPAWN) {
             // Vanilla's own minefield spawn presentation, verbatim:
             // snap invisible, fade in over 1 s, mine_spawn at the body. The wire carries no
             // phase/windup state (poseFlags = VALID|FIZZLING only), so the spec timing
@@ -2497,11 +2520,12 @@ final class MissilePoseLane {
         Twin t = new Twin(missile, rec.sourceEntityId(), rec.sourceMountIndex(), tick, false,
                 specIdOf(missile), false);
         t.thrustAi = thrustAi;
-        // sourcelessMine means the STATION-MINE class specifically — canister opts
-        // out like the conversion, which also opts it out of mine prime detection and the
-        // mine end classifier (its INTACT ends presented the r250 mine det otherwise).
-        t.sourcelessMine = !droneConversion && !canister && !mote && !scriptBomb // + script bomb
-                && !t.fuseBurst; // + the fuse-burst family (never the mine det at its END)
+        // sourcelessMine means a REAL mine (a PHASE_MINE spec) and nothing
+        // else: every other class (plain ordnance included) opts out of mine prime detection and the mine END
+        // classifier, so no ordinary sourceless body takes the mine det at its END.
+        //
+        t.sourcelessMine = SourcelessClassLaw.sourcelessMine(cls);
+        t.sourcelessClass = cls;
         t.mintSourceNull = sourceShip == null; //
         t.wireId = id;
         t.lastWireX = rec.posX();
@@ -2511,6 +2535,7 @@ final class MissilePoseLane {
         twinByWireId.put(id, t);
         consumedWireIds.offer(id);
         sourcelessAdopts++;
+        sourcelessClassAdopts[cls]++; // the per-class split of the line above (the class is 1..CLASS_SLOTS-1)
         sourcelessAdoptsRound++;
         sourcelessPresenceAdopts++; // Pairs the bump below OUT of the feed
         presenceAdopts++;
@@ -2530,13 +2555,33 @@ final class MissilePoseLane {
                 + " intangible=" + intangible
                 + " fx=" + (canister ? "canister:" + MineBombEndFxLane.CANISTER_FX
                         : mote ? "mote:launch" : String.valueOf(MINE_FX))
-                + " birthFizz=" + rec.fizzling();
+                + " birthFizz=" + rec.fizzling()
+                + " cls=" + SourcelessClassLaw.className(cls) + " src=" + rec.sourceEntityId()
+                + " mnt=" + rec.sourceMountIndex();
         if (droneConversion) {
             convLog(adoptRow);
         } else if (scriptBomb) {
             bindScriptBomb(t, missile, sourceShip, bombBinder, trueSpec, id, rec.sourceEntityId(), tick);
         } else {
             lane.log(adoptRow);
+        }
+    }
+
+    /** The minted body's spec type is PHASE_MINE (read the way
+     *  {@code FuseBurstLaw.classify} reads it). The engine's mine fuse AI marks the body a mine
+     *  ({@link #keepsNativeAi}); a mod that swaps that AI keeps the type but loses the mark, and such a body is
+     *  still a mine (class MINE_PAINTED: the minefield dressing, the painted det at its END). A throw reads
+     *  "not a mine" (the body falls to a later class or PLAIN), counted and announced once. */
+    private boolean specTypeIsMine(MissileAPI missile, long id) {
+        try {
+            com.fs.starfarer.api.loading.MissileSpecAPI spec = missile.getSpec();
+            return spec != null && "PHASE_MINE".equals(spec.getTypeString());
+        } catch (Throwable e) {
+            sourcelessClassReadFault++;
+            FallbackAnnounce.announceOnce("sourceless-class-read",
+                    "sourceless spec type read threw " + e.getClass().getSimpleName() + " (first id=" + id
+                    + ") -> read as not a mine");
+            return false;
         }
     }
 
@@ -2953,7 +2998,21 @@ final class MissilePoseLane {
                 + " predict_missile_fuse_relay_skip=" + fuseRelaySkipped
                 + " predict_missile_fuse_sourceless_adopt=" + fuseSourcelessAdopts
                 + " predict_missile_fuse_classify_fault=" + FuseBurstLaw.classifyFaults
-                + " predict_missile_fuse_unconfirmed_retire=" + fuseUnconfirmedRetired;
+                + " predict_missile_fuse_unconfirmed_retire=" + fuseUnconfirmedRetired
+                + sourcelessClassTokens();
+    }
+
+    /** The per-class sourceless adopt tokens, every class always printed
+     *  (a zero included) so the grader's sum is exact, then the spec-type read fault; appended at the line's tail
+     *  (the token order is read by name only). */
+    private String sourcelessClassTokens() {
+        StringBuilder sb = new StringBuilder(512);
+        for (int cls = 1; cls < SourcelessClassLaw.CLASS_SLOTS; cls++) {
+            sb.append(" predict_missile_sourceless_cls_").append(SourcelessClassLaw.className(cls)).append('=')
+                    .append(sourcelessClassAdopts[cls]);
+        }
+        return sb.append(" predict_missile_sourceless_class_read_fault=").append(sourcelessClassReadFault)
+                .toString();
     }
 
     /** The MISSILE_SPLIT presentation entry. The law lives in

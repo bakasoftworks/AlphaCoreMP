@@ -116,6 +116,9 @@ final class SourcedMissileEndLane {
     private int fuseBurstNoSpec;     // predict_missile_fuse_burst_no_spec (refused: no cached burst spec)
     private int fuseBurstFault;      // predict_missile_fuse_burst_fault (presentFuseBurst threw)
     private int fuseBurstSourceless; // predict_missile_fuse_burst_sourceless (a BURST end served for a twin with no source hull)
+    /** predict_missile_unstable_sourceless_served: a foe unstable fragment's
+     *  det END served same-tick for a twin with no source hull (its own count, never sourcedEndRetired). */
+    private int unstableSourcelessServed;
     /** The {@link FoeImpactDoorLaw} door meters (round line). */
     private int foeImpactExplodeDoor;        // predict_missile_foe_impact_explode_door
     private int foeImpactNativeDone;         // predict_missile_foe_impact_native_done
@@ -670,7 +673,14 @@ final class SourcedMissileEndLane {
         // absence-confirm path never serves the same end twice.
         boolean sourcelessBurst = FuseBurstLaw.sourcelessBursts(t.fuseBurst, t.own, t.sourceEntityId,
                 event.endCauseCode(), event.endVictimWireId());
-        if (t.sourceEntityId <= 0L && !sourcelessBurst) {
+        // A foe unstable fragment adopted with no source hull is no mine any
+        // more, so its det no longer rides the painted mine arm at absence-confirm; its INTACT-class / FIZZLING
+        // END is served here, same tick, where presentUnstableEnd paints the blast and relays its ONE own hit.
+        int endCause = event.endCauseCode();
+        boolean unstableDet = SourcelessClassLaw.unstableDetEnd(t.sourcelessClass, t.own,
+                cc.starsector.client.net.ClientGameplayEdgeEvent.endCauseIntactClass(endCause),
+                endCause == cc.starsector.client.net.ClientGameplayEdgeEvent.END_CAUSE_FIZZLING);
+        if (!SourcelessClassLaw.servedSameTick(t.sourceEntityId > 0L, sourcelessBurst, unstableDet)) {
             // The legacy degraded (0,-1) pair: pre-v7 consumers own these ends at
             // absence-confirm — the landed, watch-graded arcs stay untouched. The (N,-1)
             // sourceless family passes and is served same-tick (class javadoc).
@@ -737,6 +747,8 @@ final class SourcedMissileEndLane {
         mpl.twinByWireId.remove(t.wireId);
         if (sourcelessBurst) {
             fuseBurstSourceless++; // its own count: sourcedEndRetired stays the SOURCED watch bar
+        } else if (t.sourceEntityId <= 0L) {
+            unstableSourcelessServed++; // the unstableDet pass (the only other no-source-hull admit); never the bar
         } else {
             sourcedEndRetired++;
         }
@@ -1765,6 +1777,8 @@ final class SourcedMissileEndLane {
                 + " predict_missile_contact_door_no_source=" + contactDoorNoSource
                 + " predict_missile_contact_door_shield_miss=" + contactDoorShieldMiss
                 // The own-shield presenter's overload FAULT, appended (order kept).
-                + " predict_missile_foe_impact_own_shield_overload_fault=" + foeImpactOwnShieldOverloadFault;
+                + " predict_missile_foe_impact_own_shield_overload_fault=" + foeImpactOwnShieldOverloadFault
+                // The sourceless unstable same-tick serve, appended.
+                + " predict_missile_unstable_sourceless_served=" + unstableSourcelessServed;
     }
 }

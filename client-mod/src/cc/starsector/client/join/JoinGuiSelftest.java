@@ -1012,11 +1012,13 @@ final class JoinGuiSelftest {
                 "w3-one-copy: the window constant, the door's reject text and both windows' lines are one string (flips"
                         + " if either copy is re-worded alone)");
         check(door.contains("is not the host's kit") && door.contains("delete the CC_Client folder from mods")
+                && door.contains("press Cancel") && !door.contains("close this window")
                 && door.endsWith("then run join-cc again.") && !door.contains("Refresh")
                 && !door.contains("credential") && !door.toLowerCase(java.util.Locale.ROOT).contains("paste"),
-                "w3-one-copy: the text names the host's kit and says to DELETE the folder before copying the kit in,"
+                "w3-one-copy: the text names the host's kit, says press Cancel (flips if 'close this window' returns:"
+                        + " the browser window outlives its tab) and to DELETE the folder before copying the kit in,"
                         + " no match paste (flips if the dead paste hint returns, or the advice goes back to 'extract"
-                        + " again, then press Refresh', which cannot clear a stale file left by a copy-over)");
+                        + " again, then press Refresh')");
     }
 
     /** The selftest descriptor under {@code matchId}, its seat tokens as the strict placeholders the receive law

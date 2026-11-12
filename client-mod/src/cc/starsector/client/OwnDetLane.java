@@ -142,9 +142,11 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
      *  collision, flat (dmgMax==dmgMin — the .proj carries NO damage keys; its
      *  explosionRadius 60 is commented "purely visual", so like the terminator row the AoE is
      *  cosmetic). EMP 0 = the CSV emp column (blank, both rows). Reaches this lane ONLY via
-     *  the MINE det site (a sourceless-adopted swarmer — fighter/station volley in a
+     *  the plain sourceless END's relay ({@code MineBombEndFxLane.presentPlainEnd}, keyed by
+     *  {@link #isPlainRelaySpec}; a swarmer is no mine, so it no
+     *  longer rides the mine det site) — a sourceless-adopted swarmer, fighter/station volley in a
      *  source-unbound window; sourced twins ride presented-ordnance
-     *  and never relay here): that site has no victim sweep, so this belt is the sole own-hit
+     *  and never relay here. That site has no victim sweep, so this belt is the sole own-hit
      *  gate — 120 su past the collision circle mirrors TERMINATOR on the same grounds (must
      *  clear the shield-ring-vs-collision-circle delta; shield hits end at ring range). Fade
      *  misses never arrive (the relay's {@code t.fizzled} guard — swarmers latch it at actual
@@ -152,6 +154,14 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
      *  = the disclosed fizzle-phantom class, bounded by 100 hp + ledger expiry. */
     private static final DetSpec SWARMER =
             new DetSpec(100f, 100f, 120f, 120f, DamageType.HIGH_EXPLOSIVE, 0f);
+    /** The swarmer's spec id ({@link #specFor} maps it to {@link #SWARMER}). */
+    static final String SWARMER_SPEC_ID = "type_1_srm";
+
+    /** The spec whose plain sourceless END relays its own-hull hit
+     *  ({@code SourcelessClassLaw.plainRelays}): the swarmer, the one plain-ordnance {@link DetSpec} here. Pure. */
+    static boolean isPlainRelaySpec(String specId) {
+        return SWARMER_SPEC_ID.equals(specId);
+    }
     /** The
      *  Threat unstable fragment's proximity blast ({@code unstable_fragment_missile.proj}
      *  explosionSpec radius 120 / coreRadius 60; weapon_data.csv {@code unstable_fragment} 750
@@ -181,7 +191,7 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
         if (DroneStrikeFxLane.CONVERSION_SPEC.equals(specId)) {
             return TERMINATOR;
         }
-        if ("type_1_srm".equals(specId)) {
+        if (SWARMER_SPEC_ID.equals(specId)) {
             return SWARMER;
         }
         return null;

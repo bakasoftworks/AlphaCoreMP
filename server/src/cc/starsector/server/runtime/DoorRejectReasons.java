@@ -45,6 +45,12 @@ public final class DoorRejectReasons {
 
     // ---- kit ----
     public static final String KIT_OUTDATED = "kit_outdated";
+    /** The mirror of {@link #KIT_OUTDATED}: the door's answer to a WELL-FORMED F1 whose version byte is ABOVE the
+     *  door's own (a kit released after this server). The reply is headed by the KIT's byte, so that kit's own strict
+     *  reader takes it; a kit that predates the token shows it raw. In {@link #JOIN_DOOR} / {@link #PROBE} /
+     *  {@link #ALL} (the answer precedes any flag read, so a join AND a probe flight draw it), never {@link #CUSTOM}.
+     *  Gate + reply = {@code HandshakeBounceLadder.classifyNewerOrNull}. */
+    public static final String SERVER_OUTDATED = "server_outdated";
     // ---- content fingerprint ----
     public static final String CONTENT_FINGERPRINT_REQUIRED = "content_fingerprint_required";
     public static final String CONTENT_FINGERPRINT_MISMATCH = "content_fingerprint_mismatch";
@@ -132,15 +138,15 @@ public final class DoorRejectReasons {
             SEAT_TOKEN_REQUIRED, SEAT_TOKEN_UNKNOWN, SEAT_UNKNOWN, SEAT_ALREADY_OCCUPIED,
             MATCH_FULL, SESSION_TABLE_FULL,
             OBSERVER_PASSWORD_MODE_ONLY, OBSERVER_CID_IN_USE, OBSERVER_FULL,
-            BANNED, HANDSHAKE_REFUSED, SOURCE_SEAT_CAP, MATCH_STALE, TEAM_FULL));
+            BANNED, HANDSHAKE_REFUSED, SOURCE_SEAT_CAP, MATCH_STALE, TEAM_FULL, SERVER_OUTDATED));
 
     private static final List<String> PROBE = Collections.unmodifiableList(Arrays.asList(
             MATCH_PASSWORD_MISMATCH, MATCH_PASSWORD_REQUIRED, KIT_OUTDATED,
             CONTENT_FINGERPRINT_MISMATCH, CONTENT_FINGERPRINT_REQUIRED, CLIENT_ID_REQUIRED,
-            PROBE_UNSUPPORTED, PROBE_NO_PICKABLES, BANNED, HANDSHAKE_REFUSED));
+            PROBE_UNSUPPORTED, PROBE_NO_PICKABLES, BANNED, HANDSHAKE_REFUSED, SERVER_OUTDATED));
 
     private static final List<String> ALL = Collections.unmodifiableList(Arrays.asList(
-            KIT_OUTDATED,
+            KIT_OUTDATED, SERVER_OUTDATED,
             CONTENT_FINGERPRINT_REQUIRED, CONTENT_FINGERPRINT_MISMATCH,
             MATCH_PASSWORD_REQUIRED, MATCH_PASSWORD_MISMATCH, CLIENT_ID_REQUIRED, SESSION_TABLE_FULL, MATCH_FULL,
             SEAT_TOKEN_REQUIRED, SEAT_TOKEN_UNKNOWN, SEAT_UNKNOWN, SEAT_ALREADY_OCCUPIED,
@@ -152,14 +158,15 @@ public final class DoorRejectReasons {
             CUSTOM_SMOD_CAP, CUSTOM_OP_EXCEEDED, CUSTOM_ENGINE_REJECTED, CUSTOM_TOO_LARGE,
             CUSTOM_ENGINE_FAULT, CUSTOM_BANNED));
 
-    /** Every reason a JOIN hello can be rejected with (20: the original enumeration + {@link #BANNED}
+    /** Every reason a JOIN hello can be rejected with (21: the original enumeration + {@link #BANNED}
      * + {@link #HANDSHAKE_REFUSED} + {@link #SOURCE_SEAT_CAP}
-     * + {@link #MATCH_STALE} + {@link #TEAM_FULL},
-     *order-free; {@link #TEAM_FULL} stays listed though the door never sends it). */
+     * + {@link #MATCH_STALE} + {@link #TEAM_FULL}
+     * + {@link #SERVER_OUTDATED}, order-free; {@link #TEAM_FULL}
+     *  stays listed though the door never sends it). */
     public static List<String> joinDoor() { return JOIN_DOOR; }
 
-    /** Every reason a PROBE hello can be rejected with (10 since THE FLIP; no seat is ever claimed on
-     *  this path). */
+    /** Every reason a PROBE hello can be rejected with (11: 10 since THE FLIP + {@link #SERVER_OUTDATED}; no seat
+     *  is ever claimed on this path). */
     public static List<String> probe() { return PROBE; }
 
     /** Every reason a VSUB submission can be refused with (17; ORDER = the VACK wire code). */
@@ -178,7 +185,7 @@ public final class DoorRejectReasons {
         return code >= 1 && code <= CUSTOM.size() ? CUSTOM.get(code - 1) : null;
     }
 
-    /** The whole vocabulary (39 distinct tokens: 22 door + 17 custom). */
+    /** The whole vocabulary (40 distinct tokens: 23 door + 17 custom). */
     public static List<String> all() { return ALL; }
 
     /** True iff {@code token} is exactly one of the registry's canonical spellings. */

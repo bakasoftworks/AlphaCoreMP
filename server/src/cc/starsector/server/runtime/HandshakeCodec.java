@@ -858,6 +858,31 @@ public final class HandshakeCodec {
                     CUSTOM_TIER_STANDARD, 4, CUSTOM_S_MOD_CAP_ENGINE, 0);
         }
 
+        /**
+         * The door's ONE reply to a kit NEWER than itself ({@code server_outdated}; the gate =
+         * {@code HandshakeBounceLadder.classifyNewerOrNull}): the REJECTED layout of the {@code kit_outdated} bounces
+         * headed by the REQUEST's version byte, so the newer kit's own strict reader
+         * ({@link #decodeRejectedOrNull}{@code (payload, itsVersion)}) takes it with no new parsing code, and a kit that
+         * predates the token shows it raw. {@code sessionId} = the door's handshake VERSION, no session: the one u64
+         * of the grammar with no decode law and no kit reader on a REJECT ({@link WelcomePayload#toString} prints it).
+         * Its use rule: a kit reads it only on {@code server_outdated} and only when {@code 1 <= n < its own
+         * VERSION}; the number picks a sentence and gates nothing. 60 B payload (96 B framed): never larger than the
+         * F1 it answers (123 B or more). THE FREEZE: this reply, and the datagram envelope around it, is what every
+         * later kit must keep reading (the three parts are spelled out at {@code Handshake13.encodeOpen}).
+         * {@code kitVersionByte} outside {@code VERSION + 1 .. 255} = {@link IllegalArgumentException} (the door's own
+         * byte and every older one have their own emitters).
+         */
+        public static byte[] encodeRejectedServerOutdated(int kitVersionByte, long nonceEcho, int startingRoundId,
+                int tickRate, long serverLife) {
+            if (kitVersionByte <= HANDSHAKE_VERSION || kitVersionByte > 0xFF) {
+                throw new IllegalArgumentException("server_outdated answers only a version byte above "
+                        + HANDSHAKE_VERSION + ", got " + kitVersionByte);
+            }
+            return frame(kitVersionByte, WELCOME_REJECTED, nonceEcho, HANDSHAKE_VERSION, startingRoundId,
+                    DoorRejectReasons.SERVER_OUTDATED, 0L, tickRate, 0, serverLife,
+                    CUSTOM_TIER_STANDARD, 4, CUSTOM_S_MOD_CAP_ENGINE, 0);
+        }
+
         /** The v11 custom-tail domain law, shared by the encoders (THROW) and the decoder
          * (null): one predicate so the two ends can never disagree on what is well-formed. */
         public static boolean customTailValid(int customTier, int customPerSeat,

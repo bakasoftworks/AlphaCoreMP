@@ -163,14 +163,21 @@ public final class DoorProbe {
                 return "Enter the match password to fetch the server's ship list.";
             case "kit_outdated":
                 return "This kit is outdated - get the NEWEST kit zip from the host.";
+            case "server_outdated":
+                // A v0.6.9-or-later server answering a kit NEWER than itself (an older
+                // server stays silent: the timeout copy keeps that case). The update first, then the matching kit.
+                return "This server is older than this kit - ask the host to update it, or for the kit their server"
+                        + " came with.";
             case "content_fingerprint_mismatch":
             case "content_fingerprint_required":
                 // The ONE copy of the kit-differs line (both join windows read it
                 // through here); the fix is the host's kit again — the match itself comes from the server, never a paste.
-                // The steps are the launcher's own FIX line (delete the folder FIRST). WHY: a
-                // kit copied OVER an old CC_Client keeps a file the new kit no longer ships, the print still differs,
-                // and "extract the zip again, then press Refresh" could never clear it.
-                return "This CC_Client folder is not the host's kit (a file differs) - close this window, delete the"
+                // WHY this refusal: a LISTED kit file or the jar is not the host's (another kit; a stray extra file is
+                // outside the print and is admitted). WHY "press Cancel", never "close this window": the browser
+                // window's JVM outlives its tab and a second join-cc run re-opens that same window; Cancel ends the
+                // JVM in both windows, which also frees the jar for the delete. The window re-reads the folder after
+                // this refusal (JoinBrowserUi.probe).
+                return "This CC_Client folder is not the host's kit (a file differs) - press Cancel, delete the"
                         + " CC_Client folder from mods, copy in the one from the host's kit zip, then run join-cc again.";
             case "client_id_required":
                 // The door's pre-claim HELLO checks can mint this on

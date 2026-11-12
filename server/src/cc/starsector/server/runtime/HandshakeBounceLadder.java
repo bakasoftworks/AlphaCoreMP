@@ -295,6 +295,59 @@ public final class HandshakeBounceLadder {
     }
 
     /**
+     * One classified NEWER-kit F1: the kit's version byte ({@code Handshake13.VERSION + 1 .. 255}) + its nonce. A
+     * DISTINCT type from {@link StaleHello} on purpose: no consumer of a stale tier (the door's per-tier tally, whose
+     * default arm is version 1's; {@link #encodeReject}, whose default throws) can ever be handed a version above the
+     * door's own.
+     */
+    public record NewerHello(int version, long nonce) {
+    }
+
+    /**
+     * The NEWER-kit rung: a WELL-FORMED F1 whose version byte is ABOVE the door's own → {@code NewerHello(version,
+     * nonce)}, else {@code null}. The grammar is the part of an F1 that is FROZEN across versions and nothing more:
+     * at least {@link Handshake13#OPEN_PAYLOAD_BYTES} B and within the frame's payload cap, byte 0 {@code >}
+     * {@link Handshake13#VERSION}, {@code [10] == 0}, every byte from 11 to the end 0. WHY {@code >= 123}, never
+     * {@code == 123}: the door's own decode takes any F1 of 11 B or more and the encoder sizes the pad to the cookie,
+     * so a later bump that grows the cookie grows the F1; the reply is constant (96 B framed), so reply &lt;= request
+     * holds at every admitted length — a 1:1 reflector at worst, the 13..19 rungs' posture. WHY the flags byte
+     * {@code [9]} is NOT gated: a later kit may define the two free bits, and this door reads no flag of a kit it
+     * cannot admit. WHY {@code >} and never {@code >=}: the door's own byte is an admit (an armed door) or garbage
+     * (an un-armed one), never "this server is older".
+     *
+     * <p>THE FREEZE this rung leans on, both ways: every later kit keeps the
+     * datagram envelope (magic, framing version, the HELLO / WELCOME channels, header + CRC) and these F1 bytes, and
+     * keeps reading the reply of {@link HandshakeCodec.WelcomePayload#encodeRejectedServerOutdated} at its own
+     * version byte (the three parts are spelled out at {@link Handshake13#encodeOpen}). THE BUMP RECIPE: the N-1 rung
+     * carries that kit's LITERAL flag set (the v20 rung = {@code 0x3F}); both version constants move; the kit-side
+     * frozen-reply row is never re-minted.
+     */
+    public static NewerHello classifyNewerOrNull(byte[] payload) {
+        if (payload == null || payload.length < Handshake13.OPEN_PAYLOAD_BYTES
+                || payload.length > DatagramFrameCodec.MAX_PAYLOAD_BYTES
+                || (payload[0] & 0xFF) <= Handshake13.VERSION || payload[10] != 0) {
+            return null;
+        }
+        for (int i = V13_OPEN_HEAD_BYTES; i < payload.length; i++) {
+            if (payload[i] != 0) {
+                return null;
+            }
+        }
+        long nonce = 0L;
+        for (int i = 1; i <= 8; i++) {
+            nonce = (nonce << 8) | (payload[i] & 0xFF);
+        }
+        return new NewerHello(payload[0] & 0xFF, nonce);
+    }
+
+    /** The {@code server_outdated} WELCOME for a classified newer-kit F1, headed by THAT kit's version byte
+     *  ({@link HandshakeCodec.WelcomePayload#encodeRejectedServerOutdated}). */
+    public static byte[] encodeServerOutdated(NewerHello newer, int startingRoundId, int tickRate, long serverLife) {
+        return HandshakeCodec.WelcomePayload.encodeRejectedServerOutdated(newer.version(), newer.nonce(),
+                startingRoundId, tickRate, serverLife);
+    }
+
+    /**
      * The v12 rung's return-routability challenge (called by the door's
      * stale-kit path since THE FLIP): the compact COOKIE WELCOME at version byte 12
      * ({@link HandshakeCodec.WelcomePayload#encodeCookieV12}) echoing the stale HELLO's nonce

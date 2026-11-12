@@ -793,6 +793,15 @@ final class JoinGuiProbeSelftest {
                     && !garbled.contains("\"probe\"") && !garbled.contains("match.id"),
                     "paste-re-probes: a pasted match text is refused unparsed and probes nothing (flips if the"
                             + " credential half comes back)");
+            // A content-print refusal drops the cached print, so the next probe re-reads the folder (the print used
+            // to live as long as the window's JVM, which outlives its tab: a corrected folder met the same refusal
+            // for ever).
+            Files.write(modDir.resolve("jars").resolve("cc-client-mod.jar"), new byte[] {4, 5, 6, 7});
+            ui.probe("127.0.0.1", "7777", "pw-1pass");
+            check(prints.size() == 2 && !prints.get(1).equals(prints.get(0))
+                    && prints.get(1).endsWith(";match=" + idA),
+                    "paste-re-probes: after a kit-differs refusal the next probe prints the folder as it is NOW (flips"
+                            + " if the refused print stays cached for the life of the window)");
         } finally {
             JoinBrowserUi.doorCall = real;
         }

@@ -92,7 +92,8 @@ At the title screen, "Open editor" in the join window opens a ship editor. Its F
 Read the message (KIT VERSION CHECK FAILED, NOT CONNECTED under the mission, a NOTE line): most say what to do - and tell the host what you saw.
 
 - Kit outdated or not the host's kit: see [Updating the kit](#updating-the-kit).
-- "no reply from <address>:<port> (server not up yet, wrong address/port, or a server older than this kit)": check the address and port with the host. If both are right and the server is running, the server is older than this kit: ask the host for the kit their server came with, or to update the server.
+- "This server is older than this kit": ask the host to update the server, or for the kit their server came with.
+- "no reply from <address>:<port> (server not up yet, wrong address/port, or a server older than this kit)": check the address and port with the host. If both are right and the server is running, the server is too old to answer this kit: ask the host the same.
 - Wrong match password: paste the code again or type it as announced.
 - NO MATCH YET: the host's server must be running; run `join-cc.bat` again and press "Refresh".
 - "Launch failed: Could not save the server's match as `match.txt`": your Windows account likely cannot write to the Starsector folder; a Starsector install outside `Program Files` (e.g. `C:\Games\Starsector`) avoids this.
@@ -108,7 +109,7 @@ The kit's own Java runtime is `CC_Client\jre-cc` (Eclipse Temurin 25.0.4.1+1, ab
 
 ## Updating the kit
 
-For a new kit, delete `mods\CC_Client`, copy in the new zip's `CC_Client`, run `join-cc.bat`. Remembered entries stay.
+For a new kit, press Cancel in the join window and close the game, delete `mods\CC_Client`, copy in the new zip's `CC_Client`, run `join-cc.bat`. Remembered entries stay.
 
 ## The session report
 
