@@ -24,7 +24,7 @@ public final class MagicSeamAllowlist {
     /** MagicLib 1.5.4 through 1.5.6 (one class, byte-identical across the three). */
     public static final String MAGICLIB_1_5_4_TO_1_5_6 =
             "e2815e57069f8146fe915c9cae74d4fd97e958b041f4ad8bafe89bc43d395c0a";
-    /** MagicLib 1.5.8-dev14. */
+    /** MagicLib 1.5.8-dev14 and 1.6.1 (one class, byte-identical across the two). */
     public static final String MAGICLIB_1_5_8_DEV14 =
             "0b9aba6f68566ab0d0a5724068a971c03788921382ae525644e06b41da4c9b6c";
 

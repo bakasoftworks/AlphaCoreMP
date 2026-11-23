@@ -8,6 +8,7 @@ import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
 import cc.starsector.server.bridge.RealEngineDemoRoster;
 import cc.starsector.server.bridge.SeatRebind;
 import cc.starsector.server.match.MatchDescriptors;
+import cc.starsector.server.names.EngineSym;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -93,9 +94,8 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class RealEngineAnchorDiveProbeMain {
 
-    // ---- PINNED 0.98a-RC8 identities (probe-local pin convention; RealEnginePhaseProbeMain). ----
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
+    // ---- PINNED 0.98.5a-RC4 (names unchanged from 0.98a-RC8) identities
+    //      (probe-local pin convention; RealEnginePhaseProbeMain). ----
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     private static final String SHIP_COMMAND_CLASS = "com.fs.starfarer.api.combat.ShipCommand";
     private static final String COMBAT_ENTITY_API = "com.fs.starfarer.api.combat.CombatEntityAPI";
@@ -462,7 +462,7 @@ public final class RealEngineAnchorDiveProbeMain {
                 Throwable cause = unwrap(damageThrow);
                 boolean cosmetic = cause instanceof NullPointerException
                         && java.util.Arrays.stream(cause.getStackTrace())
-                                .anyMatch(el -> el.getClassName().startsWith("com.fs.graphics"));
+                                .anyMatch(el -> el.getClassName().startsWith(EngineSym.GRAPHICS_PKG.dottedPrefix()));
                 if (!cosmetic) {
                     System.out.println(P + "-end verdict=APPLY_DAMAGE_THREW boundary="
                             + cause.getClass().getName() + ": " + cause.getMessage());
@@ -1351,8 +1351,8 @@ public final class RealEngineAnchorDiveProbeMain {
         ClassLoader loader = RealEngineAnchorDiveProbeMain.class.getClassLoader();
         Rig rig = new Rig();
         rig.loader = loader;
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
-        rig.shipClass = Class.forName(SHIP_CLASS, false, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
+        rig.shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         Class<?> shipApiClass = Class.forName(SHIP_API, false, loader);
         rig.shipApiClass = shipApiClass;
         Class<?> shipCommandClass = Class.forName(SHIP_COMMAND_CLASS, false, loader);

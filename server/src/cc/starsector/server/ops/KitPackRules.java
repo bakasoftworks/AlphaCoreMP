@@ -307,7 +307,7 @@ public final class KitPackRules {
 
             For players who know their way around - everything here is covered in full below.
 
-            1. You need your own Starsector 0.98a-RC8 and the host's connect code (`address:port:password`).
+            1. You need your own Starsector 0.98.5a-RC8 and the host's connect code (`address:port:password`).
             2. Extract this zip and copy its `CC_Client` folder into `mods\\` in your Starsector folder (the one with `starsector.exe`).
             3. Double-click `mods\\CC_Client\\join-cc.bat` (choose Run, or "More info" then "Run anyway", if Windows warns). The join window opens in your browser: paste the connect code, pick a ship and a team if you like, click "Launch".
             4. In the game launcher click "Play Starsector", then choose Missions, "Multiplayer Test", and press Play.
@@ -325,7 +325,7 @@ public final class KitPackRules {
 
             ## What you need
 
-            Your own purchased Starsector 0.98a-RC8 (the host's version; this kit has no game) and the host's connect code (`address:port:password`). Its last part is the match password the host announces for everyone. That is all you need: the join window fetches the match from the server by itself. The kit works on Windows and Linux only (no Mac).
+            Your own purchased Starsector 0.98.5a-RC8 (the host's version; this kit has no game) and the host's connect code (`address:port:password`). Its last part is the match password the host announces for everyone. That is all you need: the join window fetches the match from the server by itself. The kit works on Windows and Linux only (no Mac).
 
             ## Set up the kit (once)
 

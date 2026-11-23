@@ -150,12 +150,15 @@
       });
       if (any) { groups.push({ mode: S.groups[gi - 1].mode, autofire: S.groups[gi - 1].autofire, weapons: weapons }); }
     }
-    var smods = S.smods.filter(function (m) { return S.mods.indexOf(m) >= 0; });
+    
+    var biMods = h ? (h.builtInMods || []) : [];
+    var smods = S.smods.filter(function (m) { return S.mods.indexOf(m) >= 0 && biMods.indexOf(m) < 0; });
+    var sModdedBuiltIns = S.smods.filter(function (m) { return biMods.indexOf(m) >= 0; });
     var name = S.name.trim() || ((h ? h.name : 'Ship') + ' Custom');
     return {
       variantId: (h ? h.id : 'none') + '_' + slug(name), hullId: h ? h.id : '', displayName: name,
       goalVariant: false, quality: 1, fluxVents: S.vents, fluxCapacitors: S.caps,
-      hullMods: S.mods.slice(), permaMods: smods.slice(), sMods: smods.slice(), sModdedBuiltIns: [],
+      hullMods: S.mods.slice(), permaMods: smods.slice(), sMods: smods.slice(), sModdedBuiltIns: sModdedBuiltIns,
       wings: S.wings.filter(function (w) { return !!w; }), weaponGroups: groups
     };
   }
@@ -1134,7 +1137,7 @@
     S.mods.forEach(function (id) { if (keep.indexOf(id) < 0) { freed += modOpCost(S.modById[id]); touched = true; } });
     if (S.vents || S.caps) { freed += S.vents + S.caps; touched = true; }
     if (!touched) { sfx('ui_button_disabled_pressed'); return; }
-    S.fit = {}; S.groupOf = {}; S.biGroupOf = {}; S.wings = []; S.mods = keep; S.smods = S.smods.filter(function (id) { return keep.indexOf(id) >= 0; });   
+    S.fit = {}; S.groupOf = {}; S.biGroupOf = {}; S.wings = []; S.mods = keep; S.smods = S.smods.filter(function (id) { return keep.indexOf(id) >= 0 || (h.builtInMods || []).indexOf(id) >= 0; });   
     S.groups = []; for (var g = 0; g < 7; g++) { S.groups.push({ mode: 'LINKED', autofire: false }); }
     S.vents = 0; S.caps = 0; S.flash = null;
     bumpOp(-freed);
@@ -1566,7 +1569,8 @@
     var h = S.hull, g = modGate(m.id), d = h && h.modDesc ? h.modDesc[m.id] : null;
     var on = S.mods.indexOf(m.id) >= 0, isS = S.smods.indexOf(m.id) >= 0, bi = !!h && (h.builtInMods || []).indexOf(m.id) >= 0;
     var refused = !!(g && g.ok === false), locked = !!(g && g.now === false), cost = modOpCost(m);
-    var costText = !h ? '' : bi ? 'built into this hull' : (on && isS) ? 'built in (S-mod): 0 OP' : cost + ' OP on a ' + sizeName(h.size).toLowerCase();
+    var sbi = bi && (h.sModdableBuiltIns || []).indexOf(m.id) >= 0;   
+    var costText = !h ? '' : bi ? 'built into this hull' + (isS ? ' · S-modded' : '') : (on && isS) ? 'built in (S-mod): 0 OP' : cost + ' OP on a ' + sizeName(h.size).toLowerCase();
     var parts = [el('div', { class: 'h', text: m.name }),
       el('div', { class: 's', text: [m.manufacturer || '', costText].filter(Boolean).join(' · ') })];
     if (d && d.d) {   
@@ -1578,7 +1582,9 @@
     if (notes && notes.length) { notes.forEach(function (n) { parts.push(el('div', { class: 'p build', text: n })); }); }
     
     
-    if (d && d.s && !m.noBuildIn) { parts.push(el('div', { class: 'p smod' + (d.sNeg ? ' neg' : ''), text: (d.sNeg ? 'S-mod penalty (built in): ' : 'S-mod bonus (built in): ') + d.s })); }
+    
+    if (d && d.s && !m.noBuildIn && !(bi && d.sNeg)) { parts.push(el('div', { class: 'p smod' + (d.sNeg ? ' neg' : ''), text: (d.sNeg ? 'S-mod penalty (built in): ' : 'S-mod bonus (built in): ') + d.s })); }
+    if (sbi && !isS && d && d.s) { parts.push(el('div', { class: 'p', text: 'This effect only applies if this built-in hullmod is S-modded. Doing this does not count against the maximum number of S-mods.' })); }
     if (!bi && refused) { parts.push(el('div', { class: 'p why', text: g.reason || 'the game refuses it on this ship' })); }
     else if (!bi && !on && locked) { parts.push(el('div', { class: 'p why', text: g.nowReason || 'cannot be changed now' })); }
     else if (!bi && !on && cost > opFree()) { parts.push(el('div', { class: 'p why', text: 'not enough OP: needs ' + cost + ', ' + opFree() + ' free' })); }
@@ -1586,7 +1592,7 @@
       parts.push(el('div', { class: 'p hint', text: !on ? ('click: add' + (m.noBuildIn ? '' : ' · shift+click: add built in'))
         : isS ? 'click: remove · right-click: remove · shift+right-click: un-build (keep it as a normal mod)'
         : sModBlock(m) ? ('click: remove (' + sModBlock(m) + ') · right-click: remove') : 'click: build in (S-mod, 0 OP) · right-click: remove · shift+right-click: build in' }));
-    }
+    } else if (sbi || isS) { parts.push(el('div', { class: 'p hint', text: isS ? 'Shift+click to remove the S-mod.' : 'Shift+click to S-mod it.' })); }
     return parts;
   }
   
@@ -2307,7 +2313,7 @@
   function buildModList() {
     var box = clear($('mods'));
     S.mrows = {}; S.msecs = []; S.mrowsPinned = {};
-    box.appendChild(el('div', { class: 'hint', text: 'click a hullmod: add · click it again: build it in (S-mod, 0 OP) · again: remove · right-click: remove · shift+right-click: build in / un-build' }));
+    box.appendChild(el('div', { class: 'hint', text: 'click a hullmod: add · click it again: build it in (S-mod, 0 OP) · again: remove · right-click: remove · shift+right-click: build in / un-build · shift+click an eligible built-in: S-mod it (free, uncounted)' }));
     
     
     S.mpinned = el('div', { class: 'mlist' });
@@ -2384,8 +2390,9 @@
   
   function toggleMod(id, mode) {
     var row = S.mrows[id];
-    if (!row || row.classList.contains('builtin')) { return; }
+    if (!row) { return; }
     var m = S.modById[id];
+    if (row.classList.contains('builtin')) { toggleBuiltInSMod(id, m, mode); return; }
     var on = S.mods.indexOf(id) >= 0, isS = S.smods.indexOf(id) >= 0;
     
     
@@ -2407,6 +2414,23 @@
     bumpOp(((nowOn && !nowS) ? cost : 0) - was);
     sfx(nowS && !isS ? 'ui_char_spent_story_point_technology' : 'ui_button_pressed');   
     S.pinHoldArm = nowOn && !on && S.tab === 'mods';   
+    updateModList(); changed();
+  }
+  
+  
+  
+  function toggleBuiltInSMod(id, m, mode) {
+    var h = S.hull, isS = S.smods.indexOf(id) >= 0;
+    if (mode === 'smod' && isS) { S.smods = S.smods.filter(function (x) { return x !== id; }); sfx('ui_button_pressed'); }
+    else if (mode === 'smod' && h && (h.sModdableBuiltIns || []).indexOf(id) >= 0) { S.smods.push(id); sfx('ui_char_spent_story_point_technology'); }
+    else {
+      sfx('ui_button_disabled_pressed');
+      if (mode === 'smod') {   
+        var d = h && h.modDesc ? h.modDesc[id] : null;
+        flashHint((m ? m.name : id) + ' cannot be S-modded' + (d && d.sNeg ? ': its S-mod effect is a penalty' : d && !d.s ? ': it has no S-mod effect' : ''));
+      }
+      return;
+    }
     updateModList(); changed();
   }
   function updateModList() {
@@ -2472,7 +2496,7 @@
   function styleModRow(row, m, h, g, hidden, on, isS, bi, refused, locked) {
       row.classList.toggle('hide', !!hidden);
       row.classList.toggle('on', on || bi);
-      row.classList.toggle('smod', on && isS);
+      row.classList.toggle('smod', (on || bi) && isS);   
       row.classList.toggle('builtin', bi);
       var pricey = !bi && !on && !refused && !locked && modOpCost(m) > opFree();   
       row.classList.toggle('off', !bi && !on && (refused || locked || pricey));
@@ -2486,8 +2510,9 @@
       row.querySelector('.cost').textContent = bi ? '' : (!on && refused ? 'n / a' : (h && m.cost ? (isS ? '0' : m.cost[h.size]) + ' OP' : ''));
       
       
+      
       var st = row.querySelector('.st'), meta = row.querySelector('.meta');
-      st.textContent = bi ? 'built in' : on && isS ? 'S' : on ? '✓' : (locked && !refused) ? 'dock' : '';
+      st.textContent = bi ? (isS ? 'S' : 'built in') : on && isS ? 'S' : on ? '✓' : (locked && !refused) ? 'dock' : '';
       meta.textContent = !on && refused ? (g.reason || 'the game refuses it on this ship') : !on && locked ? (g.nowReason || 'cannot be changed now') : (m.manufacturer || '');
       meta.classList.toggle('why', !on && (refused || locked));
   }
@@ -4442,10 +4467,22 @@
     
     
     S.smods = [];
+    
+    
+    
+    var biMods = h.builtInMods || [], biS = [];
+    (Array.isArray(doc.sModdedBuiltIns) ? doc.sModdedBuiltIns : []).forEach(function (m) { if (biS.indexOf(m) < 0) { biS.push(m); } });
     (doc.sMods || []).forEach(function (m) {
       if (!S.modById[m]) { if (dropped.indexOf(m) < 0) { dropped.push(m); } return; }
+      if (biMods.indexOf(m) >= 0) { if (biS.indexOf(m) < 0) { biS.push(m); } return; }
       if (S.mods.indexOf(m) < 0 && (h.builtInMods || []).indexOf(m) < 0) { S.mods.push(m); }
       if (S.mods.indexOf(m) >= 0 && S.smods.indexOf(m) < 0) { S.smods.push(m); }
+    });
+    biS.forEach(function (m) {
+      var mm = S.modById[m];
+      if (!mm) { if (dropped.indexOf(m) < 0) { dropped.push(m); } return; }
+      if ((h.sModdableBuiltIns || []).indexOf(m) >= 0) { S.smods.push(m); S.mods = S.mods.filter(function (x) { return x !== m; }); return; }
+      dropped.push(mm.name + (biMods.indexOf(m) >= 0 ? ': a built-in that cannot be S-modded' : ': not built into this hull'));
     });
     S.vents = Math.max(0, Math.min(h.maxVents, parseInt(doc.fluxVents, 10) || 0));
     S.caps = Math.max(0, Math.min(h.maxCaps, parseInt(doc.fluxCapacitors, 10) || 0));

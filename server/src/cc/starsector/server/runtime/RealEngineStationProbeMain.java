@@ -5,6 +5,7 @@ import cc.starsector.server.bridge.EngineBackedCombatStepBoundary;
 import cc.starsector.server.bridge.EngineBackedCombatWorldState;
 import cc.starsector.server.bridge.EngineCombatBinding;
 import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.protocol.NonShipEntitySnapshot;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -66,14 +67,7 @@ import java.util.TreeMap;
  */
 public final class RealEngineStationProbeMain {
 
-    // ---- PINNED 0.98a-RC8 identities, byte-identical to RealEngineDemoRoster (Option R). ----
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
-    private static final String MISSILE_CLASS = "com.fs.starfarer.combat.entities.Missile";
-    private static final String HULL_VARIANT_SPEC_CLASS = "com.fs.starfarer.loading.specs.HullVariantSpec";
-    private static final String VARIANT_REGISTRY_CLASS = "com.fs.starfarer.loading.B";
-    private static final String VARIANT_REGISTRY_METHOD = "o00000";
-    private static final String FLEET_MEMBER_CLASS = "com.fs.starfarer.campaign.fleet.FleetMember";
+    // ---- PINNED 0.98.5a-RC4 identities, byte-identical to RealEngineDemoRoster (Option R). ----
     private static final String FLEET_MEMBER_TYPE_API = "com.fs.starfarer.api.fleet.FleetMemberType";
     private static final String FLEET_MEMBER_API = "com.fs.starfarer.api.fleet.FleetMemberAPI";
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
@@ -160,8 +154,8 @@ public final class RealEngineStationProbeMain {
         EngineBackedCombatStepBoundary step = new EngineBackedCombatStepBoundary(world, binding);
 
         ClassLoader loader = RealEngineStationProbeMain.class.getClassLoader();
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
-        Class<?> shipClass = Class.forName(SHIP_CLASS, false, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
+        Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         Class<?> shipApiClass = Class.forName(SHIP_API, false, loader);
         Object engine = engineClass.getMethod("getInstance").invoke(null);
         if (engine == null) {
@@ -210,13 +204,13 @@ public final class RealEngineStationProbeMain {
         }
 
         // ---- Member mint: the faithful roster recipe + PRE-SPAWN CR lift (module CR copies the member's). ----
-        Class<?> registryClass = Class.forName(VARIANT_REGISTRY_CLASS, true, loader);
-        Object variant = registryClass.getMethod(VARIANT_REGISTRY_METHOD, String.class).invoke(null, variantId);
-        Class<?> hullVariantClass = Class.forName(HULL_VARIANT_SPEC_CLASS, false, loader);
+        Class<?> registryClass = EngineSym.VARIANT_REGISTRY_CLASS.load(loader);
+        Object variant = EngineSym.VARIANT_REGISTRY_LOOKUP_METHOD.method(registryClass).invoke(null, variantId);
+        Class<?> hullVariantClass = Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader);
         if (variant == null || !hullVariantClass.isInstance(variant)) {
             throw new IllegalStateException("variant '" + variantId + "' did not resolve");
         }
-        Class<?> fleetMemberClass = Class.forName(FLEET_MEMBER_CLASS, false, loader);
+        Class<?> fleetMemberClass = Class.forName(EngineSym.FLEET_MEMBER_CLASS.className(), false, loader);
         Class<?> memberTypeClass = Class.forName(FLEET_MEMBER_TYPE_API, false, loader);
         Object member = fleetMemberClass
                 .getConstructor(int.class, hullVariantClass, memberTypeClass)
@@ -387,7 +381,7 @@ public final class RealEngineStationProbeMain {
             Class<?> combatEngineApiClass = Class.forName(COMBAT_ENGINE_API, false, loader);
             Class<?> weaponApiClass = Class.forName(WEAPON_API, false, loader);
             Class<?> missileApiClass = Class.forName(MISSILE_API, false, loader);
-            Class<?> missileEntityClass = Class.forName(MISSILE_CLASS, false, loader);
+            Class<?> missileEntityClass = Class.forName(EngineSym.MISSILE_CLASS.className(), false, loader);
             Method engineSpawnProjectile = combatEngineApiClass.getMethod("spawnProjectile",
                     shipApiClass, weaponApiClass, String.class, vec2Class, float.class, vec2Class);
             Method engineGetMissiles = combatEngineApiClass.getMethod("getMissiles");
@@ -538,7 +532,7 @@ public final class RealEngineStationProbeMain {
         if (fuseProbe) {
             Class<?> ceApiClass = Class.forName(COMBAT_ENGINE_API, false, loader);
             Class<?> wpnApiClass = Class.forName(WEAPON_API, false, loader);
-            Class<?> missileClass = Class.forName(MISSILE_CLASS, false, loader);
+            Class<?> missileClass = Class.forName(EngineSym.MISSILE_CLASS.className(), false, loader);
             Method spawnProj = ceApiClass.getMethod("spawnProjectile",
                     shipApiClass, wpnApiClass, String.class, vec2Class, float.class, vec2Class);
             Method getAiGrid = engineClass.getMethod("getAiGrid");
@@ -557,7 +551,7 @@ public final class RealEngineStationProbeMain {
 
             // Bait member: the station recipe minus station-ness; variant proven resolvable in
             // this boot by RealEngineMidDeployProbeMain (side-1 spawnFleetMember lane).
-            Object baitVariant = registryClass.getMethod(VARIANT_REGISTRY_METHOD, String.class)
+            Object baitVariant = EngineSym.VARIANT_REGISTRY_LOOKUP_METHOD.method(registryClass)
                     .invoke(null, fuseEnemyVariant);
             if (baitVariant == null || !hullVariantClass.isInstance(baitVariant)) {
                 throw new IllegalStateException("fuse bait variant '" + fuseEnemyVariant + "' did not resolve");
@@ -826,7 +820,7 @@ public final class RealEngineStationProbeMain {
 
     private static int missileCount(ClassLoader loader, Object engine, Method getObjects, Method repoGetList) {
         try {
-            Class<?> missileClass = Class.forName(MISSILE_CLASS, false, loader);
+            Class<?> missileClass = Class.forName(EngineSym.MISSILE_CLASS.className(), false, loader);
             return ((List<?>) repoGetList.invoke(getObjects.invoke(engine), missileClass)).size();
         } catch (Throwable t) {
             return -1;

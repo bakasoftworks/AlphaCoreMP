@@ -9,14 +9,14 @@
         "magazines"
     ],
     "permaMods": [
-        "missleracks",
         "hardened_subsystems",
-        "fluxcoil"
+        "fluxcoil",
+        "missile_autoloader"
     ],
     "sMods": [
-        "missleracks",
         "hardened_subsystems",
-        "fluxcoil"
+        "fluxcoil",
+        "missile_autoloader"
     ],
     "variantId": "afflictor_Antimatter",
     "weaponGroups": [

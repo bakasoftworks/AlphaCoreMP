@@ -5,11 +5,16 @@ import cc.starsector.server.ops.PeerText;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
+import java.util.function.UnaryOperator;
 
 /**
  * The door's seat-variant PICK surface, carved out of {@code PilotIntentDatagramServer}:
@@ -21,9 +26,10 @@ import java.util.function.LongSupplier;
  * own-only by design, sharing is v3) and a pick naming a custom that is still in flight
  * is HELD {@link #PENDING_HOLD_MILLIS} as the design's {@code pendingUnresolvedPick}: seeded the
  * moment the lane ACCEPTs it ({@link #onCustomAccepted}), dropped loud at the deadline
- * ({@link #sweepExpired}). The HELLO pick is held UNCONDITIONALLY whenever customs are on — by
+ * ({@link #sweepExpired}). An unlisted HELLO pick is held whenever customs are on — by
  * construction a joiner's HELLO precedes its outbox VSUBs (by design), so at HELLO time
- * the ledger cannot know the id yet; a {@code /ship} pick is held only when a matching own
+ * the ledger cannot know the id yet — EXCEPT an id the host replaced or hides, answered at once
+ * ({@link Kind#REPLACED} / {@link Kind#NOT_SERVED}); a {@code /ship} pick is held only when a matching own
  * submission is already deposited or in flight (the client's normal flow is submit → VACK →
  * {@code /ship}, so an unknown {@code /ship} arg falls through to the dispatch at once —
  * that is the fold-substring FILTER listing, or the immediate
@@ -103,9 +109,85 @@ public final class SeatVariantPicks {
         void chat(long sessionId, int seatId, String line);
     }
 
-    public enum Kind { ALLOWLIST, OWN_CUSTOM, HELD, UNKNOWN, UNAVAILABLE }
+    /**
+     * The kept copy a host put in a ship's place (implemented by {@code CatalogPromotionLane::copySupersedingOrNull};
+     * any thread, the last kept scan's view). WHY: a join window REMEMBERS the id it
+     * last flew, and a host that has since replaced that ship serves its copy under another id - the HELLO pick then
+     * names an id the listing no longer holds and no submission will ever confirm.
+     */
+    public interface SupersedeSource {
+        /** The kept copy whose link names {@code replacedId} (ASCII fold), or null = none kept now. */
+        String copySupersedingOrNull(String replacedId);
 
-    /** {@code canonical} is non-null for {@link Kind#ALLOWLIST} / {@link Kind#OWN_CUSTOM} only. */
+        /**
+         * The ROOT a REMOVED kept stem stood for - the link its forgotten
+         * {@code .meta} carried (implemented by {@code CatalogPromotionLane::removedSupersededByOrNull}) - or null = not
+         * a removed kept stem with a link. WHY: a copy of a copy links the ROOT, so a re-edited or removed kept stem a
+         * join window remembers is named by no kept copy's link; only its own link leads to the copy standing in its
+         * place now. Default null: a reader built from the copy link alone never follows a removed stem.
+         */
+        default String removedSupersededByOrNull(String removedId) {
+            return null;
+        }
+
+        /**
+         * true = {@code id} (ASCII fold) is a kept copy the host REMOVED - an
+         * inbox {@code kept-} file no kept stem holds, the same removed list a restore takes back from (implemented by
+         * {@code CustomVariantOps.removedStemOrNull}: the last scans' bounded lists, any thread, no file I/O). WHY: a
+         * join window that last flew a kept copy sends that stem as its pick; once the host removes the copy no
+         * submission can ever confirm it, so a hold only delays the default 30 s. A plain removal carries no link to
+         * walk, and the stem itself is never hidden, so neither the redirect nor the hidden test sees it.
+         * Default false: a reader built from the links alone never answers a removal.
+         */
+        default boolean isRemovedKeptStem(String id) {
+            return false;
+        }
+
+        /**
+         * Every reader of one catalog, e.g. {@code of(promo::copySupersedingOrNull, promo::removedSupersededByOrNull,
+         * id -> CustomVariantOps.removedStemOrNull(lane, id) != null)}. The removal test is a {@link Predicate}, a type
+         * apart from the two link readers, so it cannot trade places with one and still compile.
+         */
+        static SupersedeSource of(UnaryOperator<String> copySuperseding, UnaryOperator<String> removedSupersededBy,
+                Predicate<String> removedKeptStem) {
+            Objects.requireNonNull(copySuperseding, "copySuperseding");
+            Objects.requireNonNull(removedSupersededBy, "removedSupersededBy");
+            Objects.requireNonNull(removedKeptStem, "removedKeptStem");
+            return new SupersedeSource() {
+                @Override
+                public String copySupersedingOrNull(String replacedId) {
+                    return copySuperseding.apply(replacedId);
+                }
+
+                @Override
+                public String removedSupersededByOrNull(String removedId) {
+                    return removedSupersededBy.apply(removedId);
+                }
+
+                @Override
+                public boolean isRemovedKeptStem(String id) {
+                    return removedKeptStem.test(id);
+                }
+            };
+        }
+    }
+
+    /**
+     * Links one redirect walk follows before it answers {@code NOT_SERVED}.
+     * Every link the last scans hold is a kept copy's (at most {@link CatalogPromotionLane#KEPT_CAP} kept stems per
+     * scan) or a removed kept stem's (at most {@link CatalogPromotionLane#INBOX_LIST_CAP} kept names listed per scan),
+     * so a chain of distinct ids never needs more; past it the reader is not the scans' bounded view and the walk stops
+     * rather than spin on peer-named input.
+     */
+    public static final int SUPERSEDE_HOPS_MAX = CatalogPromotionLane.KEPT_CAP + CatalogPromotionLane.INBOX_LIST_CAP;
+
+    /** {@code REPLACED} = an unlisted id whose listed kept copy flies in its place; {@code NOT_SERVED} = an id this
+     *  server hides with no listed copy, a kept copy the host removed, an id whose supersede links end with no listed
+     *  copy, or whose supersede chain cycles or runs past {@link #SUPERSEDE_HOPS_MAX} (both only while customs are on
+     *  - without them a miss is {@code UNKNOWN}). */
+    public enum Kind { ALLOWLIST, OWN_CUSTOM, HELD, UNKNOWN, UNAVAILABLE, REPLACED, NOT_SERVED }
+
+    /** {@code canonical} is non-null for {@link Kind#ALLOWLIST} / {@link Kind#OWN_CUSTOM} / {@link Kind#REPLACED} only. */
     public record Resolution(Kind kind, String canonical) {
     }
 
@@ -121,6 +203,7 @@ public final class SeatVariantPicks {
     private final Notifier notifier;
     private final LongSupplier clock;
     private volatile CustomPickSource customSource;
+    private volatile SupersedeSource supersedeSource;
     private volatile String joinerDefaultVariant;
     /** seat → RAW fresh-claim request ("" = none); guarded by {@code this}. */
     private final Map<Integer, String> requestedBySeat = new HashMap<>();
@@ -131,6 +214,8 @@ public final class SeatVariantPicks {
     private int expiredTotal;
     private int releasedTotal; // Holds dropped by a REJECT (D3)
     private int submittedTotal; // Accepts that seeded the SUBMITTER's seat (no hold)
+    /** Redirect walks that met a cycle or ran past {@link #SUPERSEDE_HOPS_MAX} (each answered {@code NOT_SERVED}). */
+    private final AtomicInteger supersedeChainBrokenTotal = new AtomicInteger();
 
     public SeatVariantPicks(PickableVariants pickableVariantsOrNull, Seeder seeder, Notifier notifier) {
         this(pickableVariantsOrNull, seeder, notifier, System::currentTimeMillis);
@@ -148,6 +233,80 @@ public final class SeatVariantPicks {
     /** Attach (or detach, null) the custom-variant lane; thread-agnostic. */
     public void attachCustomSource(CustomPickSource sourceOrNull) {
         customSource = sourceOrNull;
+    }
+
+    /** Attach (or detach, null) the kept-copy link reader; thread-agnostic. Read only while customs are on. */
+    public void attachSupersedeSource(SupersedeSource sourceOrNull) {
+        supersedeSource = sourceOrNull;
+    }
+
+    /**
+     * The answer for an unlisted {@code raw} the host's supersede links can give: {@code REPLACED} = the first LISTED
+     * kept copy down the chain, {@code NOT_SERVED} = a walk that followed at least one link and ends with no listed
+     * copy, or a broken chain (counted, one log row), null = no link reader or no link names {@code raw} (the
+     * caller's removed / hidden / hold answer stands). A redirect never names a ship
+     * {@code /ship} refuses: a copy the listing no longer holds (hidden or banned since) is a link to follow, never a
+     * target. {@code raw} is peer text (the HELLO pick, printable, at most 64 chars): folded and compared, printed
+     * only through {@link PeerText#quote}, never stored.
+     * The walk follows the whole chain, not its first link. At each id the
+     * copy kept in its place comes first (it names this very id); an id no copy names follows its own removed-stem
+     * link to the ROOT, whose copy is read on the next step. The root itself is never a target, listed or not: the
+     * redirect names only a kept copy standing in a place. A revisited id (ASCII fold) or a walk past
+     * {@link #SUPERSEDE_HOPS_MAX} links = {@code NOT_SERVED}, never a spin and never a 30 s hold for a submission that
+     * cannot come.
+     * A walk that followed a link and then finds no link onward and no listed
+     * copy is NOT_SERVED too, uncounted (the chain is whole; the place it leads to is just empty): {@code raw} named a
+     * ship the host replaced or removed, whose root is still hidden with no copy listed, or was put back on the list -
+     * the build the window remembers is gone either way, so it is neither held nor flown as the root.
+     */
+    private Resolution redirectOrNull(String raw) {
+        SupersedeSource source = supersedeSource;
+        if (source == null) {
+            return null;
+        }
+        Set<String> seen = new HashSet<>();
+        seen.add(ChatCommands.asciiLower(raw));
+        String at = raw;
+        for (int hop = 1; hop <= SUPERSEDE_HOPS_MAX; hop++) {
+            String copy = source.copySupersedingOrNull(at);
+            String next;
+            if (copy != null) {
+                String listed = canonicalPickOrNull(copy);
+                if (listed != null) {
+                    return new Resolution(Kind.REPLACED, listed);
+                }
+                next = copy;
+            } else {
+                next = source.removedSupersededByOrNull(at);
+                if (next == null) {
+                    return hop == 1 ? null : new Resolution(Kind.NOT_SERVED, null);
+                }
+            }
+            if (!seen.add(ChatCommands.asciiLower(next))) {
+                return brokenChain(raw, "cycle", hop);
+            }
+            at = next;
+        }
+        return brokenChain(raw, "bound", SUPERSEDE_HOPS_MAX);
+    }
+
+    private Resolution brokenChain(String raw, String reason, int hops) {
+        supersedeChainBrokenTotal.incrementAndGet();
+        System.out.println("pilot-datagram-admission VARIANT_SUPERSEDE_CHAIN_BROKEN pick=" + PeerText.quote(raw)
+                + " reason=" + reason + " hops=" + hops + " (not served)");
+        return new Resolution(Kind.NOT_SERVED, null);
+    }
+
+    /** true = {@code raw} names a kept copy the host removed (no link reader
+     *  = false). {@code raw} is peer text: folded and compared by the reader, never stored and never printed here. */
+    private boolean removedKeptStem(String raw) {
+        SupersedeSource source = supersedeSource;
+        return source != null && source.isRemovedKeptStem(raw);
+    }
+
+    /** Redirect walks answered {@code NOT_SERVED} for a cycle or a chain past {@link #SUPERSEDE_HOPS_MAX}. */
+    public int supersedeChainBrokenTotal() {
+        return supersedeChainBrokenTotal.get();
     }
 
     // ------------------------------------------------------------------ the allowlist half (moved verbatim)
@@ -179,6 +338,19 @@ public final class SeatVariantPicks {
      * The full resolution for one author: allowlist first (static spelling wins), then the
      * author's own accepted customs, then the hold decision — {@code holdUnknown} makes every
      * miss a hold (the HELLO path), else only a deposited/in-flight own submission holds.
+     * Before the blanket hold, an id this server no longer lists is answered at
+     * once: a listed kept copy standing in its place = {@code REPLACED}, a hidden id with none = {@code NOT_SERVED}.
+     * "In its place" is the whole supersede chain ({@link #redirectOrNull}): a
+     * remembered kept stem the host has since re-edited or removed reaches the newest listed copy through its own
+     * root link, and a cycle or an over-long chain is {@code NOT_SERVED} too.
+     * A remembered kept copy the host REMOVED with no listed copy in its
+     * place is {@code NOT_SERVED} at once - through its link when the walk ends empty (the root still hidden, or put
+     * back on the list: the root is never flown in the copy's stead), else through the removed list
+     * ({@link SupersedeSource#isRemovedKeptStem}, a plain removal carries no link). Only an id that no link and no
+     * removed list names still takes the blanket hold.
+     * The flight held a remembered {@code afflictor_Antimatter} 30 s for a submission that could not come and
+     * flew the descriptor row. An own accepted custom and an own in-flight submission still win first (the
+     * author's build under that local id beats the host's copy, as before).
      */
     public Resolution resolve(String authorKey, String raw, boolean holdUnknown) {
         String allow = canonicalPickOrNull(raw);
@@ -191,7 +363,20 @@ public final class SeatVariantPicks {
             if (own != null) {
                 return new Resolution(Kind.OWN_CUSTOM, own);
             }
-            if (holdUnknown || src.ownPending(authorKey, raw)) {
+            if (src.ownPending(authorKey, raw)) {
+                return new Resolution(Kind.HELD, null);
+            }
+            Resolution redirect = redirectOrNull(raw);
+            if (redirect != null) {
+                return redirect;
+            }
+            if (removedKeptStem(raw)) {
+                return new Resolution(Kind.NOT_SERVED, null);
+            }
+            if (pickableVariants != null && pickableVariants.isHidden(raw)) {
+                return new Resolution(Kind.NOT_SERVED, null);
+            }
+            if (holdUnknown) {
                 return new Resolution(Kind.HELD, null);
             }
         }
@@ -361,6 +546,40 @@ public final class SeatVariantPicks {
                 notifier.chat(sessionId, seatId, "variant '" + pickNoticeName(pickableVariants, pick, null)
                         + "' not pickable - spawning default; /ship lists ids");
                 tenureClear(seatId, freshTenure);
+            }
+            case NOT_SERVED -> {
+                // An id this server hides, no listed kept copy in its place, or a supersede chain
+                // that cycles or runs past its bound, or a kept copy the host removed with no
+                // listed copy in its place - answered now, never held
+                // (the UNKNOWN twin: log + FALLBACK row + one chat line; an own submission under this local id
+                // still seeds the seat on its ACCEPT through the submitter path)
+                System.out.println("pilot-datagram-admission VARIANT_UNPICKABLE seat=" + seatId
+                        + " pick=" + PeerText.quote(pick) + " (not served: hidden or removed with no listed kept copy,"
+                        + " or a broken supersede chain)");
+                FallbackAnnounce.announceOnce("hello-pick-refused-seat-" + seatId,
+                        "pick=" + PeerText.quote(echo)
+                                + " not_served=true (seat flies the descriptor row)");
+                notifier.chat(sessionId, seatId, "variant '" + pickNoticeName(pickableVariants, pick, null)
+                        + "' is not on this server - spawning default; /ship lists ids");
+                tenureClear(seatId, freshTenure);
+            }
+            case REPLACED -> {
+                // The seat flies the host's kept copy of the ship it asked for. The fresh-claim
+                // request is NOT re-pointed: the joiner's own window may have fielded the old id at t=0, so the
+                // first fly-in must announce the copy (SeatAnnounceTracker's requestDiffers) and list the swap.
+                Seed s = seeder.seed(seatId, r.canonical());
+                if (!s.seeded()) {
+                    seedRefused(sessionId, seatId, pick, r.canonical(), "hello", true);
+                    tenureClear(seatId, freshTenure);
+                    return;
+                }
+                System.out.println("pilot-datagram-admission VARIANT seat=" + seatId
+                        + " pick=" + PeerText.quote(pick) + " canonical=" + r.canonical() + " (replaced: its kept copy)"
+                        + (s.claimCleared() ? " (module claim cleared)" : ""));
+                // NO chat line: a host re-edit keeps the ship's name, so a line naming both
+                // ships named one ship twice, and it replayed at EVERY connect - the join window keeps the id it
+                // remembers. The seat asked for a ship and flies the host's current version of it; the VARIANT row
+                // above is the swap's one record.
             }
             case HELD -> {
                 // The tenure clear runs BEFORE the hold — an ACCEPT can seed

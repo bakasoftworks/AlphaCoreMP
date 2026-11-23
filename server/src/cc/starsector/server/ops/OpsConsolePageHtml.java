@@ -357,8 +357,8 @@ final class OpsConsolePageHtml {
 <button type="button" id="btn-forget-custom" data-cc="verb.customForget" aria-describedby="tip-forget-custom">Forget kept</button>
 </details>
 <span id="customs-summary" data-cc="verb.customs.summary">customs: -</span>
-<p id="customs-detail" data-cc="verb.customs.detail"></p>
 </div>
+<p id="customs-detail" data-cc="verb.customs.detail"></p>
 <p id="footer-note" data-cc="shell.close">Closing this tab stops nothing; the server keeps running.</p>
 </div>
 <div id="load" tabindex="0" role="group" aria-label="Load (capacity headroom)" data-cc="load.group">

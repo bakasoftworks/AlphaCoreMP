@@ -1,5 +1,6 @@
 package cc.starsector.server.runtime;
 
+import cc.starsector.server.names.EngineSym;
 import java.lang.reflect.InvocationTargetException;
 
 /**
@@ -43,14 +44,6 @@ import java.lang.reflect.InvocationTargetException;
  * armor/hull/death stay engine-authoritative and snapshot-replicated.
  */
 public final class SwallowCosmeticFxAuthoritativeDamageSink implements AuthoritativeDamageSink {
-
-    /**
-     * The version-independent marker that identifies the engine's headless cosmetic-FX
-     * NPE: a {@link NullPointerException} whose message names the GL texture/decal type
-     * {@code com.fs.graphics.Object} that is null without an OpenGL context. Matched as a
-     * substring of the NPE message (same family as the earlier spawn and armor-cell findings).
-     */
-    public static final String HEADLESS_COSMETIC_FX_NPE_MARKER = "com.fs.graphics";
 
     /**
      * Applies one resolved impact's raw damage to the engine's authoritative ship state.
@@ -103,7 +96,10 @@ public final class SwallowCosmeticFxAuthoritativeDamageSink implements Authorita
 
     /**
      * Tests whether a throwable is the engine's headless cosmetic-FX NPE — a
-     * {@link NullPointerException} whose message contains {@link #HEADLESS_COSMETIC_FX_NPE_MARKER}.
+     * {@link NullPointerException} whose message names a class of the engine's graphics package
+     * ({@link EngineSym#GRAPHICS_PKG}'s dotted prefix, a substring match): the GL texture/decal type that is null
+     * without an OpenGL context (same family as the earlier spawn and armor-cell findings).
+     *
      * Such a throwable is safe to swallow because measurement proved the authoritative damage
      * has already landed before it is thrown. Any other throwable is a real failure.
      *
@@ -114,7 +110,7 @@ public final class SwallowCosmeticFxAuthoritativeDamageSink implements Authorita
     public static boolean isHeadlessCosmeticFxNpe(Throwable cause) {
         return cause instanceof NullPointerException
                 && cause.getMessage() != null
-                && cause.getMessage().contains(HEADLESS_COSMETIC_FX_NPE_MARKER);
+                && cause.getMessage().contains(EngineSym.GRAPHICS_PKG.dottedPrefix());
     }
 
     /**

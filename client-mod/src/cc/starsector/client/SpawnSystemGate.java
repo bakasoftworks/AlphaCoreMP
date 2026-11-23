@@ -112,9 +112,9 @@ final class SpawnSystemGate {
      * <li>{@code acausaldisruptor} — {@code AcausalDisruptorStats}: a LOCAL nearest-enemy
      *     pick ({@code Misc.findClosestShipEnemyOf}) then {@code beginOverloadWithTotalBaseDuration}
      *     on THAT ship + an every-frame plugin — the player's own hull overloads.</li>
-     * <li>{@code entropyamplifier} — {@code EntropyAmplifierStats}: the same local pick,
-     *     then hull/armor/shield/EMP damage-taken ×1.5 on the victim every frame + a HUD status
-     *     line the server never sent.</li>
+     * <li>{@code entropyamplifier} — {@code EntropyAmplifierStats}: the same local
+     *     pick, then hull/armor/shield/EMP damage-taken ×1.3 (×1.5 before 0.98.5a) on the victim every frame + a
+     *     HUD status line the server never sent.</li>
      * <li>{@code interdictor} — {@code InterdictorArrayStats}: the local pick, then
      *     {@code Collections.shuffle} + {@code engine.disable()} on the victim's engines.</li>
      * <li>{@code darkened_gaze} — {@code dweller/DarkenedGazeSystemScript} force-fires the eye's

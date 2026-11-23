@@ -5,7 +5,6 @@ import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
 import com.fs.starfarer.api.Global;
-import com.fs.starfarer.api.combat.BaseCombatLayeredRenderingPlugin;
 import com.fs.starfarer.api.combat.CombatEngineAPI;
 import com.fs.starfarer.api.combat.CombatEntityAPI;
 import com.fs.starfarer.api.combat.DamagingProjectileAPI;
@@ -13,8 +12,6 @@ import com.fs.starfarer.api.combat.EmpArcEntityAPI;
 import com.fs.starfarer.api.combat.ShipAPI;
 import com.fs.starfarer.api.combat.WeaponAPI;
 import com.fs.starfarer.api.combat.listeners.ApplyDamageResultAPI;
-import com.fs.starfarer.api.impl.combat.NegativeExplosionVisual;
-import com.fs.starfarer.api.impl.combat.RiftCascadeMineExplosion;
 import com.fs.starfarer.api.impl.combat.dweller.DwellerShroud;
 import com.fs.starfarer.api.impl.combat.dweller.RiftLightningEffect;
 import com.fs.starfarer.api.util.Misc;
@@ -30,10 +27,19 @@ import org.lwjgl.util.vector.Vector2f;
  * visual arc (thickness 80, core 40, red fringe, single-flicker, plus the shroud-anchored crackle)
  * AND {@code spawnMine("rift_lightning_minelayer")} — the mine is the area EMP damage
  * (server-authoritative, arrives as the wire's disabled bits) and would be an unseeded local damage
- * author, so it is the door shut here; the arc and the mine's rift bloom are drawn by this class's
- * own code.
- * {@code advance}, {@code onHit}, {@link #fireArcVisual}
- * and {@link #spawnRiftBloom} were rewritten from the functional spec;
+ * author, so it is the door shut here; this class's own code draws the arc and its shroud crackle.
+ * The mine's rift is NOT drawn here: the server's mine arrives
+ * as an adopted twin on {@link MissilePoseLane}, and ITS engine explosion draws the rift, plays the
+ * explosion sound and lands the local blast at the server's end pose, so a bloom painted here would
+ * be a second rift for one strike.
+ *
+ *
+ *
+ *
+ *
+ *
+ * {@code advance}, {@code onHit} and {@link #fireArcVisual}
+ * were rewritten from the functional spec;
  * their pure laws live in {@link RiftArcLaw} (game-free rows:
  * {@code ApiRwD3Rows}). Trigger = the wire-presented bolt: {@code onFire} via
  * {@link ReplicaPresentedFireRelay} (the presenter's spawn never runs it), then {@code onHit} on
@@ -125,8 +131,11 @@ public class CcWrapRiftLightningEffect extends RiftLightningEffect
      *     white core, segment length x8, zig-zag reduction 0.15, fade-out distance 50, minimum fade-out
      *     x10, flicker x0.3, travel time {@code T}; no glow at the start, starts faded out, single
      *     flicker;</li>
-     * <li>the bloom, the mine's visual half: the mine itself is never spawned (counted
-     *     {@code doorShut}); {@link #spawnRiftBloomLater} at the end point after {@code 0.8 T};</li>
+     * <li>The mine: never spawned here (counted
+     *     {@code doorShut}), since a local mine would be an unseeded damage author. Nor is its rift
+     *     painted here: the server's mine arrives as an adopted twin on {@link MissilePoseLane}, whose
+     *     own engine explosion draws the rift, plays the explosion sound and lands the local blast at
+     *     the server's end pose, so a bloom here would be a second rift for one strike;</li>
      * <li>with a dweller shroud only, the crackle: a second visual arc from the origin, both ends
      *     anchored to the ship, to {@link RiftArcLaw#crackleEnd}; the shroud's overload-arc thickness
      *     and core thickness, fringe {@code RIFT_LIGHTNING_COLOR}, white core, segment length x4, glow
@@ -170,7 +179,7 @@ public class CcWrapRiftLightningEffect extends RiftLightningEffect
         look.movementDurOverride = travel;
         look.segmentLengthMult = 8f;
         look.zigZagReductionFactor = 0.15f;
-        EmpArcEntityAPI arc = engine.spawnEmpArcVisual(new Vector2f(origin), ship, new Vector2f(end), null,
+        EmpArcEntityAPI arc = ArcBelt.spawn(engine, new Vector2f(origin), ship, new Vector2f(end), null,
                 80f, RIFT_LIGHTNING_COLOR, Color.white, look);
         if (arc != null) {
             arc.setCoreWidthOverride(40f);
@@ -180,7 +189,6 @@ public class CcWrapRiftLightningEffect extends RiftLightningEffect
         }
 
         CcReplicaEffectGate.doorShut(TAG);
-        spawnRiftBloomLater(engine, end, RiftArcLaw.bloomDelay(travel));
 
         if (shroudParams != null) {
             float[] c = RiftArcLaw.crackleEnd(origin.x, origin.y, centre.x, centre.y, shroudParams.maxOffset,
@@ -189,7 +197,7 @@ public class CcWrapRiftLightningEffect extends RiftLightningEffect
             crackleLook.flickerRateMult = RiftArcLaw.crackleFlicker(rng.nextFloat());
             crackleLook.glowSizeMult = 4f;
             crackleLook.segmentLengthMult = 4f;
-            EmpArcEntityAPI crackle = engine.spawnEmpArcVisual(new Vector2f(origin), ship, new Vector2f(c[0], c[1]),
+            EmpArcEntityAPI crackle = ArcBelt.spawn(engine, new Vector2f(origin), ship, new Vector2f(c[0], c[1]),
                     ship, shroudParams.overloadArcThickness, RIFT_LIGHTNING_COLOR, Color.white, crackleLook);
             if (crackle != null) {
                 crackle.setCoreWidthOverride(shroudParams.overloadArcCoreThickness);
@@ -207,69 +215,6 @@ public class CcWrapRiftLightningEffect extends RiftLightningEffect
     }
 
     /**
-     * Why the Maelstrom seemed not to fire its rift lightning:
-     * the mine the door above shuts
-     * is ALSO the weapon's recognizable half — its explosion visual
-     * ({@code RiftLightningMineExplosion.onExplosion} → {@code RiftCascadeMineExplosion
-     * .spawnStandardRift}, a pure {@code NegativeExplosionVisual} layered plugin with no
-     * damage author) is the dark "rift" that opens at the bolt's terminus; without it the arc alone
-     * is one flicker lost in the red shroud. Minted here damage-free at the same point and delay
-     * vanilla gives the mine (80 % of the arc's travel time; the mine explodes on arming) via a
-     * one-shot layered plugin that renders nothing and expires after the wait. The look is
-     * {@link #riftBloomParams}; {@link #spawnRiftBloom} draws it at the point with no projectile
-     * anchor (both written from the functional spec).
-     */
-    static void spawnRiftBloomLater(final CombatEngineAPI engine, Vector2f point, float delay) {
-        final Vector2f at = new Vector2f(point);
-        final float wait = Math.max(0f, delay);
-        engine.addLayeredRenderingPlugin(new BaseCombatLayeredRenderingPlugin() {
-            float left = wait;
-            boolean done;
-
-            @Override
-            public void advance(float amount) {
-                if (done) {
-                    return;
-                }
-                left -= amount;
-                if (left <= 0f) {
-                    done = true;
-                    try {
-                        spawnRiftBloom(engine, at);
-                    } catch (Throwable ignore) {
-                        // presentation only — the arc already landed
-                    }
-                }
-            }
-
-            @Override
-            public boolean isExpired() {
-                return done;
-            }
-        });
-    }
-
-    /** The rift-lightning mine's bloom look (spec S14 (b) game facts): the engine's standard rift params
-     *  with border colour (255, 75, 75, 255) at radius 20, then fade-out 1, hit-glow size x0.6,
-     *  thickness 50 (a fresh, deterministic object each call). */
-    private static NegativeExplosionVisual.NEParams riftBloomParams() {
-        NegativeExplosionVisual.NEParams p =
-                RiftCascadeMineExplosion.createStandardRiftParams(new Color(255, 75, 75, 255), 20.0F);
-        p.fadeOut = 1.0F;
-        p.hitGlowSizeMult = 0.6F;
-        p.thickness = 50.0F;
-        return p;
-    }
-
-    /** The mine's rift bloom at {@code at}, visual only, rewritten
-     *  from the functional spec (spec S14 (b) + SR): {@link RiftChainFx}
-     *  draws the {@link #riftBloomParams} look about the point as layered rendering plugins — no
-     *  explosion entity, no mine, no projectile anchor. A null engine or point draws nothing. */
-    static void spawnRiftBloom(CombatEngineAPI engine, Vector2f at) {
-        RiftChainFx.spawn(engine, riftBloomParams(), at);
-    }
-
-    /**
      * Spec S14's pure laws: no engine type in a signature, so
      * the game-free rows ({@code ApiRwD3Rows}) drive them (this nested class loads without its outer
      * effect class). Units: positions world su (either sign); distances, ranges and offsets su
@@ -281,8 +226,6 @@ public class CcWrapRiftLightningEffect extends RiftLightningEffect
         static final float MISS_MIN_FRACTION = 0.5f;
         /** The arc's travel-time floor, s. */
         static final float MIN_TRAVEL = 0.05f;
-        /** The bloom waits this fraction of the arc's travel time. */
-        static final float BLOOM_DELAY_FRACTION = 0.8f;
         /** Shroud origin: ship centre + uniform [MIN, MAX) x the shroud's max offset, turned up to
          *  +-ORIGIN_TURN_DEGREES off the centre-to-end-point bearing. */
         static final float ORIGIN_MIN_FRACTION = 0.5f;
@@ -327,11 +270,6 @@ public class CcWrapRiftLightningEffect extends RiftLightningEffect
         /** The travel-time law, s: max(0.05, D / speed); 0.05 for a non-positive speed. */
         static float travelTime(float distance, float speed) {
             return speed > 0f ? Math.max(MIN_TRAVEL, distance / speed) : MIN_TRAVEL;
-        }
-
-        /** The bloom's wait, s: 0.8 x the arc's travel time. */
-        static float bloomDelay(float travel) {
-            return BLOOM_DELAY_FRACTION * travel;
         }
 
         /** The shroud-origin band (see the constants). Returns {x, y}. */

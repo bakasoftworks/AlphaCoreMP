@@ -236,7 +236,7 @@ final class MoteAttractorFxLane {
         params.brightSpotFadeFraction = 0.5f;
         float dist = Misc.getDistance(slotLoc, to);
         params.flickerRateMult = Math.max(0.3f, 0.6f - dist / 3000f);
-        EmpArcEntityAPI arc = engine.spawnEmpArcVisual(slotLoc, p.activator, to, lock, ARC_THICKNESS,
+        EmpArcEntityAPI arc = ArcBelt.spawn(engine, slotLoc, p.activator, to, lock, ARC_THICKNESS,
                 p.highFrequency ? EMP_HF : EMP_NORMAL, ARC_CORE, params);
         if (arc != null) {
             arc.setCoreWidthOverride(ARC_CORE_WIDTH);

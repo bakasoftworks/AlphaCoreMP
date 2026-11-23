@@ -116,11 +116,23 @@ public enum WireKnob {
     private final String[] choices;
     private final int defaultChoice;
     private final boolean derived;
+    /** {@link #choicePercent}'s answers, one per choice word, parsed once here (see the constructor). */
+    private final int[] percents;
+    /** How many choice words are not numbers (the constructor's counted catch); see {@link #nonNumericChoiceCount}. */
+    private final int nonNumericChoices;
 
     WireKnob(int id, String key, String verbName, String[] choices, int defaultChoice) {
         this(id, key, verbName, choices, defaultChoice, false);
     }
 
+    /**
+     * Also builds the percent table.
+     * WHY: the terrain stat seam reads {@link #TERRAIN_LEVEL}'s percent on every stat read on the sim
+     * thread, and a parse of the choice word per read measured about 9 % of that thread.
+     * The words are fixed for the JVM's life ({@link #choices()} hands out a
+     * copy), so each is parsed exactly once: a numeric word is its int ({@code Integer.parseInt}, sign
+     * allowed), any other word is {@code 0}, the same answers the per-read parse gave.
+     */
     WireKnob(int id, String key, String verbName, String[] choices, int defaultChoice, boolean derived) {
         this.id = id;
         this.key = key;
@@ -128,6 +140,17 @@ public enum WireKnob {
         this.choices = choices;
         this.defaultChoice = defaultChoice;
         this.derived = derived;
+        int[] table = new int[choices.length];
+        int notNumeric = 0;
+        for (int i = 0; i < choices.length; i++) {
+            try {
+                table[i] = Integer.parseInt(choices[i]);
+            } catch (NumberFormatException wordNotNumber) {
+                notNumeric++;
+            }
+        }
+        this.percents = table;
+        this.nonNumericChoices = notNumeric;
     }
 
     /** The numeric words {@code "0".."255"}: one per
@@ -192,16 +215,19 @@ public enum WireKnob {
     }
 
     /** A numeric choice word ({@link #TERRAIN_LEVEL}'s {@code 0..100}) as an int; {@code 0} for a
-     *  value past the table or a non-numeric word (fail-closed: no terrain effect). */
+     *  value outside {@code 0..choiceCount-1} (any signed int) or a non-numeric word (fail-closed: no
+     *  terrain effect). A read of the table the constructor parsed once: no per-call parse, no
+     *  exception path (it runs on the sim thread per stat read). */
     public int choicePercent(int value) {
-        if (value < 0 || value >= choices.length) {
-            return 0;
-        }
-        try {
-            return Integer.parseInt(choices[value]);
-        } catch (NumberFormatException notNumeric) {
-            return 0;
-        }
+        return value >= 0 && value < percents.length ? percents[value] : 0;
+    }
+
+    /** How many choice words
+     *  {@link #choicePercent} answers {@code 0} for because the word is not a number (the counted
+     *  catch of the one-time parse): {@code 0} for {@link #TERRAIN_LEVEL} and the tick rows, every
+     *  word for {@link #FOE_CLOAK_LEAD} and {@link #TERRAIN}, {@code none} for {@link #ASTEROIDS}. */
+    public int nonNumericChoiceCount() {
+        return nonNumericChoices;
     }
 
     /** The choice word for a wire value, or {@code "?"} past the table (log rows only). */

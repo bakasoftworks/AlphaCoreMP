@@ -5,6 +5,7 @@ import cc.starsector.server.bridge.EngineBackedCombatWorldState;
 import cc.starsector.server.bridge.EngineBackedLiveWorldSnapshotSource;
 import cc.starsector.server.bridge.EngineCombatBinding;
 import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.protocol.AuthoritativeWorldSnapshot;
 import cc.starsector.server.protocol.ShipEngineStateSnapshot;
 import java.lang.reflect.Constructor;
@@ -51,8 +52,9 @@ import java.util.Set;
  * source and the 5 s-gated timed repair is observable un-confounded.
  *
  * <p>A measurement, NOT a WATCH (headless, no socket, no operator). Non-API literals below
- * ({@code CombatEngine}, {@code entities.Ship}) are the same PINNED 0.98a-RC8 identities
- * {@link RealEngineCombatBindingFactory} documents; this is a triage instrument like
+ * ({@code CombatEngine}, {@code entities.Ship}) are the same
+ * PINNED 0.98.5a-RC4 (names unchanged from 0.98a-RC8) identities {@link RealEngineCombatBindingFactory}
+ * documents; this is a triage instrument like
  * {@code CcwrEngineStateDump}, not product serve-path code. The per-hit cosmetic damage-FX NPE
  * ({@code com.fs.graphics}) lands AFTER the durability change and is swallowed as
  * applied ({@link SwallowCosmeticFxAuthoritativeDamageSink#isHeadlessCosmeticFxNpe} + the
@@ -117,11 +119,11 @@ public final class RealEngineDeckDamageMeasureMain {
                 step, binding, warmupFrames + sampleFrames, 2, fixedDt,
                 null, new ShipNetworkIdRegistry(), Map.of(), null);
 
-        // ---- Resolve the stimulus + raw-read handles (PINNED RC8 identities, measurement-only) ----
+        // ---- Resolve the stimulus + raw-read handles (PINNED 0.98.5a-RC4 (names unchanged from 0.98a-RC8) identities, measurement-only) ----
         ClassLoader loader = RealEngineDeckDamageMeasureMain.class.getClassLoader();
-        Class<?> engineClass = Class.forName("com.fs.starfarer.combat.CombatEngine", true, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
         Object engine = engineClass.getMethod("getInstance").invoke(null);
-        Class<?> shipClass = Class.forName("com.fs.starfarer.combat.entities.Ship", false, loader);
+        Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         Class<?> combatEntityApi = Class.forName("com.fs.starfarer.api.combat.CombatEntityAPI", false, loader);
         Class<?> vector2f = Class.forName("org.lwjgl.util.vector.Vector2f", false, loader);
         Class<?> damageTypeClass = Class.forName("com.fs.starfarer.api.combat.DamageType", false, loader);
@@ -316,7 +318,7 @@ public final class RealEngineDeckDamageMeasureMain {
             }
             if (cause instanceof NullPointerException
                     && Arrays.stream(cause.getStackTrace())
-                            .anyMatch(el -> el.getClassName().startsWith("com.fs.graphics"))) {
+                            .anyMatch(el -> el.getClassName().startsWith(EngineSym.GRAPHICS_PKG.dottedPrefix()))) {
                 return "applied_cosmetic_fx_npe_swallowed";
             }
             return "threw_" + cause.getClass().getName()

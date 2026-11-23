@@ -1,5 +1,6 @@
 package cc.starsector.server.runtime;
 
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.runtime.AsteroidPoseFrameCodec.AsteroidRow;
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -1054,7 +1055,6 @@ public final class AsteroidFieldServeLane {
             return true;
         }
 
-        private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
         private static final String ENTITY_API = "com.fs.starfarer.api.combat.CombatEntityAPI";
 
         private Class<?> engineClass;
@@ -1100,7 +1100,7 @@ public final class AsteroidFieldServeLane {
             }
             try {
                 ClassLoader loader = AsteroidFieldServeLane.class.getClassLoader();
-                Class<?> ec = Class.forName(ENGINE_CLASS, true, loader);
+                Class<?> ec = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
                 Class<?> api = Class.forName(ENTITY_API, false, ec.getClassLoader());
                 getInstance = ec.getMethod("getInstance");
                 spawnAsteroid = ec.getMethod("spawnAsteroid", int.class, float.class, float.class,

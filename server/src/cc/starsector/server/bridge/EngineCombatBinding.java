@@ -21,6 +21,8 @@ import cc.starsector.server.adapter.WeaponMountView;
 import cc.starsector.server.bridge.FreshSpawnScan.FreshSpawn;
 import cc.starsector.server.bridge.TypedGetter.Role;
 import cc.starsector.server.bridge.TypedGetter.Sig;
+import cc.starsector.server.names.EngineRow;
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.protocol.NonShipEntitySnapshot;
 import cc.starsector.server.protocol.ShipManeuverCommandSnapshot;
 import cc.starsector.server.runtime.HullSourceLedger;
@@ -601,7 +603,7 @@ public final class EngineCombatBinding {
         // list-handle finals by SIMPLE name, after their assignment (javac's definite-assignment check guards it).
         this.freshSpawnScan = new FreshSpawnScan(engine, combatGetProjectiles, combatGetMissiles,
                 b.projectileGetElapsed, b.projectileGetWeapon, b.projectileGetVelocity,
-                b.projectileGetLocation, b.projectileGetFacing);
+                b.projectileGetLocation, b.projectileGetFacing, b.projectileGetExplosionSpec);
         this.pilotCommands = new PilotCommandApplier(this, b); // LAST: reads engine + reflection off this binding
     }
 
@@ -1255,24 +1257,26 @@ public final class EngineCombatBinding {
             return "no_engine";
         }
         ClassLoader cl = engine.getClass().getClassLoader();
-        String[] classes = { "BallisticProjectile", "PlasmaShot", "Missile",
-                "DamagingExplosion", "CustomCombatEntity", "BeamWeaponRay" };
+        EngineRow[] classes = { EngineSym.BALLISTIC_PROJECTILE_CLASS, EngineSym.PLASMA_SHOT_CLASS,
+                EngineSym.MISSILE_CLASS, EngineSym.DAMAGING_EXPLOSION_CLASS, EngineSym.CUSTOM_COMBAT_ENTITY_CLASS,
+                EngineSym.BEAM_WEAPON_RAY_CLASS };
         // A cached getter is warmed THROUGH its per-class cache, so the per-tick read finds the
         // very Method resolved here; a bare name (an event-rate read with no cache) still
         // pre-builds the class reflection data its first lookup would otherwise walk mid-frame.
         //
         Object[] accessors = { GET_LOCATION, GET_OWNER, GET_PROJECTILE_SPEC_ID, GET_WEAPON,
                 IS_FROM_MISSILE, GET_ELAPSED, "isMirv", GET_SOURCE, "getFacing", "isFizzling",
-                "getExplosionSpecIfExplosion" };
+                GET_EXPLOSION_SPEC };
         long start = System.nanoTime();
         int classesLoaded = 0;
         int methodsResolved = 0;
         int methodsMissing = 0;
         StringBuilder failed = new StringBuilder();
-        for (String simpleName : classes) {
+        for (EngineRow entityRow : classes) {
+            String internalName = entityRow.internalName();
+            String simpleName = internalName.substring(internalName.lastIndexOf('/') + 1);
             try {
-                Class<?> entityClass = Class.forName(
-                        "com.fs.starfarer.combat.entities." + simpleName, true, cl);
+                Class<?> entityClass = entityRow.load(cl);
                 classesLoaded++;
                 for (Object accessor : accessors) {
                     try {
@@ -3066,6 +3070,36 @@ public final class EngineCombatBinding {
         }
     }
 
+    /**
+     * Whether a point entity is an engine blast, by the engine's own identity
+     * {@code DamagingProjectileAPI.getExplosionSpecIfExplosion() != null} (the API default
+     * returns null; only the engine's explosion entity overrides it). WHY: a blast's spec id
+     * reads blank, and on the older engine its {@code getWeapon()} was null, so the content-key
+     * fallback returned {@code ""} and blast rows crossed content-less. The current engine
+     * fills a missile's explosion-spec blast and a fuse burst with the LAUNCHER's weapon, so the
+     * fallback would cross those rows under the launcher's content id: the per-weapon census
+     * every recording is read by would inflate, and a wire value no client pairs would change
+     * silently. Read only on the blank-key path (in practice blasts alone), through the
+     * per-class cache. Fail-soft: an unreadable identity answers {@code false} (the fallback
+     * runs, the pre-change behaviour) and prints the one-shot miss receipt.
+     *
+     *
+     *
+     *
+     */
+    private static boolean isEngineBlast(Object entity, Class<?> entityClass) {
+        try {
+            return GET_EXPLOSION_SPEC.of(entityClass).invoke(entity, NO_ARGS) != null;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            Throwable cause =
+                    (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null)
+                            ? e.getCause() : e;
+            noteContentKeyMiss("blast_read error=" + cause.getClass().getName()
+                    + " entity=" + entityClass.getName());
+            return false;
+        }
+    }
+
     /** One line per distinct miss cause per JVM — a receipt, never a log flood. */
     private static final java.util.Set<String> CONTENT_KEY_MISSES =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -3581,11 +3615,12 @@ public final class EngineCombatBinding {
                 int owner = (ownerValue instanceof Number) ? ((Number) ownerValue).intValue() : -1;
                 Object specId = GET_PROJECTILE_SPEC_ID.of(entityClass).invoke(entity, NO_ARGS);
                 String key = (specId instanceof String) ? ((String) specId).trim() : "";
-                if (key.isEmpty()) {
+                if (key.isEmpty() && !isEngineBlast(entity, entityClass)) {
                     // The live lane's
                     // getProjectileSpecId reads blank, so fall back to the firing weapon's
                     // spec id — the same identity a beam carries — making every recorded
-                    // .ccwr a per-weapon census.
+                    // .ccwr a per-weapon census. An engine blast keeps its blank key
+                    // ({@link #isEngineBlast}).
                     key = firingWeaponContentKey(entity, entityClass);
                 }
                 if (liveMissiles == null) {
@@ -4470,11 +4505,13 @@ public final class EngineCombatBinding {
     /**
      * Engine-internal name of the glow's "flaring now" getter (zero-arg boolean).
      * The name is
-     * pinned to the installed engine jar like every engine-internal identity; a rename resolves to nothing and
-     * the bit simply never sets (see {@link #readEngineFlareFlag(Object)}).
+     * pinned to the installed engine jar like every engine-internal identity. A rename
+     * either resolves to nothing, so the bit simply never sets (see {@link #readEngineFlareFlag(Object)}), or binds a
+     * different zero-arg boolean that took the name, which the return-type guard does not catch; so the name is
+     * re-derived by hand at each game build.
+     *
      */
-    private static final String GLOW_IS_FLARING_OBF =
-            Character.toString(0xD3) + "00000"; // U+00D3 then five zeros, pure-ASCII source
+    private static final EngineRow GLOW_IS_FLARING_OBF = EngineSym.GLOW_FLAG_NAME;
     private Method flareGetEngineGlow;   // impl-controller public getEngineGlow()
     private Method flareIsFlaring;       // the glow's flaring getter, lazily bound from the live instance
     private boolean flareUnresolvable;   // one resolve attempt; failure ⇒ bit 7 never set
@@ -4501,9 +4538,9 @@ public final class EngineCombatBinding {
                 if (glow == null) {
                     return false; // no glow yet on this ship; retry next read
                 }
-                Method isFlaring = glow.getClass().getMethod(GLOW_IS_FLARING_OBF);
+                Method isFlaring = GLOW_IS_FLARING_OBF.method(glow.getClass());
                 if (isFlaring.getReturnType() != boolean.class) {
-                    throw new NoSuchMethodException(GLOW_IS_FLARING_OBF + " is not boolean()");
+                    throw new NoSuchMethodException(GLOW_IS_FLARING_OBF.name() + " is not boolean()");
                 }
                 flareGetEngineGlow = OpenHandles.open(getGlow);
                 flareIsFlaring = OpenHandles.open(isFlaring);
@@ -6133,6 +6170,7 @@ public final class EngineCombatBinding {
     private static final PerClassGetter GET_WEAPON = new PerClassGetter("getWeapon");
     private static final PerClassGetter GET_TO = new PerClassGetter("getTo");
     private static final PerClassGetter GET_ID = new PerClassGetter("getId");
+    private static final PerClassGetter GET_EXPLOSION_SPEC = new PerClassGetter("getExplosionSpecIfExplosion");
     private static final PerClassGetter.XyFields XY_FIELDS = new PerClassGetter.XyFields();
 
     /**
@@ -6532,6 +6570,7 @@ public final class EngineCombatBinding {
         private Method projectileGetVelocity;
         private Method projectileGetLocation;
         private Method projectileGetFacing;
+        private Method projectileGetExplosionSpec;
         Method shipGetSystem;
         private Method systemGetId;
         Method systemGetState;
@@ -6978,14 +7017,20 @@ public final class EngineCombatBinding {
          * missile branch of the discharge {@code aimFacingDeg} payload
          * ({@code LaunchFacingLaw}); a null {@code getFacing} alone degrades only
          * {@link WeaponMountView#freshSpawnFacingDeg()} (a counted mount fallback).
+         * Plus
+         * {@code DamagingProjectileAPI.getExplosionSpecIfExplosion()} — the engine's own blast
+         * identity, which keeps a weaponed engine blast out of the scan; a null
+         * {@code getExplosionSpecIfExplosion} alone keeps the pre-skip scan (a blast that
+         * carries its launcher's weapon can be taken).
          */
         public Builder projectileSpawnReads(Method getElapsed, Method getWeapon, Method getVelocity,
-                Method getLocation, Method getFacing) {
+                Method getLocation, Method getFacing, Method getExplosionSpecIfExplosion) {
             this.projectileGetElapsed = getElapsed;
             this.projectileGetWeapon = getWeapon;
             this.projectileGetVelocity = getVelocity;
             this.projectileGetLocation = getLocation;
             this.projectileGetFacing = getFacing;
+            this.projectileGetExplosionSpec = getExplosionSpecIfExplosion;
             return this;
         }
 

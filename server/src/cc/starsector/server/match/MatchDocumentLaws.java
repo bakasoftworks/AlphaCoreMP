@@ -3,6 +3,7 @@ package cc.starsector.server.match;
 import cc.starsector.server.protocol.SeatRole;
 
 import java.util.List;
+import java.util.function.Predicate;
 
 /**
  * The bounds and value laws a match document must pass beyond its grammar - the ONE home of every
@@ -15,6 +16,10 @@ import java.util.List;
  * law broken, naming OUR field (never the document's bytes). Shared: bundled into the client mod
  * jar and run under the game's script classloader, so this class is {@code String} / {@code List}
  * / {@code Math} code only - no IO, no regex.
+ *
+ * <p>{@link #checkShape}, {@link #checkLocalField} (MATCH-DOC-4096) and {@link #checkSideZeroFleet} (MDLF-1) are
+ * the RECEIVING side's laws on what a document makes a game build locally: the join window and the game run
+ * them, {@link #check} does not.
  *
  *
  */
@@ -69,8 +74,126 @@ public final class MatchDocumentLaws {
     public static final float MAP_HALF_MIN = 2000f;
     /** The largest map half-extent, whole su: the twin of {@code MatchShapes.MAP_HALF_MAX} (server-only). */
     public static final float MAP_HALF_MAX = 60000f;
+    /** The duel shape, a registry key by EXACT match ({@link #isRegistryShape}; never a prefix, so the rig's
+     *  {@code vanilla:1v1} twin stays out): served as {@code seats:2} is, it fields only the own seat locally. */
+    public static final String SHAPE_ONE_VS_ONE = "1v1";
+    /** The prefix of this repo's own serverless compare windows ({@code vanilla:<shape>}): the WHOLE roster is
+     *  fielded locally and the enemy side gets a deploying admiral, so no server mints it and no document earns
+     *  it - only a window launched with the rig knob ({@link #checkShape}'s {@code vanillaRig}). */
+    public static final String SHAPE_VANILLA_PREFIX = "vanilla:";
+    /** The station hulls a registry document may make a game field at mission build (each clones its module
+     *  cluster): 4x the largest lawful mint (1, the fortress). */
+    public static final int STATION_FIELD_MAX = 4;
 
     private MatchDocumentLaws() {
+    }
+
+    /** The n-peer registry prefixes ({@code seats:} / {@code gauntlet:} / {@code teams:} / {@code bastion:}): with
+     *  {@code bots} and the exact {@code 1v1} they make up {@link #isRegistryShape}, the key every caller routes on. */
+    public static boolean isNpeerShape(String shape) {
+        return shape.startsWith("seats:") || shape.startsWith("gauntlet:")
+                || shape.startsWith("teams:") || shape.startsWith("bastion:");
+    }
+
+    /**
+     * THE registry-shape key list, single-sourced (moved here from the client's mission builder
+     * with the local-field law, which keys on it): a registry shape fields ONLY the own seat locally - every other
+     * hull spawns at first wire sight - so the mission build, the predict plugin and these laws must never disagree
+     * on it. {@code bots} is a bare prefix (the mint canonicalizes {@code bots:0:N} to {@code bots:N}).
+     * {@code 1v1} is a key by EXACT match. WHY: the server serves a
+     * {@code 1v1} exactly as {@code seats:2} (same roster, a seat's pick re-points its hull), so a client that fields
+     * the document's rows locally flies a hull the server never fielded and never takes the re-point. Only the
+     * rig's {@code vanilla:} windows (and a window with no document) stay off the registry.
+     */
+    public static boolean isRegistryShape(String shape) {
+        return SHAPE_ONE_VS_ONE.equals(shape) || shape.startsWith("bots") || isNpeerShape(shape);
+    }
+
+    /**
+     * THE SHAPE LAW (MATCH-DOC-4096): a document's shape is a registry shape ({@code 1v1}
+     * among them), else refused {@code match_doc_out_of_range shape} (OUR token, never the shape's text). WHY:
+     * the shape picks how much of the roster a game fields LOCALLY, and a {@code vanilla:} shape fields all of it under an
+     * admiral that deploys every zero-point reserve in one frame - a host-authored document must never choose
+     * that. {@code vanillaRig} = the launching rig's own knob (never read from the document): only then is a
+     * {@code vanilla:} shape taken. Runs at the join window (always {@code false}) and in the game's one load.
+     */
+    public static void checkShape(MatchDescriptor d, boolean vanillaRig) throws MatchDocumentRefused {
+        String shape = d.shape();
+        boolean lawful = isRegistryShape(shape) || (vanillaRig && shape.startsWith(SHAPE_VANILLA_PREFIX));
+        if (!lawful) {
+            throw new MatchDocumentRefused(REASON_OUT_OF_RANGE, "shape");
+        }
+    }
+
+    /**
+     * The hulls {@code d} makes a game field LOCALLY at mission build, as the local-field law counts them - an
+     * UPPER bound on the mission build's own {@code addToFleet} calls beyond the one own-seat hull (rows: verify-
+     * match V13 against the recording mission stub). A registry shape: its station rows' summed count on EITHER
+     * side (the build fields the stations of the side the seat is not on; side-blind, so the bound holds whatever
+     * seat this game gets). Any other shape (past the shape law only the rig's exempt {@code vanilla:} windows):
+     * the whole roster's summed count.
+     */
+    public static int localFieldCount(MatchDescriptor d, Predicate<String> isStation) {
+        boolean registry = isRegistryShape(d.shape());
+        List<MatchDescriptor.RosterRow> roster = d.roster();
+        long fielded = 0L;
+        for (int i = 0; i < roster.size(); i++) {
+            MatchDescriptor.RosterRow row = roster.get(i);
+            if (!registry || isStation.test(row.variantId())) {
+                fielded += row.count();
+            }
+        }
+        return (int) Math.min(fielded, Integer.MAX_VALUE);
+    }
+
+    /**
+     * THE LOCAL-FIELD LAW (MATCH-DOC-4096): {@link #checkShape} first, then the hulls the
+     * document makes this game field locally ({@link #localFieldCount}: its station rows, either side) stay within
+     * {@link #STATION_FIELD_MAX}, else {@code match_doc_out_of_range roster.local}. Past the shape law a shape is a
+     * registry one ({@code 1v1} too) or the rig's {@code vanilla:} window, which is exempt (its author is the rig),
+     * so a side-0 station row is lawful on every shape (a registry build never puts a station in the seat's own
+     * reserves; an own-side one rides the registry, as the fortress does).
+     * WHY the cap sits far under {@link #SHIPS_MAX}: that bound is for hulls a registry shape spawns at
+     * wire sight under the server's own pacing; the stations are built in one go at mission build from a
+     * host-authored file.
+     *
+     * @param isStation the game's station test in the game (every variant resolved first); at the join window,
+     *                  which has no game data, a test that is always false (nothing counts there: the game's own
+     *                  load runs this law again with the real test)
+     */
+    public static void checkLocalField(MatchDescriptor d, Predicate<String> isStation, boolean vanillaRig)
+            throws MatchDocumentRefused {
+        checkShape(d, vanillaRig);
+        if (d.shape().startsWith(SHAPE_VANILLA_PREFIX)) {
+            return;
+        }
+        if (localFieldCount(d, isStation) > STATION_FIELD_MAX) {
+            throw new MatchDocumentRefused(REASON_OUT_OF_RANGE, "roster.local");
+        }
+    }
+
+    /**
+     * THE SIDE-0 FLEET LAW (MDLF-1): at least one roster row is a side-0 ship that is not a
+     * station, else {@code match_doc_out_of_range roster.side0}. WHY: the all-skills fleet context is minted from
+     * exactly that walk ({@link AllSkillsFleetLaw#sideZeroShipVariantIds}), which THROWS on an empty one (an empty
+     * fleet would grant every threshold skill at maximum). A host-authored document must never carry that throw
+     * into a joiner's mission build or frame loop, and the all-skills bit arrives on the wire AFTER the document
+     * is loaded, so the law binds every document whatever the match's flags, and every shape (the rig's
+     * {@code vanilla:} one too). The test is the walk's own, row for row; no server mint has an empty walk.
+     *
+     * @param isStation as {@link #checkLocalField}'s: the game's station test in the game; at the join window the
+     *                  always-false test, which then refuses only a document with no side-0 row at all
+     */
+    public static void checkSideZeroFleet(MatchDescriptor d, Predicate<String> isStation)
+            throws MatchDocumentRefused {
+        List<MatchDescriptor.RosterRow> roster = d.roster();
+        for (int i = 0; i < roster.size(); i++) {
+            MatchDescriptor.RosterRow row = roster.get(i);
+            if (row.side() == 0 && row.count() >= 1 && !isStation.test(row.variantId())) {
+                return;
+            }
+        }
+        throw new MatchDocumentRefused(REASON_OUT_OF_RANGE, "roster.side0");
     }
 
     /**

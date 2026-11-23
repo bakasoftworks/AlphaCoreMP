@@ -40,10 +40,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import java.util.zip.ZipEntry;
 import java.util.zip.ZipException;
+import java.util.zip.ZipFile;
 
 import cc.starsector.server.match.ContentFingerprints;
 import cc.starsector.server.match.MatchPasswords;
+import cc.starsector.server.names.EngineSymPlatformGate;
+import cc.starsector.server.platform.ActivationGate;
 import cc.starsector.server.runtime.BanSet;
 import cc.starsector.server.runtime.HandshakeCodec;
 
@@ -421,7 +425,8 @@ final class OpsJoinSelf {
      * folder holds no Starsector core jar; {@link #R17} = it is the first window's own game through its links (one
      * join endpoint file per game folder, so the second press would only bring the first window back). {@code %s}
      * = the saved row, bounded. On either refusal neither window is read, written or started.
-     * {@link #SECOND_PREFIX} leads the second window's answer after the first's; {@link #NOTE_SECOND_LIVE} is that
+     * {@link #SECOND_PREFIX} leads the second window's answer after the first's (unless that answer already opens
+     * with the row's own name); {@link #NOTE_SECOND_LIVE} is that
      * answer when the second game's join window is already open.
      */
     static final String R16 = "Second game folder is not a Starsector folder (%s) - fix it on the Setup tab, or clear"
@@ -433,10 +438,59 @@ final class OpsJoinSelf {
      *  the name is shown only to a host who wrote the row. */
     static final String R18 = "The row %1$s in launcher.properties must be blank or a whole number from 96 to 65536"
             + " (MiB of client log per game window), not '%2$s' - fix the row, then press again.";
+    /**
+     * A Game folder holding another build of the game than the one this server build pins
+     * ({@link #gameVersionRefusalOrNull}): {@code %1$s} = the row as the Setup tab names it ({@link #ROW_SHOWN_GAME},
+     * {@link #ROW_SHOWN_SECOND}, {@link #ROW_SHOWN_PLAYER}), {@code %2$s} = this server's game version
+     * ({@link ActivationGate#SUPPORTED_GAME_VERSION}). The folder's own version is never named: the check compares
+     * engine bytes, it reads no version. WHY it refuses before the kit check writes: a player kit built for another
+     * build, swapped into that folder, only fails later as a launch error that names neither build.
+     *
+     */
+    static final String R21 = "%1$s holds another build of Starsector; this server needs Starsector %2$s - point the"
+            + " row at a %2$s install.";
+    static final String ROW_SHOWN_GAME = "Game folder";
+    static final String ROW_SHOWN_SECOND = "Second game folder";
+    static final String ROW_SHOWN_PLAYER = "Player game folder";
+    /** The largest launcher-check entry {@link Live#gameBuildOf} hashes; larger = unread. The pinned builds' entries
+     *  are 9289 bytes (Windows) and 10353 bytes (Linux), so the cap only bounds the read.
+     * */
+    static final int LAUNCHER_CHECK_ENTRY_MAX_BYTES = 64 * 1024;
     static final String SECOND_PREFIX = "Second game folder: ";
     static final String NOTE_SECOND_LIVE = "its join window is already open - close it to open a fresh one.";
 
     // ---- types ----
+
+    /**
+     * One platform's game-build pin: the core-jar {@code entry} name {@link Live#gameBuildOf} hashes and the
+     * lowercase-hex SHA-256 ({@code sha256}) that entry's bytes must equal. WHY a pair: the Windows files and the
+     * Linux download are two engine builds of the same version, each naming its classes on its own, so each may ship
+     * the launcher-check class under its own name, and a sha judged under the other platform's name reads every correct
+     * folder as another build. Name and sha travel as one value so no caller pairs one platform's sha with the other's
+     * name.
+     */
+    record GameBuildPin(String entry, String sha256) {
+
+        /** The Windows files' pin, the one the serve's own drift guard compares: the engine-name table's entry with
+         *  {@link ActivationGate#LAUNCHER_CHECK_CLASS_SHA256}. */
+        static GameBuildPin windows() {
+            return new GameBuildPin(EngineSymPlatformGate.PLATFORM_GATE_LAUNCHER_CLASS.classEntry(),
+                    ActivationGate.LAUNCHER_CHECK_CLASS_SHA256);
+        }
+
+        /** The game's Linux download's own pin (a Linux host's press folder):
+         *  {@link ActivationGate#LAUNCHER_CHECK_CLASS_ENTRY_LINUX} with
+         *  {@link ActivationGate#LAUNCHER_CHECK_CLASS_SHA256_LINUX}. */
+        static GameBuildPin linux() {
+            return new GameBuildPin(ActivationGate.LAUNCHER_CHECK_CLASS_ENTRY_LINUX,
+                    ActivationGate.LAUNCHER_CHECK_CLASS_SHA256_LINUX);
+        }
+
+        /** This pin with its sha replaced and its entry name kept (a selftest's own jar). */
+        GameBuildPin withSha256(String sha) {
+            return new GameBuildPin(entry, sha);
+        }
+    }
 
     /**
      * One press's inputs, supplied by the shell. {@code launcherRows} = {@link ServeLauncher#readLauncherRows}'
@@ -462,11 +516,34 @@ final class OpsJoinSelf {
      * <p>{@code posixOrNull} = the Linux host's facts ({@link PosixHost}); null = a Windows host (the
      * {@code localAppData} / {@code appData} / {@code userHome} locations). The shell sets it from the OS once
      * per press; the core branches on {@link #posixHost} only.
+     *
+     * <p>{@code gameBuildPin} = the {@link GameBuildPin} (entry name + SHA-256) a Game folder's launcher-check entry is
+     * judged by to be the game build this server runs ({@link #gameVersionRefusalOrNull}); every shell passes
+     * {@link GameBuildPin#windows} through the shorter constructors, a selftest the sha of its own tiny jar's entry,
+     * the entry name kept ({@link #withGameBuildPin}).
+     *
+     * <p>{@code posixGameBuildPin} = the same for a Linux host's press folder, which is the game's Linux download (a
+     * Linux host's serve runs the Windows files, so its join window needs that download, another engine build of the
+     * same version whose launcher-check entry hashes differently and may be named differently); every shell passes
+     * {@link GameBuildPin#linux}, a selftest its own jar's entry name and sha ({@link #withPosixGameBuildPin}).
+     * {@link #pressGameBuildPin} picks the one the press judges by.
      */
     record Inputs(Path packageRoot, Map<String, String> launcherRows, OpsSnapshot liveOrNull,
             String passwordOrBlank, String kitHint, String localAppData, String appData, String userHome,
             Path propsPathOrNull, boolean adminArm, String kitJarMd5OrNull,
-            String kitFingerprintOrNull, Path kitZipOrNull, PosixHost posixOrNull) {
+            String kitFingerprintOrNull, Path kitZipOrNull, PosixHost posixOrNull, GameBuildPin gameBuildPin,
+            GameBuildPin posixGameBuildPin) {
+
+        /** Every shell's shape: the game build pins are the server's own ({@link GameBuildPin#windows},
+         *  {@link GameBuildPin#linux}). */
+        Inputs(Path packageRoot, Map<String, String> launcherRows, OpsSnapshot liveOrNull,
+                String passwordOrBlank, String kitHint, String localAppData, String appData, String userHome,
+                Path propsPathOrNull, boolean adminArm, String kitJarMd5OrNull,
+                String kitFingerprintOrNull, Path kitZipOrNull, PosixHost posixOrNull) {
+            this(packageRoot, launcherRows, liveOrNull, passwordOrBlank, kitHint, localAppData, appData, userHome,
+                    propsPathOrNull, adminArm, kitJarMd5OrNull, kitFingerprintOrNull, kitZipOrNull, posixOrNull,
+                    GameBuildPin.windows(), GameBuildPin.linux());
+        }
 
         /** The earlier shape: no admin arm, no kit stamps - the rows and shells that predate them. */
         Inputs(Path packageRoot, Map<String, String> launcherRows, OpsSnapshot liveOrNull,
@@ -481,18 +558,41 @@ final class OpsJoinSelf {
             return posixOrNull != null;
         }
 
+        /** The pin the press's own Game folder is judged by: {@link #posixGameBuildPin} on a Linux host (its press
+         *  folder is always the Linux download: a blank player row there is refused, never read as Game folder),
+         *  else {@link #gameBuildPin}. */
+        GameBuildPin pressGameBuildPin() {
+            return posixHost() ? posixGameBuildPin : gameBuildPin;
+        }
+
         /** These inputs with the Linux host's facts replaced (null = a Windows host). */
         Inputs withPosixHost(PosixHost host) {
             return new Inputs(packageRoot, launcherRows, liveOrNull, passwordOrBlank, kitHint, localAppData,
                     appData, userHome, propsPathOrNull, adminArm, kitJarMd5OrNull, kitFingerprintOrNull, kitZipOrNull,
-                    host);
+                    host, gameBuildPin, posixGameBuildPin);
         }
 
         /** These inputs with {@code adminArm} replaced. */
         Inputs withAdminArm(boolean arm) {
             return new Inputs(packageRoot, launcherRows, liveOrNull, passwordOrBlank, kitHint, localAppData,
                     appData, userHome, propsPathOrNull, arm, kitJarMd5OrNull, kitFingerprintOrNull, kitZipOrNull,
-                    posixOrNull);
+                    posixOrNull, gameBuildPin, posixGameBuildPin);
+        }
+
+        /** These inputs with {@code gameBuildPin}'s sha replaced, its entry name kept (a selftest's own jar).
+         * */
+        Inputs withGameBuildPin(String pin) {
+            return new Inputs(packageRoot, launcherRows, liveOrNull, passwordOrBlank, kitHint, localAppData,
+                    appData, userHome, propsPathOrNull, adminArm, kitJarMd5OrNull, kitFingerprintOrNull, kitZipOrNull,
+                    posixOrNull, gameBuildPin.withSha256(pin), posixGameBuildPin);
+        }
+
+        /** These inputs with {@code posixGameBuildPin} replaced, entry name and sha (a selftest's own jar).
+         * */
+        Inputs withPosixGameBuildPin(GameBuildPin pin) {
+            return new Inputs(packageRoot, launcherRows, liveOrNull, passwordOrBlank, kitHint, localAppData,
+                    appData, userHome, propsPathOrNull, adminArm, kitJarMd5OrNull, kitFingerprintOrNull, kitZipOrNull,
+                    posixOrNull, gameBuildPin, pin);
         }
 
         /** These inputs with the package's three kit stamps replaced (any may be null;
@@ -500,7 +600,7 @@ final class OpsJoinSelf {
         Inputs withKitStamps(String jarMd5OrNull, String fingerprintOrNull, Path zipOrNull) {
             return new Inputs(packageRoot, launcherRows, liveOrNull, passwordOrBlank, kitHint, localAppData,
                     appData, userHome, propsPathOrNull, adminArm, jarMd5OrNull, fingerprintOrNull, zipOrNull,
-                    posixOrNull);
+                    posixOrNull, gameBuildPin, posixGameBuildPin);
         }
 
         /** These inputs with {@code launcherRows} replaced - the second pilot window is the same press over its own
@@ -510,7 +610,7 @@ final class OpsJoinSelf {
         Inputs withLauncherRows(Map<String, String> rows) {
             return new Inputs(packageRoot, rows, liveOrNull, passwordOrBlank, kitHint, localAppData, appData,
                     userHome, propsPathOrNull, adminArm, kitJarMd5OrNull, kitFingerprintOrNull, kitZipOrNull,
-                    posixOrNull);
+                    posixOrNull, gameBuildPin, posixGameBuildPin);
         }
 
         /** Never the password (a shell logging its inputs must not leak it). */
@@ -804,6 +904,57 @@ final class OpsJoinSelf {
     /** The real seams: files, one loopback GET, the ProtonVPN probe, one ProcessBuilder. In the console JVM
      *  only (never the serve JVM). */
     static final class Live implements Effects {
+
+        /** A Game folder's build against the server's pin ({@link #gameBuildOf}). */
+        enum GameBuild { SAME, OTHER, UNREAD }
+
+        /**
+         * Which game build {@code install} holds, judged by the one fact the serve's own drift guard pins about it:
+         * the SHA-256 of the launcher-check class's bytes (the entry {@code pin} names: the Windows files' table row
+         * or the Linux download's own name, {@link GameBuildPin}), read as a ZIP entry of the folder's core jar - in
+         * the folder {@link ServeLauncher#resolveGame} finds (an install's {@code starsector-core}, or the folder
+         * itself when the jar sits in it) - against {@code pin}'s sha. NO engine class is loaded (this JVM cannot load a real game's renamed classes; the serve JVM
+         * runs with bytecode verification off) and no class file is parsed: the one entry streams through the digest,
+         * at most {@link #LAUNCHER_CHECK_ENTRY_MAX_BYTES}, and the jar is closed before the return. WHY here: the
+         * press's file reads live in this class.
+         *
+         * <p>SAME = the bytes hash to {@code pin}'s sha. OTHER = they do not, or the jar opened and holds no entry under
+         * {@code pin}'s name (the game ships that class under another name in another build: the 0.98a-RC8 core jar has
+         * none under this one; no other name is tried). UNREAD, with ONE row {@code cc-ops game_version=unread (<why>)}:
+         * no core jar ({@code no_core_jar}), an entry over the cap ({@code entry_over_cap}), or any read failure (its
+         * SimpleName). Thread: any; one local jar's directory and one small entry, never on a frame loop.
+         *
+         */
+        static GameBuild gameBuildOf(Path install, GameBuildPin pin) {
+            Path game = install == null ? null : ServeLauncher.resolveGame(install);
+            if (game == null) {
+                System.out.println("cc-ops game_version=unread (no_core_jar)");
+                return GameBuild.UNREAD;
+            }
+            try (ZipFile jar = new ZipFile(game.resolve(ServeLauncher.CORE_JAR).toFile())) {
+                ZipEntry entry = jar.getEntry(pin.entry());
+                if (entry == null) {
+                    return GameBuild.OTHER;
+                }
+                MessageDigest sha = MessageDigest.getInstance("SHA-256");
+                try (InputStream in = jar.getInputStream(entry)) {
+                    byte[] buf = new byte[8192];
+                    long total = 0;
+                    for (int n = in.read(buf); n > 0; n = in.read(buf)) {
+                        total += n;
+                        if (total > LAUNCHER_CHECK_ENTRY_MAX_BYTES) {
+                            System.out.println("cc-ops game_version=unread (entry_over_cap)");
+                            return GameBuild.UNREAD;
+                        }
+                        sha.update(buf, 0, n);
+                    }
+                }
+                return HexFormat.of().formatHex(sha.digest()).equals(pin.sha256()) ? GameBuild.SAME : GameBuild.OTHER;
+            } catch (IOException | NoSuchAlgorithmException | RuntimeException | LinkageError failed) {
+                System.out.println("cc-ops game_version=unread (" + failed.getClass().getSimpleName() + ")");
+                return GameBuild.UNREAD;
+            }
+        }
 
         @Override
         public boolean isRegularFile(Path file) {
@@ -1943,6 +2094,10 @@ final class OpsJoinSelf {
          *  window, a debug watch's first window), {@value #SETTINGS_FILE_NAME_SECOND} for its second
          *  ({@link #pressWatch}). */
         String settingsName;
+        /** The row this window's Game folder came from, as {@link #R21} names it: null = read from the rows
+         *  ({@link #folderShown}); {@link #ROW_SHOWN_SECOND} for a debug flight's second window ({@link #pressWatch},
+         *  whose rows carry that folder in the player and Game folder rows). */
+        String folderShownOrNull;
 
         Press(Inputs in, Effects fx) {
             this.in = in;
@@ -2013,7 +2168,9 @@ final class OpsJoinSelf {
      * ONE stdout row {@code cc-ops join second=<opened|reopened|refused:<token>|none>} (none = no second window
      * was pressed) beside each window's own outcome row. The answer = window 1's, followed by
      * {@link #SECOND_PREFIX} and window 2's text ({@link #NOTE_SECOND_LIVE} when its join window was already
-     * open); {@link Outcome} never grows.
+     * open); {@link Outcome} never grows. A window-2 text that already
+     * opens with that row's own name ({@link #R21} over {@link #ROW_SHOWN_SECOND}) is not prefixed again, so the
+     * row is named once.
      *
      * <p>The answer's {@link Result#windows} = every window this call opened (one or two; a live window it only
      * re-opened is not one): the console closes them when the watch's serve ends.
@@ -2079,6 +2236,7 @@ final class OpsJoinSelf {
         second.publicDial = true;
         second.pressLogName = PRESS_LOG_NAME_SECOND;
         second.settingsName = SETTINGS_FILE_NAME_SECOND;
+        second.folderShownOrNull = ROW_SHOWN_SECOND;
         String cid2 = mintCid();
         while (cid2.equals(first.cid)) {
             cid2 = mintCid();
@@ -2092,9 +2250,10 @@ final class OpsJoinSelf {
         };
         System.out.println("cc-ops join second=" + shown);
         String text2 = r2.outcome() == Outcome.REOPENED ? NOTE_SECOND_LIVE : r2.text();
+        String shown2 = text2 != null && text2.startsWith(ROW_SHOWN_SECOND) ? text2 : SECOND_PREFIX + text2;
         List<JoinWindowSweep.Window> opened = new ArrayList<>(r1.windows());
         opened.addAll(r2.windows());
-        return new Result(Outcome.OPENED, r1.text() + " " + SECOND_PREFIX + text2, null, "-", opened,
+        return new Result(Outcome.OPENED, r1.text() + " " + shown2, null, "-", opened,
                 r1.armLines() + r2.armLines());
     }
 
@@ -2306,12 +2465,28 @@ final class OpsJoinSelf {
      * (fail-closed). ONE row {@code cc-ops join kit_check=current|stale} (no path, no md5); current = null; stale
      * with the package's kit zip at hand = {@link #refreshOrRefuse}; stale without one = REFUSED {@code kit_stale}
      * with {@link #R12}, nothing written.
+     *
+     * <p>With stamps set, the Game folder's game build is checked FIRST ({@link #gameVersionRefusalOrNull} against
+     * {@link Inputs#pressGameBuildPin}, the row named by {@link #folderShown}): another build than this server's =
+     * REFUSED {@code game_version} with {@link #R21} - no stamp read, no kit row, nothing written into that folder, a
+     * current kit included (it was built for this server's game, not that folder's). Unreadable = the checks above as
+     * before.
+     *
+     * <p>A Linux host's press folder is the game's Linux download, another engine build of the same version (its
+     * launcher-check bytes differ from the Windows files the serve runs), so it is judged by the Linux pin
+     * ({@link Inputs#posixGameBuildPin}) with the same sentence and the same refusal: WHY - a wrong-build Linux
+     * download would otherwise get this server's kit swapped in and fail later as a launch error naming neither
+     * build.
      */
     private static KitCheck kitCheckOf(Press p) {
         String want = p.in.kitJarMd5OrNull();
         if (want == null) {
             System.out.println("cc-ops join kit_check=skipped");
             return null;
+        }
+        String otherGame = gameVersionRefusalOrNull(p.install, folderShown(p), p.in.pressGameBuildPin());
+        if (otherGame != null) {
+            return new KitCheck(refused("game_version", otherGame), null);
         }
         Path kit = cwd(p.install);
         List<String> m = stampRowsOrNull(p.fx, kit.resolve(KIT_MANIFEST), KIT_MANIFEST_MAX_BYTES);
@@ -2328,6 +2503,46 @@ final class OpsJoinSelf {
             return refreshOrRefuse(p, stamp, yours);
         }
         return new KitCheck(refused("kit_stale", r12(p, yours)), null);
+    }
+
+    /** The row {@code p}'s Game folder came from, as {@link #R21} names it: the press's own
+     *  ({@link Press#folderShownOrNull}), else the player row when set ({@link #installOrNull} reads it first), else
+     *  Game folder. */
+    private static String folderShown(Press p) {
+        if (p.folderShownOrNull != null) {
+            return p.folderShownOrNull;
+        }
+        return playerRow(p.in.launcherRows()).isEmpty() ? ROW_SHOWN_GAME : ROW_SHOWN_PLAYER;
+    }
+
+    /**
+     * One Game folder's game build against {@code pin} ({@link Live#gameBuildOf}; every shell's pin =
+     * {@link GameBuildPin#windows}, or {@link GameBuildPin#linux} for a Linux host's press folder): another build = {@link #R21} naming {@code rowShown} and
+     * this server's {@link ActivationGate#SUPPORTED_GAME_VERSION}; the same build, or a folder that cannot be read =
+     * null = proceed as before, and the serve's own drift refusal stays the backstop. ONE stdout row
+     * {@code cc-ops game_version=same|other} when read (no path, no hash). Reads only. Thread: any.
+     *
+     */
+    static String gameVersionRefusalOrNull(Path install, String rowShown, GameBuildPin pin) {
+        Live.GameBuild build = Live.gameBuildOf(install, pin);
+        if (build == Live.GameBuild.UNREAD) {
+            return null;
+        }
+        boolean same = build == Live.GameBuild.SAME;
+        System.out.println("cc-ops game_version=" + (same ? "same" : "other"));
+        return same ? null : String.format(Locale.ROOT, R21, rowShown, ActivationGate.SUPPORTED_GAME_VERSION);
+    }
+
+    /** The Start's check of the serve's OWN Game folder ({@code game.root}, resolved as the serve resolves it):
+     *  {@link #gameVersionRefusalOrNull} named {@link #ROW_SHOWN_GAME}, against the server's own pin on every host
+     *  (the serve runs the Windows files on Linux too). A blank or unresolvable row = null (the Start's own checks
+     *  answer it). WHY at the Start: the serve refuses another build only after it was spawned, with a text that
+     *  cannot name the row. */
+    static String serveGameVersionRefusalOrNull(Path packageRoot, Map<String, String> rows) {
+        String row = trimmed(rows == null ? null : rows.get(ServeLauncher.ROW_GAME_ROOT));
+        Path folder = row.isEmpty() || packageRoot == null ? null : ServeLauncher.resolveRow(packageRoot, row);
+        return folder == null ? null
+                : gameVersionRefusalOrNull(folder, ROW_SHOWN_GAME, GameBuildPin.windows());
     }
 
     /**

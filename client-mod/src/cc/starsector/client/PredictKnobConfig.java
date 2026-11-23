@@ -517,9 +517,12 @@ final class PredictKnobConfig {
      * lane, knob {@code cc.predict.ownCloak} = {@code off|meter|apply} (default {@code apply}).
      * The defect: the own body's phase cloak runs on the LOCAL engine only (the own reconcile is
      * compare-only), so a spurious local cloak cycle lands vanilla {@code PhaseCloakStats}
-     * maxSpeed/accel mults (×0.0116) that the server body (cloak IDLE) never carries — a pure
-     * state desync riding EVERY own-body mint. {@code meter}: the pre-existing agree/disagree
-     * rider only (pre-build byte-for-byte). {@code apply}: when the ON-ness disagreement
+     * mods (time mults, maxSpeed/accel mods, the phased flag) that the server body (cloak IDLE)
+     * never carries — a pure state desync riding EVERY own-body mint. At 0.98.5a-RC4 the
+     * speed/accel mult ramps {@code 1 + (mod - 1) * effectLevel} (×1 with no
+     * {@code phase_cloak_speed}/{@code _accel} modifier); the 0.98a-RC8 law
+     * {@code mod * effectLevel} was the near-zero (×0.0116) speed crush. {@code meter}: the
+     * pre-existing agree/disagree rider only (pre-build byte-for-byte). {@code apply}: when the ON-ness disagreement
      * persists {@link #OWN_CLOAK_FORCE_PATIENCE_FRAMES} consecutive fresh frames (a genuine
      * player press leads authority by ~RTT and reconverges well inside the window — never
      * fought), {@code forceState} the own cloak to the authoritative state+progress, the

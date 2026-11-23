@@ -15,8 +15,7 @@ import com.fs.starfarer.api.impl.hullmods.ConvertedHangar;
 import com.fs.starfarer.api.loading.FighterWingSpecAPI;
 import com.fs.starfarer.api.loading.HullModSpecAPI;
 import com.fs.starfarer.campaign.CharacterStats;
-import com.fs.starfarer.combat.ai.M;
-import com.fs.starfarer.combat.entities.ship.o0OO;
+import com.fs.starfarer.combat.entities.ship.E;
 import com.fs.starfarer.loading.specs.FighterWingSpec;
 
 import java.util.ArrayList;
@@ -510,7 +509,33 @@ public final class CarrierBornFighterFx {
         private EngineReach() {
         }
 
-        /** {@code new M(spec, owner, cr)} (field init only) + {@code setSourceShip}
+        /**
+         * The engine fighter wing's {@code (FighterWingSpec, int, float)}
+         * constructor, resolved ONCE by name at this holder's lazy load. WHY: that class's name on 0.98.5a-RC4
+         * was a Java keyword, so source could not spell it; the handle is typed to {@link FighterWingAPI} for an
+         * exact invoke. Null, with {@link #WING_CTOR_FAILURE} set, when unresolved: the mint then throws and every
+         * caller's catch dead-latches the lane, as a compiled reference's link failure would.
+         */
+        private static final java.lang.invoke.MethodHandle WING_CTOR;
+        private static final Throwable WING_CTOR_FAILURE;
+
+        static {
+            java.lang.invoke.MethodHandle ctor = null;
+            Throwable failure = null;
+            try {
+                Class<?> wingClass = Class.forName(EngineNames.cls("com.fs.starfarer.combat.ai.oO0O"));
+                java.lang.invoke.MethodType sig = java.lang.invoke.MethodType.methodType(
+                        void.class, FighterWingSpec.class, int.class, float.class);
+                ctor = java.lang.invoke.MethodHandles.lookup().findConstructor(wingClass, sig)
+                        .asType(sig.changeReturnType(FighterWingAPI.class));
+            } catch (Throwable t) {
+                failure = t; // logged once, as the cause the mint throws into the callers' dead-latch line
+            }
+            WING_CTOR = ctor;
+            WING_CTOR_FAILURE = failure;
+        }
+
+        /** {@code new for(spec, owner, cr)} via {@link #WING_CTOR} (field init only) + {@code setSourceShip}
          *  — never {@code setSourceBay} (class javadoc, THE PERSISTENT WING: no bay ⇒ no return, no
          *  replacement, no bay death report), never registered with a fleet manager. Spec = the carrier's
          *  wing for {@code bay}, else (bay/variant mismatch) the wing whose variant is the fighter's. */
@@ -532,7 +557,18 @@ public final class CarrierBornFighterFx {
             if (!(spec instanceof FighterWingSpec)) {
                 return null;
             }
-            M wing = new M((FighterWingSpec) spec, carrier.getOwner(), carrier.getCurrentCR());
+            if (WING_CTOR == null) {
+                throw new IllegalStateException("fighter wing constructor unresolved", WING_CTOR_FAILURE);
+            }
+            FighterWingAPI wing;
+            try {
+                wing = (FighterWingAPI) WING_CTOR.invokeExact((FighterWingSpec) spec, carrier.getOwner(),
+                        carrier.getCurrentCR());
+            } catch (RuntimeException | Error e) {
+                throw e; // the constructor's own failure reaches the callers' catch unchanged
+            } catch (Throwable t) {
+                throw new IllegalStateException("fighter wing constructor threw", t);
+            }
             wing.setSourceShip(carrier);
             return wing;
         }
@@ -549,7 +585,7 @@ public final class CarrierBornFighterFx {
                 fighter.setWing(wingOrNull);
             }
             try {
-                o0OO stats = (o0OO) fighter.getMutableStats();
+                E stats = (E) fighter.getMutableStats();
                 ShipAPI.HullSize size = fighter.getHullSize();
                 int captainRuns = 0;
                 PersonAPI captain = carrier.getCaptain();

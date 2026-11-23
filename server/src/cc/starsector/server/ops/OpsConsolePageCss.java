@@ -298,7 +298,7 @@ label.check { display: inline-flex; align-items: center; gap: 4px; margin-right:
 #pick-why { font-size: 11px; white-space: nowrap; }
 #customs-summary { min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #cl-customs { flex-wrap: wrap; }
-#customs-detail { flex: 1 1 100%; min-width: 0; margin: 0; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+#customs-detail { grid-column: 1 / -1; min-width: 0; margin: 0; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
 #customs-detail:empty { display: none; }
 #footer-note { grid-column: 1 / -1; margin: 0; font-size: 11px; color: var(--muted); }
 #bar details.more { display: contents; }
@@ -380,8 +380,8 @@ dialog h3 { margin: 10px 0 4px; font-size: 13px; }
   @supports selector(:has(a)) {
     #bar:not(:has(#cl-match > details.more[open])) { display: flex; flex-wrap: wrap; gap: 4px 8px; }
     #bar:not(:has(#cl-match > details.more[open])) :is(#cl-server > :not(#btn-start), #btn-end-round, #magic-seam,
-      #pilot-ship, #cl-simspeed, #cl-customs, #footer-note) { display: none; }
-    #cl-customs:not(:has(details.more[open])) #customs-detail { display: none; }
+      #pilot-ship, #cl-simspeed, #cl-customs, #customs-detail, #footer-note) { display: none; }
+    #bar:not(:has(#cl-customs details.more[open])) #customs-detail { display: none; }
   }
   #seats, #seats tbody, #seats tr, #seats td { display: block; }
   #seats thead { display: none; }

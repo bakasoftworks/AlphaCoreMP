@@ -1,5 +1,7 @@
 package cc.starsector.server.bridge;
 
+import cc.starsector.server.names.EngineRow;
+import cc.starsector.server.names.EngineSymBridgeFactory;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -51,9 +53,9 @@ public final class EngineIntervalTimers {
     /** The API's interval timer, loaded by the game's loader (matched by name): public bound getters. */
     public static final String INTERVAL_UTIL = "com.fs.starfarer.api.util.IntervalUtil";
     /** The engine-internal interval timer ({@code DoNotObfuscate}): bounds are private fields, no getters. */
-    public static final String INTERVAL_TRACKER = "com.fs.starfarer.util.IntervalTracker";
+    public static final EngineRow INTERVAL_TRACKER = EngineSymBridgeFactory.BF_INTERVAL_TRACKER_CLASS;
     /** The engine's timer types — every declared engine field of either type is restarted at frame 0. */
-    public static final String[] ENGINE_TIMER_TYPES = { INTERVAL_UTIL, INTERVAL_TRACKER };
+    public static final String[] ENGINE_TIMER_TYPES = { INTERVAL_UTIL, INTERVAL_TRACKER.className() };
 
     /** One timer type's accessors: the re-roll, the bounds (getters OR fields), the optional clock reset. */
     private static final class Accessors {

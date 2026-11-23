@@ -33,14 +33,14 @@ final class HulkCutGeometryAdapter {
 
     /** The exact bound ring the carve translates + feeds point-in-poly. */
     private static final java.lang.invoke.VarHandle EXACT_RING;
-    /** {@code oo.void} — the visual bound ring (keyword name). */
+    /** The visual bound ring. */
     private static final java.lang.invoke.VarHandle VISUAL_RING;
-    /** {@code oo.String} — the cut-point list (armor-cell zeroing along the cut). */
+    /** The cut-point list (armor-cell zeroing along the cut). */
     private static final java.lang.invoke.VarHandle CUT_POINTS;
     private static final Throwable INIT_FAILURE;
 
-    /** The exact-ring field name, U+00D3 escaped (never raw in source). */
-    private static final String EXACT_RING_FIELD = "\u00D3" + "00000";
+    /** The exact-ring field name, built from char codes (never raw in source). */
+    private static final String EXACT_RING_FIELD = ((char) 0xD3) + "00000";
 
     /**
      * The three list fields below are found by NAME, which the compat
@@ -63,9 +63,9 @@ final class HulkCutGeometryAdapter {
             exactRing = lookup.findVarHandle(com.fs.starfarer.util.Tesselator.oo.class,
                     EngineNames.member(RING_OWNER, EXACT_RING_FIELD, RING_DESC), List.class);
             visualRing = lookup.findVarHandle(com.fs.starfarer.util.Tesselator.oo.class,
-                    EngineNames.member(RING_OWNER, "void", RING_DESC), List.class);
+                    EngineNames.member(RING_OWNER, "\u00D8" + "00000", RING_DESC), List.class);
             cutPoints = lookup.findVarHandle(com.fs.starfarer.util.Tesselator.oo.class,
-                    EngineNames.member(RING_OWNER, "String", RING_DESC), List.class);
+                    EngineNames.member(RING_OWNER, "\u00D4" + "00000", RING_DESC), List.class);
         } catch (Throwable t) {
             failure = t;
             exactRing = null;

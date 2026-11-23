@@ -1,5 +1,6 @@
 package cc.starsector.server.runtime;
 
+import cc.starsector.server.names.EngineSym;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -19,8 +20,6 @@ import java.util.Map;
  * share one thread (the assumption every probe documents).
  */
 final class ServeProbeSupport {
-
-    static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
 
     private ServeProbeSupport() {
     }
@@ -114,9 +113,9 @@ final class ServeProbeSupport {
     record EngineHandle(Class<?> type, Object instance) {
     }
 
-    /** {@code Class.forName(ENGINE_CLASS, true, loader)} + {@code getMethod("getInstance").invoke(null)}. */
+    /** {@code EngineSym.COMBAT_ENGINE_CLASS.load(loader)} + {@code getMethod("getInstance").invoke(null)}. */
     static EngineHandle combatEngine(ClassLoader loader) throws Exception {
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
         return new EngineHandle(engineClass, engineClass.getMethod("getInstance").invoke(null));
     }
 

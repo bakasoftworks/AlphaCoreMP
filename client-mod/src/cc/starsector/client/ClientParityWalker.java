@@ -413,7 +413,7 @@ final class ClientParityWalker {
         try { fields.put("ship.isAffectedByNebula", String.valueOf(ship.isAffectedByNebula())); } catch (Throwable t) { fields.put("ship.isAffectedByNebula", err(t)); }
         try { fields.put("ship.isAlive", String.valueOf(ship.isAlive())); } catch (Throwable t) { fields.put("ship.isAlive", err(t)); }
         try { fields.put("ship.isAlly", String.valueOf(ship.isAlly())); } catch (Throwable t) { fields.put("ship.isAlly", err(t)); }
-        try { fields.put("ship.isBeingIgnored", String.valueOf(ship.isBeingIgnored())); } catch (Throwable t) { fields.put("ship.isBeingIgnored", err(t)); }
+        try { fields.put("ship.isBeingIgnored", String.valueOf(ship.isBeingIgnored(false))); } catch (Throwable t) { fields.put("ship.isBeingIgnored", err(t)); }
         try { fields.put("ship.isCapital", String.valueOf(ship.isCapital())); } catch (Throwable t) { fields.put("ship.isCapital", err(t)); }
         try { fields.put("ship.isCruiser", String.valueOf(ship.isCruiser())); } catch (Throwable t) { fields.put("ship.isCruiser", err(t)); }
         try { fields.put("ship.isDefenseDisabled", String.valueOf(ship.isDefenseDisabled())); } catch (Throwable t) { fields.put("ship.isDefenseDisabled", err(t)); }
@@ -446,6 +446,8 @@ final class ClientParityWalker {
         try { fields.put("ship.isPhased", String.valueOf(ship.isPhased())); } catch (Throwable t) { fields.put("ship.isPhased", err(t)); }
         try { fields.put("ship.isPiece", String.valueOf(ship.isPiece())); } catch (Throwable t) { fields.put("ship.isPiece", err(t)); }
         try { fields.put("ship.isPullBackFighters", String.valueOf(ship.isPullBackFighters())); } catch (Throwable t) { fields.put("ship.isPullBackFighters", err(t)); }
+        // Starsector 0.98.5a+: a hull-spec constant (the spec's phase flag or its PHASE hint), memoized by the engine.
+        try { fields.put("ship.isReallyPhaseShip", String.valueOf(ship.isReallyPhaseShip())); } catch (Throwable t) { fields.put("ship.isReallyPhaseShip", err(t)); }
         try { fields.put("ship.isRecentlyShotByPlayer", String.valueOf(ship.isRecentlyShotByPlayer())); } catch (Throwable t) { fields.put("ship.isRecentlyShotByPlayer", err(t)); }
         try { fields.put("ship.isRenderEngines", String.valueOf(ship.isRenderEngines())); } catch (Throwable t) { fields.put("ship.isRenderEngines", err(t)); }
         try { fields.put("ship.isRetreating", String.valueOf(ship.isRetreating())); } catch (Throwable t) { fields.put("ship.isRetreating", err(t)); }
@@ -459,6 +461,8 @@ final class ClientParityWalker {
         try { fields.put("ship.isStation", String.valueOf(ship.isStation())); } catch (Throwable t) { fields.put("ship.isStation", err(t)); }
         try { fields.put("ship.isStationModule", String.valueOf(ship.isStationModule())); } catch (Throwable t) { fields.put("ship.isStationModule", err(t)); }
         try { fields.put("ship.isTargetable", String.valueOf(ship.isTargetable())); } catch (Throwable t) { fields.put("ship.isTargetable", err(t)); }
+        // Starsector 0.98.5a+: the PREVIOUS frame's isHulk (advance() latches it first); the replica advances locally.
+        try { fields.put("ship.isWasHulk", String.valueOf(ship.isWasHulk())); } catch (Throwable t) { fields.put("ship.isWasHulk", err(t)); }
         try { fields.put("ship.isWingLeader", String.valueOf(ship.isWingLeader())); } catch (Throwable t) { fields.put("ship.isWingLeader", err(t)); }
     }
 
@@ -712,6 +716,8 @@ final class ClientParityWalker {
         try { vec(fields, "ship.weapon.getLocation", w.getLocation()); } catch (Throwable t) { vecErr(fields, "ship.weapon.getLocation", t); }
         try { fields.put("ship.weapon.getMaxAmmo", String.valueOf(w.getMaxAmmo())); } catch (Throwable t) { fields.put("ship.weapon.getMaxAmmo", err(t)); }
         try { fields.put("ship.weapon.getMaxHealth", num(w.getMaxHealth())); } catch (Throwable t) { fields.put("ship.weapon.getMaxHealth", err(t)); }
+        // Starsector 0.98.5a+: the owning ship's facing, so the offline differ grades it with the ship-facing rule.
+        try { fields.put("ship.weapon.getPivotFacing", num(w.getPivotFacing())); } catch (Throwable t) { fields.put("ship.weapon.getPivotFacing", err(t)); }
         try { fields.put("ship.weapon.getProjectileCollisionClass", txt(w.getProjectileCollisionClass())); } catch (Throwable t) { fields.put("ship.weapon.getProjectileCollisionClass", err(t)); }
         try { fields.put("ship.weapon.getProjectileFadeRange", num(w.getProjectileFadeRange())); } catch (Throwable t) { fields.put("ship.weapon.getProjectileFadeRange", err(t)); }
         try { fields.put("ship.weapon.getProjectileSpeed", num(w.getProjectileSpeed())); } catch (Throwable t) { fields.put("ship.weapon.getProjectileSpeed", err(t)); }

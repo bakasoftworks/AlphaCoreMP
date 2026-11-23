@@ -80,6 +80,32 @@ final class TeamChangeLane {
         return flippedBodies;
     }
 
+    /**
+     * The own-team re-key, ONE home for its two callers: the per-frame pass
+     * ({@link #advance}) and the match-reset rebuild ({@code PredictReconcileCombatPlugin.applyMatchReset}).
+     * WHY the rebuild calls it: the rebuild runs BEFORE that frame's {@link #advance}, so its own spawn
+     * ({@code OwnSeatLifecycleLane.spawnOwnSeat}) used to note the ENDING round's side. A server that fields
+     * the seat on another side at the round open (a non-PvP wrap reverts a switched seat to its document side;
+     * a PvP pick still pending at the wrap lands on the new one) then had the fresh own hull read the wrong
+     * side's fleet context for that whole life (measured on a real engine after a team switch + a round wrap:
+     * the server {@code fab=1}, the client {@code fab=0} + an {@code unstamped kind=reorder} row). Owner, colours and
+     * targeting never depended on it ({@code sideAuthority()} is untouched: the own hull is local owner 0).
+     * Writes {@code plugin.ownDescSide} and the fleet-context side note only; the REMOTE re-side stays
+     * {@link #advance}'s, whose side signature still moves the same frame (the signature is not touched
+     * here). {@code liveOwnAbs} = the own row's wire {@code fleetSide}; an absent / neutral / unknown /
+     * equal value is no change. Returns the new absolute side, else {@code -1}.
+     */
+    int rekeyOwn(int liveOwnAbs, long tick, String why) {
+        int changed = TeamPerspectiveLaw.ownTeamChangeOrNeg(liveOwnAbs, plugin.ownDescSide);
+        if (changed >= 0) {
+            PilotWatchLog.info("predict team-change: OWN team abs " + plugin.ownDescSide + " -> "
+                    + changed + " tick=" + tick + " (" + why + ")");
+            plugin.ownDescSide = changed;
+            OfficerLoadout.noteOwnAbsoluteSide(changed); // later pairs read the fleet context of the new side
+        }
+        return changed;
+    }
+
     /** {@code ownId} = this session's own wire id (the WELCOME {@code boundShipId}). */
     void advance(ServerSnapshotFrame snapshot, long ownId) {
         for (int i = flippedBodies.size() - 1; i >= 0; i--) {
@@ -117,13 +143,7 @@ final class TeamChangeLane {
             return; // No side moved and nothing to re-own — skip the heavy walk
         }
         lastPassTick = tick;
-        int changed = TeamPerspectiveLaw.ownTeamChangeOrNeg(liveOwn, plugin.ownDescSide);
-        if (changed >= 0) {
-            PilotWatchLog.info("predict team-change: OWN team abs " + plugin.ownDescSide + " -> "
-                    + changed + " tick=" + tick
-                    + " (the own row's live fleetSide; re-siding the registry)");
-            plugin.ownDescSide = changed;
-        }
+        int changed = rekeyOwn(liveOwn, tick, "the own row's live fleetSide; re-siding the registry");
         int resided = 0;
         int reowned = 0;
         int pending = 0;

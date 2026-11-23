@@ -1,5 +1,7 @@
 package cc.starsector.server.transform;
 
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymTestsTable;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -441,7 +443,7 @@ public final class TransformRegistry {
      * derived from the master seed + the CALLER class (ships, fleet members and persons each own a
      * stream, so a wall-clock-timed pass minting fleet members cannot shift the ship ids) + that
      * class's per-caller index. Class (ii) behavior-correcting, server JVM only, default OFF, the
-     * installed game untouched. Fingerprint measured 2026-10-14 against the install's
+     * installed game untouched. Fingerprint re-measured 2026-11-12 against the 0.98.5a install's
      * {@code starsector-core\starfarer.api.jar} (class major 61) via {@code MethodBytecodeFingerprint};
      * the site confirmed in the class file at bytecode 48.
      */
@@ -451,7 +453,7 @@ public final class TransformRegistry {
             "com/fs/starfarer/api/util/Misc",
             "starfarer.api.jar",
             List.of(new TargetMethod("genUID", "()Ljava/lang/String;",
-                    "635db3326765a254ecbd6b05fe5cc80514af94a488d0ca0ff82b3cc0fcbab977", null)),
+                    "8d26689cfa81581a54ead686a5297b75126574ec6cb0a171f57e2318af7a20e7", null)),
             "ii",
             "-Dcc.transform.enable=" + HOOK_0044.id() + "," + ID_REDIRECT_ID + " (or env CC_TRANSFORM_ENABLE)"
                     + " + -Dcc.rngpin.seed=<long> + -Dcc.rngpin.keyed=true; refused without " + HOOK_0044.id()
@@ -486,7 +488,7 @@ public final class TransformRegistry {
     private static final Entry HOOK_0050 = new Entry(
             LANDING_REDIRECT_ID,
             Kind.CALL_SITE_REDIRECT,
-            "com/fs/starfarer/combat/entities/ship/A/C",
+            EngineSymTestsTable.TESTS_TABLE_LAUNCH_BAY_CLASS.internalName(),
             "starfarer_obf.jar",
             List.of(new TargetMethod("getLandingLocation",
                     "(Lcom/fs/starfarer/api/combat/ShipAPI;)Lorg/lwjgl/util/vector/Vector2f;",
@@ -522,7 +524,7 @@ public final class TransformRegistry {
      * walk becomes the engine's own insertion order, itself one of the orders an identity hash may
      * produce, and every computation stays the engine's. Class (ii) behavior-correcting, server JVM
      * only, default OFF, the installed game untouched; needs no other entry (no holder, no seed).
-     * Method fingerprint measured 2026-10-15 against the install's engine jar (class major 61) via
+     * Method fingerprint re-measured 2026-11-12 against the 0.98.5a install's engine jar (class major 61) via
      * {@code MethodBytecodeFingerprint}; the class file holds the two pairs at bytecodes 5 / 9 and
      * 38 / 42 of the constructor, no other method of the class names {@code HashMap}, and the
      * constructor carries no stack-map frame. The evidence field below states the governance
@@ -532,12 +534,10 @@ public final class TransformRegistry {
     private static final Entry HOOK_0051 = new Entry(
             ORDER_SWAP_ID,
             Kind.NEW_TYPE_SWAP,
-            "com/fs/starfarer/combat/ai/D",
+            EngineSymTestsTable.TESTS_TABLE_THREAT_CLASS.internalName(),
             "starfarer_obf.jar",
-            List.of(new TargetMethod("<init>",
-                    "(Lcom/fs/starfarer/combat/entities/Ship;Lcom/fs/starfarer/combat/ai/movement/maneuvers/M$o;"
-                            + "Lcom/fs/starfarer/combat/ai/movement/A;)V",
-                    "52799650b5106a4fe139eacf46b61bdeeb17b457b47308494811ba55b073d8d7", null)),
+            List.of(new TargetMethod("<init>", threatCtorDescriptor(),
+                    "e5a46ec33a7e846214ae078da50b38f72d1098bf049b3e6c04f0913ab8bc7374", null)),
             "ii",
             "-Dcc.transform.enable=" + ORDER_SWAP_ID + " (or env CC_TRANSFORM_ENABLE); no prerequisite (no holder,"
                     + " no seed); absent => premain inert, the threat table walks in identity-hash order (stock)",
@@ -551,6 +551,19 @@ public final class TransformRegistry {
                     + "in the class names HashMap; update the class, the method sha256 and expectedSites here; re-run "
                     + "the install-facing registry verifier + the keyed-pin contract rows",
             new TypeSwap("java/util/HashMap", "java/util/LinkedHashMap", "()V", 2));
+
+    /**
+     * The threat-table constructor's JVM descriptor ({@code (Ship, maneuver type, movement)V}), built from the
+     * engine-name table so a game update re-keys its three engine types there, never in this string. Static, so
+     * the {@link #HOOK_0051} initializer may call it whatever the textual order.
+     *
+     *
+     */
+    private static String threatCtorDescriptor() {
+        return "(" + EngineSym.SHIP_CLASS.typeDescriptor()
+                + EngineSymTestsTable.TESTS_TABLE_THREAT_CTOR_MANEUVER_CLASS.typeDescriptor()
+                + EngineSymTestsTable.TESTS_TABLE_THREAT_CTOR_MOVEMENT_CLASS.typeDescriptor() + ")V";
+    }
 
     /** The MagicLib pilot seam's id (a {@link Kind#FOREIGN_LOAD_TIME_SEAM} entry). */
     public static final String MAGIC_SEAM_ID = "HOOK-0053";
@@ -567,7 +580,8 @@ public final class TransformRegistry {
      * pilot's key on the serve and on every replica instead of the mod's AI. Class (ii) behavior-correcting,
      * cleared before registration with the host default ON and an OFF switch. The
      * {@code sha256} is the canonical token sha of the 23-token fork window, constant by construction across
-     * every recognised build, MagicLib 1.4.5 through 1.5.8-dev14.
+     * every recognised build, MagicLib 1.4.5 through 1.5.8-dev14 and 1.6.1, whose class is
+     * byte-identical to 1.5.8-dev14's.
      */
     private static final Entry HOOK_0053 = new Entry(
             MAGIC_SEAM_ID,
@@ -595,16 +609,16 @@ public final class TransformRegistry {
      * return and one catch-all handler appended last to the exception table, no frame or local of the original
      * touched. Engine half, fail-CLOSED: with the host row on, the eager gate verifies this fingerprint and probes
      * the holder and the typed target, and a miss refuses the launch naming the row; a load-time drift halts the
-     * JVM the same way. Class (ii) behavior-correcting, default OFF. Fingerprint measured 2026-10-29 against the
-     * install's engine jar (class 134,154 bytes, major 61; code length 5,780) via {@link MethodBytecodeFingerprint}.
+     * JVM the same way. Class (ii) behavior-correcting, default OFF. Fingerprint re-measured 2026-11-12 against the
+     * 0.98.5a install's engine jar (class 136,297 bytes, major 61; code length 5,788) via {@link MethodBytecodeFingerprint}.
      */
     private static final Entry HOOK_0054 = new Entry(
             PILOT_SHIP_WINDOW_ID,
             Kind.SCOPED_WINDOW,
-            "com/fs/starfarer/combat/entities/Ship",
+            EngineSym.SHIP_CLASS.internalName(),
             "starfarer_obf.jar",
             List.of(new TargetMethod("advance", "(F)V",
-                    "9ea0cb5920af7b2ed1a3c0a83844a8d5958cf176a71667bfa5edd22ed65da0b5", null)),
+                    "bd93eb250306842a6a730b0e72c9a92d8aa246a6258c5cdc9da966c7fb816442", null)),
             "ii",
             "host row " + PILOT_SHIP_ENABLED_FILE_KEY + " (sysprop " + PILOT_SHIP_ENABLED_SYSPROP + " > env "
                     + PILOT_SHIP_ENABLED_ENV + " > the config file row > true); ON = the eager gate verifies this"

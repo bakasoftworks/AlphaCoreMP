@@ -184,6 +184,14 @@ final class FireLaneCoordinator {
     long ownlockFluxSkipsState;  // sub-lane 1: mutual-normal-state skips (vent/overload/unknown flags)
     long ownlockAmmoWrites;      // sub-lane 2: setAmmo writes / would-write
     long ownlockAmmoRowsLogged;  // sub-lane 2: ammo rows printed, against OWNLOCK_AMMO_ROW_MAX
+    // Server max ammo != local max ammo on a carried own mount (a hull built differently).
+    long ownlockAmmoMaxMismatch;             // mount-frames, whole session (the summary token)
+    private long ownlockMaxMismatchEpoch = Long.MIN_VALUE; // the own-hull epoch the streak below belongs to
+    private int ownlockMaxMismatchThisEpoch; // mount-frames on this own hull
+    private int ownlockMaxMismatchRows;      // loud rows printed, against OWNLOCK_MAX_MISMATCH_ROW_MAX
+    /** Mount-frames before the loud row: past the few stale frames a re-field leaves (old wire row, new hull). */
+    static final int OWNLOCK_MAX_MISMATCH_LOUD_AT = 60;
+    static final int OWNLOCK_MAX_MISMATCH_ROW_MAX = 4;
     long ownlockAmmoSkipsBusy;   // sub-lane 2: quiescence-gate skips (chargeup/firing/burst)
     long ownlockCdNudges;        // sub-lane 3: setRemainingCooldownTo nudges / would-nudge
     long ownlockCdSkipsFast;     // sub-lane 3: FAST_MIN skips (vulcan class)
@@ -689,6 +697,27 @@ final class FireLaneCoordinator {
                         float burstRem = weapon.getBurstFireTimeRemaining();
                         float cdRem = weapon.getCooldownRemaining();
                         int maxAmmo = weapon.getMaxAmmo(); // the law's read, reused by the ammo row
+                        // The law CLAMPS auth to the local max, which hid a hull built
+                        // differently on the two ends (server max 6, client 4) for a whole life. Counted every
+                        // fresh frame; LOUD once the mismatch has outlasted a hull-epoch edge's stale frames.
+                        if (mount.usesAmmo() && weapon.usesAmmo() && mount.maxAmmo() != maxAmmo) {
+                            ownlockAmmoMaxMismatch++;
+                            if (ownlockMaxMismatchEpoch != ownHullEpoch) {
+                                ownlockMaxMismatchEpoch = ownHullEpoch;
+                                ownlockMaxMismatchThisEpoch = 0;
+                            }
+                            if (++ownlockMaxMismatchThisEpoch == OWNLOCK_MAX_MISMATCH_LOUD_AT
+                                    && ownlockMaxMismatchRows < OWNLOCK_MAX_MISMATCH_ROW_MAX) {
+                                ownlockMaxMismatchRows++;
+                                PilotWatchLog.error("predict ownlock ammo MAX MISMATCH @tick=" + simTick + ": mount="
+                                        + idx + " server max=" + mount.maxAmmo() + " local max=" + maxAmmo
+                                        + " (server ammo=" + mount.ammo() + " local=" + weapon.getAmmo() + ") after "
+                                        + OWNLOCK_MAX_MISMATCH_LOUD_AT + " mismatched mount-frames on this own hull:"
+                                        + " the two ends BUILT this hull differently (captain / hullmods / variant)"
+                                        + " and the ammo law's clamp hides the difference -> a DESYNC to fix at the"
+                                        + " hull's construction, never here", null);
+                            }
+                        }
                         boolean firing = weapon.isFiring();
                         // owed: walked only where the hold can fire - a quiescent down divergence, the
                         // cooldown-EXPIRY frame included. The prune is the law's own QUIESCENCE test
@@ -1896,6 +1925,7 @@ final class FireLaneCoordinator {
                 + " ownlock_flux_skips_state=" + ownlockFluxSkipsState
                 + " ownlock_ammo_writes=" + ownlockAmmoWrites
                 + " predict_ownlock_ammo_rows=" + ownlockAmmoRowsLogged
+                + " ownlock_ammo_max_mismatch=" + ownlockAmmoMaxMismatch
                 + " ownlock_ammo_skips_busy=" + ownlockAmmoSkipsBusy
                 + " ownlock_cd_nudges=" + ownlockCdNudges
                 + " ownlock_cd_skips_implausible=" + ownlockCdSkipsImplausible

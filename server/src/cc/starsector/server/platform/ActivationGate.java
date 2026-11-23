@@ -1,5 +1,6 @@
 package cc.starsector.server.platform;
 
+import cc.starsector.server.names.EngineSymPlatformGate;
 import java.io.InputStream;
 import java.io.PrintStream;
 import java.lang.reflect.Field;
@@ -58,32 +59,62 @@ public final class ActivationGate {
     /** The ONE stdout line a VALID decision prints (once per JVM) — no version, no hash, no value. */
     public static final String OK_LINE = "key-gate ok";
 
-    // ---- PINNED 0.98a-RC8 (the drift guard; a new game version = a new server build). ----
+    // ---- PINNED 0.98.5a-RC8 (the drift guard; a new game version = a new server build). ----
 
     /** The game's compiled {@code com.fs.starfarer.Version.versionOnly} constant this build supports. */
-    public static final String SUPPORTED_GAME_VERSION = "0.98a-RC8";
+    public static final String SUPPORTED_GAME_VERSION = "0.98.5a-RC8";
     /**
-     * SHA-256 (lowercase hex) of the launcher-settings class file as the
-     * pinned install ships it inside the game's core engine jar (that jar's own
-     * SHA-256 = the pin {@code 5DD222B9...4CC8}; 9457 bytes).
+     * SHA-256 (lowercase hex) of the launcher-settings class file (the engine-name table's launcher-class row; 9289
+     * bytes) as the pinned install ships it inside the game's core engine jar.
+     *
      * Computed by reading that jar entry and hashing its bytes (PowerShell:
      * {@code [IO.Compression.ZipFile]::OpenRead(jar).GetEntry(<entry>).Open()} into
      * {@code SHA256.ComputeHash}; any {@code unzip -p <jar> <entry> | sha256sum} gives the same).
      * {@code ActivationGateEngineSmoke} row E2b recomputes it through {@link EngineProbe} on the install.
+     *
      */
     public static final String LAUNCHER_CHECK_CLASS_SHA256 =
-            "f6ef064a76d1b08fddcbb095caab14a2b71997e646e8c258e4a983e961fa546e";
-    /** The game's launcher-settings class holding the activation check. */
-    public static final String LAUNCHER_CHECK_CLASS = "com.fs.starfarer.launcher.ooOO";
-    /** The same class as a class-path resource (hashed without initializing the class). */
-    public static final String LAUNCHER_CHECK_RESOURCE = "com/fs/starfarer/launcher/ooOO.class";
-    /** Static singleton accessor, returning the launcher-settings class. */
-    public static final String SINGLETON_ACCESSOR_NAME = (char) 0xD3 + "00000";
-    /** Instance activation check, descriptor {@code ()Z}. */
-    public static final String ACTIVATION_CHECK_NAME = (char) 0xD6 + "00000";
-    /** The game's version holder (a non-renamed class) and its compiled version constant. */
-    public static final String VERSION_CLASS = "com.fs.starfarer.Version";
-    public static final String VERSION_FIELD = "versionOnly";
+            "ac1c502df12bcdf4e8c1d79853436ce64a622dde762298dbbb81e6e7f562ad84";
+    /**
+     * SHA-256 (lowercase hex) of the SAME launcher-settings class as the game's LINUX download of
+     * {@link #SUPPORTED_GAME_VERSION} ships it inside its own core engine jar, under
+     * {@link #LAUNCHER_CHECK_CLASS_ENTRY_LINUX} (that download keeps the jar at its root, beside the launchers; 10353
+     * bytes - another engine build of the same version, so its bytes differ from
+     * {@link #LAUNCHER_CHECK_CLASS_SHA256}'s). NOT a pin of this gate: {@link #decide} compares only the Windows pin, on
+     * every host, because the serve runs the Windows game files on a Linux host too. Its one reader is the host-side
+     * join step on a Linux host, which judges the host's own Linux download against it before swapping a player kit
+     * in. Computed the same way as the Windows pin, from the Linux download's jar.
+     *
+     */
+    public static final String LAUNCHER_CHECK_CLASS_SHA256_LINUX =
+            "54f539c97e1a3ddda907bf52ca28649a4fe08e915034afc0b3a52ef774a905ba";
+    /**
+     * The jar entry name under which the game's LINUX download of {@link #SUPPORTED_GAME_VERSION} ships the
+     * launcher-settings class whose bytes {@link #LAUNCHER_CHECK_CLASS_SHA256_LINUX} pins. WHY its own constant: that
+     * download is another engine build of the same version, naming its classes on its own, so it may name the class
+     * otherwise than the Windows files do (at this build it does: the Windows files name it {@code Object}, the table's
+     * launcher-class row; the Linux download names it {@code oo} followed by 254 capital {@code O}s, a 256-char simple
+     * name), and the engine-name table holds the Windows files' names only. It moves
+     * WITH {@link #LAUNCHER_CHECK_CLASS_SHA256_LINUX}: a new game build re-pins the two together. Read from the Linux
+     * download's own core jar, paired with the Windows class by its members, strings and instruction sequence: this
+     * entry's bytes hash to that sha. Same one reader as that sha.
+     *
+     * <p>WRITTEN AS COUNTED PIECES, never one literal: the entry is 288 chars (the 28-char package-and-{@code oo} head,
+     * 254 {@code O}s, the 6-char {@code .class} tail), too long to type or read whole without a miscount. Each quoted
+     * {@code O} piece below is 10 chars, five pieces to a line, five lines (250), then one 4-char piece (254). A
+     * {@code +} of string literals is a compile-time constant: javac folds it into ONE string here and inlines that
+     * string into its reader, exactly as a single literal would. {@code ActivationGateContractRows} row G12 pins the
+     * length and the shape; the folded value, read back from the compiled class, equals the Linux jar's own entry name
+     * byte for byte (measured at the pin).
+     *
+     */
+    public static final String LAUNCHER_CHECK_CLASS_ENTRY_LINUX = "com/fs/starfarer/launcher/oo"
+            + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO"
+            + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO"
+            + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO"
+            + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO"
+            + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO" + "OOOOOOOOOO"
+            + "OOOO" + ".class";
     /** The prefs node the engine's check reads; on Windows {@code HKCU\Software\JavaSoft\Prefs\com\fs\starfarer}. */
     public static final String KEY_NODE_PATH = "/com/fs/starfarer";
     /** The JDK's own platform prefs stores (Windows registry, Linux/BSD file store, macOS plist). */
@@ -214,7 +245,9 @@ public final class ActivationGate {
 
     private static Decision drift(String found) {
         // The last sentence: the game's Linux download carries a DIFFERENT engine build of the
-        // same version (the pinned class is absent from its engine jar), so a Linux host lands here with the right version.
+        // same version (its engine jar names that class LAUNCHER_CHECK_CLASS_ENTRY_LINUX and its bytes hash to
+        // LAUNCHER_CHECK_CLASS_SHA256_LINUX, so the pinned entry is absent or off the pin), so a Linux host lands here
+        // with the right version.
         // The pointer names the package README.md's "Linux (x86-64)" section.
         return new Decision(Outcome.DRIFT, "This server build supports Starsector " + SUPPORTED_GAME_VERSION
                 + " and cannot check the installed game (" + found + ")."
@@ -288,7 +321,8 @@ public final class ActivationGate {
      * @throws NoSuchMethodException on any other shape (= DRIFT)
      */
     public static CheckMembers resolveCheckMembers(Class<?> launcherCheck) throws NoSuchMethodException {
-        return resolveCheckMembers(launcherCheck, SINGLETON_ACCESSOR_NAME, ACTIVATION_CHECK_NAME);
+        return resolveCheckMembers(launcherCheck, EngineSymPlatformGate.PLATFORM_GATE_LAUNCHER_SINGLETON_METHOD.name(),
+                EngineSymPlatformGate.PLATFORM_GATE_ACTIVATION_CHECK_METHOD.name());
     }
 
     /**
@@ -343,8 +377,9 @@ public final class ActivationGate {
         /** Reads the compiled constant (initializes only the light version holder class). */
         @Override
         public String gameVersion() throws ReflectiveOperationException {
-            Class<?> version = Class.forName(VERSION_CLASS, false, loader);
-            Field field = version.getDeclaredField(VERSION_FIELD);
+            Class<?> version = Class.forName(
+                    EngineSymPlatformGate.PLATFORM_GATE_VERSION_FIELD.className(), false, loader);
+            Field field = version.getDeclaredField(EngineSymPlatformGate.PLATFORM_GATE_VERSION_FIELD.name());
             int mods = field.getModifiers();
             if (!Modifier.isPublic(mods) || !Modifier.isStatic(mods) || field.getType() != String.class) {
                 throw new NoSuchFieldException("version field does not match the pinned shape");
@@ -356,7 +391,8 @@ public final class ActivationGate {
         /** Hashes the class FILE through the loader (no class init); bounded read. */
         @Override
         public String launcherCheckClassSha256() throws Exception {
-            try (InputStream in = loader.getResourceAsStream(LAUNCHER_CHECK_RESOURCE)) {
+            try (InputStream in = loader.getResourceAsStream(
+                    EngineSymPlatformGate.PLATFORM_GATE_LAUNCHER_CLASS.classEntry())) {
                 if (in == null) {
                     throw new ClassNotFoundException("launcher check class file not on the class path");
                 }
@@ -387,7 +423,8 @@ public final class ActivationGate {
          */
         @Override
         public boolean engineSaysActivated() throws ReflectiveOperationException {
-            Class<?> launcherCheck = Class.forName(LAUNCHER_CHECK_CLASS, false, loader);
+            Class<?> launcherCheck = Class.forName(
+                    EngineSymPlatformGate.PLATFORM_GATE_LAUNCHER_CLASS.className(), false, loader);
             CheckMembers members = resolveCheckMembers(launcherCheck);
             Object launcher = members.singletonAccessor().invoke(null);
             if (!launcherCheck.isInstance(launcher)) {

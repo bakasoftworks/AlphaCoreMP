@@ -1312,7 +1312,7 @@ final class MineBombEndFxLane {
      *  witness row carried no {@code cell=} (the grid lookup found nothing there), so the engine
      *  dealt nothing and the player saw no numbers for that hit. */
     static Vector2f impactPoint(ShipAPI victim, Vector2f loc) {
-        Vector2f shieldHit = OwnDetLane.shieldContactOrNull(victim, loc, CONV_HIT_SLACK_SU);
+        Vector2f shieldHit = directShieldContact(victim, loc);
         if (shieldHit != null) {
             return shieldHit;
         }
@@ -1321,6 +1321,15 @@ final class MineBombEndFxLane {
             return new Vector2f(b[0], b[1]);
         }
         return surfaceToward(victim, loc);
+    }
+
+    /** The raised-shield contact of a direct missile-body hit at {@code loc}
+     *  within {@link #CONV_HIT_SLACK_SU} = the radius-weighted law, never the explosion law: the engine picks
+     *  the nearest-ring point only for a DamagingExplosion and a body hit is none.
+     * The one site of that flag for {@link #impactPoint} and the
+     *  {@code SourcedMissileEndLane} shield-absorbed guards; null = no shield contact. */
+    static Vector2f directShieldContact(ShipAPI victim, Vector2f loc) {
+        return OwnDetLane.shieldContactOrNull(victim, loc, CONV_HIT_SLACK_SU, false);
     }
 
     /** Where FX meets the body: the point on the facing edge ({@link #edgeToward}) along

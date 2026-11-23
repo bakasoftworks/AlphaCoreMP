@@ -1,5 +1,7 @@
 package cc.starsector.client.net;
 
+import cc.starsector.client.PilotWatchLog;
+
 /**
  * One ship entity's authoritative pose, decoded from the server's
  * {@code AWSS} world-snapshot wire frame.
@@ -176,8 +178,8 @@ public final class ServerEntityPose {
      * or a v14 frame with no record for this ship — the tier is SPARSE per-entity like the
      * cloak tier: absence means "unchanged", never "CR zero"). The real value is the
      * server's {@code ShipCrSnapshot.cr()} — the engine's {@code getCurrentCR()} in
-     * {@code [0,1]} (lenient upper bound), always {@code >= 0}, so {@link #hasCr()} gates
-     * on the sign. When this sentinel is set the two companion clocks are meaningless
+     * {@code [0,1]}, held there by {@link #withShipCr} ({@link WireScalarLaw}), so
+     * {@link #hasCr()} gates on the sign. When this sentinel is set the two companion clocks are meaningless
      * ({@link #crDepSec()} / {@link #crPeakSec()} left {@code 0}); gate on {@link #hasCr()}
      * first. Schema v14.
      */
@@ -1026,9 +1028,10 @@ public final class ServerEntityPose {
 
     /**
      * This ship's authoritative combat-readiness fraction (the server's schema-v14
-     * {@code ShipCrSnapshot.cr()} — the engine's {@code getCurrentCR()} in {@code [0,1]},
-     * lenient upper bound), or {@link #UNKNOWN_CR} when the frame carried no CR
-     * record for this entity (a pre-v14 server / a sparse-absent ship). The
+     * {@code ShipCrSnapshot.cr()} — the engine's {@code getCurrentCR()} in {@code [0,1]};
+     * a finite wire CR above 1 is held to 1 at {@link #withShipCr}), or
+     * {@link #UNKNOWN_CR} when the frame carried no CR record for this entity (a pre-v14
+     * server / a sparse-absent ship / a record the attach dropped). The
      * {@code cc.predict.ownCr} lane pins the local engine's {@code setCurrentCR} from it —
      * the local CR/PPT clock freezes when the local engine scans a different roster than
      * the authoritative one.
@@ -1050,14 +1053,22 @@ public final class ServerEntityPose {
 
     /**
      * Authoritative effective peak-readiness duration, seconds — diagnostic-grade context
-     * (the HUD derives peak from LOCAL stats; never-lose-CR hulls carry effective peaks
-     * ≥ 1e5 s by design). Meaningless without {@link #hasCr()}.
+     * (the HUD derives peak from LOCAL stats; a never-lose-CR hull loads a 9,999,999 s peak,
+     * sent unclamped, and peak bonuses raise it). Held to
+     * [0, {@link WireScalarLaw#MAX_CR_PEAK_SEC}] at {@link #withShipCr}. Meaningless without
+     * {@link #hasCr()}.
      */
     public float crPeakSec() {
         return crPeakSec;
     }
 
-    /** True when this pose carries the authoritative schema-v14 CR clock tier (see {@link #cr()}). */
+    /**
+     * True when this pose carries the authoritative schema-v14 CR clock tier (see {@link #cr()}).
+     * Both pose decoders attach a {@code cr} that is {@link #UNKNOWN_CR} or in [0, 1] with
+     * finite clocks: the AWSS reader through {@link #withShipCr} (a non-finite or negative
+     * record is dropped, a finite value held to its bound), the AWSD keyframe from a u8
+     * fraction and u16 half-seconds. A pose built by hand through {@link Builder} is not checked.
+     */
     public boolean hasCr() {
         return cr >= 0f;
     }
@@ -1149,8 +1160,19 @@ public final class ServerEntityPose {
      * Return a copy of this pose with the given authoritative flux — what the schema-v3+ decode
      * path calls after it has read the flux section and matched this entity. All other fields
      * (including any {@code fleetSide} already attached) are unchanged.
+     *
+     * <p>Every overload of this family drops a record
+     * whose flux floats are not all finite ({@link WireScalarLaw#fluxRecordFault}): it returns
+     * THIS pose unchanged (the flux tier stays as it was, and the status flags and shield facing
+     * of the same record drop with it), counted in {@link #fluxRecordsDropped()}. The test sits
+     * in the family rather than at the reader because the overloads do not funnel to one, and
+     * every caller that attaches a wire flux record passes through one of them. A finite value
+     * passes unchanged.
      */
     public ServerEntityPose withFlux(float currFlux, float maxFlux, float fluxLevel) {
+        if (fluxDropped(currFlux, maxFlux, fluxLevel, 0f)) {
+            return this;
+        }
         return toBuilder().currFlux(currFlux).maxFlux(maxFlux).fluxLevel(fluxLevel).build();
     }
 
@@ -1161,6 +1183,9 @@ public final class ServerEntityPose {
      */
     public ServerEntityPose withFlux(
             float currFlux, float maxFlux, float fluxLevel, float hardFlux, int fluxFlags) {
+        if (fluxDropped(currFlux, maxFlux, fluxLevel, hardFlux)) {
+            return this;
+        }
         return toBuilder().currFlux(currFlux).maxFlux(maxFlux).fluxLevel(fluxLevel)
                 .hardFlux(hardFlux).fluxFlags(fluxFlags).build();
     }
@@ -1175,8 +1200,30 @@ public final class ServerEntityPose {
     public ServerEntityPose withFlux(
             float currFlux, float maxFlux, float fluxLevel, float hardFlux, int fluxFlags,
             int shieldFacingU8) {
+        if (fluxDropped(currFlux, maxFlux, fluxLevel, hardFlux)) {
+            return this;
+        }
         return toBuilder().currFlux(currFlux).maxFlux(maxFlux).fluxLevel(fluxLevel)
                 .hardFlux(hardFlux).fluxFlags(fluxFlags).shieldFacingU8(shieldFacingU8).build();
+    }
+
+    /**
+     * True (counted) when the flux floats fail
+     * {@link WireScalarLaw#fluxRecordFault}; the first such drop this JVM writes ONE error row
+     * naming the field, later drops are counted silently. The three-float overload passes a
+     * finite 0 for the hard flux it does not carry.
+     */
+    private static boolean fluxDropped(float currFlux, float maxFlux, float fluxLevel, float hardFlux) {
+        String fault = WireScalarLaw.fluxRecordFault(currFlux, maxFlux, fluxLevel, hardFlux);
+        if (fault == null) {
+            return false;
+        }
+        if (++fluxRecordsDropped == 1) {
+            PilotWatchLog.error("host scalar law: a ship flux record was dropped, field " + fault
+                    + " not finite (dropped=1; the record reads as absent; later drops are counted"
+                    + " silently)", null);
+        }
+        return true;
     }
 
     /**
@@ -1239,9 +1286,43 @@ public final class ServerEntityPose {
      * schema-v14 decode path calls after it has read the ship-CR section (appended after
      * the phase-cloak section) and matched this entity. All other fields are
      * unchanged.
+     *
+     * <p>The sole attach of the three CR fields from a
+     * host frame, so the host scalar law sits here ({@link WireScalarLaw}): a record whose CR is
+     * not finite or below 0, or whose clock is not finite, is DROPPED (this pose comes back
+     * unchanged, the sparse tier reads it as absent), counted in {@link #crRecordsDropped()}; a
+     * finite CR above 1 is held to 1, the deployed clock to [0, {@link WireScalarLaw#MAX_CR_DEP_SEC}]
+     * and the peak to [0, {@link WireScalarLaw#MAX_CR_PEAK_SEC}]. Never a throw: a refused frame
+     * ends the session.
      */
     public ServerEntityPose withShipCr(float cr, float crDepSec, float crPeakSec) {
-        return toBuilder().cr(cr).crDepSec(crDepSec).crPeakSec(crPeakSec).build();
+        String fault = WireScalarLaw.crRecordFault(cr, crDepSec, crPeakSec);
+        if (fault != null) {
+            if (++crRecordsDropped == 1) {
+                PilotWatchLog.error("host scalar law: a ship CR record was dropped, field " + fault
+                        + " not finite or below zero (dropped=1; the record reads as absent; later drops"
+                        + " are counted silently)", null);
+            }
+            return this;
+        }
+        return toBuilder().cr(WireScalarLaw.boundedCr(cr))
+                .crDepSec(WireScalarLaw.boundedCrDepSec(crDepSec))
+                .crPeakSec(WireScalarLaw.boundedCrPeakSec(crPeakSec)).build();
+    }
+
+    // The drop census of the host scalar law. Single
+    // writer (the snapshot decode thread); volatile for the other threads' reads.
+    private static volatile long crRecordsDropped;
+    private static volatile long fluxRecordsDropped;
+
+    /** Host CR records dropped by {@link #withShipCr} this JVM (a lawful match keeps it 0). */
+    public static long crRecordsDropped() {
+        return crRecordsDropped;
+    }
+
+    /** Host flux records dropped by the {@link #withFlux(float, float, float)} family this JVM (a lawful match keeps it 0). */
+    public static long fluxRecordsDropped() {
+        return fluxRecordsDropped;
     }
 
     /**

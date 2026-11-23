@@ -1,6 +1,7 @@
 package cc.starsector.client;
 
 import cc.starsector.client.net.ClientGameplayEdgeEvent;
+import cc.starsector.client.net.WireWorldLaw;
 import com.fs.starfarer.api.SoundAPI;
 import com.fs.starfarer.api.combat.CollisionClass;
 import com.fs.starfarer.api.combat.CombatEngineAPI;
@@ -140,6 +141,15 @@ final class AuthoritativePresenter {
     // replica injected until v8, now measured per present.
     private int foeFireMuzzleApplied;         // predict_event_rebase_foe_fire_muzzle_applied
     private float foeFireMuzzleXcheckMaxAbsU; // predict_event_rebase_foe_fire_muzzle_xcheck_max_abs_u
+    /**
+     * Presents whose USABLE wire muzzle did not steer the spawn
+     * ({@link #muzzleSpawnPoint}: farther than the drift bound from the local fire point, or no local point), so
+     * the shot spawned at the local fire point; split by role. The xcheck meter above keeps measuring applied
+     * muzzles only. {@link #muzzleDriftWarned} = the JVM's one WARN row for the first of them.
+     */
+    private int foeFireMuzzleDriftFallback;   // predict_event_rebase_foe_fire_muzzle_drift_fallback
+    private int ownAdoptMuzzleDriftFallback;  // predict_event_rebase_own_adopt_muzzle_drift_fallback
+    private static boolean muzzleDriftWarned;
     // OWN-role adopted presentations share the spawn core below
     // but keep their own capped log lines — the foe counters above stay foe-only (frozen rule:
     // "foe counters/log untouched"; the plugin owns adopt_count/adopt_skip_unresolved off the
@@ -422,6 +432,51 @@ final class AuthoritativePresenter {
         return foeFireMuzzleXcheckMaxAbsU;
     }
 
+    int foeFireMuzzleDriftFallback() {
+        return foeFireMuzzleDriftFallback;
+    }
+
+    int ownAdoptMuzzleDriftFallback() {
+        return ownAdoptMuzzleDriftFallback;
+    }
+
+    /**
+     * The presented shot's spawn point: a NEW vector at the wire muzzle
+     * when the muzzle is usable, the local fire point is known and the two sit within
+     * {@link WireWorldLaw#MAX_MUZZLE_DRIFT_SU} ({@link WireWorldLaw#muzzleDriftOk}); else {@code localPoint}
+     * itself, the same instance (the pre-v8 path, byte-identical). WHY: the host chooses the muzzle, and a vanilla
+     * fire script on the presented shot arcs from the shooter's hull to wherever the shot was born. Pure: the
+     * caller tells the two answers apart by identity and counts a usable muzzle that did not steer.
+     */
+    static Vector2f muzzleSpawnPoint(boolean muzzleUsable, Vector2f localPoint, float muzzleX, float muzzleY) {
+        if (muzzleUsable && localPoint != null
+                && WireWorldLaw.muzzleDriftOk(localPoint.x, localPoint.y, muzzleX, muzzleY)) {
+            return new Vector2f(muzzleX, muzzleY);
+        }
+        return localPoint;
+    }
+
+    /**
+     * Counts one usable wire muzzle the drift bound sent to the local fire
+     * point, by role; the JVM's first writes ONE neutral WARN row (a lawful match can write it: a stall leaves the
+     * local body, the bound's anchor, stale), later ones are counted silently.
+     */
+    private void noteMuzzleDriftFallback(boolean ownAdopt) {
+        if (ownAdopt) {
+            ownAdoptMuzzleDriftFallback++;
+        } else {
+            foeFireMuzzleDriftFallback++;
+        }
+        if (!muzzleDriftWarned) {
+            muzzleDriftWarned = true;
+            PilotWatchLog.warn("predict " + (ownAdopt ? "own-adopt" : "foe-fire") + " present: a shot's wire muzzle"
+                    + " sat more than " + WireWorldLaw.MAX_MUZZLE_DRIFT_SU + " su from the shooter's local fire point"
+                    + " (or the local point was unknown), so the shot spawned at the local fire point; the event still"
+                    + " presented whole (a host sending muzzles far from their shooters, or a stall that left the"
+                    + " local body stale in a lawful match; later ones are counted silently)");
+        }
+    }
+
     int foeFireBearingApplied() {
         return foeFireBearingApplied;
     }
@@ -531,13 +586,19 @@ final class AuthoritativePresenter {
                     // (composed, wire-bearing, ray — the point is factory input on all three,
                     // so no class gate): the local point re-derives the muzzle from a lagged
                     // shooter replica, the wire pair is the position the server's projectile
-                    // was actually born at. NaN/implausible pair ⇒ spawnPoint == point, the
+                    // was actually born at. NaN/implausible/too-far pair ⇒ spawnPoint == point, the
                     // pre-v8 path byte-identical. Muzzle FX below deliberately KEEPS the local
                     // point (the flash is the weapon's, not the bolt's).
-                    boolean muzzleUsed = event.muzzleUsable();
-                    Vector2f spawnPoint = muzzleUsed
-                            ? new Vector2f(event.muzzleX(), event.muzzleY()) : point;
-                    float muzzleXcheckU = muzzleUsed && point != null
+                    // The muzzle steers only within the drift
+                    // bound of the local fire point (muzzleSpawnPoint); past it the shot spawns at the
+                    // local point, the event is never refused, and the fallback is counted by role.
+                    boolean muzzleUsable = event.muzzleUsable();
+                    Vector2f spawnPoint = muzzleSpawnPoint(muzzleUsable, point, event.muzzleX(), event.muzzleY());
+                    boolean muzzleUsed = spawnPoint != point;
+                    if (muzzleUsable && !muzzleUsed) {
+                        noteMuzzleDriftFallback(ownAdopt);
+                    }
+                    float muzzleXcheckU = muzzleUsed
                             ? (float) Math.hypot(point.x - event.muzzleX(),
                                     point.y - event.muzzleY())
                             : Float.NaN;

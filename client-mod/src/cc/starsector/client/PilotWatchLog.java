@@ -22,7 +22,8 @@ import org.apache.log4j.Logger;
  * {@link CcClientModPlugin#onApplicationLoad()}) so the logger and its sidelog exist before the first
  * combat row, and every method is wrapped so a logging failure can NEVER break the watch.
  * If the log4j call ever fails it falls back to {@code System.out}/{@code System.err} (which Starsector
- * redirects into the same log), so a message is never silently lost.
+ * redirects into the same log), so a message is never silently lost. The one exception is a row the
+ * write gate ({@link LogRowGateLaw}) refuses: it is dropped and COUNTED, never re-routed.
  *
  * <p><b>Log divorce.</b> This logger no longer tees into the
  * game's shared {@code starsector.log}: {@link #attachSidelog(Logger)} attaches a sidelog appender on
@@ -116,7 +117,7 @@ public final class PilotWatchLog {
                 // fails isEnabled before any appender traversal: no rows, no file, no log4j
                 // no-appender warning. The logger object stays non-null so call sites never
                 // take the System.out fallback (which the game also tees into starsector.log).
-                logger.info(prefix + "sidelog DISABLED (player choice; cc.watch.sideLog=none)");
+                emit(logger, Level.INFO, "sidelog DISABLED (player choice; cc.watch.sideLog=none)", null, true);
                 logger.setLevel(Level.OFF);
                 return logger;
             }
@@ -138,7 +139,8 @@ public final class PilotWatchLog {
      *
      * <ul>
      * <li><b>Explicit</b> — {@code -Dcc.watch.sideLog} (launcher-composed, per-window unique) or
-     * {@code CC_WATCH_SIDELOG} env: a PLAIN {@code FileAppender} (unbounded) — watch archives need
+     * {@code CC_WATCH_SIDELOG} env: a PLAIN {@code FileAppender} (unbounded; {@link CountingFileAppender}
+     * adds only the write gate's slot release and a counted catch) — watch archives need
      * every line and the run tooling owns the file lifecycle. No game-side roll can touch it (the
      * ~10 MB starsector.log roll destroyed early one-shots + the owner's F9 markers, two runs
      * running — the trigger). With {@value SidelogCapLaw#EXPLICIT_CAP_ENV} also set (a
@@ -201,11 +203,13 @@ public final class PilotWatchLog {
                 explicitCap = SidelogCapLaw.explicitCapChars(System.getenv(SidelogCapLaw.EXPLICIT_CAP_ENV));
                 if (explicitCap > 0L) {
                     CappedSidelogAppender capped = new CappedSidelogAppender(layout, path, true, explicitCap,
-                            SidelogCapLaw.HEAD_MAX_CHARS, prefix);
+                            SidelogCapLaw.HEAD_MAX_CHARS, prefix, LogRowGateLaw.BOOT);
                     capped.setMaximumFileSize(Long.MAX_VALUE);
                     sidelog = capped;
                 } else {
-                    sidelog = new org.apache.log4j.FileAppender(layout, path, true);
+                    // log4j's plain FileAppender plus the ring
+                    // gate's slot back in a finally and a counted catch (CountingFileAppender).
+                    sidelog = new CountingFileAppender(layout, path, true, LogRowGateLaw.BOOT);
                 }
             } else {
                 // Pure string path composition — NO java.io.File: loader B
@@ -227,7 +231,7 @@ public final class PilotWatchLog {
                 String logsDir = System.getProperty("com.fs.starfarer.settings.paths.logs", ".");
                 path = logsDir + "/cc-client.log";
                 CappedSidelogAppender rolling = new CappedSidelogAppender(layout, path, true,
-                        SidelogCapLaw.CAP_CHARS, SidelogCapLaw.HEAD_MAX_CHARS, prefix);
+                        SidelogCapLaw.CAP_CHARS, SidelogCapLaw.HEAD_MAX_CHARS, prefix, LogRowGateLaw.BOOT);
                 rolling.setMaximumFileSize(Long.MAX_VALUE);
                 rolling.setMaxBackupIndex(1);
                 rolling.rollOver();
@@ -239,9 +243,11 @@ public final class PilotWatchLog {
             // run on every LOGGING thread (dominantly the render thread). The flush measured
             // as page-cache-only (NOT the stutter mechanism); this removes the variable entirely:
             // a writeback-throttled write() can never stall a frame. log4j 1.2.9's AsyncAppender
-            // has NO setBlocking (1.2.16+), so a FULL ring blocks the caller — the buffer is sized
-            // far above any real backlog (~127 rows/s vs a dispatcher that drains continuously;
-            // its Dispatcher thread is a daemon, spawned HERE at application load; it also runs the
+            // has NO setBlocking (1.2.16+), so a FULL ring blocks the caller — so the ring is never
+            // allowed to fill: emit() reserves an in-flight slot per row and drops (counted) past
+            // LogRowGateLaw.RING_SOFT, the file appender gives the slot back after the Dispatcher's pop.
+            //The dispatcher drains continuously
+            // (its Dispatcher thread is a daemon, spawned HERE at application load; it also runs the
             // capped lanes' size check + in-place restart, off the render thread). Tail safety: {@link #closeSidelog()} drains the ring at the
             // cc-quit-bye hook; disclosed residue — a hard JVM abort loses the in-ring rows
             // (normally ~0; the pre-async lane lost ≤1 row on the same abort).
@@ -252,23 +258,20 @@ public final class PilotWatchLog {
             logger.addAppender(async);
             ASYNC_SIDELOG = async;
             // Logged BEFORE the caller cuts additivity: the ONE breadcrumb starsector.log keeps,
-            // pointing anyone reading it at where this mod's rows went.
-            logger.info(prefix + "sidelog OPEN " + path + (!explicit ? " (default)"
-                    : explicitCap > 0L ? " (cap_chars=" + explicitCap + ")" : ""));
+            // pointing anyone reading it at where this mod's rows went. Both attach rows are PRIORITY
+            // emits on init's LOCAL logger (LOG is still null here).
+            emit(logger, Level.INFO, "sidelog OPEN " + path + (!explicit ? " (default)"
+                    : explicitCap > 0L ? " (cap_chars=" + explicitCap + ")" : ""), null, true);
             // P6 debrief pre-work (sync-campaign-tooling.md): ONE wall-clock anchor row.
             // Every row's epoch derives exactly as rowEpoch = row.%r + (anchorEpoch - anchor.%r)
             // (log4j %r and event timestamps share currentTimeMillis), so cross-artifact SECOND
             // windows (JFR, server epochMs rows) are cuttable while the ~26 sidelog consumers
             // keep their byte-identical "%r [thread]" line prefix at zero per-row cost.
-            logger.info(prefix + "sidelog-wallclock-anchor epoch_ms=" + System.currentTimeMillis());
+            emit(logger, Level.INFO, "sidelog-wallclock-anchor epoch_ms=" + System.currentTimeMillis(), null, true);
             return true;
         } catch (Throwable t) {
-            try {
-                logger.info(prefix + "sidelog FAILED (rows stay in starsector.log) path=" + path
-                        + " : " + t);
-            } catch (Throwable ignore) {
-                // best-effort
-            }
+            emit(logger, Level.INFO, "sidelog FAILED (rows stay in starsector.log) path=" + path + " : " + t,
+                    null, true); // emit never throws
             return false;
         }
     }
@@ -282,6 +285,11 @@ public final class PilotWatchLog {
      * shutdown hook — after every bye row. Detach-first so any post-close row is dropped
      * silently (additivity is already cut) instead of tripping log4j's closed-appender warning.
      * Idempotent, fail-soft, never throws.
+     *
+     * <p>The write gate's counts print HERE, as the sidelog's
+     * last row, once a boot and even when all three are 0: {@code log-gate summary global_refused=<n>
+     * ring_dropped=<n> ring_dropped_priority=<n>}. PRIORITY and exempt from the bucket (a drained bucket
+     * must never hide its own evidence); emitted before the detach so the drain writes it.
      */
     public static void closeSidelog() {
         try {
@@ -289,6 +297,7 @@ public final class PilotWatchLog {
             if (async == null) {
                 return;
             }
+            emit(LOG, Level.INFO, LogRowGateLaw.BOOT.summaryRow(), null, true);
             ASYNC_SIDELOG = null;
             if (LOG != null) {
                 LOG.removeAppender(async);
@@ -343,58 +352,78 @@ public final class PilotWatchLog {
     }
 
     public static void info(String msg) {
-        String row = render(msg, null);
-        try {
-            if (LOG != null) {
-                LOG.info(row);
-                return;
-            }
-        } catch (Throwable ignore) {
-            // fall through to the stream fallback below
-        }
-        try {
-            System.out.println(row);
-        } catch (Throwable ignore) {
-            // best-effort
-        }
+        emit(LOG, Level.INFO, msg, null, false);
     }
 
     /** {@link #info} at WARN level (same prefix, same stream
      *  fallback) — for a once-per-round alert line (the replay FP WARN), never a per-hit row. */
     public static void warn(String msg) {
-        String row = render(msg, null);
-        try {
-            if (LOG != null) {
-                LOG.warn(row);
-                return;
-            }
-        } catch (Throwable ignore) {
-            // fall through to the stream fallback
-        }
-        try {
-            System.out.println(row); // guarded like info's: a dead stream never reaches
-        } catch (Throwable ignore) {          // the caller's failSoft (the foe cell lane would go inert)
-            // swallowed: an alert line is never worth the lane
-        }
+        emit(LOG, Level.WARN, msg, null, false);
     }
 
+    /** The row at ERROR; its stream fallback is {@code System.err}. */
     public static void error(String msg, Throwable t) {
-        String body = render(msg, t);
-        boolean logged = false;
+        emit(LOG, Level.ERROR, msg, t, false);
+    }
+
+    /**
+     * The ONE write path to the sidelog logger: {@link #info},
+     * {@link #warn}, {@link #error}, the attach rows (on init's LOCAL logger: {@link #LOG} is still null
+     * inside init) and the quit summary row. In order:
+     * <ol>
+     * <li>a logger disabled at {@code level} (the player's {@code none}) returns at once: no charge, no line;</li>
+     * <li>a non-PRIORITY row is charged its exact {@code msg.length()} to {@link LogRowGateLaw}'s bucket BEFORE
+     * it is rendered; refused = dropped and counted, never rendered, never sent to a stream (a stream
+     * fallback would move a flood into starsector.log); a PRIORITY row skips the bucket;</li>
+     * <li>while the async sidelog is live the row reserves an in-flight ring slot (limit
+     * {@link LogRowGateLaw#RING_SOFT}, PRIORITY {@link LogRowGateLaw#RING_HARD}); over it = dropped and counted;
+     * a logger call that throws gives the slot back;</li>
+     * <li>render, then log. An admitted row with no logger, or whose logger threw, keeps the stream fallback
+     * ({@code System.err} for ERROR, else {@code System.out}).</li>
+     * </ol>
+     * Frame-loop cost: one clock read, one CAS and one increment beside what the logger
+     * call already cost; it never blocks, sleeps or allocates beyond the render. A REFUSED row costs one clock
+     * read, one volatile read and one counter increment (a ring drop: the bucket's CAS plus an increment, a
+     * decrement and a counter); neither renders. Never throws.
+     */
+    private static void emit(Logger logger, Level level, String msg, Throwable t, boolean priority) {
+        emitThrough(LogRowGateLaw.BOOT, logger, level, msg, t, priority, ASYNC_SIDELOG != null);
+    }
+
+    /** {@link #emit} on an explicit gate and ring flag: the selftest's seam (a fresh gate on an injected
+     *  clock, its own logger); product code calls {@link #emit}. */
+    static void emitThrough(LogRowGateLaw gate, Logger logger, Level level, String msg, Throwable t,
+            boolean priority, boolean ring) {
         try {
-            if (LOG != null) {
-                LOG.error(body);
-                logged = true;
+            if (logger != null && !logger.isEnabledFor(level)) {
+                return;
             }
-        } catch (Throwable ignore) {
-            // fall through to the stream fallback below
-        }
-        if (!logged) {
-            try {
-                System.err.println(body);
-            } catch (Throwable ignore) {
-                // best-effort
+            String text = msg == null ? "null" : msg;
+            if (!priority && !gate.admitGlobal(text.length())) {
+                return;
             }
+            boolean reserved = false;
+            if (logger != null && ring) {
+                if (!gate.reserveRing(priority)) {
+                    return;
+                }
+                reserved = true;
+            }
+            String row = render(text, t);
+            if (logger != null) {
+                try {
+                    logger.log(level, row);
+                    return;
+                } catch (Throwable logFault) {
+                    gate.emitFault();
+                    if (reserved) {
+                        gate.releaseRing();
+                    }
+                }
+            }
+            (level == Level.ERROR ? System.err : System.out).println(row);
+        } catch (Throwable fault) {
+            gate.emitFault(); // a throwing clock or a dead stream: counted, never worth the caller
         }
     }
 }

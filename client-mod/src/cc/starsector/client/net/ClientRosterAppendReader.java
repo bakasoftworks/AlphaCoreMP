@@ -24,9 +24,11 @@ import cc.starsector.server.runtime.WireTextLaw;
  * classloader, see {@link WireBytes}). It reads exactly the bytes the server writes — magic /
  * schema / headerBytes / wireTypeCode / bodyLen / body / CRC32, body = {@code u8 rowCount} +
  * rows of {@code u32 wireId | u8 side | UTF variantId | UTF shipName | u16 crPerMille |
- * u32 carrierWireId | u8 bayIndex | UTF officerLine | u8 flags} (v2 = the carrier+bay tail;
- * v3 = the officer tail, "" = no captain; v5 = the flags byte,
- * bit0 = AT_REST, other bits reject) —
+ * u32 carrierWireId | u8 bayIndex | UTF officerLine | u8 flags | u32 fleetKeyDigest} (v2 = the
+ * carrier+bay tail; v3 = the officer tail, "" = no captain; v5 = the
+ * flags byte; v6 = flags bit2 / bit3 + the big-endian digest tail;
+ *v7 = flags bit4, the record-removal row;
+ * a bit outside {@link #KNOWN_FLAGS} rejects) —
  * over plain {@link InputStream} primitives plus the allowlisted {@link CRC32}. The UTF
  * strings are {@code DataOutputStream.writeUTF} modified UTF-8 (u16 byte length + 1/2/3-byte
  * chars), decoded here with the same accept/reject rules as {@code DataInputStream.readUTF}.
@@ -43,9 +45,13 @@ public final class ClientRosterAppendReader {
 
     /** Schema version this reader understands. Mirrors {@code RosterAppendControlMessage.SCHEMA_VERSION}
      *  (v3 = the officer tail; v4 = the optional |aiCoreId officer-line
-     *  field; v5 = the {@code u8 flags} row tail). Exact match: a v4 frame fails
-     *  closed here (its rows have no flags byte). */
-    public static final int SCHEMA_VERSION = 5;
+     *  field; v5 = the {@code u8 flags} row tail; v6 = the fleet-fielded bits + the
+     *  {@code u32 fleetKeyDigest} row tail; v7 = the
+     *  {@link #FLAG_FLEET_VACATED} row, same row layout). Exact match: a v5
+     *  frame fails closed here (its rows have no digest tail), as a v4 one does (no flags byte). The v7
+     *  bump exists ONLY to keep this compare loud: a v6 kit meeting a v7 serve ends its net loop at the
+     *  first RAPP frame of the join, not at the first removal row deep into a round. */
+    public static final int SCHEMA_VERSION = 7;
 
     /** v5 row {@code flags} bit0 = AT_REST. Mirrors {@code RosterAppendFrameCodec.FLAG_AT_REST}. */
     public static final int FLAG_AT_REST = 0x01;
@@ -64,6 +70,39 @@ public final class ClientRosterAppendReader {
      *
      */
     public static final int FLAG_ALL_SKILLS_CAPTAIN = 0x02;
+
+    /**
+     * v6 row {@code flags} bit2 = FLEET_FIELDED: this row is a fleet-record write; its wire id holds
+     * (row side, the goal of its variant) in the round's record from here on, and the row's
+     * {@code fleetKeyDigest} is the digest of the side's fleet key the hull read (every u32 value is
+     * lawful, 0 included). Without this bit the digest must be 0, else the frame fails closed.
+     *
+     *
+     */
+    public static final int FLAG_FLEET_FIELDED = 0x04;
+
+    /** v6 row {@code flags} bit3 = FLEET_ROUND_OPEN: the write belongs to the round-open pre-pass.
+     *  Lawful ONLY beside {@link #FLAG_FLEET_FIELDED}; alone it fails the frame closed. */
+    public static final int FLAG_FLEET_ROUND_OPEN = 0x08;
+
+    /**
+     * v7 row {@code flags} bit4 = FLEET_VACATED: this row REMOVES its wire id's entry from the round's
+     * fleet record; it is never a hull announce. Lawful ONLY as the whole flags byte ({@code flags ==
+     * 0x10}): beside any other bit the frame fails closed, so one bit pattern carries one meaning. The
+     * row's {@code fleetKeyDigest} is the digest of the side's fleet key right AFTER the removal (every
+     * u32 lawful, 0 included); its other fields are REQUIRED inert (no officer line, no carrier / bay,
+     * cr 0, shipName == variantId = the removed entry's goal id, side = the entry's side), a law
+     * {@link ClientRosterAppend.Row} enforces. A pre-v7 kit never meets this bit: the exact schema
+     * compare refuses the whole v7 frame first.
+     *
+     *
+     */
+    public static final int FLAG_FLEET_VACATED = 0x10;
+
+    /** Every admitted v7 {@code flags} bit; any other bit fails the frame closed (a newer server's
+     *  bit ends this kit's net loop loud rather than being read as something it is not). */
+    public static final int KNOWN_FLAGS = FLAG_AT_REST | FLAG_ALL_SKILLS_CAPTAIN
+            | FLAG_FLEET_FIELDED | FLAG_FLEET_ROUND_OPEN | FLAG_FLEET_VACATED;
 
     /** Header bytes: magic(4) + schema(2) + headerBytes(2) + wireTypeCode(4) + bodyBytes(4). */
     public static final int HEADER_BYTES = 4 + 2 + 2 + 4 + 4;
@@ -175,20 +214,50 @@ public final class ClientRosterAppendReader {
             // v5 tail: u8 flags — bit0 = AT_REST (the server hull was placed
             // with burnDur 0, so the twin mints with no parity burn), bit1 = ALL_SKILLS_CAPTAIN
             // (the server's restored captain on this hull is its all-skills seat mint; the Row
-            // refuses it beside an officer line, wrapped below); a reserved bit (0x04 and up)
-            // fails the frame closed. Short-body guard BEFORE the read (the reader's order).
+            // refuses it beside an officer line, wrapped below), bit2 / bit3 = the v6 fleet bits,
+            // bit4 = the v7 vacated bit (alone or not at all); a reserved bit (0x20 and up) fails
+            // the frame closed. Short-body guard BEFORE the read (the reader's order).
             if (cursor[0] + 1 > body.length) {
                 throw new IOException("roster-append frame row " + i + " truncated (v5 tail)");
             }
             int flags = body[cursor[0]] & 0xff;
             cursor[0] += 1;
-            if ((flags & ~(FLAG_AT_REST | FLAG_ALL_SKILLS_CAPTAIN)) != 0) {
+            if ((flags & ~KNOWN_FLAGS) != 0) {
                 throw new IOException("roster-append frame row " + i + " unknown flags: " + flags);
             }
+            // The vacated bit is the whole flags byte or absent: checked BEFORE the round-open law so
+            // 0x18 names this law, the number only.
+            boolean fleetVacated = (flags & FLAG_FLEET_VACATED) != 0;
+            if (fleetVacated && flags != FLAG_FLEET_VACATED) {
+                throw new IOException("roster-append frame row " + i
+                        + " vacated flag beside another flag: " + flags);
+            }
             boolean allSkills = (flags & FLAG_ALL_SKILLS_CAPTAIN) != 0;
+            boolean fleetFielded = (flags & FLAG_FLEET_FIELDED) != 0;
+            boolean fleetRoundOpen = (flags & FLAG_FLEET_ROUND_OPEN) != 0;
+            if (fleetRoundOpen && !fleetFielded) {
+                throw new IOException("roster-append frame row " + i
+                        + " round-open flag without the fielded flag: " + flags);
+            }
+            // v6 tail: u32 fleetKeyDigest, AFTER the flags byte (the server's write order). The
+            // field carries the u32 bit pattern in a signed int (every value lawful on a fielded or
+            // a vacated row, 0 included); a non-zero digest on a row with neither bit2 nor bit4 fails
+            // the frame closed, naming the number only.
+            //
+            if (cursor[0] + 4 > body.length) {
+                throw new IOException("roster-append frame row " + i + " truncated (v6 tail)");
+            }
+            int fleetKeyDigest = WireBytes.getInt(body, cursor[0]);
+            cursor[0] += 4;
+            if (!fleetFielded && !fleetVacated && fleetKeyDigest != 0) {
+                throw new IOException("roster-append frame row " + i
+                        + " fleet-key digest without the fielded or vacated flag: 0x"
+                        + Integer.toHexString(fleetKeyDigest));
+            }
             try {
                 rows.add(new ClientRosterAppend.Row(wireId, side, variantId, shipName, crPerMille,
-                        carrierWireId, bayIndex, officer, (flags & FLAG_AT_REST) != 0, allSkills));
+                        carrierWireId, bayIndex, officer, (flags & FLAG_AT_REST) != 0, allSkills,
+                        fleetFielded, fleetRoundOpen, fleetVacated, fleetKeyDigest));
             } catch (IllegalArgumentException badRow) {
                 // The Row's messages carry numbers and fixed words only (never an id string), so
                 // the frame-drop reason names the broken invariant.

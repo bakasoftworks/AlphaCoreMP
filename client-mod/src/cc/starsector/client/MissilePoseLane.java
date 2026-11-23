@@ -2,6 +2,7 @@ package cc.starsector.client;
 
 import cc.starsector.client.net.ServerMissileState;
 import cc.starsector.client.net.ServerSnapshotFrame;
+import cc.starsector.client.net.WireWorldLaw;
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.combat.CollisionClass;
 import com.fs.starfarer.api.combat.CombatEntityAPI;
@@ -15,7 +16,6 @@ import com.fs.starfarer.api.combat.WeaponAPI;
 import com.fs.starfarer.combat.CombatEngine;
 import com.fs.starfarer.combat.entities.Missile;
 import com.fs.starfarer.combat.entities.Ship;
-import com.fs.starfarer.loading.specs.F;
 import org.lwjgl.util.vector.Vector2f;
 
 import java.util.ArrayList;
@@ -696,8 +696,10 @@ final class MissilePoseLane {
         /** The hybrid handoff fired: puppet AI installed, wire-driven from here. */
         boolean handedOff;
         /** TRUE for a sourceless-adopted (station-mine) body: its
-         *  end-of-track runs the det-FX classifier instead of the silent remove. Set only in
-         *  {@code adoptSourceless}. */
+         *  end-of-track runs the det-FX classifier instead of the silent remove. Written in
+         *  {@code adoptSourceless} ({@link SourcelessClassLaw#sourcelessMine}), at the sourced adopt for a script's
+         *  mine kept from its minelayer recipe ({@link SourcelessClassLaw#sourcedScriptMine}) and by
+         *  {@code OwnMissileHandoffLane.enrollOwnMine}. The sourced writer: */
         boolean sourcelessMine;
         /** The sourceless adopt minted with NO wire
          *  source replica ({@code sourceShip == null}: the engine substituted its synthetic source).
@@ -948,6 +950,20 @@ final class MissilePoseLane {
     private int specUnresolved;      // predict_missile_spec_unresolved (adopt fell to launcher recipe)
     private int recipeRemints;       // predict_missile_recipe_remints (MIRV-child true-spec remints
                                      //   + sourceless bodies minted through a launcher recipe)
+    /** The sourced SCRIPT-MINE adopt ({@link #scriptMineRecipeMint}: a mine
+     *  a script minted through the gun with its own minelayer recipe, the rift lightning mine since the engine binds
+     *  the gun to it). predict_missile_script_mine_adopts: twins that took the mine END arm from it (a subset of the
+     *  presence adopts; recipe_remints does not count them); predict_missile_script_mine_recipe_threw: recipe mints
+     *  that threw (the registry remint ran instead); predict_missile_script_relay_skipped: sourced adopts whose spec
+     *  is not the gun's own projectile (a script spawn), so the gun's onFire relay and the launch FX were skipped;
+     *  predict_missile_script_relay_unread: sourced adopts whose verdict was unreadable (FX and relay ran as before);
+     *  predict_missile_probe_unresolved_announced: non-missile probes of an ANNOUNCED spec that never resolved,
+     *  removed WITHOUT blacklisting the pair. Whole-match counts. */
+    private int scriptMineAdopts;
+    private int scriptMineRecipeThrew;
+    private int scriptRelaySkipped;
+    private int scriptRelayUnread;
+    private int probeUnresolvedAnnounced;
     private int endRemoved;          // predict_missile_end_removed (authoritative-end removals)
     private int localGone;           // predict_missile_local_gone (PD-killed puppet pruned)
     // The predict_missile_split_* / _child_override_* counters live in MissileSplitLane.
@@ -1567,6 +1583,12 @@ final class MissilePoseLane {
             long rate = ServerTickRate.ticksPerSecond();
             vx = (rec.posX() - t.lastWireX) * perTick * rate;
             vy = (rec.posY() - t.lastWireY) * perTick * rate;
+            // A velocity derived from two wire places over host-chosen
+            // ticks is scaled into the world's speed bound; both calls read the unscaled pair.
+            float bx = WireWorldLaw.boundedSpeedComponent(vx, vx, vy);
+            float by = WireWorldLaw.boundedSpeedComponent(vy, vx, vy);
+            vx = bx;
+            vy = by;
         }
         // A handed-off OWN twin pose-adopts under ITS knob (own puppets exist only
         // under ownMissile=apply — the pose-lane knob must not gate their driver).
@@ -1870,7 +1892,8 @@ final class MissilePoseLane {
      * missiles keep zero-RTT local flight), no twin, pair not known-ballistic — buffers its 1st
      * sighting and spawns AT the wire pose on the 2nd (vel known ⇒ exact bearing+velocity). The
      * mint is classified like every enroll: guided/flare kept as a linked puppet, ballistic probe
-     * removed + pair blacklisted. Unresolvable source ship/mount degrades to counted-unpresented
+     * removed + pair blacklisted (a non-missile probe of an announced spec that never resolved is removed
+     * WITHOUT the blacklist). Unresolvable source ship/mount degrades to counted-unpresented
      * (meter + capped log, never silent). Package-private: {@code MineNativeFuseLawSmoke} drives it.
      */
     void presenceAdopt(Map<Long, ServerMissileState> byId, long tick) {
@@ -1977,6 +2000,14 @@ final class MissilePoseLane {
                 mineReadoptRefused++;
                 continue;
             }
+            if (!sourceless && mineLocalDetTicks.containsKey(id)) {
+                // The same refusal for a SOURCED mine twin (the script's mine kept
+                // from its minelayer recipe keeps the engine fuse, so it may det locally a tick or two before the wire
+                // END). pruneLocalGone latches every native-fuse twin's id whatever its arm; a re-mint here would be a
+                // second body and a second det. The wire END for the id lands on the twinless arm.
+                mineReadoptRefused++;
+                continue;
+            }
             if (sourceless && sourcelessThrewIds.contains(id)) {
                 // this id's carrier mint already threw
                 // (counted + logged once). The throw is deterministic for the spec — a logged match's
@@ -2054,6 +2085,12 @@ final class MissilePoseLane {
             long rate = ServerTickRate.ticksPerSecond();
             float vx = (rec.posX() - first.x) / dtick * rate;
             float vy = (rec.posY() - first.y) / dtick * rate;
+            // The derived pair is scaled into the world's speed bound
+            // before the bearing reads it; both calls read the unscaled pair.
+            float bx = WireWorldLaw.boundedSpeedComponent(vx, vx, vy);
+            float by = WireWorldLaw.boundedSpeedComponent(vy, vx, vy);
+            vx = bx;
+            vy = by;
             float bearing = vx * vx + vy * vy > 1f
                     ? (float) Math.toDegrees(Math.atan2(vy, vx)) : weapon.getCurrAngle();
             // Spawn by TRUE SPEC — the resolved catalog spec rides arg-4 of the
@@ -2066,6 +2103,31 @@ final class MissilePoseLane {
             // is now the MIRV-child path only (PresentedMintRecipe javadoc).
             CombatEntityAPI spawned = plugin.engine.spawnProjectile(ship, weapon, weapon.getId(),
                     new Vector2f(rec.posX(), rec.posY()), bearing, new Vector2f());
+            boolean scriptMineRecipe = false;
+            if (spawned != null && trueSpec != null && !PresentedMintRecipe.sameSpec(spawned, trueSpec)) {
+                // A script's mine minted through the gun takes its own minelayer
+                // recipe first (scriptMineRecipeMint = why). On a keep the probe goes, then vanilla's second half (the
+                // null-weapon modifier call its spawner still makes with the gun bound), fail-soft. The kept body IS
+                // the true spec, so the registry remint below does not run for it.
+                MissileAPI scriptMine = scriptMineRecipeMint(ship, weapon, trueSpec, rec.posX(), rec.posY(), bearing,
+                        id);
+                if (scriptMine != null) {
+                    plugin.engine.removeEntity(spawned);
+                    spawned = scriptMine;
+                    scriptMineRecipe = true;
+                    try {
+                        WeaponAPI.WeaponType mount = PresentedMintRecipe.mountTypeOf(trueSpec);
+                        if (mount != null) {
+                            plugin.engine.applyDamageModifiersToSpawnedProjectileWithNullWeapon(ship, mount, false,
+                                    scriptMine.getDamage());
+                        }
+                    } catch (Throwable e) {
+                        FallbackAnnounce.announceOnce("script-mine-modifiers-threw", "script-mine damage modifier"
+                                + " call threw " + e.getClass().getSimpleName() + " (first id=" + id
+                                + ") -> the recipe's base amount stands");
+                    }
+                }
+            }
             if (spawned != null && trueSpec != null && !PresentedMintRecipe.sameSpec(spawned, trueSpec)) {
                 CombatEntityAPI child = null;
                 try {
@@ -2093,6 +2155,16 @@ final class MissilePoseLane {
             // ballistic probe's entry is harmless either way.
             plugin.presentedFoeProj.add(spawned);
             plugin.localFire.onPresentedAdd();
+            if (!(spawned instanceof MissileAPI) && trueSpec == null && rec.contentId() >= 1) {
+                // The record ANNOUNCED a spec that never resolved (the dictionary
+                // defer expired above), so the gun's own non-missile shot says nothing about the pair: a minelayer gun
+                // whose own shot is no missile would lose every later mine for the rest of the combat. Remove the probe,
+                // count it, never blacklist; the id is re-sighted while it lives (a late dictionary entry adopts it).
+                probeUnresolvedAnnounced++;
+                plugin.engine.removeEntity(spawned);
+                plugin.localFire.onPresentedEphemeral();
+                continue;
+            }
             if (!(spawned instanceof MissileAPI)) {
                 adoptProbeBallistic++;
                 ballisticPairs.add(pairKey(rec.sourceEntityId(), rec.sourceMountIndex()));
@@ -2125,32 +2197,53 @@ final class MissilePoseLane {
             if (bomb) {
                 bombAdopts++;
             }
+            // A body a script minted through the gun (its spec is not the gun's
+            // own projectile: a script's mine, a MIRV child) was never fired by that gun, so it takes no launch FX (the
+            // gun's fire sound and flash) and no relay to the gun's onFire below: vanilla runs onFire on the gun's own
+            // shot only, and for the rift gun that relay applied its damage remover and filled a list the mine never
+            // leaves. An unreadable verdict keeps the FX and the relay, counted.
+            int scriptSpec = scriptSpawnVerdict(missile, weapon);
+            boolean launchFx = scriptSpec != ReplicaScriptDamageGate.SPEC_SCRIPT;
             if (flare) {
                 enrolledFlare++;
                 // The vanilla LAUNCH INSTANT this lane never played. Wire
                 // flares arriving as WEAPON_DISCHARGE get it from AuthoritativePresenter (60/75);
                 // the 15/75 that arrive here presented SILENTLY — a pre-existing
                 // hole, and the owner's vanilla-FEEL bar for the press gate rides on closing it.
-                adoptLaunchFx(ship, weapon, rec.posX(), rec.posY(), vx, vy, bearing,
-                        tick, first.tick, id);
+                if (launchFx) {
+                    adoptLaunchFx(ship, weapon, rec.posX(), rec.posY(), vx, vy, bearing,
+                            tick, first.tick, id);
+                }
             } else if (guided) {
                 enrolledGuided++;
                 // The guided and bomb branches
                 // presented SILENTLY too — a replica fighter's bomb (phasecl_bomber, animationType
                 // SMOKE) arrives here, never on WEAPON_DISCHARGE, so its vanilla launch puff +
                 // fire sound were dropped. Same call, same launch-instant gate; spec-general.
-                adoptLaunchFx(ship, weapon, rec.posX(), rec.posY(), vx, vy, bearing,
-                        tick, first.tick, id);
+                if (launchFx) {
+                    adoptLaunchFx(ship, weapon, rec.posX(), rec.posY(), vx, vy, bearing,
+                            tick, first.tick, id);
+                }
             } else {
                 enrolledBomb++;
-                adoptLaunchFx(ship, weapon, rec.posX(), rec.posY(), vx, vy, bearing,
-                        tick, first.tick, id);
+                if (launchFx) {
+                    adoptLaunchFx(ship, weapon, rec.posX(), rec.posY(), vx, vy, bearing,
+                            tick, first.tick, id);
+                }
             }
             // spawnProjectile never runs onFire, and a Threat fragment carrier's
             // whole visual is the swarm its onFire builds (carrier sprite = empty.png) — relay
             // to OUR wrappers only, treated replica only (FragmentCarrierPresentLaw). The relay
-            // is fail-soft; the own ship is never a treated replica (no double swarm).
-            ReplicaPresentedFireRelay.onPresented(spawned, weapon, ship, plugin.engine);
+            // is fail-soft; the own ship is never a treated replica (no double swarm). A script's
+            // body skips it (the verdict above); an unreadable verdict relays as before, counted.
+            if (scriptSpec == ReplicaScriptDamageGate.SPEC_SCRIPT) {
+                scriptRelaySkipped++;
+            } else {
+                if (scriptSpec == ReplicaScriptDamageGate.SPEC_UNREAD) {
+                    scriptRelayUnread++;
+                }
+                ReplicaPresentedFireRelay.onPresented(spawned, weapon, ship, plugin.engine);
+            }
             String adoptSpecId = specIdOf(missile);
             // Canister fire sound on the SOURCED adopt — a recorded census overturned
             // the earlier sourceless premise (all 330 canister tracks crossed fully sourced, src=2
@@ -2199,6 +2292,14 @@ final class MissilePoseLane {
             Twin t = new Twin(missile, rec.sourceEntityId(), rec.sourceMountIndex(), tick, flare,
                     adoptSpecId, false);
             t.thrustAi = thrustAi;
+            // A script's mine kept from its minelayer recipe is a real mine: its
+            // twin takes the mine END arm (the engine's own explode() at the server's END pose, quiet on a shot-down
+            // END) and no spawn dressing (its vanilla spawner plays none). Its class stays NOT_SOURCELESS.
+            t.sourcelessMine = SourcelessClassLaw.sourcedScriptMine(MISSILE_POSE_APPLY,
+                    scriptSpec == ReplicaScriptDamageGate.SPEC_SCRIPT, t.mine, scriptMineRecipe);
+            if (t.sourcelessMine) {
+                scriptMineAdopts++;
+            }
             t.wireId = id;
             t.lastWireX = rec.posX();
             t.lastWireY = rec.posY();
@@ -2212,8 +2313,60 @@ final class MissilePoseLane {
                     + " mount=" + idx + " tick=" + tick + " class="
                     + (flare ? "flare" : guided ? "guided" : "bomb")
                     + " weapon=" + weapon.getId() + " spec=" + t.specId
-                    + (trueSpec == null ? " (launcher recipe)" : ""));
+                    + (trueSpec == null ? " (launcher recipe)" : "")
+                    + (t.sourcelessMine ? " script-mine" : ""));
         }
+    }
+
+    /**
+     * The sourced SCRIPT-MINE recipe mint. A script minted this wire body through the gun with ANOTHER weapon's
+     * recipe: vanilla's rift lightning mine binds the gun and names the minelayer's weapon id, then makes the
+     * null-weapon modifier call. The registry
+     * remint would mint the pristine registry spec (no weapon damage, vanilla's on-hit; {@link PresentedMintRecipe}
+     * javadoc), so when the true spec has a recipe weapon that is not the gun, this mints vanilla's exact call and
+     * keeps the body only when it IS the true spec, a missile and a mine (its engine fuse kept). Anything else is
+     * removed and {@code null} returned, so the registry remint runs unchanged (a MIRV child whose spec has a recipe
+     * weapon keeps the registry path). A throw is counted ({@code predict_missile_script_mine_recipe_threw},
+     * announced once) and returns {@code null} the same way.
+     */
+    private MissileAPI scriptMineRecipeMint(ShipAPI ship, WeaponAPI weapon, String trueSpec, float x, float y,
+            float bearing, long id) {
+        CombatEntityAPI body;
+        try {
+            String rw = PresentedMintRecipe.weaponIdForSpec(trueSpec);
+            if (rw == null || rw.equals(weapon.getId())) {
+                return null;
+            }
+            body = plugin.engine.spawnProjectile(ship, weapon, rw, new Vector2f(x, y), bearing, new Vector2f());
+        } catch (Throwable t) {
+            scriptMineRecipeThrew++;
+            FallbackAnnounce.announceOnce("script-mine-recipe-mint-threw", "script-mine recipe mint threw "
+                    + t.getClass().getSimpleName() + " (first id=" + id + " spec="
+                    + FallbackAnnounce.sanitize(trueSpec, 64) + ") -> registry remint");
+            return null;
+        }
+        if (body == null) {
+            return null;
+        }
+        if (!PresentedMintRecipe.sameSpec(body, trueSpec) || !(body instanceof MissileAPI)
+                || !keepsNativeAi((MissileAPI) body)) {
+            plugin.engine.removeEntity(body);
+            return null;
+        }
+        return (MissileAPI) body;
+    }
+
+    /** The script-spawn verdict of a sourced adopt: the body's spec against the gun's own projectile spec
+     *  ({@link ReplicaScriptDamageGate#scriptSpawnSpec}). An unreadable gun spec reads SPEC_UNREAD, which the caller
+     *  counts ({@code predict_missile_script_relay_unread}). */
+    private static int scriptSpawnVerdict(MissileAPI missile, WeaponAPI weapon) {
+        Object own = null;
+        try {
+            own = weapon.getSpec() == null ? null : weapon.getSpec().getProjectileSpec();
+        } catch (Throwable unread) {
+            // SPEC_UNREAD below; the caller counts it
+        }
+        return ReplicaScriptDamageGate.scriptSpawnSpec(specIdOf(missile), own);
     }
 
     /**
@@ -2292,6 +2445,12 @@ final class MissilePoseLane {
         }
         float vx = sourcelessVelocity(rec.posX() - first.x, dtick, rate); //
         float vy = sourcelessVelocity(rec.posY() - first.y, dtick, rate); //
+        // The derived pair is scaled into the world's speed bound before
+        // the bearing reads it; both calls read the unscaled pair.
+        float bx = WireWorldLaw.boundedSpeedComponent(vx, vx, vy);
+        float by = WireWorldLaw.boundedSpeedComponent(vy, vx, vy);
+        vx = bx;
+        vy = by;
         float bearing = rec.hasPose() ? rec.facingDeg()
                 : (vx * vx + vy * vy > 1f ? (float) Math.toDegrees(Math.atan2(vy, vx)) : 0f);
         CombatEntityAPI spawned;
@@ -2944,6 +3103,12 @@ final class MissilePoseLane {
                 + " predict_missile_adopt_unresolved=" + adoptUnresolved
                 + " predict_missile_spec_unresolved=" + specUnresolved
                 + " predict_missile_recipe_remints=" + recipeRemints
+                // The sourced script-mine adopt, its relay gate and the probe split.
+                + " predict_missile_script_mine_adopts=" + scriptMineAdopts
+                + " predict_missile_script_mine_recipe_threw=" + scriptMineRecipeThrew
+                + " predict_missile_script_relay_skipped=" + scriptRelaySkipped
+                + " predict_missile_script_relay_unread=" + scriptRelayUnread
+                + " predict_missile_probe_unresolved_announced=" + probeUnresolvedAnnounced
                 // Recipe throws that fell through to
                 // the carrier; the ROUND twin of the whole-match adopts token (the residual bar's term).
                 + " predict_missile_sourceless_recipe_threw=" + sourcelessRecipeThrew

@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.runtime.SimTickRate;
 
 /**
@@ -40,8 +41,8 @@ import cc.starsector.server.runtime.SimTickRate;
  * registered in {@code PostureRegistry}). OFF = one static boolean test per tick, zero
  * engine reads. Armed = a per-tick walk of the missile list on the sim thread — an INSTRUMENT for
  * headless rigs, never a product posture. Fail-soft: any reflective failure disarms the
- * probe for the session and logs once; it never mutates engine state. Engine-internal member names are built
- * from char codes (never a typed escape) and are guarded by the engine-jar pin. Same static
+ * probe for the session and logs once; it never mutates engine state. Engine-internal member names
+ * are guarded by the engine-jar pin. Same static
  * {@code sample(List, long)} shape and call site as {@link MoteCensusProbe}.
  */
 public final class FlareGlowProbe {
@@ -51,8 +52,6 @@ public final class FlareGlowProbe {
     static final int ROW_CAP = 1200;
     /** The glow level past which the rendered flame grows beyond the idle dot. */
     static final float HOT_LEVEL = 0.8f;
-    /** Engine-internal name shared by the glow-flag getter and the slot-state getter: capital O-acute followed by five zeros. */
-    private static final String OBF_O_ACUTE = (char) 0xD3 + "00000";
     private static final char[] BRANCHES = {'B', 'N', 'T', 'F', 'Z'};
 
     private static final CappedProbeSink SINK = new CappedProbeSink("flare-glow-probe", PROP, ROW_CAP);
@@ -141,20 +140,15 @@ public final class FlareGlowProbe {
             controllerGetEngineGlow = controller.getClass().getMethod("getEngineGlow");
             entityGetEngineLocations = missile.getClass().getMethod("getEngineLocations");
             Class<?> glowClass = controllerGetEngineGlow.getReturnType();
-            for (Method m : glowClass.getMethods()) {
-                if (!OBF_O_ACUTE.equals(m.getName())) {
-                    continue;
-                }
-                if (m.getParameterCount() == 0 && m.getReturnType() == boolean.class) {
-                    glowFlag = m;
-                } else if (m.getParameterCount() == 1 && !m.getParameterTypes()[0].isPrimitive()) {
-                    glowSlotState = m;
-                }
-            }
-            if (glowFlag == null || glowSlotState == null) {
-                throw new NoSuchMethodException("engine glow getters not found on " + glowClass.getName());
-            }
-            slotLevel = glowSlotState.getReturnType().getField("class");
+            /*
+             * The glow-flag getter (zero-arg boolean, the flag the glow's own per-frame integration sets) and the
+             * slot-state getter (one EngineSlot arg, the per-slot state), each bound by name AND full descriptor
+             * off the name table; a miss throws a NoSuchMethodException / NoSuchFieldException naming the row,
+             * which the armed tick's catch turns into a disarm.
+             */
+            glowFlag = EngineSym.GLOW_FLAG_NAME.method(glowClass);
+            glowSlotState = EngineSym.GLOW_SLOT_STATE_NAME.method(glowClass);
+            slotLevel = EngineSym.GLOW_SLOT_LEVEL_FIELD.field(glowSlotState.getReturnType());
         }
     }
 

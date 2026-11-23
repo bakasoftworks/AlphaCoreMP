@@ -524,8 +524,8 @@ final class SourcedMissileEndLane {
             }
             Vector2f loc = new Vector2f(event.endX(), event.endY());
             // A SHIELD_ABSORBED end applies at a shield contact or not at all.
-            Vector2f at = ownEndApplyPoint(event.endCauseCode(), OwnDetLane.shieldContactOrNull(victim, loc,
-                    MineBombEndFxLane.CONV_HIT_SLACK_SU), MineBombEndFxLane.impactPoint(victim, loc));
+            Vector2f at = ownEndApplyPoint(event.endCauseCode(), MineBombEndFxLane.directShieldContact(victim, loc),
+                    MineBombEndFxLane.impactPoint(victim, loc));
             if (at == null) {
                 // the skip returns before applyWireAckedHit, so no dmg-apply row names the
                 // victim's local shield -- the source evidence rides the skip row (+ rowTag: twin vs ballistic).
@@ -1325,7 +1325,7 @@ final class SourcedMissileEndLane {
         Vector2f loc = new Vector2f(event.endX(), event.endY());
         Vector2f shieldAt = cause == cc.starsector.client.net.ClientGameplayEdgeEvent.END_CAUSE_SHIELD_ABSORBED
                 && victim != null && !own && !dead && treated
-                ? OwnDetLane.shieldContactOrNull(victim, loc, MineBombEndFxLane.CONV_HIT_SLACK_SU) : null;
+                ? MineBombEndFxLane.directShieldContact(victim, loc) : null;
         FoeImpactDoorLaw.ContactAct act = FoeImpactDoorLaw.contactAct(
                 FoeImpactDoorLaw.Door.PAINT_RESIDUE_EXPLOSION_SPEC, cause, family, victim != null, own, dead,
                 treated, source != null, shieldAt != null);

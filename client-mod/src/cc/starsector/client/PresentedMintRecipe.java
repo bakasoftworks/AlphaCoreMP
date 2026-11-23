@@ -28,7 +28,12 @@ import com.fs.starfarer.api.loading.WeaponSpecAPI;
  * <p>Law: mint by the launcher RECIPE (6-arg) whenever the recipe yields the wire's true spec;
  * the true-spec overload is the MIRV-child path only (recipe spec id != true spec). A sourceless
  * body has no launcher — {@link #weaponIdForSpec} finds one whose clone IS that spec (the same
- * class-name rewrite has already landed on it). Zero wire bytes, zero server compute.
+ * class-name rewrite has already landed on it). A SOURCED body a script minted through the gun with
+ * another weapon's recipe takes the same lookup: since 0.98.5a the rift lightning mine's spawner binds
+ * the gun and names the minelayer's weapon id, so the sourced adopt mints that exact call (the gun bound,
+ * the recipe id) and keeps it for a mine only ({@code MissilePoseLane.scriptMineRecipeMint}); before it
+ * the mine crossed with no mount and rode the sourceless arm. The sourced lines:
+ * Zero wire bytes, zero server compute.
  *
  * <p><b>The recipe map walks {@code getActuallyAllWeaponSpecs()}.</b>
  * {@code getAllWeaponSpecs()} FILTERS every {@code AIHints.SYSTEM} / {@code WeaponType.SYSTEM}
@@ -40,10 +45,12 @@ import com.fs.starfarer.api.loading.WeaponSpecAPI;
  * contacted (the rig's probe rows: {@code twin[base=0.0]}, {@code already} growing,
  * {@code lastDmg=0.0}). The SYSTEM-inclusive list is the one every swap layer already walks
  * ({@code ClientEveryFrameEffectSwap}, {@code ClientBeamEffectSwap}, {@code ClientOnFireAttachSweep}).
- * {@link #mountTypeOf} serves the recipe path's second vanilla half: vanilla's own null-weapon
+ * {@link #mountTypeOf} serves the recipe path's second vanilla half: vanilla's own minelayer
  * spawners finish the mint with {@code applyDamageModifiersToSpawnedProjectileWithNullWeapon(source,
- * mountType, false, damage)} (api {@code RiftLightningEffect.spawnMine} ENERGY,
- * {@code MineStrikeStats} MISSILE). Pinned by {@code MineNativeFuseLawSmoke} F10 pre.
+ * mountType, false, damage)} (api {@code RiftLightningEffect.spawnMine} ENERGY, which still
+ * makes that null-weapon call with the gun bound since 0.98.5a,
+ * {@code MineStrikeStats} MISSILE); the sourceless arm and the sourced
+ * script-mine mint both make it. Pinned by {@code MineNativeFuseLawSmoke} F10 pre.
  */
 final class PresentedMintRecipe {
 

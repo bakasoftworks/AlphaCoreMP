@@ -1,5 +1,6 @@
 package cc.starsector.server.bridge;
 
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.runtime.ModDataWalk;
 import cc.starsector.server.runtime.ModSet;
 
@@ -24,8 +25,6 @@ import java.util.List;
  */
 public final class RealEngineModSetFacts {
 
-    private static final String MOD_MANAGER_CLASS = "com.fs.starfarer.launcher.ModManager";
-
     private RealEngineModSetFacts() {
     }
 
@@ -33,7 +32,7 @@ public final class RealEngineModSetFacts {
     public static ModSet snapshot() {
         try {
             ClassLoader loader = RealEngineModSetFacts.class.getClassLoader();
-            Class<?> modManagerClass = Class.forName(MOD_MANAGER_CLASS, true, loader);
+            Class<?> modManagerClass = EngineSym.MOD_MANAGER_CLASS.load(loader);
             Object modManager = modManagerClass.getMethod("getInstance").invoke(null);
             List<?> enabledMods = (List<?>) modManagerClass.getMethod("getEnabledMods").invoke(modManager);
             List<ModSet.Record> records = new ArrayList<ModSet.Record>();
@@ -63,7 +62,7 @@ public final class RealEngineModSetFacts {
     public static ModSet optionalSnapshot(List<String> optionalIds) {
         try {
             ClassLoader loader = RealEngineModSetFacts.class.getClassLoader();
-            Class<?> modManagerClass = Class.forName(MOD_MANAGER_CLASS, true, loader);
+            Class<?> modManagerClass = EngineSym.MOD_MANAGER_CLASS.load(loader);
             Object modManager = modManagerClass.getMethod("getInstance").invoke(null);
             List<?> available = (List<?>) modManagerClass.getMethod("getAvailableMods").invoke(modManager);
             List<?> enabled = (List<?>) modManagerClass.getMethod("getEnabledMods").invoke(modManager);

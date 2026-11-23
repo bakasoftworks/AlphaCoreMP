@@ -1,5 +1,6 @@
 package cc.starsector.server.bridge;
 
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.runtime.SeatTeamLane;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -46,8 +47,6 @@ import java.util.Set;
  * the unfaithful move.
  */
 public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
-
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
 
     private final Map<Class<?>, Map<String, Method>> methodsByClass =
             new HashMap<Class<?>, Map<String, Method>>();
@@ -398,8 +397,7 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
     }
 
     private static Object engineOrNull() throws Exception {
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true,
-                SeatTeamEnginePort.class.getClassLoader());
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(SeatTeamEnginePort.class.getClassLoader());
         return engineClass.getMethod("getInstance").invoke(null);
     }
 
@@ -442,8 +440,7 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
                 dropped++;
             }
         }
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true,
-                SeatTeamEnginePort.class.getClassLoader());
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(SeatTeamEnginePort.class.getClassLoader());
         Object engine = engineClass.getMethod("getInstance").invoke(null);
         Object ships = engine == null ? null : engineClass.getMethod("getShips").invoke(engine);
         if (ships instanceof List<?>) {

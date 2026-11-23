@@ -83,6 +83,8 @@ final class RejoinRebaselineLane {
     private ShipAPI flyinMintOwn;
     private float flyinMintFacing;
     private float flyinMintBurnSec;
+    /** The marked drive was lit in place and has not fired yet ({@link #noteOwnFlyinLitInPlace}); read once at the adopt. */
+    private boolean flyinMintLitPending;
     /** A mint latch within this many degrees of the adopted wire facing keeps
      *  its drive (the entry-turn excursion the kill exists for was 9°; a fresh-pose mint reads 0.0). */
     static final float FLYIN_LATCH_TOL_DEG = 2f;
@@ -511,6 +513,32 @@ final class RejoinRebaselineLane {
         flyinMintOwn = own;
         flyinMintFacing = facing;
         flyinMintBurnSec = burnSec;
+        flyinMintLitPending = false;
+    }
+
+    /**
+     * The keep mark for a hull whose drive was lit IN PLACE by {@code turnOnTravelDrive} (the captain-less claim
+     * adopt), not by a spawn's deploy. WHY a second verb: the engine's
+     * {@code turnOnTravelDrive(sec)} only arms the burn; the drive FIRES on the hull's next advance, so
+     * {@code getTravelDrive().isOn()} still reads false when the adopt runs later in the SAME plugin frame.
+     *
+     * A spawn's deploy pre-advances its hull, so a spawned mint is ON by the adopt and
+     * keeps the plain mark. Without this the adopt read the lit drive as "already OFF" and turned it off in the
+     * frame it was lit. The pending bit is read ONCE, by the first adopt attempt after the lighting: a retry on
+     * a later frame reads the drive itself.
+     */
+    void noteOwnFlyinLitInPlace(ShipAPI own, float facing, float burnSec) {
+        noteOwnFlyinMint(own, facing, burnSec);
+        flyinMintLitPending = true;
+    }
+
+    /**
+     * An armed re-admission's pre-adopt burn-kill window is open (it
+     * kills every own drive until the adopt and hard-cuts it there). Read-only: the own-seat drive burn
+     * returns 0 while it is, so a re-join never lights a drive the window would kill.
+     */
+    boolean burnKillWindowOpen() {
+        return burnKillWindow;
     }
 
     /** The mint's drive latch is the adopted wire facing (within
@@ -535,10 +563,14 @@ final class RejoinRebaselineLane {
         } catch (Throwable ignore) {
             // fail-soft read; a throw here reads as OFF and the kill path below stays idempotent
         }
-        if (latchHolds && driveOn) {
+        // One-shot (see noteOwnFlyinLitInPlace): a drive lit in place this frame has not fired yet.
+        boolean litPending = flyinMintLitPending && !driveOn;
+        flyinMintLitPending = false;
+        if (latchHolds && (driveOn || litPending)) {
             PilotWatchLog.info("predict initial-world: travel drive kept ON at adopt (own) — wire-facing"
                     + " fly-in mint, burn=" + flyinMintBurnSec + "s latch=" + flyinMintFacing
-                    + " wire=" + wireFacing + " (the server twin is mid fly-in)");
+                    + " wire=" + wireFacing + (litPending ? " (lit in place, fires on the hull's next advance;"
+                    : " (") + "the server twin is mid fly-in)");
         } else {
             PilotWatchLog.info("predict initial-world: fly-in mint marker present but "
                     + (latchHolds ? "its drive is already OFF" : "its latch is STALE (mint="

@@ -1,5 +1,6 @@
 package cc.starsector.server.runtime;
 
+import cc.starsector.server.names.EngineSymArcWarm;
 import java.util.List;
 
 /**
@@ -373,12 +374,12 @@ final class ServeBootWarm {
     /** The measured cold vanilla first-use classes, in measurement order (see the leg's javadoc). */
     private static final List<EngineFirstUse> ENGINE_FIRST_USE_CLASSES = List.of(
             new EngineFirstUse("com.fs.starfarer.api.impl.campaign.procgen.StarSystemGenerator", true),
-            new EngineFirstUse("com.fs.starfarer.combat.ai.missile.MissileAI", false),
-            new EngineFirstUse("com.fs.starfarer.combat.ai.missile.MissileAI$o", false),
-            new EngineFirstUse("com.fs.graphics.particle.GenericTextureParticle", false),
-            new EngineFirstUse("com.fs.starfarer.combat.ai.movement.maneuvers.EscortTargetManeuverV3$4", false),
-            new EngineFirstUse("com.fs.starfarer.combat.ai.missile.HeatseekerAI", false),
-            new EngineFirstUse("com.fs.starfarer.combat.ai.ProximityFuseAI", false));
+            new EngineFirstUse(EngineSymArcWarm.ARCWARM_MISSILE_AI_CLASS.className(), false),
+            new EngineFirstUse(EngineSymArcWarm.ARCWARM_MISSILE_AI_STATE_ENUM_CLASS.className(), false),
+            new EngineFirstUse(EngineSymArcWarm.ARCWARM_TEXTURE_PARTICLE_CLASS.className(), false),
+            new EngineFirstUse(EngineSymArcWarm.ARCWARM_ESCORT_PICK_COMPARATOR_CLASS.className(), false),
+            new EngineFirstUse(EngineSymArcWarm.ARCWARM_HEATSEEKER_AI_CLASS.className(), false),
+            new EngineFirstUse(EngineSymArcWarm.ARCWARM_PROXIMITY_FUSE_AI_CLASS.className(), false));
 
     /**
      * Boot warm leg 4 — the cold VANILLA first-use classes.

@@ -191,8 +191,11 @@ final class OwnReadoutLane {
             // Under cc.predict.ownCloak=apply a PERSISTENT ON-ness
             // disagreement forces the own cloak to the authoritative state (knob javadoc at the
             // OWN_CLOAK_MODE decl) — collapsing a spurious local cloak cycle unapply()s the
-            // vanilla PhaseCloakStats mults (the 0.0115 crush). Sub-state skew with agreeing
-            // ON-ness is RTT physics, never forced.
+            // vanilla PhaseCloakStats mods (time mults, maxSpeed/accel mods, the phased flag).
+            // At 0.98.5a-RC4 the speed/accel mult ramps 1 + (mod - 1) * effectLevel (x1 with no
+            // phase_cloak_speed/_accel modifier); the 0.98a-RC8 law mod * effectLevel was the
+            // near-zero speed crush.
+            // Sub-state skew with agreeing ON-ness is RTT physics, never forced.
             if (freshSnapshot && ownPose.hasPhaseCloakState() && !"off".equals(PredictKnobConfig.OWN_CLOAK_MODE)) {
                 ShipSystemAPI ownCloak = own.getPhaseCloak();
                 if (ownCloak != null) {

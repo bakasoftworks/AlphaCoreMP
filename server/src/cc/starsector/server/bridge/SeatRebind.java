@@ -2,6 +2,7 @@ package cc.starsector.server.bridge;
 
 import cc.starsector.server.bridge.RealEngineDemoRoster.RealEngineDemoRosterException;
 import cc.starsector.server.match.MatchDescriptors;
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.platform.AllSkillsAttach;
 import cc.starsector.server.platform.OfficerAttach;
 import java.lang.reflect.Constructor;
@@ -62,13 +63,13 @@ public final class SeatRebind {
             }
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
             try {
-                Class<?> engineClass = Class.forName(RealEngineDemoRoster.ENGINE_CLASS, true, loader);
+                Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
                 Object engine = engineClass.getMethod("getInstance").invoke(null);
                 if (engine == null) {
                     throw new RealEngineDemoRosterException(
                             "CombatEngine.getInstance() returned null at forceKillSideHulls(" + side + ")");
                 }
-                Class<?> shipClass = Class.forName(RealEngineDemoRoster.SHIP_CLASS, false, loader);
+                Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
                 Object repo = engineClass.getMethod("getObjects").invoke(engine);
                 if (repo == null) {
                     throw new RealEngineDemoRosterException(
@@ -160,13 +161,13 @@ public final class SeatRebind {
             }
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
             try {
-                Class<?> engineClass = Class.forName(RealEngineDemoRoster.ENGINE_CLASS, true, loader);
+                Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
                 Object engine = engineClass.getMethod("getInstance").invoke(null);
                 if (engine == null) {
                     throw new RealEngineDemoRosterException(
                             "CombatEngine.getInstance() returned null at removeSideHulks(" + side + ")");
                 }
-                Class<?> shipClass = Class.forName(RealEngineDemoRoster.SHIP_CLASS, false, loader);
+                Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
                 Object repo = engineClass.getMethod("getObjects").invoke(engine);
                 if (repo == null) {
                     throw new RealEngineDemoRosterException(
@@ -357,7 +358,8 @@ public final class SeatRebind {
                     .SwallowCosmeticFxAuthoritativeDamageSink.isHeadlessCosmeticFxNpe(cause)
                     || (cause instanceof NullPointerException
                             && java.util.Arrays.stream(cause.getStackTrace()).anyMatch(
-                                    el -> el.getClassName().startsWith("com.fs.graphics")));
+                                    el -> el.getClassName().startsWith(
+                                            EngineSym.GRAPHICS_PKG.dottedPrefix())));
             if (!cosmetic) {
                 throw new RealEngineDemoRosterException(
                         site + " applyDamage threw a"
@@ -389,14 +391,14 @@ public final class SeatRebind {
             }
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
             try {
-                Class<?> engineClass = Class.forName(RealEngineDemoRoster.ENGINE_CLASS, true, loader);
+                Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
                 Object engine = engineClass.getMethod("getInstance").invoke(null);
                 if (engine == null) {
                     throw new RealEngineDemoRosterException(
                             "CombatEngine.getInstance() returned null at forceKillLiveShipForWireId("
                                     + wireId + ")");
                 }
-                Class<?> shipClass = Class.forName(RealEngineDemoRoster.SHIP_CLASS, false, loader);
+                Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
                 if (!Boolean.TRUE.equals(shipClass.getMethod("isAlive").invoke(ship))) {
                     return false;
                 }
@@ -440,13 +442,13 @@ public final class SeatRebind {
         synchronized (RealEngineDemoRoster.class) {
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
             try {
-                Class<?> engineClass = Class.forName(RealEngineDemoRoster.ENGINE_CLASS, true, loader);
+                Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
                 Object engine = engineClass.getMethod("getInstance").invoke(null);
                 if (engine == null) {
                     throw new RealEngineDemoRosterException(
                             "CombatEngine.getInstance() returned null at forceKillShip(" + site + ")");
                 }
-                Class<?> shipClass = Class.forName(RealEngineDemoRoster.SHIP_CLASS, false, loader);
+                Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
                 if (!shipClass.isInstance(ship)
                         || !Boolean.TRUE.equals(shipClass.getMethod("isAlive").invoke(ship))) {
                     return false;
@@ -536,14 +538,14 @@ public final class SeatRebind {
             DescriptorLayout.SeatSlot slot = DescriptorLayout.seatSlot(seatId);
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
             try {
-                Class<?> engineClass = Class.forName(RealEngineDemoRoster.ENGINE_CLASS, true, loader);
+                Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
                 Object engine = engineClass.getMethod("getInstance").invoke(null);
                 if (engine == null) {
                     throw new RealEngineDemoRosterException(
                             "CombatEngine.getInstance() returned null at mountStationModule(seat="
                                     + seatId + ")");
                 }
-                Class<?> shipClass = Class.forName(RealEngineDemoRoster.SHIP_CLASS, false, loader);
+                Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
                 Object rawChildren = shipClass.getMethod("getChildModulesCopy")
                         .invoke(RealEngineDemoRoster.stationBaseShip);
                 if (!(rawChildren instanceof List)) {
@@ -697,7 +699,7 @@ public final class SeatRebind {
             }
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
             try {
-                Class<?> shipClass = Class.forName(RealEngineDemoRoster.SHIP_CLASS, false, loader);
+                Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
                 Object idValue = shipClass.getMethod("getId").invoke(module);
                 String stable = (idValue instanceof String) ? ((String) idValue).trim() : "";
                 if (stable.isEmpty()) {
@@ -878,8 +880,8 @@ public final class SeatRebind {
      *
      * <p>F3 id-steal law, takeover-widened: a target body already live-mapped under
      * {@code targetHullWireId} is the PARKED-seat displacement the caller announced (its entry
-     * vacates as part of this re-key — the caller has already detached the grace AI and
-     * recorded the parked seat's mount loss); under any OTHER wire id it THROWS. Fail-closed
+     * vacates as part of this re-key — the caller detached the grace AI first, and unseats the
+     * parked seat only once this verb lands); under any OTHER wire id it THROWS. Fail-closed
      * THROWS (wiring, never per-session): no deployed round/descriptor, seat wire id not
      * live-mapped (the drain's winner-mounted re-check should have caught it), stable-id read
      * failure. {@code deployedShipCount} deliberately untouched — nothing minted.
@@ -917,14 +919,14 @@ public final class SeatRebind {
             }
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
             try {
-                Class<?> engineClass = Class.forName(RealEngineDemoRoster.ENGINE_CLASS, true, loader);
+                Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
                 Object engine = engineClass.getMethod("getInstance").invoke(null);
                 if (engine == null) {
                     throw new RealEngineDemoRosterException(
                             "CombatEngine.getInstance() returned null at transferSeatToHull(seat="
                                     + seatId + ")");
                 }
-                Class<?> shipClass = Class.forName(RealEngineDemoRoster.SHIP_CLASS, false, loader);
+                Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
                 // Resolve the target by stable id off the live ship list (waveProbeSampleLine
                 // idiom) — a miss is the normal target-left-the-field race, not a wiring failure.
                 Object target = null;
@@ -1159,14 +1161,14 @@ public final class SeatRebind {
             }
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
             try {
-                Class<?> engineClass = Class.forName(RealEngineDemoRoster.ENGINE_CLASS, true, loader);
+                Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
                 Object engine = engineClass.getMethod("getInstance").invoke(null);
                 if (engine == null) {
                     throw new RealEngineDemoRosterException(
                             "CombatEngine.getInstance() returned null at mountSeatOnPod(seat="
                                     + seatId + ")");
                 }
-                Class<?> shipClass = Class.forName(RealEngineDemoRoster.SHIP_CLASS, false, loader);
+                Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
                 Method getId = shipClass.getMethod("getId");
                 // Fixed after a real-engine FAIL: the spawner's own handle FIRST — the
                 // pod was added via CombatEngine.addObject THIS tick and is pending-add until the
@@ -1296,7 +1298,7 @@ public final class SeatRebind {
                 Object taskManager = manager.getClass()
                         .getMethod("getTaskManager", boolean.class).invoke(manager, false);
                 Class<?> memberClass = Class.forName(
-                        "com.fs.starfarer.combat.CombatFleetManager$O0", false, loader);
+                        EngineSym.DEPLOYED_MEMBER_CLASS.className(), false, loader);
                 taskManager.getClass().getMethod("cancelDirectOrdersForMember", memberClass)
                         .invoke(taskManager, member);
                 orderPath = "order-cancelled";
@@ -1334,13 +1336,13 @@ public final class SeatRebind {
             }
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
             try {
-                Class<?> engineClass = Class.forName(RealEngineDemoRoster.ENGINE_CLASS, true, loader);
+                Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
                 Object engine = engineClass.getMethod("getInstance").invoke(null);
                 if (engine == null) {
                     throw new RealEngineDemoRosterException(
                             "CombatEngine.getInstance() returned null at stationModuleCensus");
                 }
-                Class<?> shipClass = Class.forName(RealEngineDemoRoster.SHIP_CLASS, false, loader);
+                Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
                 Class<?> shipApiClass = Class.forName(RealEngineDemoRoster.SHIP_API, false, loader);
                 Object rawChildren = shipClass.getMethod("getChildModulesCopy")
                         .invoke(RealEngineDemoRoster.stationBaseShip);
@@ -1439,14 +1441,14 @@ public final class SeatRebind {
             }
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
             try {
-                Class<?> engineClass = Class.forName(RealEngineDemoRoster.ENGINE_CLASS, true, loader);
+                Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
                 Object engine = engineClass.getMethod("getInstance").invoke(null);
                 if (engine == null) {
                     throw new RealEngineDemoRosterException(
                             "CombatEngine.getInstance() returned null at transferSeatToStationModule"
                                     + "(seat=" + seatId + ")");
                 }
-                Class<?> shipClass = Class.forName(RealEngineDemoRoster.SHIP_CLASS, false, loader);
+                Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
                 // Module resolve BY STABLE ID (parent implied): the station gone or
                 // the slot's body detached is the normal target-left race, never wiring.
                 Object module = null;
@@ -1621,12 +1623,12 @@ public final class SeatRebind {
         }
         try {
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
-            Class<?> engineClass = Class.forName(RealEngineDemoRoster.ENGINE_CLASS, true, loader);
+            Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
             Object engine = engineClass.getMethod("getInstance").invoke(null);
             if (engine == null) {
                 return WreckSource.NONE;
             }
-            Class<?> shipClass = Class.forName(RealEngineDemoRoster.SHIP_CLASS, false, loader);
+            Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
             Method getId = shipClass.getMethod("getId");
             Method isHulk = shipClass.getMethod("isHulk");
             for (Object candidate : (List<?>) engineClass.getMethod("getShips").invoke(engine)) {

@@ -1,5 +1,7 @@
 package cc.starsector.server.bridge;
 
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymBridgeSeams;
 import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
@@ -74,8 +76,6 @@ import java.util.Map;
  */
 final class OrbitDroneDrive {
 
-    private static final String SMOOTH_CLASS =
-            "com.fs.starfarer.campaign.fleet.SmoothMovementModuleCombatCopy";
     private static final float WRITEBACK_SNAP_DISTANCE_SU = 10f;
     private static final float STATION_MAX_SPEED_PAD = 50f;
     private static final float FALLBACK_DT_SECONDS = 1f / 60f;
@@ -168,7 +168,7 @@ final class OrbitDroneDrive {
             return null;
         }
         Class<?> modManagerClass = Class.forName(
-                "com.fs.starfarer.launcher.ModManager", false, shipClass.getClassLoader());
+                EngineSym.MOD_MANAGER_CLASS.className(), false, shipClass.getClassLoader());
         Object modManager = modManagerClass.getMethod("getInstance").invoke(null);
         for (Method candidate : modManagerClass.getMethods()) {
             if ("pickDroneAIPlugin".equals(candidate.getName())
@@ -242,8 +242,8 @@ final class OrbitDroneDrive {
             seat.getEngineController = shipClass.getMethod("getEngineController");
             Object controller = seat.getEngineController.invoke(mothership);
             seat.controllerCruiseSpeed = controller.getClass().getMethod("getCruiseSpeed");
-            Class<?> smoothClass =
-                    Class.forName(SMOOTH_CLASS, false, shipClass.getClassLoader());
+            Class<?> smoothClass = Class.forName(EngineSymBridgeSeams.BRIDGE_SEAMS_DRONE_EASING_CLASS.className(),
+                    false, shipClass.getClassLoader());
             float accel = ((Number) seat.getAcceleration.invoke(ship)).floatValue();
             float maxSpeed = ((Number) seat.getMaxSpeed.invoke(ship)).floatValue();
             seat.smooth = smoothClass.getConstructor(float.class, float.class)
@@ -260,7 +260,8 @@ final class OrbitDroneDrive {
             seat.smoothGetLocation = smoothClass.getMethod("getLocation");
             seat.smoothGetVelocity = smoothClass.getMethod("getVelocity");
             if (seat.smoothAdvance == null) {
-                throw new NoSuchMethodException("3-arg advance missing on " + SMOOTH_CLASS);
+                throw new NoSuchMethodException("3-arg advance missing on "
+                        + EngineSymBridgeSeams.BRIDGE_SEAMS_DRONE_EASING_CLASS.className());
             }
             // Seed the easing state at the body's live pose — the un-nudged branch writes
             // ship.vel←smooth.vel unconditionally, so an unseeded module would zero the body.

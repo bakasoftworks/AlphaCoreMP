@@ -1,9 +1,12 @@
 package cc.starsector.server.bridge;
 
+import cc.starsector.server.match.AllSkillsFleetLaw;
 import cc.starsector.server.match.MatchDescriptor;
 import cc.starsector.server.match.MatchDescriptorCodec;
 import cc.starsector.server.match.MatchDescriptors;
 import cc.starsector.server.match.OfficerRosterCodec;
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymBridgeRoster;
 import cc.starsector.server.platform.AllSkillsAttach;
 import cc.starsector.server.platform.HeadlessCombatContext;
 import cc.starsector.server.platform.OfficerAttach;
@@ -73,38 +76,17 @@ import java.util.SortedSet;
  * (distinguishing "no content loaded" from "cc mod dir not on the resource path"), surfacing the
  * content-loading boundary honestly rather than silently substituting a different ship.
  *
- * <p><b>Option R — literal identities, pinned.</b> Like the sibling factory,
- * every engine-internal {@code com.fs.*} identity fed into reflection is rendered literally in the
- * {@code PINNED 0.98a-RC8} block, byte-identical to the proven scout lane; descriptor-grade
- * resolution is the documented next-RC upgrade (standing portability-drill trigger).
+ * <p><b>Option R — engine identities from the name table.</b> Every engine-internal
+ * {@code com.fs.*} class, field and method fed into reflection is read from the
+ * {@link EngineSym} / {@link EngineSymBridgeRoster} rows, so a game build is one re-key of that table
+ * and the build's resolve leg proves each row against the pinned jars.
  */
 public final class RealEngineDemoRoster {
 
-    // ---- PINNED 0.98a-RC8 (descriptor-grade identity owed at the next RC). Option R. ----
-    // Several identities are package-private: {@link SeatRebind}
-    // resolves through this SAME pinned block — one block, never duplicated.
-
-    /** Combat engine singleton (the same instance {@code create()} constructed). */
-    static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    /** Concrete combat ship type; the {@code getList(Class)} key. */
-    static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
-    /** Hull variant spec; the {@code FleetMember} ctor arg + the registry's value type. */
-    private static final String HULL_VARIANT_SPEC_CLASS = "com.fs.starfarer.loading.specs.HullVariantSpec";
-    /** Variant registry; the no-arg method = id set, the (String) overload = lookup. */
-    private static final String VARIANT_REGISTRY_CLASS = "com.fs.starfarer.loading.B";
-    /** Registry method name, engine-internal (overloaded by arity: () -> ids, (String) -> variant). */
-    private static final String VARIANT_REGISTRY_METHOD = "o00000";
-    /** Real campaign fleet member (the engine-own deploy unit). */
-    private static final String FLEET_MEMBER_CLASS = "com.fs.starfarer.campaign.fleet.FleetMember";
-    /** Per-side deployer minted by {@code addFleet}; drives {@code spawnFleetMember}. */
-    private static final String COMBAT_FLEET_MANAGER_CLASS = "com.fs.starfarer.combat.CombatFleetManager";
-    // ADMIRAL: vanilla's fleet commander (a plainly named engine class) + its API plugin face.
-    private static final String ADMIRAL_AI_CLASS = "com.fs.starfarer.combat.ai.admiral.AdmiralAI";
+    // ADMIRAL: the API plugin face of vanilla's fleet commander (the commander class = a table row).
     private static final String ADMIRAL_AI_PLUGIN_API = "com.fs.starfarer.api.combat.AdmiralAIPlugin";
     /** The wave (AI) side every fortress chain spawns onto — the admiral's side. */
     private static final int WAVE_SIDE = 1;
-    /** The engine-internal player-ship field {@code create()}'s factory binds the seat into (W3). */
-    private static final String PLAYER_SHIP_FIELD = "OO0000";
 
     // ---- Public API + LWJGL (identity-clean even under descriptor-grade). ----
     private static final String FLEET_MEMBER_TYPE_API = "com.fs.starfarer.api.fleet.FleetMemberType";
@@ -479,6 +461,49 @@ public final class RealEngineDemoRoster {
         return liveShipByWireId.get(wireId);
     }
 
+    /** One per-ship echo: the ship, its decimal wire entity id, the absolute side it is fielded on. */
+    @FunctionalInterface
+    public interface ShipEchoSink {
+        void echo(Object ship, String wireId, int side);
+    }
+
+    /**
+     * The t=0 per-ship echo, walked where the round deploy first holds every input of each t=0
+     * hull's wire entity id, so the server's row names a hull by the SAME id the client prints for
+     * it and a grader can diff the two ends line for line. Deploy-ledger position {@code i} (= the
+     * {@code specs} order): a seat ({@code i < seatWireIds.length}) carries its recorded seat wire
+     * id; every later hull carries the reserved-band ceiling plus its 1-based ordinal among the
+     * non-seat hulls, which is the id the serve's first-seen interning gives it above the seat band
+     * and, on a lawful document (seat rows before AI rows, the station last), its flattened
+     * declaration id. The ceiling is the largest DESCRIPTOR seat ship id when a descriptor deployed
+     * (occupancy-independent: an unoccupied seat keeps its id reserved), else the largest deployed
+     * seat wire id. Every id is &gt; 0. {@code specSides.get(i)} = the side spec {@code i} fields
+     * its hull on (the fleet manager it spawns through). Stations are skipped; each hull is echoed
+     * once. The knob gate, the per-round cap and the never-throw ship read live in the sink. A
+     * misaligned input is a code drift and throws.
+     *
+     */
+    public static void echoT0Ships(List<?> deployedShips,
+            List<HeadlessCombatContext.EngineDeployShipSpec> specs, List<Integer> specSides,
+            long[] seatWireIds, long[] descriptorSeatShipIds, ShipEchoSink sink) {
+        int n = deployedShips.size();
+        if (specs.size() != n || specSides.size() != n || seatWireIds.length > n) {
+            throw new IllegalArgumentException("t=0 echo inputs misaligned: ledger " + n + ", specs "
+                    + specs.size() + ", sides " + specSides.size() + ", seats " + seatWireIds.length);
+        }
+        long ceiling = 0L;
+        for (long id : descriptorSeatShipIds.length > 0 ? descriptorSeatShipIds : seatWireIds) {
+            ceiling = Math.max(ceiling, id);
+        }
+        for (int i = 0; i < n; i++) {
+            if (specs.get(i).isStation()) {
+                continue;
+            }
+            long wireId = i < seatWireIds.length ? seatWireIds[i] : ceiling + (i - seatWireIds.length) + 1L;
+            sink.echo(deployedShips.get(i), Long.toString(wireId), specSides.get(i));
+        }
+    }
+
     /** The seat's descriptor side (0/1) for the podtest target spawn, -1 when
      * the layout has no such seat (the driver grades that as a spawn FAIL, never a throw). */
     public static synchronized int seatSideOrNeg(int seatId) {
@@ -523,6 +548,14 @@ public final class RealEngineDemoRoster {
      * deliberately NOT touched: the dead hull's stable id stays the round's identity record until
      * {@link #midDeploySeat} re-points it (the Main fly-in hook's remount diff-assert keys on
      * exactly that re-point).
+     *
+     * <p>The removed hull's member then releases its fleet data
+     * ({@link AllSkillsAttach#dropRemovedHullFleetData}): the engine keeps a dead or departed
+     * member for the battle's life, so without the release every superseded fab stayed reachable
+     * on a match that never wraps. It runs first, before anything else touches the removed hull,
+     * reading the member off the hull's own stats link; a hull the engine still holds alive keeps
+     * its fab, and the release never throws.
+     *
      */
     public static synchronized void vacateSeatHull(int seatId, long wireId) {
         Object removed = liveShipByWireId.remove(wireId);
@@ -532,9 +565,65 @@ public final class RealEngineDemoRoster {
                             + " live-mapped — T3 fires once per hull death, so a second vacate (or"
                             + " one for a never-mounted seat) is a serve-loop wiring bug");
         }
+        AllSkillsAttach.dropRemovedHullFleetData(removed, seatId);
         System.out.println("real-engine-demo-roster vacateSeatHull seat=" + seatId
                 + " wireId=" + wireId
                 + " (hull despawned — live map vacated; a fly-in re-points this id on remount)");
+    }
+
+    /**
+     * One fleet-record removal: the removed entry's ABSOLUTE side (0 / 1), its goal id, and the
+     * digest of that side's key right after the removal (any int, both signs and 0 lawful).
+     *
+     */
+    public record FleetRemoval(int side, String goalId, int keyDigest) {
+    }
+
+    /**
+     * Takes {@code wireId}'s entry out of the round's fleet record: the serve's call once the seat
+     * that owns the wire id is neither occupied nor has its hull in the world (the serve reads that;
+     * this method does not). Null = the record holds no entry for it (nothing changes, nothing is
+     * owed). Else the wire id also leaves the round-open pending set (a later fielding of it is a
+     * plain write, never a false pre-pass mismatch) and the answer carries the side's key digest
+     * right after the removal. The round-open record is never touched. It cannot interleave with
+     * {@link #midDeploySeat}'s record write and that write's restore-on-throw: both hold this
+     * class's lock on the sim thread, and nothing inside a fielding reaches a removal.
+     *
+     */
+    public static synchronized FleetRemoval removeFleetEntry(long wireId) {
+        return removeEntry(FLEET_RECORD, ROUND_OPEN_PENDING, roundDocumentIds, wireId);
+    }
+
+    /**
+     * The pure removal on explicit state (game-free rows drive it). Null when {@code record} holds
+     * no entry for {@code wireId}, a wire id below 1 included: nothing changes and nothing throws.
+     * Else removes the entry, drops the wire id from {@code roundOpenPending} and answers the
+     * removed side's key digest after the removal. THROWS {@link IllegalStateException} before any
+     * change on a null {@code document} while an entry is held (a fielding needed one to write
+     * it); a key fault after the removal restores the entry and the pending id, then rethrows.
+     *
+     */
+    public static FleetRemoval removeEntry(AllSkillsFleetLaw.FleetRecord record, Set<Long> roundOpenPending,
+            AllSkillsFleetLaw.DocumentIds document, long wireId) {
+        if (wireId < 1L || record.entryOrNull(wireId) == null) {
+            return null;
+        }
+        if (document == null) {
+            throw new IllegalStateException("fleet record: an entry for wire id " + wireId
+                    + " with no document facts this round (the roster deploy builds them)");
+        }
+        AllSkillsFleetLaw.RecordEntry removed = record.remove(wireId);
+        boolean wasPending = roundOpenPending.remove(wireId);
+        try {
+            int keyDigest = document.key(removed.side(), record).digest();
+            return new FleetRemoval(removed.side(), removed.goalId(), keyDigest);
+        } catch (RuntimeException keyFault) {
+            record.restore(wireId, removed);
+            if (wasPending) {
+                roundOpenPending.add(wireId);
+            }
+            throw keyFault;
+        }
     }
 
     /**
@@ -608,6 +697,229 @@ public final class RealEngineDemoRoster {
         stationBaseShip = null;
         stationBaseStableId = "";
         stationBaseIsHulk = null;
+        // The fleet record, its round-open set and the round's
+        // document facts die with the round (an entry whose seat or hull still holds keeps it until here).
+        FLEET_RECORD.clear();
+        ROUND_OPEN_PENDING.clear();
+        roundDocumentIds = null;
+    }
+
+    /**
+     * The round's fleet record: wire id to (absolute side, goal id), at most one entry per wire id.
+     * Written by every seat fielding (the full {@code midDeploySeat} twin, before its captain attach)
+     * and by the round-open pre-pass ({@link #writeRoundOpenPrePass}); cleared whole only by
+     * {@link #resetForRedeploy()}. A pick or {@code /ship} command, an instant team switch, a transfer,
+     * a module mount and a pod never write it. Written with the all-skills knob OFF too (the wire law
+     * has no mode). Mutated and read under this class's lock.
+     *
+     *
+     * <p>An entry is held while its seat is occupied or the seat's hull is in the world (a seated
+     * death keeps it, as the base game keeps a destroyed member for the engagement); the serve
+     * removes it through {@link #removeFleetEntry} at the first moment neither holds, and
+     * {@link #resetForRedeploy()} clears the rest.
+     *
+     */
+    private static final AllSkillsFleetLaw.FleetRecord FLEET_RECORD = new AllSkillsFleetLaw.FleetRecord();
+
+    /** The wire ids the round-open pre-pass wrote that no fielding has consumed yet (cleared with the record). */
+    private static final Set<Long> ROUND_OPEN_PENDING = new LinkedHashSet<>();
+
+    /** The round's document facts for the fleet key, built at the round's roster deploy; null with no descriptor. */
+    private static AllSkillsFleetLaw.DocumentIds roundDocumentIds;
+
+    /** Pre-pass disagreements this JVM: each one printed ONE ERROR row (a bug count, never reset). */
+    private static long fleetPrePassMismatches;
+
+    /**
+     * The live fleet record (never null; the same object for the JVM's life). Read it under this class's
+     * lock: every writer holds it, and the roster deploy and the seat fielding already run under it.
+     */
+    public static AllSkillsFleetLaw.FleetRecord fleetRecord() {
+        return FLEET_RECORD;
+    }
+
+    /** The round's document facts (built at the roster deploy), or null before it / with no descriptor. */
+    public static synchronized AllSkillsFleetLaw.DocumentIds roundDocumentIdsOrNull() {
+        return roundDocumentIds;
+    }
+
+    /** How many round-open pre-pass wire ids still wait for their fielding this round ({@code >= 0}). */
+    public static synchronized int roundOpenPendingCount() {
+        return ROUND_OPEN_PENDING.size();
+    }
+
+    /** Pre-pass / fielding disagreements this JVM ({@code >= 0}; each printed one ERROR row). */
+    public static synchronized long fleetPrePassMismatches() {
+        return fleetPrePassMismatches;
+    }
+
+    /**
+     * One fielding's fleet record write: the wire id ({@code >= 1}) and side (0 / 1) written, the entry
+     * it replaced (null = new), whether the wire id was a pending round-open pre-pass id, whether the
+     * write was that pre-pass entry's EQUAL re-write (the round-open bit), the digest of the side's key
+     * after the write (the key this hull reads; any int, 0 lawful) and, on a pre-pass disagreement only,
+     * the digest of the pre-pass side's key before the write (the round-open key its readers saw; else 0).
+     *
+     */
+    public record FleetWrite(long wireId, int side, AllSkillsFleetLaw.RecordEntry replacedOrNull,
+            boolean wasPending, boolean roundOpen, int keyDigest, int openKeyDigest) {
+        /** A pending pre-pass id whose fielding resolved a different (side, goal): a bug, never silent. */
+        public boolean prePassMismatch() {
+            return wasPending && !roundOpen;
+        }
+    }
+
+    /**
+     * The pure fielding write: writes {@code wireId -> (side, goalId)} into {@code record} (an equal
+     * entry included: every fielding is a write op), drains the wire id from {@code roundOpenPending}
+     * (the seat's next fielding this round is a plain write) and answers the side's key digest after
+     * the write. Round-open = the wire id was pending AND its entry already equals (side, goal).
+     * THROWS before any change on a null {@code document} or a write the law refuses
+     * ({@link IllegalArgumentException}: wire id below 1, side not 0 / 1, goal over
+     * {@link AllSkillsFleetLaw#MAX_GOAL_CHARS}); a key fault after the write undoes it, then rethrows.
+     *
+     */
+    public static FleetWrite writeFielding(AllSkillsFleetLaw.FleetRecord record, Set<Long> roundOpenPending,
+            AllSkillsFleetLaw.DocumentIds document, long wireId, int side, String goalId) {
+        if (document == null) {
+            throw new IllegalStateException("fleet record: no document facts this round (the roster deploy"
+                    + " builds them)");
+        }
+        AllSkillsFleetLaw.RecordEntry before = record.entryOrNull(wireId);
+        boolean wasPending = roundOpenPending.contains(wireId);
+        boolean roundOpen = wasPending && before != null && before.side() == side
+                && before.goalId().equals(goalId);
+        int openKeyDigest = wasPending && !roundOpen && before != null
+                ? document.key(before.side(), record).digest() : 0;
+        AllSkillsFleetLaw.RecordEntry replaced = record.write(wireId, side, goalId);
+        roundOpenPending.remove(wireId);
+        try {
+            int keyDigest = document.key(side, record).digest();
+            return new FleetWrite(wireId, side, replaced, wasPending, roundOpen, keyDigest, openKeyDigest);
+        } catch (RuntimeException keyFault) {
+            record.restore(wireId, replaced);
+            if (wasPending) {
+                roundOpenPending.add(wireId);
+            }
+            throw keyFault;
+        }
+    }
+
+    /**
+     * Undoes one {@link #writeFielding} of a fielding that then THREW: the replaced entry returns (a new
+     * one is removed) and a drained round-open id is pending again. Null = nothing was written.
+     *
+     */
+    public static void undoFielding(AllSkillsFleetLaw.FleetRecord record, Set<Long> roundOpenPending,
+            FleetWrite write) {
+        if (write == null) {
+            return;
+        }
+        record.restore(write.wireId(), write.replacedOrNull());
+        if (write.wasPending()) {
+            roundOpenPending.add(write.wireId());
+        }
+    }
+
+    /**
+     * The ERROR row of a pre-pass disagreement, or null when {@code write} is none. Bounded tokens only:
+     * seat id, wire id, both sides, hex digests; never a variant id.
+     *
+     */
+    public static String prePassMismatchRowOrNull(int seatId, FleetWrite write) {
+        if (write == null || !write.prePassMismatch()) {
+            return null;
+        }
+        AllSkillsFleetLaw.RecordEntry prePass = write.replacedOrNull();
+        return "real-engine-demo-roster fleet-record ERROR prepass_mismatch seat=" + seatId
+                + " wire=" + write.wireId()
+                + " prepass_side=" + (prePass == null ? -1 : prePass.side())
+                + " side=" + write.side()
+                + " open_key=" + AllSkillsFleetLaw.hex8(write.openKeyDigest())
+                + " key=" + AllSkillsFleetLaw.hex8(write.keyDigest());
+    }
+
+    /**
+     * The pure round-open pre-pass: one record write per seat of {@code seatIds} (ascending), each
+     * resolved by {@link #resolveSeatFielding} exactly as that seat's fielding will resolve it, and each
+     * wire id remembered in {@code roundOpenPending}. Neither prints nor counts: the fieldings' own
+     * pick rows feed the match-reset row. Returns the write count. A law refusal THROWS (the reset then
+     * fails closed, as the seat's own fielding would).
+     *
+     */
+    public static int prePassWrites(MatchDescriptor descriptor, SortedSet<Integer> seatIds,
+            Map<Integer, String> overrideBySeat, Map<Integer, Integer> sideBySeat, PickResolver resolver,
+            StationCheck stationCheck, AllSkillsFleetLaw.FleetRecord record, Set<Long> roundOpenPending) {
+        int writes = 0;
+        for (Integer seatId : seatIds) {
+            SeatFielding fielding = resolveSeatFielding(descriptor, seatId, sideBySeat.getOrDefault(seatId, -1),
+                    overrideBySeat.get(seatId), resolver, stationCheck);
+            record.write(fielding.wireId(), fielding.side(), fielding.goalId());
+            roundOpenPending.add(fielding.wireId());
+            writes++;
+        }
+        return writes;
+    }
+
+    /**
+     * The round-open pre-pass on this class's record, with the engine's own variant registry and
+     * station read as the pick seams (the ones the fielding passes). Runs AFTER
+     * {@link #resetForRedeploy()} (it clears the record) and BEFORE the round's roster deploy (whose
+     * AI rows read the round-open key). Null descriptor or no seats = no write (the fieldings then fail
+     * or field as they do without it). Round 0 has no pre-pass.
+     *
+     */
+    public static synchronized int writeRoundOpenPrePass(MatchDescriptor descriptorOrNull,
+            SortedSet<Integer> seatIds, Map<Integer, String> overrideBySeat, Map<Integer, Integer> sideBySeat) {
+        if (descriptorOrNull == null || seatIds.isEmpty()) {
+            return 0;
+        }
+        ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
+        final Class<?> hullVariantClass;
+        final Method variantIsStation;
+        try {
+            hullVariantClass = Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader);
+            variantIsStation = hullVariantClass.getMethod("isStation");
+        } catch (ReflectiveOperationException | LinkageError seamMiss) {
+            throw new RealEngineDemoRosterException("round-open pre-pass: the engine variant seams did not"
+                    + " resolve: " + seamMiss.getClass().getSimpleName(), seamMiss);
+        }
+        return writeRoundOpenPrePass(descriptorOrNull, seatIds, overrideBySeat, sideBySeat,
+                id -> resolveVariantById(loader, hullVariantClass, id),
+                (v, id) -> Boolean.TRUE.equals(variantIsStation.invoke(v))
+                        || MatchDescriptors.isStationVariantId(id));
+    }
+
+    /** The seam-injected twin of the engine pre-pass (game-free rows drive this class's own record). */
+    public static synchronized int writeRoundOpenPrePass(MatchDescriptor descriptorOrNull,
+            SortedSet<Integer> seatIds, Map<Integer, String> overrideBySeat, Map<Integer, Integer> sideBySeat,
+            PickResolver resolver, StationCheck stationCheck) {
+        if (descriptorOrNull == null) {
+            return 0;
+        }
+        return prePassWrites(descriptorOrNull, seatIds, overrideBySeat, sideBySeat, resolver, stationCheck,
+                FLEET_RECORD, ROUND_OPEN_PENDING);
+    }
+
+    /** The fielding's record write on this class's state (caller holds the lock); prints a disagreement's ERROR row. */
+    private static FleetWrite recordSeatFielding(int seatId, long wireId, int side, String goalId) {
+        FleetWrite write = writeFielding(FLEET_RECORD, ROUND_OPEN_PENDING, roundDocumentIds, wireId, side, goalId);
+        String errorRow = prePassMismatchRowOrNull(seatId, write);
+        if (errorRow != null) {
+            fleetPrePassMismatches++;
+            System.out.println(errorRow);
+        }
+        return write;
+    }
+
+    /** A thrown fielding's record undo on this class's state (caller holds the lock); a fault logs once. */
+    private static void undoSeatFielding(FleetWrite writeOrNull) {
+        try {
+            undoFielding(FLEET_RECORD, ROUND_OPEN_PENDING, writeOrNull);
+        } catch (RuntimeException undoMiss) {
+            System.out.println("real-engine-demo-roster fleet-record restore_failed wire="
+                    + writeOrNull.wireId() + " " + undoMiss.getClass().getSimpleName());
+        }
     }
 
     /**
@@ -744,7 +1056,7 @@ public final class RealEngineDemoRoster {
         }
         ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
         try {
-            Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+            Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
             Object engine = engineClass.getMethod("getInstance").invoke(null);
             if (engine == null) {
                 throw new RealEngineDemoRosterException(
@@ -758,8 +1070,8 @@ public final class RealEngineDemoRoster {
                                 + " (the serve gate's combatSpaceReady predicate)");
             }
 
-            Class<?> shipClass = Class.forName(SHIP_CLASS, false, loader);
-            Class<?> hullVariantClass = Class.forName(HULL_VARIANT_SPEC_CLASS, false, loader);
+            Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
+            Class<?> hullVariantClass = Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader);
             MatchDescriptor descriptor = resolveConfiguredDescriptorOrNull("roster-deploy");
 
             // ---- Engine-own deploy-lane handles ----
@@ -771,11 +1083,11 @@ public final class RealEngineDemoRoster {
             Class<?> repoClass = engineRepo.getClass();
             Method repoGetList = repoClass.getMethod("getList", Class.class);
 
-            Class<?> fleetMemberClass = Class.forName(FLEET_MEMBER_CLASS, false, loader);
+            Class<?> fleetMemberClass = Class.forName(EngineSym.FLEET_MEMBER_CLASS.className(), false, loader);
             Class<?> fleetMemberTypeClass = Class.forName(FLEET_MEMBER_TYPE_API, false, loader);
             Class<?> fleetMemberApiClass = Class.forName(FLEET_MEMBER_API, false, loader);
             Class<?> shipApiClass = Class.forName(SHIP_API, false, loader);
-            Class<?> cfmClass = Class.forName(COMBAT_FLEET_MANAGER_CLASS, false, loader);
+            Class<?> cfmClass = Class.forName(EngineSym.COMBAT_FLEET_MANAGER_CLASS.className(), false, loader);
             Class<?> vec2Class = Class.forName(LWJGL_VECTOR2F_CLASS, false, loader);
             Constructor<?> vec2Ctor = vec2Class.getConstructor(float.class, float.class);
             Constructor<?> fleetMemberCtor =
@@ -808,7 +1120,7 @@ public final class RealEngineDemoRoster {
             Method setPreDeploy = engineClass.getMethod("setPreDeploy", boolean.class);
             Method isPreDeploy = engineClass.getMethod("isPreDeploy");
             Method getPlayerShip = engineClass.getMethod("getPlayerShip");
-            Field playerShipField = engineClass.getDeclaredField(PLAYER_SHIP_FIELD);
+            Field playerShipField = EngineSymBridgeRoster.BRIDGE_ROSTER_PLAYER_SHIP_FIELD.field(engineClass);
             playerShipField.setAccessible(true);
 
             Constructor<?> repoCtor = repoClass.getDeclaredConstructor();
@@ -824,6 +1136,7 @@ public final class RealEngineDemoRoster {
             }
 
             List<HeadlessCombatContext.EngineDeployShipSpec> specs;
+            List<Integer> specSides = new ArrayList<>();
             long[] seatWireIds;
             long[] allSeatShipIds = new long[0];
             float deployCr;
@@ -845,6 +1158,7 @@ public final class RealEngineDemoRoster {
                         1, variant,
                         DescriptorLayout.resolveSeatShipName(2, System.getProperty("cc.match.seat2Name"), DescriptorLayout.seatDefaultName(2)),
                         vec2Ctor.newInstance(SPAWN_X, 0.0f), 180.0f, 0.0f));
+                specSides.addAll(List.of(0, 1)); // the two specs' owners, in spec order
                 seatWireIds = new long[] {1L, 2L};
                 deployCr = HeadlessCombatContext.DEFAULT_DEPLOY_CR;
             } else {
@@ -900,13 +1214,18 @@ public final class RealEngineDemoRoster {
                     seatWireIds[i] = deploySeats.get(i).shipId();
                 }
                 specs = buildDescriptorSpecs(descriptor, seats, occupiedOrNull, overrideBySeat,
-                        loader, hullVariantClass, vec2Ctor);
+                        loader, hullVariantClass, vec2Ctor, specSides);
                 deployCr = descriptor.deployCr();
             }
-            // Mint the side-0 fleet context BEFORE any member mints (installFleetContext
-            // fail-closes on ordering) — knob-gated inside; cached once per boot.
+            // The round's document facts for the fleet key, built at
+            // every roster deploy beside the document entry below (null with no descriptor).
+            roundDocumentIds = descriptor == null ? null : AllSkillsFleetLaw.DocumentIds.of(descriptor);
+            // The round's document entry BEFORE any member mints (installFleetContext
+            // fail-closes on ordering) — knob-gated inside; it runs every round and hands the round's
+            // LIVE record over by reference: each later lookup re-mints a side's fleet context only
+            // when that side's fleet key moved.
             if (descriptor != null) {
-                AllSkillsAttach.maybeMintSideZeroFleetContext(descriptor.roster());
+                AllSkillsAttach.maybeMintSideZeroFleetContext(roundDocumentIds, FLEET_RECORD);
             } else {
                 AllSkillsAttach.maybeMintSideZeroFleetContextFromVariantIds(
                         List.of(demoVariantId));
@@ -927,7 +1246,8 @@ public final class RealEngineDemoRoster {
                 Method getShipFor = cfmClass.getMethod("getShipFor", fleetMemberApiClass);
                 Method getReserves = cfmClass.getMethod("getReserves");
                 Method getCombatMap = engineClass.getMethod("getCombatMap");
-                Method mapHeight = getCombatMap.getReturnType().getMethod("super");
+                Method mapHeight =
+                        EngineSymBridgeRoster.BRIDGE_ROSTER_MAP_HEIGHT_METHOD.method(getCombatMap.getReturnType());
                 Method getStandoffRange = engineClass.getMethod("getStandoffRange");
                 Method getContext = engineClass.getMethod("getContext");
                 Method contextSetStandoffRange =
@@ -946,7 +1266,8 @@ public final class RealEngineDemoRoster {
                 // the per-category fightToTheLast seeded from the boot category (a /wave switch
                 // re-writes it through the wave hook). Public API fields + one stable-named engine
                 // class; the client jar never sees any of it (B-deny stays clear).
-                Class<?> admiralClass = Class.forName(ADMIRAL_AI_CLASS, false, loader);
+                Class<?> admiralClass = Class.forName(
+                        EngineSymBridgeRoster.BRIDGE_ROSTER_ADMIRAL_AI_CLASS.className(), false, loader);
                 Class<?> admiralPluginClass = Class.forName(ADMIRAL_AI_PLUGIN_API, false, loader);
                 Constructor<?> admiralCtor = admiralClass.getConstructor(cfmClass, boolean.class);
                 Method setAdmiralAI = cfmClass.getMethod("setAdmiralAI", admiralPluginClass);
@@ -1037,6 +1358,8 @@ public final class RealEngineDemoRoster {
                 stableByWire.put(seatWireIds[i], stable);
                 liveShipByWireId.put(seatWireIds[i], deployedShips.get(i));
             }
+            // The t=0 per-ship echo rides here, not in the deploy context: that layer holds no wire id.
+            echoT0Ships(deployedShips, specs, specSides, seatWireIds, allSeatShipIds, AllSkillsAttach::echoShip);
             // Record ALL deployed hull stable ids (seats + AI rows) —
             // the growth known-keys seed. Blank ids (the fx_drone class) are skipped
             // silently: the seam never announces a blank key, so an unseeded blank cannot
@@ -1409,7 +1732,9 @@ public final class RealEngineDemoRoster {
                     "midDeploySeat(" + seatId + ") without an active descriptor — fly-ins exist"
                             + " only on the descriptor-driven npeer path");
         }
-        DescriptorLayout.SeatSlot slot = DescriptorLayout.seatSlot(seatId);
+        // The slot law over the deployed document, the composition the
+        // round-open pre-pass lays its seats out with (same answer as the layout's own seat slot).
+        DescriptorLayout.SeatSlot slot = seatSlotOf(deployedDescriptor, seatId);
         MatchDescriptor.Seat seat = slot.seat();
         if (liveShipByWireId.containsKey(seat.shipId())) {
             throw new RealEngineDemoRosterException(
@@ -1418,26 +1743,30 @@ public final class RealEngineDemoRoster {
                             + " (mount-loss / reset) before a fresh fly-in");
         }
         ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
+        FleetWrite fleetWrite = null;
         try {
-            Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+            Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
             Object engine = engineClass.getMethod("getInstance").invoke(null);
             if (engine == null) {
                 throw new RealEngineDemoRosterException(
                         "CombatEngine.getInstance() returned null at midDeploySeat(" + seatId + ")");
             }
-            Class<?> shipClass = Class.forName(SHIP_CLASS, false, loader);
-            Class<?> hullVariantClass = Class.forName(HULL_VARIANT_SPEC_CLASS, false, loader);
+            Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
+            Class<?> hullVariantClass = Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader);
 
             // Variant by FULL-layout ordinal (occupancy-independent — the same slot the t=0 deploy
             // would have used, so a joiner's hull identity is join-order-invariant), or the seat's
             // stored /ship override when it resolves (W7 B1b — allowlist-canonical id, never wire).
-            int side = sideOrNeg >= 0 ? sideOrNeg : slot.side();
             // The ONE pick law (now refuses stations too).
+            // Side + pick through the ONE pure resolver the round-open
+            // pre-pass also runs, so a pre-pass entry and this fielding cannot resolve apart.
             Method variantIsStation = hullVariantClass.getMethod("isStation");
-            PickResolution pick = resolveSeatPick(overrideOrNull, slot.descriptorVariantId(),
+            SeatFielding fielding = resolveSeatFielding(deployedDescriptor, seatId, sideOrNeg, overrideOrNull,
                     id -> resolveVariantById(loader, hullVariantClass, id),
                     (v, id) -> Boolean.TRUE.equals(variantIsStation.invoke(v))
                             || MatchDescriptors.isStationVariantId(id));
+            int side = fielding.side();
+            PickResolution pick = fielding.pick();
             if (pick.fallbackReasonOrNull() != null) {
                 System.out.println("real-engine-demo-roster midDeploySeat seat=" + seatId
                         + " override_unresolvable id=" + overrideOrNull
@@ -1481,7 +1810,7 @@ public final class RealEngineDemoRoster {
             // crewing left getCrewFraction()=0.8 and CRPluginImpl's understrength malus dragged
             // maxCR to 0.6 — crew max(maxCrew,minCrew,1), the engine's own full-crew idiom
             // (FleetMember.readResolve addCrew(100000))).
-            Class<?> fleetMemberClass = Class.forName(FLEET_MEMBER_CLASS, false, loader);
+            Class<?> fleetMemberClass = Class.forName(EngineSym.FLEET_MEMBER_CLASS.className(), false, loader);
             Class<?> fleetMemberTypeClass = Class.forName(FLEET_MEMBER_TYPE_API, false, loader);
             Object member = fleetMemberClass
                     .getConstructor(int.class, hullVariantClass, fleetMemberTypeClass)
@@ -1494,25 +1823,27 @@ public final class RealEngineDemoRoster {
                     ((Number) fleetMemberClass.getMethod("getMaxCrew").invoke(member)).floatValue();
             crewComp.getClass().getMethod("setCrew", float.class)
                     .invoke(crewComp, Math.max(Math.max(maxCrew, minCrew), 1.0f));
+            // The fleet record write. Every fielding writes (an equal
+            // entry included), keyed on the PICK's variant id (never the sticky or the realized body), BEFORE the
+            // captain attach reads its side's key; the digest is that key as this hull reads it. A throw from
+            // here on restores the replaced entry (the catches below).
+            fleetWrite = recordSeatFielding(seatId, fielding.wireId(), fielding.side(), fielding.goalId());
             // Officer attach BEFORE spawn — a fly-in seat hull must carry the
             // same json-assigned officer the t=0 roster deploy gives it (client parity attach
             // is unconditional per variant, so an officer-less fly-in would desync stats).
             // A fly-in is seat-by-construction — same guard (e) exclusion as the
             // t=0 seat specs (all-skills captain REPLACES the curated row, never stacks).
+            // The captain attach carries the fleet context of
+            // the side the seat is FIELDED on (the pair and the member's own fleet data), so a
+            // /switchteams seat on side 1 reads side 1's fleet, never side 0's; a side with no
+            // document roster keeps the pair with no fleet data (one row a side).
             if (AllSkillsAttach.enabled()) {
-                AllSkillsAttach.attachAllSkillsCaptain(member, DescriptorLayout.seatShipName(seatId));
+                AllSkillsAttach.attachAllSkillsCaptain(member, DescriptorLayout.seatShipName(seatId),
+                        side);
             } else {
                 // Officer TRANSFER: an out-of-table /ship pick falls back to the seat's
                 // descriptor-variant row — the officer follows the seat, never a bare hull.
                 OfficerAttach.maybeAttachSeat(member, variantId, slot.descriptorVariantId());
-            }
-            // A side-0 fly-in carries the fleet-context pair like every t=0 side-0
-            // member (knob-gated no-op inside; the round's deploy minted the context).
-            // The pair is MEMBER-local (setFleetCommanderForStats) and follows a
-            // /switchteams seat onto side 1 — without it the derive short-circuits to FULL
-            // bonus (the defect), so a switched player would fly a stronger ship.
-            if (side == 0 || slot.side() == 0) {
-                AllSkillsAttach.installFleetContext(member);
             }
             // The REALIZED loadout. The member ctor above ran every
             // hullmod's applyEffectsBeforeShipCreation on this clone, and a mod hook may have rolled a weapon
@@ -1558,6 +1889,7 @@ public final class RealEngineDemoRoster {
                         "midDeploySeat(" + seatId + "): spawnFleetMember returned "
                                 + (ship == null ? "null" : ship.getClass().getName()));
             }
+            AllSkillsAttach.echoShip(ship, String.valueOf(seat.shipId()), side);
             // A mod script that switched the drive off
             // mid-burn would block this hull's ship system for its whole life.
             clearStrandedTravelDrive(loader, shipClass, ship, "midDeploySeat",
@@ -1624,10 +1956,12 @@ public final class RealEngineDemoRoster {
             }
             return new SeatDeployResult(ship, fieldedVariantId, slot.descriptorVariantId(), side,
                     DescriptorLayout.seatShipName(seatId), DescriptorLayout.crPerMille(chosenCr),
-                    seat.shipId(), stable);
+                    seat.shipId(), stable, fleetWrite.keyDigest(), fleetWrite.roundOpen());
         } catch (RealEngineDemoRosterException e) {
+            undoSeatFielding(fleetWrite);
             throw e;
         } catch (Throwable t) {
+            undoSeatFielding(fleetWrite);
             Throwable cause = unwrap(t);
             throw new RealEngineDemoRosterException(
                     "midDeploySeat(" + seatId + ") failed: "
@@ -1643,9 +1977,18 @@ public final class RealEngineDemoRoster {
      * the seat's descriptor truth, and the RAPP row fields
      * the serve loop's variant-repoint fan sends.
      * {@code wireId} (the seat's descriptor ship id) + {@code stableId} (the spawned hull's
-     * engine id) — the round-reset lane builds its fly-in results from these directly. */
+     * engine id) — the round-reset lane builds its fly-in results from these directly.
+     * {@code fleetKeyDigest} = the digest of the fielded side's
+     * fleet key right after this fielding's record write (the key the hull read; any int, 0 lawful) and
+     * {@code fleetRoundOpen} = that write was its round-open pre-pass entry's equal re-write. */
     public record SeatDeployResult(Object ship, String variantId, String descriptorVariantId,
-            int side, String shipName, int crPerMille, long wireId, String stableId) {
+            int side, String shipName, int crPerMille, long wireId, String stableId, int fleetKeyDigest,
+            boolean fleetRoundOpen) {
+        /** The pre-record shape: digest 0, not round-open (a result no fleet record write produced). */
+        public SeatDeployResult(Object ship, String variantId, String descriptorVariantId,
+                int side, String shipName, int crPerMille, long wireId, String stableId) {
+            this(ship, variantId, descriptorVariantId, side, shipName, crPerMille, wireId, stableId, 0, false);
+        }
     }
 
     /** The seat/wave ship's
@@ -1809,6 +2152,62 @@ public final class RealEngineDemoRoster {
     }
 
     /**
+     * One seat fielding's resolved identity: the seat's wire id ({@code >= 1}), the side it is fielded on
+     * (0 / 1) and the pick; {@link #goalId} = the pick's variant id, the fleet record's goal (never the
+     * sticky or realized body).
+     */
+    public record SeatFielding(long wireId, int side, PickResolution pick) {
+        public String goalId() {
+            return pick.variantId();
+        }
+    }
+
+    /**
+     * The ONE pure side + pick resolution of a seat fielding, run by the full {@code midDeploySeat} twin
+     * AND by the round-open pre-pass ({@link #prePassWrites}), so a pre-pass entry equals its fielding by
+     * construction. {@code sideOrNeg} 0 / 1 = that side, negative = the descriptor's side, above 1 THROWS;
+     * the pick = {@link #resolveSeatPick} over the seat's full-layout descriptor variant. Pure: no print,
+     * no counter (the call sites own both).
+     */
+    public static SeatFielding resolveSeatFielding(MatchDescriptor descriptor, int seatId, int sideOrNeg,
+            String overrideOrNull, PickResolver resolver, StationCheck stationCheck) {
+        if (sideOrNeg > 1) {
+            throw new RealEngineDemoRosterException("seat " + seatId + ": side " + sideOrNeg
+                    + " is not a team (0/1, negative = descriptor)");
+        }
+        DescriptorLayout.SeatSlot slot = seatSlotOf(descriptor, seatId);
+        int side = sideOrNeg >= 0 ? sideOrNeg : slot.side();
+        return new SeatFielding(slot.seat().shipId(), side,
+                resolveSeatPick(overrideOrNull, slot.descriptorVariantId(), resolver, stationCheck));
+    }
+
+    /**
+     * The seat slot of {@code seatId} over a GIVEN document: the layout's sorted-seats / full-layout
+     * ordinal law (its public pure halves), so the round-open pre-pass can lay seats out after the
+     * roster reset forgot the deployed document. THROWS on a seat the document never minted.
+     *
+     */
+    static DescriptorLayout.SeatSlot seatSlotOf(MatchDescriptor descriptor, int seatId) {
+        List<MatchDescriptor.Seat> seats = new ArrayList<>(descriptor.seats());
+        seats.sort(Comparator.comparingInt(MatchDescriptor.Seat::seatId));
+        int seatIndex = -1;
+        for (int i = 0; i < seats.size(); i++) {
+            if (seats.get(i).seatId() == seatId) {
+                seatIndex = i;
+                break;
+            }
+        }
+        if (seatIndex < 0) {
+            throw new RealEngineDemoRosterException("seat " + seatId + ": not a minted descriptor seat");
+        }
+        MatchDescriptor.Seat seat = seats.get(seatIndex);
+        int ordinal = DescriptorLayout.fullLayoutSideOrdinals(seats)[seatIndex];
+        String descriptorVariantId =
+                DescriptorLayout.seatVariantSlotsBySide(descriptor.roster()).get(seat.side()).get(ordinal);
+        return new DescriptorLayout.SeatSlot(seat, seat.side(), descriptorVariantId);
+    }
+
+    /**
      * cr_effect deploy-CR seed law: seed {@code max(floor, computed)}
      * where {@code computed} = the engine's own {@code getMutableStats().getMaxCombatReadiness()
      * .getModifiedValue()} read AFTER officer attach. The client's vanilla {@code addToFleet}
@@ -1818,9 +2217,12 @@ public final class RealEngineDemoRoster {
      * whole measured 174.45229-vs-174.39999 maxSpeed gap). The floor keeps the
      * anti-withdraw guarantee if a headless member's crew-modifier path computes low
      * (MEASURE-first guard); a non-finite read falls to the floor rather than seeding NaN.
+     * The seed is held to 1, the top of the engine's own CR range: the client's pose attach holds a
+     * wire CR over 1 to 1, so a seed above it would split own-ship cr_effect between the two ends
+     * (measured seeds sit at or under 0.45 computed and 1 floor; the hold is hygiene).
      */
     private static float chooseDeployCr(float computed, float floor, String site) {
-        float chosen = Float.isFinite(computed) ? Math.max(floor, computed) : floor;
+        float chosen = Math.min(1f, Float.isFinite(computed) ? Math.max(floor, computed) : floor);
         System.out.println("real-engine-demo-roster " + site + " deploy CR seed computed="
                 + computed + " floor=" + floor + " chosen=" + chosen);
         return chosen;
@@ -1925,10 +2327,10 @@ public final class RealEngineDemoRoster {
         final Method statGetModifiedValue;
 
         WaveMintHandles(ClassLoader loader) throws ReflectiveOperationException {
-            engineClass = Class.forName(ENGINE_CLASS, true, loader);
-            shipClass = Class.forName(SHIP_CLASS, false, loader);
-            hullVariantClass = Class.forName(HULL_VARIANT_SPEC_CLASS, false, loader);
-            Class<?> fleetMemberClass = Class.forName(FLEET_MEMBER_CLASS, false, loader);
+            engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
+            shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
+            hullVariantClass = Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader);
+            Class<?> fleetMemberClass = Class.forName(EngineSym.FLEET_MEMBER_CLASS.className(), false, loader);
             Class<?> fleetMemberTypeClass = Class.forName(FLEET_MEMBER_TYPE_API, false, loader);
             fleetMemberApiClass = Class.forName(FLEET_MEMBER_API, false, loader);
             vec2Class = Class.forName(LWJGL_VECTOR2F_CLASS, false, loader);
@@ -2354,12 +2756,12 @@ public final class RealEngineDemoRoster {
     public static String waveProbeSampleLine(String stableId) {
         ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
         try {
-            Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+            Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
             Object engine = engineClass.getMethod("getInstance").invoke(null);
             if (engine == null) {
                 return "sample_error=no_engine_instance";
             }
-            Class<?> shipClass = Class.forName(SHIP_CLASS, false, loader);
+            Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
             List<?> ships = (List<?>) engineClass.getMethod("getShips").invoke(engine);
             Object ship = null;
             for (Object candidate : ships) {
@@ -2470,11 +2872,15 @@ public final class RealEngineDemoRoster {
      * {@link #overrideFallbackCount()}); each deployed seat's fielded id is recorded for
      * {@link #seatDeployedVariantId(int)}, and the seat spec carries fielded + descriptor ids so
      * the officer attach takes the seat lookup law. Placement/name stay ordinal-driven.
+     *
+     * <p>{@code specSidesOut} gains each returned spec's owner side, in spec order (the per-ship
+     * echo's side).
      */
     private static List<HeadlessCombatContext.EngineDeployShipSpec> buildDescriptorSpecs(
             MatchDescriptor descriptor, List<MatchDescriptor.Seat> seats, SortedSet<Integer> occupiedOrNull,
             Map<Integer, String> overrideBySeat,
-            ClassLoader loader, Class<?> hullVariantClass, Constructor<?> vec2Ctor) throws Exception {
+            ClassLoader loader, Class<?> hullVariantClass, Constructor<?> vec2Ctor,
+            List<Integer> specSidesOut) throws Exception {
         // Resolve each distinct variant once, fail-closed. Hoisted ABOVE the capacity fold
         // because the STATION validation below needs the ENGINE's own
         // detection seam — ShipVariantAPI.isStation() (reads the
@@ -2616,6 +3022,11 @@ public final class RealEngineDemoRoster {
                         + pick.fallbackReasonOrNull());
             }
             deployedVariantBySeatId.put(seat.seatId(), variantId);
+            // The t=0 record write: a seat fielded at t=0 by the roster deploy itself is a
+            // fleet member like any flown-in one (the base game counts every member), so it writes the
+            // round's record here, before the document entry reads the key. Never round-open pending:
+            // this deploy IS its fielding. Caller holds the class lock (deployRoster).
+            FLEET_RECORD.write(seat.shipId(), side, variantId);
             if (specs.isEmpty()) {
                 deployedVariantId = variantId; // diagnostics: the first deployed seat's variant
             }
@@ -2626,6 +3037,7 @@ public final class RealEngineDemoRoster {
                     side, variant, DescriptorLayout.seatShipName(seat.seatId()),
                     vec2Ctor.newInstance(pos[0], pos[1]), side == 0 ? 90.0f : 270.0f, 0.0f,
                     /*station*/ false, /*seat*/ true, variantId, descriptorVariantId));
+            specSidesOut.add(side);
         }
         int[] aiOrdinal = new int[2];
         for (MatchDescriptor.RosterRow row : descriptor.roster()) {
@@ -2645,6 +3057,7 @@ public final class RealEngineDemoRoster {
                         side, variantById.get(row.variantId()),
                         "AlphaCoreMP Station " + side + "." + (++aiOrdinal[side]), // W11 public name
                         vec2Ctor.newInstance(0.0f, 0.0f), 0.0f, 0.0f, /*station*/ true));
+                specSidesOut.add(side);
                 continue;
             }
             for (int k = 0; k < row.count(); k++) {
@@ -2654,6 +3067,7 @@ public final class RealEngineDemoRoster {
                         side, variantById.get(row.variantId()),
                         "AlphaCoreMP AI " + side + "." + (++aiOrdinal[side]), // W11 public name
                         vec2Ctor.newInstance(pos[0], pos[1]), side == 0 ? 90.0f : 270.0f, 0.0f));
+                specSidesOut.add(side);
             }
         }
         return specs;
@@ -2714,7 +3128,7 @@ public final class RealEngineDemoRoster {
     static Object resolveVariantById(String variantId) throws Exception {
         ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
         return resolveVariantById(
-                loader, Class.forName(HULL_VARIANT_SPEC_CLASS, false, loader), variantId);
+                loader, Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader), variantId);
     }
 
     /**
@@ -2771,7 +3185,7 @@ public final class RealEngineDemoRoster {
             if (law != null) {
                 try {
                     ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
-                    Class<?> variantClass = Class.forName(HULL_VARIANT_SPEC_CLASS, false, loader);
+                    Class<?> variantClass = Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader);
                     hullSpec = variantClass.getMethod("getHullSpec");
                     hullId = hullSpec.getReturnType().getMethod("getHullId");
                 } catch (Throwable t) {
@@ -2856,8 +3270,8 @@ public final class RealEngineDemoRoster {
     public static List<String> variantRegistryIds() {
         try {
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
-            Class<?> registryClass = Class.forName(VARIANT_REGISTRY_CLASS, true, loader);
-            Object rawIds = registryClass.getMethod(VARIANT_REGISTRY_METHOD).invoke(null);
+            Class<?> registryClass = EngineSym.VARIANT_REGISTRY_CLASS.load(loader);
+            Object rawIds = EngineSym.VARIANT_REGISTRY_IDS_METHOD.method(registryClass).invoke(null);
             List<String> ids = new ArrayList<>();
             if (rawIds instanceof Collection) {
                 for (Object id : (Collection<?>) rawIds) {
@@ -2912,8 +3326,7 @@ public final class RealEngineDemoRoster {
         java.io.File kitRoot = null;
         try {
             ClassLoader loader = RealEngineDemoRoster.class.getClassLoader();
-            Class<?> modManagerClass =
-                    Class.forName("com.fs.starfarer.launcher.ModManager", true, loader);
+            Class<?> modManagerClass = EngineSym.MOD_MANAGER_CLASS.load(loader);
             Object modManager = modManagerClass.getMethod("getInstance").invoke(null);
             List<?> enabledMods =
                     (List<?>) modManagerClass.getMethod("getEnabledMods").invoke(modManager);
@@ -2941,8 +3354,8 @@ public final class RealEngineDemoRoster {
 
     static Object resolveVariantById(ClassLoader loader, Class<?> hullVariantClass,
             String variantId) throws Exception {
-        Class<?> registryClass = Class.forName(VARIANT_REGISTRY_CLASS, true, loader);
-        Method lookup = registryClass.getMethod(VARIANT_REGISTRY_METHOD, String.class);
+        Class<?> registryClass = EngineSym.VARIANT_REGISTRY_CLASS.load(loader);
+        Method lookup = EngineSym.VARIANT_REGISTRY_LOOKUP_METHOD.method(registryClass);
         Object variant = lookup.invoke(null, variantId);
         if (variant != null && hullVariantClass.isInstance(variant)) {
             return variant;
@@ -2950,7 +3363,7 @@ public final class RealEngineDemoRoster {
         // Fail closed with the diagnostics that point at the actual boundary.
         int registrySize = -1;
         try {
-            Object rawIds = registryClass.getMethod(VARIANT_REGISTRY_METHOD).invoke(null);
+            Object rawIds = EngineSym.VARIANT_REGISTRY_IDS_METHOD.method(registryClass).invoke(null);
             if (rawIds instanceof Collection) {
                 registrySize = ((Collection<?>) rawIds).size();
             }

@@ -166,8 +166,7 @@ final class PressShadowProbe {
                 java.lang.invoke.MethodHandle g = pressShadowVerbGetter;
                 if (g == null) {
                     Class<?> verbEnum = Class.forName("com.fs.starfarer.combat.entities.Ship$oo");
-                    // Verb FIELD identifier built from
-                    // char codes — ASCII-only source, immune to any javac/source-encoding drift.
+                    // Verb FIELD identifier, built from char codes.
                     // A field lookup legitimately takes the engine's internal identifier (unlike an
                     // enum NAME — see below).
                     g = java.lang.invoke.MethodHandles.publicLookup()

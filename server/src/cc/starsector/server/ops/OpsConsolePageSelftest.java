@@ -176,6 +176,9 @@ public final class OpsConsolePageSelftest {
         row(fails, "page-setup-folds", () -> setupFolds(html));
         row(fails, "page-setup-fold-opens-on-refusal", () -> setupFoldOpensOnRefusal(js));
         row(fails, "page-mods-kind-kept", () -> modsKindKept(js));
+        row(fails, "page-launch-fail-stale-live", () -> launchFailDialog(js, 1));
+        row(fails, "page-launch-fail-live-dismiss", () -> launchFailDialog(js, 2));
+        row(fails, "page-launch-fail-current-pops", () -> launchFailDialog(js, 3));
         return fails;
     }
 
@@ -1152,6 +1155,94 @@ public final class OpsConsolePageSelftest {
             bad.add("the map block is missing or copies by itself (flips if the map block copies to the clipboard)");
         }
         return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /**
+     * The launch-failure dialog's rows, read off the served script's
+     * {@code _launchDialog} / {@code _dropLaunchErr} / {@code dialogError} bodies. This selftest runs no script
+     * engine, so each row pins the branch shape its behaviour rides (the WHY = the {@link OpsConsoleJsCore}
+     * javadoc). {@code which}: 1 = {@code page-launch-fail-stale-live} (a stale failId, or any failId beside a
+     * live server, pops nothing and is marked seen), 2 = {@code page-launch-fail-live-dismiss} (a live answer
+     * takes back a failure dialog still up while another queued error stays), 3 =
+     * {@code page-launch-fail-current-pops} (the current launch's own failure, server not live, pops once).
+     */
+    static String launchFailDialog(String js, int which) {
+        String ld = between(js, "  _launchDialog(s) {", "\n  },");
+        String drop = between(js, "  _dropLaunchErr() {", "\n  },");
+        String err = between(js, "  dialogError(title, text, kind) {", "\n  },");
+        if (ld.isEmpty() || drop.isEmpty() || err.isEmpty()) {
+            return "_launchDialog / _dropLaunchErr / dialogError(title, text, kind) missing from the served script"
+                    + " (flips if one is renamed or dropped)";
+        }
+        String live = "const live = s.stateKey === 'listening' || s.stateKey === 'run';";
+        String takeBack = "if (live) {\n      CC._dropLaunchErr();\n    }";
+        String seen = "if (id <= 0 || String(id) === CC._failSeen) {";
+        String own = "const own = !!l && (l.headline === 'REFUSED' || (l.headline === 'FAILED' && l.phase !== 'PENDING'));";
+        String pending = "if (!live && !own && l && l.phase === 'PENDING') {";
+        String mark = "CC._store('cc.failSeen', CC._failSeen);";
+        String pop = "if (own && !live) {\n      CC.dialogError(l.headline, l.text, 'launch');";
+        String keep = "if (i === 0 || it.kind !== 'launch') {\n        return true;\n      }\n      it.resolve();\n      return false;";
+        String gate = "if (!d || !d.open || !head || head.kind !== 'launch') {";
+        String shift = "CC._errQ.shift();\n    head.resolve();";
+        String next = "if (CC._errQ.length) {\n      CC._errNext();\n    } else {\n      d.close();\n    }";
+        List<String> bad = new ArrayList<>();
+        if (which == 1) {
+            if (!ld.contains(live)) {
+                bad.add("live is not the snapshot's listening / run (flips if a live server stops gating the pop)");
+            }
+            if (!ld.contains(pending)) {
+                bad.add("the pending skip is not '" + pending + "' (flips if a live answer can return before the"
+                        + " mark: its stale failId stays unseen and pops once the server stops)");
+            }
+            if (!ld.contains(own)) {
+                bad.add("own is not REFUSED, or FAILED past PENDING (flips if a later launch still pending counts"
+                        + " as the failure's own: a superseded failId pops over the starting server)");
+            }
+            if (!inOrder(ld, live, pending, mark, pop)) {
+                bad.add("not live < pending skip < mark < the own-and-not-live pop (flips if a live or superseded"
+                        + " failId pops, or returns before it is marked seen)");
+            }
+        } else if (which == 2) {
+            if (!inOrder(ld, live, takeBack, seen)) {
+                bad.add("a live answer does not call _dropLaunchErr before the seen return (flips if the dialog"
+                        + " this failId already popped stays up over a live server)");
+            }
+            if (!err.contains("kind: kind === 'launch' ? 'launch' : ''") || !ld.contains(pop)) {
+                bad.add("the launch failure is not queued with kind 'launch' (flips if the take-back cannot tell"
+                        + " it from another error)");
+            }
+            if (!inOrder(drop, keep, gate, shift, next)) {
+                bad.add("_dropLaunchErr is not keep-others < the open-launch-head gate < shift + resolve < next or"
+                        + " close (flips if another queued error is dropped, a taken entry never resolves, or the"
+                        + " failure dialog stays open)");
+            }
+        } else {
+            if (!ld.contains(own)) {
+                bad.add("own is not REFUSED, or FAILED past PENDING (flips if the current launch's real failure"
+                        + " stops popping)");
+            }
+            if (!ld.contains(pending)) {
+                bad.add("the pending skip is not '" + pending + "' (flips if a refusal served at PENDING is skipped)");
+            }
+            if (!inOrder(ld, seen, own, pending, mark, pop)) {
+                bad.add("not seen return < own < pending skip < mark < pop (flips if the seen return is dropped:"
+                        + " the failure pops every poll, or the mark follows the pop)");
+            }
+        }
+        return bad.isEmpty() ? null : bad.size() + " wrong: " + String.join(" | ", bad);
+    }
+
+    /** True iff each part occurs exactly once in {@code body}, in the order given. */
+    private static boolean inOrder(String body, String... parts) {
+        int at = -1;
+        for (String p : parts) {
+            int i = body.indexOf(p);
+            if (i <= at || i != body.lastIndexOf(p)) {
+                return false;
+            }
+            at = i;
+        }
+        return true;
     }
 
     /** One row: the check answers null (green) or the first offence; a throw is that row's FAIL. */

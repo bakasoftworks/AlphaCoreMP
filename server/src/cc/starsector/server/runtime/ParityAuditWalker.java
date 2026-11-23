@@ -24,8 +24,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * fields — the unknown-unknowns detector (it would have caught STEP-14's ±1000-vs-mission map
  * bounds divergence mechanically: {@code engine.getMapWidth/getMapHeight} are in the scalar walk).
  *
- * <p><b>Reflection-only, READ-only, fail-soft.</b> Every getter invoked is a public zero-arg
- * {@code get*}/{@code is*} declared on a PUBLIC API interface ({@code com.fs.starfarer.api.combat.*}),
+ * <p><b>Reflection-only, READ-only, fail-soft.</b> Every getter invoked is a public
+ * {@code get*}/{@code is*} declared on a PUBLIC API interface ({@code com.fs.starfarer.api.combat.*}), zero-arg
+ * except the one-boolean {@code FALSE_ARG_GETTERS} (walked with {@code false}), each
  * resolved against the walked object's own classloader, so this class compiles with no game jars on
  * the classpath and never touches the engine's internal (non-API) identities (descriptor-grade boundary). Getters are
  * {@code assumed} side-effect-free; the walked set is audited once from the inventory event (the
@@ -89,6 +90,13 @@ public final class ParityAuditWalker {
      * client half ({@code ClientParityWalker}) dropped its line in the same change.
      */
     private static final Set<String> SKIPPED_GETTERS = Set.of("getWingCRAtDeployment");
+
+    /**
+     * Getters that take ONE boolean since Starsector 0.98.5a and are walked with {@code false}, so the key
+     * stays two-sided: {@code ShipAPI.isBeingIgnored(boolean)} with {@code false} returns the plain flag the old
+     * zero-arg getter returned, and {@code ClientParityWalker} reads the same call.
+     */
+    private static final Set<String> FALSE_ARG_GETTERS = Set.of("isBeingIgnored");
 
     /** Emit the field inventory (walked + skipped) exactly once per JVM, on the first walk tick. */
     private static final AtomicBoolean inventoryEmitted = new AtomicBoolean(false);
@@ -316,7 +324,9 @@ public final class ParityAuditWalker {
             List<Method> candidates = new ArrayList<>();
             for (Method m : iface.getMethods()) {
                 String name = m.getName();
-                if (m.getParameterCount() != 0 || m.isBridge() || Modifier.isStatic(m.getModifiers())
+                boolean falseArg = m.getParameterCount() == 1 && m.getParameterTypes()[0] == boolean.class
+                        && FALSE_ARG_GETTERS.contains(name);
+                if ((m.getParameterCount() != 0 && !falseArg) || m.isBridge() || Modifier.isStatic(m.getModifiers())
                         || !(name.startsWith("get") || name.startsWith("is"))) {
                     continue;
                 }
@@ -341,7 +351,7 @@ public final class ParityAuditWalker {
     /** Invoke a public interface getter; render any throwable as a sentinel object. */
     private static Object invokeSafe(Method m, Object target) {
         try {
-            return m.invoke(target);
+            return m.getParameterCount() == 1 ? m.invoke(target, Boolean.FALSE) : m.invoke(target);
         } catch (Throwable t) {
             Throwable c = t.getCause() != null ? t.getCause() : t;
             return new InvokeError(c.getClass().getSimpleName());

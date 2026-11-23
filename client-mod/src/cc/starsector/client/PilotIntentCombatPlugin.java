@@ -517,7 +517,7 @@ public class PilotIntentCombatPlugin extends BaseEveryFrameCombatPlugin {
      */
     private static final class InertShipAI implements ShipAIPlugin {
         private final ShipwideAIFlags flags = new ShipwideAIFlags();
-        private final ShipAIConfig config = new ShipAIConfig();
+        private final ShipAIConfig config = new ShipAIConfig(null); // null = no hull-hint override: the plain field defaults
 
         @Override public void advance(float amount) { /* inert: issue no fire/maneuver commands */ }
         @Override public void setDoNotFireDelay(float amount) { /* no-op */ }

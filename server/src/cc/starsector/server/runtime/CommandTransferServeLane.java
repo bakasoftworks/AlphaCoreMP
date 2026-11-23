@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.function.BiConsumer; //
@@ -189,6 +190,20 @@ public final class CommandTransferServeLane {
      * {@code first=} becomes meaningful on this lane. */
     private WorstFramesLedger stallTags;
 
+    /**
+     * The serve's fleet-record removal seam: removes {@code seatId}'s entry (and fans its one
+     * removal row) when MatchSeatAuthority reads the seat neither occupied nor mounted; a no-op
+     * otherwise or with no entry held. This lane calls it where a parked takeover's verb has landed
+     * and unseated the parked owner. Sim thread only.
+     *
+     */
+    @FunctionalInterface
+    interface FleetVacateSeam {
+        void removeFleetEntryIfSeatGone(int seatId) throws IOException;
+    }
+
+    private final FleetVacateSeam fleetVacateSeam;
+
     CommandTransferServeLane(SeatRebindArbiter rebindArbiter, PilotIntentDatagramServer door,
             PersistentPilotIntentCombatServer.PilotIntentStep pilotStep,
             Map<Integer, Long> seatWireIdBySeatId, MatchSeatAuthority authority,
@@ -198,7 +213,8 @@ public final class CommandTransferServeLane {
             List<byte[]> roundRosterAppendFrames, SeatGraceLane graceLane,
             TransferPodLane podLane, TransferRekeyHook transferRekey,
             TransferTargets transferTargets, Set<String> growthKnownKeysOrNull, int round,
-            String stationVariantId) {
+            String stationVariantId, FleetVacateSeam fleetVacateSeam) {
+        this.fleetVacateSeam = Objects.requireNonNull(fleetVacateSeam, "fleetVacateSeam");
         this.rebindArbiter = rebindArbiter;
         this.door = door;
         this.pilotStep = pilotStep;
@@ -250,6 +266,13 @@ public final class CommandTransferServeLane {
 
     boolean seatVacatedThisPump(int seatId) {
         return vacatedThisPump.contains(seatId);
+    }
+
+    /** The seats THIS pump's TRUE-vacate drain took: the door's own immutable list (never copied,
+     * empty on almost every tick); the serve's fleet-record removal seam walks it after the module
+     * drain. */
+    List<Integer> vacatedThisPump() {
+        return vacatedThisPump;
     }
 
     /** The once-per-tick drain (sim thread, pre-advance FIRST — a true-vacated MOUNTED seat's
@@ -804,18 +827,15 @@ public final class CommandTransferServeLane {
                 continue;
             }
             boolean parkedTakeover = verdict.kind() == TransferEligibility.Kind.PARKED_TAKEOVER;
-            if (parkedTakeover) {
-                // D5 pre-steps BEFORE the verb: detach the suppress-whitelisted grace AI (its
-                // restore leaves a sane hull if the verb denies) and unseat the parked owner —
-                // recordMountLoss HULL_DEPARTED, the CROSS-seat vacate class (bind kept:
-                // never recordVoluntaryDismount — wrong telemetry label, no id-verify; the
-                // commit DOES produce a despawn of the parked seat's freed id, swallowed by the
-                // takeover echo armed at the rekey below — the parked-takeover despawn crash).
-                // The owner re-admits into the normal respawn path.
-                if (graceLane != null) {
-                    graceLane.clearForTakeover(targetSeatId, tick);
-                }
-                authority.recordMountLoss(targetSeatId, SeatStateCause.HULL_DEPARTED, tick);
+            if (parkedTakeover && graceLane != null) {
+                // The ONE takeover pre-step BEFORE the
+                // verb — detach the suppress-whitelisted grace AI. It must
+                // precede the verb: the verb yields the target's AI, so a detach after it would
+                // put the grace AI back onto a hull a player now flies; its personality restore
+                // also leaves a sane AI hull if the verb denies. The parked owner is NOT unseated
+                // here — its mount loss waits for the verb to land (below), so a deny or a commit
+                // race leaves that seat mounted and parked.
+                graceLane.clearForTakeover(targetSeatId, tick);
             }
             SeatRebindArbiter.TransferCommit commit = rebindArbiter.transferCommitWinner(seatId, tick);
             if (commit.targetHullId() != targetWireId) {
@@ -849,14 +869,29 @@ public final class CommandTransferServeLane {
                 continue;
             }
             if (parkedTakeover) {
-                // W3-FIX: the release inside seatOntoHull freed the PARKED seat's own
-                // fixed wire id (oldTargetId), which the despawn pass will see leave the
-                // snapshot THIS tick — but the mount loss was already recorded at the
-                // pre-step. Arm the one-shot id-verified echo so that single despawn is
-                // swallowed; every other seat-mapped despawn stays fail-closed. (The older
+                // The parked owner is unseated only
+                // now, after the verb LANDED — recordMountLoss HULL_DEPARTED, the CROSS-seat
+                // vacate class (never recordVoluntaryDismount: wrong telemetry label, no
+                // id-verify). Unseating before the verb stranded the seat
+                // on a deny (the verb refuses on the target's LIVE owner, which a host side switch
+                // can flip mid-flight past the drain's team gate): unmounted, its hull still
+                // mapped, no echo armed — that hull's later despawn, or a re-claim's fly-in,
+                // threw on the sim thread and ended the serve.
+                // The owner re-admits into the normal respawn path.
+                authority.recordMountLoss(targetSeatId, SeatStateCause.HULL_DEPARTED, tick);
+                // The release inside seatOntoHull freed the PARKED seat's own fixed wire id
+                // (oldTargetId), which the despawn pass (later this frame) will see leave the
+                // snapshot THIS tick — after the loss just recorded. Arm the one-shot id-verified
+                // echo so that single despawn is swallowed; every other seat-mapped despawn stays
+                // fail-closed. (The older
                 // comment's "a takeover never produces a despawn" premise was FALSE for parked
                 // takeover — the crash this fixes.)
                 authority.armTakeoverDespawnEcho(targetSeatId, mount.oldTargetId(), tick);
+                // The parked owner's wire id left the world
+                // with the landed verb and the seat is unmounted now, so its fleet entry leaves
+                // here (one removal row) unless the seat was re-claimed meanwhile. Only after a
+                // re-key with no deny: on the deny and commit-race arms the parked hull flies on.
+                fleetVacateSeam.removeFleetEntryIfSeatGone(targetSeatId);
             }
             fanLosers(commit, tick);
             // L3 COMMIT — MMNT stale-map semantics verbatim: from = the
@@ -1384,8 +1419,8 @@ public final class CommandTransferServeLane {
         }
         // The episode is over — the next flight's BEGIN re-arms the re-fan map.
         lastFannedTargetBySeat.remove(seatId);
-        // Any abort may follow census-shaping pre-steps (a PARKED takeover's mount-loss lands
-        // before a verb deny) — over-marking is free, a missed mark waits out the belt.
+        // Every abort re-marks the census rather than reasoning which one reshaped it —
+        // over-marking is free, a missed mark waits out the belt.
         censusDirty = true;
         door.fanServerChat(seatId, reason);
         System.out.println("npeer-serve transfer_abort seat=" + seatId

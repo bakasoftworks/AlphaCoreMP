@@ -13,7 +13,7 @@ import com.fs.starfarer.api.combat.ShipAPI;
  * engine's own cap).
  *
  * <p>The {@link FireSoundAdapter} idiom: direct compile-time engine links ({@code instanceof}
- * guard, NO {@code java.lang.reflect.*} — loader-B law), every surprise caught as
+ * guard; the keyword-named facade class binds once by name; NO {@code java.lang.reflect.*} — loader-B law), every surprise caught as
  * {@code Throwable}. Fallback = the API {@code playSound("explosion_ship", 1f, 0.5f, loc, vel)}
  * (the {@code AuthoritativePresenter} sound idiom) — loses only a hull style's per-style
  * override. Never throws into the presentation path.
@@ -21,6 +21,34 @@ import com.fs.starfarer.api.combat.ShipAPI;
 final class HulkBreakSfxAdapter {
 
     private HulkBreakSfxAdapter() {
+    }
+
+    /**
+     * On 0.98.5a-RC4 the facade class was {@code combat.entities.ship.A.int}, a Java
+     * keyword no source can name (on RC7 it is {@code combat.entities.ship.A.I}), so it binds by name through {@link EngineNames} (Windows-build owner + descriptor),
+     * resolved ONCE on the first {@link #play} (holder idiom). A resolve failure fails this holder's init, which
+     * {@link #play}'s {@code Throwable} catch takes as a facade miss (announce + API fallback), as before.
+     */
+    private static final class Facade {
+        private static final String OWNER = "com.fs.starfarer.combat.entities.ship.A.int";
+        /** The facade's hulk-break sound call. */
+        static final java.lang.invoke.MethodHandle BREAK_SFX;
+
+        static {
+            try {
+                BREAK_SFX = java.lang.invoke.MethodHandles.lookup().findStatic(
+                        Class.forName(EngineNames.cls(OWNER)),
+                        EngineNames.member(OWNER, "super", "(Lcom/fs/starfarer/loading/specs/A;"
+                                + "Lcom/fs/starfarer/api/combat/ShipAPI$HullSize;Lorg/lwjgl/util/vector/Vector2f;"
+                                + "Lorg/lwjgl/util/vector/Vector2f;FF)V"),
+                        java.lang.invoke.MethodType.methodType(void.class,
+                                com.fs.starfarer.loading.specs.A.class, ShipAPI.HullSize.class,
+                                org.lwjgl.util.vector.Vector2f.class, org.lwjgl.util.vector.Vector2f.class,
+                                float.class, float.class));
+            } catch (ReflectiveOperationException e) {
+                throw new ExceptionInInitializerError(e);
+            }
+        }
     }
 
     /**
@@ -36,10 +64,10 @@ final class HulkBreakSfxAdapter {
                 ? ShipAPI.HullSize.FIGHTER : ShipAPI.HullSize.FRIGATE;
         try {
             if (piece instanceof com.fs.starfarer.combat.entities.Ship) {
-                com.fs.starfarer.loading.specs.OoOO hullStyle =
+                com.fs.starfarer.loading.specs.A hullStyle =
                         ((com.fs.starfarer.combat.entities.Ship) piece).getHullStyle();
                 if (hullStyle != null) {
-                    com.fs.starfarer.combat.entities.ship.A.I.o00000(hullStyle, size,
+                    Facade.BREAK_SFX.invokeExact(hullStyle, size,
                             piece.getLocation(), piece.getVelocity(), 1f, 0.5f);
                     return true;
                 }

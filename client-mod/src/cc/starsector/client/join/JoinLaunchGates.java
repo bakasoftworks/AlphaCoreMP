@@ -158,6 +158,13 @@ final class JoinLaunchGates {
      * refusal is rendered as OUR reason + field ({@link MatchDocumentRefused}); any other failure reads
      * {@code match_doc_malformed decode} — never an exception message (the codec's text could carry peer bytes).
      *
+     * <p>Then the local-field law (MATCH-DOC-4096): the shape is a registry shape, the exact
+     * {@code 1v1} among them ({@code match_doc_out_of_range shape}; a {@code vanilla:}
+     * shape is this repo's rig window, never a served match). The window has no game data, so the count (station
+     * rows only, {@code roster.local}) runs in the game ({@code MatchMissionBuilder.readAndCheck},
+     * which re-runs all of it on whatever file it boots from). The side-0 fleet law (MDLF-1) rides the same way:
+     * here it refuses a document with no side-0 row at all ({@code roster.side0}), the game the station-only one.
+     *
      *
      */
     static MatchDescriptor lawfulDocument(String text) {
@@ -165,6 +172,8 @@ final class JoinLaunchGates {
             MatchDescriptor d = JoinLaunchPlan.parseDescriptor(text);
             JoinLaunchPlan.requirePilotSeat(d);
             MatchDocumentLaws.check(d, true);
+            MatchDocumentLaws.checkLocalField(d, variantId -> false, false);
+            MatchDocumentLaws.checkSideZeroFleet(d, variantId -> false);
             return d;
         } catch (MatchDocumentRefused r) {
             throw new DocumentRefused(r.reason() + " " + r.field());

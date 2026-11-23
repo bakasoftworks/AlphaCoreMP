@@ -1,23 +1,26 @@
 {
-    "displayName": "Custom",
-    "fluxCapacitors": 6,
-    "fluxVents": 55,
+    "displayName": "Hephaestus",
+    "fluxCapacitors": 0,
+    "fluxVents": 41,
     "goalVariant": true,
-    "hullId": "onslaught",
+    "hullId": "onslaught_xiv",
     "hullMods": [
-        "targetingunit",
         "ballistic_rangefinder",
+        "targetingunit",
         "heavyarmor"
     ],
     "permaMods": [
-        "armoredweapons",
+        "magazines",
         "shield_shunt",
-        "magazines"
+        "turretgyros"
+    ],
+    "sModdedBuiltIns": [
+        "armoredweapons"
     ],
     "sMods": [
-        "armoredweapons",
+        "magazines",
         "shield_shunt",
-        "magazines"
+        "turretgyros"
     ],
     "variantId": "onslaught_Hephaestus",
     "weaponGroups": [
@@ -25,42 +28,16 @@
             "autofire": true,
             "mode": "LINKED",
             "weapons": {
-                "WS 016": "tpc",
-                "WS 017": "tpc",
-                "WS 019": "multineedler"
-            }
-        },
-        {
-            "autofire": true,
-            "mode": "LINKED",
-            "weapons": {
+                "WS 001": "heavyneedler",
+                "WS 003": "heavyneedler",
+                "WS 007": "heavyneedler",
                 "WS 018": "hephag",
+                "WS 019": "multineedler",
                 "WS 020": "hephag"
             }
         },
         {
             "autofire": true,
-            "mode": "LINKED",
-            "weapons": {
-                "WS 001": "heavyneedler",
-                "WS 003": "heavyneedler",
-                "WS 007": "heavyneedler"
-            }
-        },
-        {
-            "autofire": true,
-            "mode": "LINKED",
-            "weapons": {
-                "WS 010": "dualflak",
-                "WS 011": "dualflak",
-                "WS 012": "dualflak",
-                "WS 013": "dualflak",
-                "WS 014": "dualflak",
-                "WS 015": "dualflak"
-            }
-        },
-        {
-            "autofire": false,
             "mode": "ALTERNATING",
             "weapons": {
                 "WS 021": "sabotpod",
@@ -73,12 +50,26 @@
             "autofire": true,
             "mode": "LINKED",
             "weapons": {
+                "WS 016": "tpc",
+                "WS 017": "tpc"
+            }
+        },
+        {
+            "autofire": false,
+            "mode": "LINKED",
+            "weapons": {
                 "WS 002": "vulcan",
                 "WS 004": "vulcan",
                 "WS 005": "vulcan",
                 "WS 006": "vulcan",
                 "WS 008": "vulcan",
-                "WS 009": "vulcan"
+                "WS 009": "vulcan",
+                "WS 010": "dualflak",
+                "WS 011": "dualflak",
+                "WS 012": "dualflak",
+                "WS 013": "dualflak",
+                "WS 014": "dualflak",
+                "WS 015": "dualflak"
             }
         }
     ],

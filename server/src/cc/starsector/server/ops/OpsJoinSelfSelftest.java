@@ -17,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -37,6 +38,8 @@ import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -44,7 +47,9 @@ import com.sun.net.httpserver.HttpServer;
 import cc.starsector.server.match.ContentFingerprints;
 import cc.starsector.server.match.MatchDescriptorCodec;
 import cc.starsector.server.match.MatchDescriptors;
+import cc.starsector.server.names.EngineSymPlatformGate;
 import cc.starsector.server.ops.OpsJoinSelf.Outcome;
+import cc.starsector.server.platform.ActivationGate;
 import cc.starsector.server.runtime.HandshakeCodec;
 import cc.starsector.server.runtime.OperatorCommandFile;
 
@@ -125,7 +130,7 @@ final class OpsJoinSelfSelftest {
             "R9", "R10",
             "R12", "R13", "R14", "R15", "NOTE_KIT_REFRESHED", "NOTE_OPENED_ADMIN", "R16", "R17", "R18",
             "SECOND_PREFIX", "NOTE_SECOND_LIVE", "R2P", "R6P", "R7P", "R19", "R20", "NOTE_REOPENED_WEB_POSIX",
-            "NOTE_OPENED_POSIX_LOG");
+            "NOTE_OPENED_POSIX_LOG", "R21");
     private static final Pattern FORMAT_SLOT = Pattern.compile("%(?:([1-9])\\$)?([a-zA-Z%])");
     private static final Pattern ACTION = Pattern.compile(
             "\\b(press|run|set|type|extract|reconnect|start|join from)\\b", Pattern.CASE_INSENSITIVE);
@@ -222,6 +227,10 @@ final class OpsJoinSelfSelftest {
             row(failed, "join-kit-refresh-live-window", r -> joinKitRefreshLiveWindow(r, dir.resolve("refreshlive")));
             row(failed, "join-kit-refresh-rollback", r -> joinKitRefreshRollback(r, dir.resolve("refreshroll")));
             row(failed, "join-kit-refresh-verify", r -> joinKitRefreshVerify(r, dir.resolve("refreshverify")));
+            row(failed, "join-game-version-same", r -> joinGameVersionSame(r, dir.resolve("gvsame")));
+            row(failed, "join-game-version-other", r -> joinGameVersionOther(r, dir.resolve("gvother")));
+            row(failed, "join-game-version-posix", r -> joinGameVersionPosix(r, dir.resolve("gvposix")));
+            row(failed, "join-game-version-second", r -> joinGameVersionSecond(r, dir.resolve("gvsecond")));
             row(failed, "join-fx-delegates", r -> joinFxDelegates(r, dir.resolve("delegates")));
             row(failed, "join-second-window", r -> joinSecondWindow(r, dir.resolve("second")));
             row(failed, "join-second-settings-legacy", r -> joinSecondSettingsLegacy(r, dir.resolve("secondlegacy")));
@@ -2431,6 +2440,356 @@ final class OpsJoinSelfSelftest {
                         && OpsJoinSelf.stagedPathOrNull(stage, "/evil.txt") == null,
                 "a kit entry lands inside the stage or nowhere: .., a trailing /, a backslash, a drive and a leading /"
                         + " are refused (flips if the containment law loses a case)");
+    }
+
+    // ---- join-game-version-* ----
+
+    /** The launcher-check entry as this server's build ships it, in the rows' tiny jars (the pin a row hands the press
+     *  = its SHA-256, {@link #pinOf}). */
+    private static final byte[] SAME_BUILD = "launcher check, this build".getBytes(StandardCharsets.US_ASCII);
+    /** The same entry as another build ships it. */
+    private static final byte[] OTHER_BUILD = "launcher check, another build".getBytes(StandardCharsets.US_ASCII);
+    /** The same entry as this build's Linux download ships it (another engine build of the same version: its bytes
+     *  differ from {@link #SAME_BUILD}'s). */
+    private static final byte[] LINUX_BUILD = "launcher check, this build's Linux download"
+            .getBytes(StandardCharsets.US_ASCII);
+    /** The entry the reader hashes, from the engine-name table's row (never the core's constant, so a constant that
+     *  drifts off the table flips a row). */
+    private static final String LAUNCHER_ENTRY = EngineSymPlatformGate.PLATFORM_GATE_LAUNCHER_CLASS.classEntry();
+    /** The Linux download's launcher-check entry name in the rows' tiny jars: a synthetic name in the fixture package,
+     *  never the Windows files' {@link #LAUNCHER_ENTRY}, because another engine build may name that class otherwise
+     *  (the pinned build's two downloads name it the same, so with the real names no row could tell which name a
+     *  judgment read). */
+    private static final String LINUX_ENTRY = "com/fs/x/LinuxLauncherCheck.class";
+
+    /**
+     * {@code install}'s engine jar (the Linux layout's, beside the launchers, when the fixture staged one there; else
+     * {@code starsector-core}'s) replaced by a REAL jar holding one entry {@code name} of {@code bytes} - no class
+     * file: the reader hashes bytes and parses nothing - so the real reader runs over a scratch folder with no game.
+     *
+     */
+    private static void stageGameBuild(Path install, String name, byte[] bytes) throws SetupFailure {
+        stageGameBuild(install, Map.of(name, bytes));
+    }
+
+    /** The same jar holding every entry of {@code entries} (name to bytes, written in name order), so one jar can
+     *  carry both platforms' launcher-check names. */
+    private static void stageGameBuild(Path install, Map<String, byte[]> entries) throws SetupFailure {
+        Path rootJar = install.resolve("starfarer_obf.jar");
+        Path jar = Files.isRegularFile(rootJar) ? rootJar
+                : install.resolve("starsector-core").resolve("starfarer_obf.jar");
+        try (ZipOutputStream z = new ZipOutputStream(Files.newOutputStream(jar))) {
+            for (Map.Entry<String, byte[]> e : new java.util.TreeMap<>(entries).entrySet()) {
+                z.putNextEntry(new ZipEntry(e.getKey()));
+                z.write(e.getValue());
+                z.closeEntry();
+            }
+        } catch (IOException e) {
+            throw new SetupFailure("the build jar at " + jar, e);
+        }
+    }
+
+    /** The pin a row hands the press for an entry of {@code bytes}: their lowercase-hex SHA-256. */
+    private static String pinOf(byte[] bytes) throws SetupFailure {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new SetupFailure("SHA-256", e);
+        }
+    }
+
+    /**
+     * {@code join-game-version-same}: a Game folder whose engine jar's launcher-check entry hashes to the press's pin
+     * (a real jar, the real reader) changes nothing - a stale kit with the zip at hand is refreshed and the press
+     * OPENS led by the refresh note, one {@code game_version=same} row; then the pre-Start API over the now-current
+     * kit answers null and the whole game folder is byte-identical before / after it (the check itself writes
+     * nothing). The shells' own pin is the drift guard's.
+     * A jar that also holds the Linux download's entry name with other bytes reads the same: a Windows host's
+     * judgment reads the Windows files' name only.
+     */
+    private static void joinGameVersionSame(String r, Path base) throws Exception {
+        RefreshWorld w = refreshWorld(base, null);
+        check(r, new OpsJoinSelf.GameBuildPin(LAUNCHER_ENTRY, ActivationGate.LAUNCHER_CHECK_CLASS_SHA256)
+                        .equals(w.in().gameBuildPin()),
+                "a shell's inputs carry the drift guard's own launcher-check pin under the name table's entry (flips"
+                        + " if the default pin is not the gate's, or its entry drifts off the table - every real Game"
+                        + " folder then refused): " + w.in().gameBuildPin());
+        stageGameBuild(w.install(), LAUNCHER_ENTRY, SAME_BUILD);
+        OpsJoinSelf.Inputs in = w.in().withGameBuildPin(pinOf(SAME_BUILD));
+        FakeEffects fx = diskFx(w.install());
+        Pressed a = press(in, fx);
+        String note = String.format(Locale.ROOT, OpsJoinSelf.NOTE_KIT_REFRESHED,
+                OpsJoinSelf.boundedText(w.park("").toString()));
+        check(r, a.result.outcome() == Outcome.OPENED && a.result.text().startsWith(note + " Join window opening")
+                        && a.stdout.contains("cc-ops game_version=same") && !a.stdout.contains("game_version=other")
+                        && a.stdout.contains("cc-ops join kit_refresh=done") && fx.spawns.size() == 1
+                        && treeOf(w.kit()).equals(w.z().kitTree()),
+                "a Game folder holding this server's build is read as the same build and the press goes on as"
+                        + " before: the stale kit refreshed, one window opened, the note first (flips if the compare"
+                        + " is inverted - a refusal - or the real jar is not read - an unread row): " + a.result + " "
+                        + a.stdout.strip());
+        stdoutLaw(r, "same", a, "opened", "-", 46337);
+        Map<String, String> before = treeOf(w.install());
+        FakeEffects fxApi = diskFx(w.install());
+        Printed api = printed(() -> String.valueOf(OpsJoinSelf.kitCheckOrNull(in, fxApi)));
+        Map<String, String> after = treeOf(w.install());
+        check(r, "null".equals(api.value()) && api.stdout().contains("cc-ops game_version=same")
+                        && api.stdout().contains("cc-ops join kit_check=current") && fxApi.ops.isEmpty()
+                        && after.equals(before),
+                "the pre-Start API over the same-build folder and its current kit answers null, and the whole game"
+                        + " folder is byte-identical before / after (flips if the build check refuses this server's"
+                        + " own game or leaves a file behind): " + api.value() + " " + api.stdout().strip());
+
+        // The Windows judgment over a jar that also holds the Linux name.
+        stageGameBuild(w.install(), Map.of(LAUNCHER_ENTRY, SAME_BUILD, LINUX_ENTRY, OTHER_BUILD));
+        OpsJoinSelf.Inputs both = in.withPosixGameBuildPin(
+                new OpsJoinSelf.GameBuildPin(LINUX_ENTRY, pinOf(LINUX_BUILD)));
+        FakeEffects fxBoth = diskFx(w.install());
+        Printed win = printed(() -> String.valueOf(OpsJoinSelf.kitCheckOrNull(both, fxBoth)));
+        check(r, "null".equals(win.value()) && win.stdout().contains("cc-ops game_version=same")
+                        && !win.stdout().contains("game_version=other") && fxBoth.ops.isEmpty(),
+                "a Windows host's Game folder is judged by the Windows files' entry even when its jar also holds the"
+                        + " Linux download's entry name with other bytes (flips if the Windows judgment reads the Linux"
+                        + " entry, or takes the Linux pin - this server's own game then refused): " + win.value()
+                        + " " + win.stdout().strip());
+    }
+
+    /**
+     * {@code join-game-version-other}: a Game folder whose launcher-check entry holds another build's bytes, with a
+     * stale kit and the zip at hand = REFUSED {@code game_version} with R21 naming Game folder and this server's game
+     * version; the whole folder, its {@code mods\CC_Client} included, byte-identical before / after; no refresh seam,
+     * write or spawn; one {@code game_version=other} row and no kit row. The pre-Start API refuses the same; a set
+     * Player game folder is named as that row; the Start's own check over {@code game.root} (the server's own pin)
+     * gives the same sentence; a core jar with no such entry is another build too; a folder that cannot be read (the
+     * one-byte jar, an entry over the cap) keeps the old behaviour; the Linux layout's engine jar resolves and is read
+     * (a Linux host's press is {@code join-game-version-posix}).
+     *
+     */
+    private static void joinGameVersionOther(String r, Path base) throws Exception {
+        RefreshWorld w = refreshWorld(base, null);
+        stageGameBuild(w.install(), LAUNCHER_ENTRY, OTHER_BUILD);
+        OpsJoinSelf.Inputs in = w.in().withGameBuildPin(pinOf(SAME_BUILD));
+        Map<String, String> kitBefore = treeOf(w.kit());
+        Map<String, String> before = treeOf(w.install());
+        FakeEffects fx = diskFx(w.install());
+        Pressed a = press(in, fx);
+        String want = String.format(Locale.ROOT, OpsJoinSelf.R21, "Game folder",
+                ActivationGate.SUPPORTED_GAME_VERSION);
+        check(r, a.result.outcome() == Outcome.REFUSED && "game_version".equals(a.result.reasonToken())
+                        && want.equals(a.result.text()) && a.result.text().contains("Game folder")
+                        && a.result.text().contains("another build")
+                        && a.result.text().contains(ActivationGate.SUPPORTED_GAME_VERSION),
+                "another build's folder is REFUSED game_version with ONE sentence naming Game folder, another build"
+                        + " and this server's game version (flips if the check is removed, the row or the version is"
+                        + " dropped): " + a.result);
+        check(r, treeOf(w.kit()).equals(kitBefore) && treeOf(w.install()).equals(before) && fx.ops.isEmpty()
+                        && fx.writes.isEmpty() && fx.spawns.isEmpty(),
+                "mods\\CC_Client and the whole game folder are byte-identical before / after: no refresh seam, no"
+                        + " write, no spawn (flips if the check is removed or runs after the refresh - the other build"
+                        + " gets this server's kit): ops=" + fx.ops + " spawns=" + fx.spawns.size());
+        check(r, a.stdout.contains("cc-ops game_version=other") && !a.stdout.contains("kit_check=")
+                        && !a.stdout.contains(pinOf(OTHER_BUILD)) && !a.stdout.contains(base.toString()),
+                "stdout: one game_version=other row, no kit row, no hash and no path (flips if the refusal runs"
+                        + " after the kit check or logs what it read): " + a.stdout.strip());
+        stdoutLaw(r, "other", a, "refused", "game_version", 46337);
+
+        FakeEffects fxApi = diskFx(w.install());
+        Printed api = printed(() -> {
+            OpsJoinSelf.KitCheck c = OpsJoinSelf.kitCheckOrNull(in, fxApi);
+            return c == null || c.refusedOrNull() == null ? "proceed"
+                    : c.refusedOrNull().reasonToken() + "|" + c.refusedOrNull().text() + "|" + c.noteOrNull();
+        });
+        check(r, ("game_version|" + want + "|null").equals(api.value()) && fxApi.ops.isEmpty()
+                        && treeOf(w.install()).equals(before),
+                "the pre-Start API refuses the same way with nothing touched (flips if the watch's pre-Start check"
+                        + " skips the build - a Start that swaps the kit in): " + api.value());
+
+        String samePin = pinOf(SAME_BUILD);
+        OpsJoinSelf.GameBuildPin sameWin = new OpsJoinSelf.GameBuildPin(LAUNCHER_ENTRY, samePin);
+        OpsJoinSelf.Inputs player = inputs(base, w.install(), live("192.168.1.5", 46337), PW,
+                Map.of(ServeLauncher.ROW_GAME_ROOT_PLAYER, w.install().toString()))
+                .withKitStamps(w.z().jarMd5(), w.z().fp(), w.z().zip()).withGameBuildPin(samePin);
+        Pressed b = press(player, diskFx(w.install()));
+        check(r, String.format(Locale.ROOT, OpsJoinSelf.R21, "Player game folder",
+                        ActivationGate.SUPPORTED_GAME_VERSION).equals(b.result.text())
+                        && treeOf(w.install()).equals(before),
+                "a set Player game folder is the row the sentence names (flips if the press names the wrong row): "
+                        + b.result);
+
+        Printed start = printed(() -> String.valueOf(OpsJoinSelf.serveGameVersionRefusalOrNull(base,
+                Map.of(ServeLauncher.ROW_GAME_ROOT, w.install().toString()))));
+        Printed blank = printed(() -> String.valueOf(OpsJoinSelf.serveGameVersionRefusalOrNull(base, Map.of())));
+        check(r, want.equals(start.value()) && "null".equals(blank.value()),
+                "the Start's own check over game.root, against the server's own pin, gives the same sentence, and a"
+                        + " blank row is left to the Start's own checks (flips if the Start reads no build and the"
+                        + " serve's drift exit is all the host sees): " + start.value() + " / " + blank.value());
+
+        Path renamed = stageInstall(base.resolve("renamed"), true, true);
+        stageGameBuild(renamed, "com/fs/starfarer/launcher/B.class", SAME_BUILD);
+        Printed absent = printed(() -> String.valueOf(OpsJoinSelf.gameVersionRefusalOrNull(renamed, "Game folder",
+                sameWin)));
+        check(r, want.equals(absent.value()) && absent.stdout().contains("cc-ops game_version=other"),
+                "a core jar that opens but holds no launcher-check entry under the pinned name (the 0.98a-RC8 shape:"
+                        + " that class has another name in another build) is another build (flips if a missing entry"
+                        + " reads as unread - that folder proceeds - or the reader hashes an entry not by its name): "
+                        + absent.value() + " " + absent.stdout().strip());
+
+        Path junk = stageInstall(base.resolve("junk"), true, true);
+        Printed unread = printed(() -> String.valueOf(OpsJoinSelf.gameVersionRefusalOrNull(junk, "Game folder",
+                sameWin)));
+        Path big = stageInstall(base.resolve("big"), true, true);
+        stageGameBuild(big, LAUNCHER_ENTRY, new byte[OpsJoinSelf.LAUNCHER_CHECK_ENTRY_MAX_BYTES + 1]);
+        Printed over = printed(() -> String.valueOf(OpsJoinSelf.gameVersionRefusalOrNull(big, "Game folder",
+                sameWin)));
+        check(r, "null".equals(unread.value()) && unread.stdout().contains("cc-ops game_version=unread (")
+                        && !unread.stdout().contains("game_version=other")
+                        && "null".equals(over.value())
+                        && over.stdout().contains("cc-ops game_version=unread (entry_over_cap)")
+                        && !over.stdout().contains("game_version=other"),
+                "a folder that cannot be read (a one-byte engine jar; an entry one byte over the cap) proceeds as"
+                        + " before, one unread row each (flips if an unreadable jar becomes a refusal or the read is"
+                        + " uncapped): " + unread.value() + " " + unread.stdout().strip() + " / " + over.value() + " "
+                        + over.stdout().strip());
+
+        Path linux = stagePosixInstall(base.resolve("linux"));
+        stageGameBuild(linux, LAUNCHER_ENTRY, OTHER_BUILD);
+        Printed judged = printed(() -> String.valueOf(OpsJoinSelf.gameVersionRefusalOrNull(linux,
+                "Player game folder", sameWin)));
+        check(r, String.format(Locale.ROOT, OpsJoinSelf.R21, "Player game folder",
+                        ActivationGate.SUPPORTED_GAME_VERSION).equals(judged.value())
+                        && judged.stdout().contains("cc-ops game_version=other"),
+                "the Linux layout's engine jar (beside the launchers) resolves and is read (flips if the Linux"
+                        + " layout is not found - every Linux download then reads unread and proceeds): "
+                        + judged.value() + " " + judged.stdout().strip());
+    }
+
+    /**
+     * {@code join-game-version-posix}: a Linux host's press folder (the game's Linux download) is judged by the
+     * Linux pin, with the Windows branch's sentence and refusal. A Linux folder whose launcher-check entries hold the
+     * WINDOWS files' bytes = REFUSED {@code game_version} with R21 naming Player game folder, the folder
+     * byte-identical, no seam called; the same folder holding the Linux download's bytes = the same build, the kit
+     * check runs on. The shells hand a Linux press the server's own Linux pin.
+     *
+     * <p>The Linux pin names its OWN entry ({@link #LINUX_ENTRY}, never the Windows files' name): a jar with no entry
+     * under it is another build though the Windows name holds the Linux bytes, and a jar holding both names is judged
+     * by the Linux one alone.
+     */
+    private static void joinGameVersionPosix(String r, Path base) throws Exception {
+        RefreshWorld w = refreshWorld(base, null);
+        String winPin = pinOf(SAME_BUILD);
+        String linuxPin = pinOf(LINUX_BUILD);
+        Path linux = stagePosixInstall(base.resolve("linux"));
+        OpsJoinSelf.Inputs shell = posixInputs(base, linux, POSIX_HOST);
+        OpsJoinSelf.GameBuildPin linuxShell = shell.pressGameBuildPin();
+        OpsJoinSelf.GameBuildPin winShell = shell.withPosixHost(null).pressGameBuildPin();
+        check(r, OpsJoinSelf.GameBuildPin.linux().equals(linuxShell)
+                        && ActivationGate.LAUNCHER_CHECK_CLASS_SHA256_LINUX.equals(linuxShell.sha256())
+                        && new OpsJoinSelf.GameBuildPin(LAUNCHER_ENTRY, ActivationGate.LAUNCHER_CHECK_CLASS_SHA256)
+                                .equals(winShell),
+                "a shell's Linux press is judged by the server's own Linux pin, entry name and sha as one pair, a"
+                        + " Windows press by the Windows pin under the name table's entry (flips if the shells hand a"
+                        + " Linux press the Windows pin - every real Linux download then refused - or drop the Linux"
+                        + " pin): " + linuxShell + " / " + winShell);
+        OpsJoinSelf.Inputs in = shell.withKitStamps(w.z().jarMd5(), w.z().fp(), null).withGameBuildPin(winPin)
+                .withPosixGameBuildPin(new OpsJoinSelf.GameBuildPin(LINUX_ENTRY, linuxPin));
+        String want = String.format(Locale.ROOT, OpsJoinSelf.R21, "Player game folder",
+                ActivationGate.SUPPORTED_GAME_VERSION);
+
+        stageGameBuild(linux, Map.of(LINUX_ENTRY, SAME_BUILD, LAUNCHER_ENTRY, SAME_BUILD));
+        Map<String, String> before = treeOf(linux);
+        FakeEffects fxW = posixKit(linux);
+        Printed windowsBytes = printed(() -> {
+            OpsJoinSelf.KitCheck c = OpsJoinSelf.kitCheckOrNull(in, fxW);
+            return c == null || c.refusedOrNull() == null ? "proceed"
+                    : c.refusedOrNull().reasonToken() + "|" + c.refusedOrNull().text();
+        });
+        check(r, ("game_version|" + want).equals(windowsBytes.value())
+                        && windowsBytes.stdout().contains("cc-ops game_version=other")
+                        && !windowsBytes.stdout().contains("kit_check=") && fxW.ops.isEmpty()
+                        && treeOf(linux).equals(before),
+                "a Linux host's press folder holding the Windows files' launcher-check bytes is REFUSED game_version"
+                        + " naming Player game folder, nothing touched (flips if the Linux host's folder is skipped"
+                        + " again, or judged by the Windows pin - a wrong-build Linux download gets the kit swapped"
+                        + " in): " + windowsBytes.value() + " " + windowsBytes.stdout().strip());
+
+        // The Linux download's own entry name is the only one read.
+        stageGameBuild(linux, LAUNCHER_ENTRY, LINUX_BUILD);
+        Map<String, String> beforeAbsent = treeOf(linux);
+        FakeEffects fxA = posixKit(linux);
+        Printed absent = printed(() -> {
+            OpsJoinSelf.KitCheck c = OpsJoinSelf.kitCheckOrNull(in, fxA);
+            return c == null || c.refusedOrNull() == null ? "proceed"
+                    : c.refusedOrNull().reasonToken() + "|" + c.refusedOrNull().text();
+        });
+        check(r, ("game_version|" + want).equals(absent.value())
+                        && absent.stdout().contains("cc-ops game_version=other")
+                        && !absent.stdout().contains("game_version=unread") && fxA.ops.isEmpty()
+                        && treeOf(linux).equals(beforeAbsent),
+                "a Linux jar with no entry under the Linux download's name is another build, even when the Windows"
+                        + " files' name holds the Linux bytes (flips if a missing Linux entry reads unread or same -"
+                        + " that folder gets the kit - or the reader falls back to the Windows name): "
+                        + absent.value() + " " + absent.stdout().strip());
+
+        stageGameBuild(linux, Map.of(LINUX_ENTRY, LINUX_BUILD, LAUNCHER_ENTRY, OTHER_BUILD));
+        FakeEffects fxL = posixKit(linux);
+        Printed linuxBytes = printed(() -> {
+            OpsJoinSelf.KitCheck c = OpsJoinSelf.kitCheckOrNull(in, fxL);
+            return c == null || c.refusedOrNull() == null ? "proceed" : c.refusedOrNull().reasonToken();
+        });
+        check(r, !"game_version".equals(linuxBytes.value())
+                        && linuxBytes.stdout().contains("cc-ops game_version=same")
+                        && linuxBytes.stdout().contains("cc-ops join kit_check="),
+                "a Linux host's press folder holding the Linux download's own bytes under its own name is the same"
+                        + " build and the kit check runs on, though the same jar holds the Windows files' name with"
+                        + " other bytes (flips if the Linux pin is judged under the Windows entry name, or a Linux"
+                        + " host is judged by the Windows pin - every real Linux download refused): "
+                        + linuxBytes.value() + " " + linuxBytes.stdout().strip());
+    }
+
+    /**
+     * {@code join-game-version-second}: the half re-point - the Game folder holding this server's build, the second
+     * Game folder another build, both kits stale, the zip at hand. Window 1 is judged on its own (its kit
+     * refreshed, its window opened); window 2 is REFUSED {@code game_version} with R21 naming Second game folder, its
+     * whole folder byte-identical before / after; ONE spawn; {@code second=refused:game_version}.
+     * The joined answer names Second game folder once:
+     * that refusal already opens with the row's name, so no second-window prefix leads it.
+     *
+     */
+    private static void joinGameVersionSecond(String r, Path base) throws Exception {
+        Path games = base.resolve("games");
+        Path install1 = stageInstall(games.resolve("game1"), true, true);
+        Path install2 = stageInstall(games.resolve("game2"), true, true);
+        Path kit1 = install1.resolve("mods").resolve("CC_Client");
+        stageOldKit(kit1, "old kit 1");
+        stageOldKit(install2.resolve("mods").resolve("CC_Client"), "old kit 2");
+        stageGameBuild(install1, LAUNCHER_ENTRY, SAME_BUILD);
+        stageGameBuild(install2, LAUNCHER_ENTRY, OTHER_BUILD);
+        KitFixture z = kitZip(base.resolve("pkg").resolve("kits").resolve("cc-joiner-kit.zip"), null);
+        Map<String, String> before2 = treeOf(install2);
+        FakeEffects fx = FakeEffects.withKit(install1);
+        fx.diskRoot = games;
+        Pressed two = pressWatch(inputs(base, install1, live("0.0.0.0", 46337), PW,
+                Map.of(ServeLauncher.ROW_GAME_ROOT_SECOND, install2.toString()))
+                .withKitStamps(z.jarMd5(), z.fp(), z.zip()).withGameBuildPin(pinOf(SAME_BUILD)), fx, null);
+        String want2 = String.format(Locale.ROOT, OpsJoinSelf.R21, "Second game folder",
+                ActivationGate.SUPPORTED_GAME_VERSION);
+        check(r, two.result.outcome() == Outcome.OPENED && fx.spawns.size() == 1 && kit1.equals(fx.spawns.get(0).cwd)
+                        && two.result.text().endsWith(" " + want2)
+                        && two.stdout.contains("cc-ops join second=refused:game_version"),
+                "the other build's second folder is refused naming Second game folder while window 1 opens"
+                        + " (flips if row 2 is not checked, is named as another row, or its refusal stops window 1): "
+                        + two.result + " spawns=" + fx.spawns.size());
+        check(r, !two.result.text().contains("Second game folder: Second game folder"),
+                "the joined answer names Second game folder once (flips if the second window's prefix is laid over"
+                        + " a refusal that already opens with that row's name - the doubled 'Second game folder:"
+                        + " Second game folder holds ...'): " + two.result.text());
+        check(r, treeOf(install2).equals(before2),
+                "row 2's whole game folder, its mods\\CC_Client included, is byte-identical before / after (flips if"
+                        + " the second window's kit check swaps this server's kit into the other build)");
+        check(r, treeOf(kit1).equals(z.kitTree()) && two.stdout.contains("cc-ops game_version=same")
+                        && two.stdout.contains("cc-ops game_version=other"),
+                "row 1 is judged on its own: its same-build folder's stale kit is refreshed (flips if row 2's"
+                        + " build leaks into row 1's check): " + two.stdout.strip());
     }
 
     /** A seam call that may throw (the delegation row's shape). */

@@ -1324,6 +1324,27 @@ public final class PersistentPilotIntentCombatServer {
              */
             default void vacate(int seatId, long wireId) throws IOException {
             }
+
+            /**
+             * Takes the seat wire id {@code wireId} ({@code >= 1}, the seat's FIXED id) out of the
+             * round's fleet record: the serve calls it once that seat is neither occupied nor has
+             * its hull in the world. Null = no entry held (no row is owed). Default answers null:
+             * a hook with no fleet record (the contract fakes) removes nothing; the ONE real hook
+             * ({@code PilotIntentCombatServerMain.buildSeatFlyInHook}) overrides with
+             * {@code RealEngineDemoRoster.removeFleetEntry}.
+             *
+             */
+            default FleetRemoval removeFleetEntry(long wireId) throws IOException {
+                return null;
+            }
+
+            /**
+             * One removal's answer: the removed entry's ABSOLUTE side (0 / 1), its goal id, and
+             * the digest of that side's fleet key right after the removal (any int, 0 lawful).
+             *
+             */
+            record FleetRemoval(int side, String goalId, int fleetKeyDigest) {
+            }
         }
 
         /**
@@ -1719,11 +1740,27 @@ public final class PersistentPilotIntentCombatServer {
          * descriptor truth, + the RAPP row fields). The 2-arg ctor keeps every legacy mint
          * compiling: {@code variantId == null} marks a legacy result — the fan check SKIPS it
          * (nothing truthful to announce).
+         *
+         * <p>The fielding's fleet-record write rides out
+         * on its RAPP row — {@code fleetKeyDigest} = the digest of the fielded side's fleet key
+         * right after this fielding's record write (a signed int, every value lawful, 0 included)
+         * and {@code fleetRoundOpen} = that write was its round-open pre-pass entry's re-write.
+         * Both are copied from the deploy result; the 7-arg ctor (digest 0, not round-open) keeps
+         * the transfer / module lanes and every contract fake compiling, and those lanes never
+         * flag a row from them.
          */
         public record FlyInResult(long wireId, String stableId, String variantId,
-                String descriptorVariantId, int side, String shipName, int crPerMille) {
+                String descriptorVariantId, int side, String shipName, int crPerMille,
+                int fleetKeyDigest, boolean fleetRoundOpen) {
             public FlyInResult {
                 Objects.requireNonNull(stableId, "stableId");
+            }
+
+            /** The pre-record shape: digest 0, not round-open. */
+            public FlyInResult(long wireId, String stableId, String variantId,
+                    String descriptorVariantId, int side, String shipName, int crPerMille) {
+                this(wireId, stableId, variantId, descriptorVariantId, side, shipName, crPerMille,
+                        0, false);
             }
 
             /** Legacy identity-only mint (null variantId = the fan check skips this fly-in). */
@@ -2160,8 +2197,12 @@ public final class PersistentPilotIntentCombatServer {
      * AFTER round N+1's {@code fanMatchReset} (today: closeRound → wrapRound(MRST) → mintRound
      * → the frame-0 growth drain); a producer that fans a next-round row BEFORE the MRST re-opens
      * the tick-0 wing drop. The seat re-announce at the reset deploy
-     * no longer fans here at the wrap: it is collected ({@link SeatAnnounceTracker#announceSeatVariantIfRepointed}'s
+     * no longer fans here at the wrap: it is collected ({@link SeatAnnounceTracker#announceFieldingRecordWrite}'s
      * defer list) and rides the next round-open fan AFTER the MRST.
+     *
+     * <p>The log is append-only, but a slot may later be
+     * RETIRED (set to null, its index kept) by {@link SeatAnnounceTracker.EqualRewriteLedger} once a
+     * newer flagged row of the same wire id supersedes it; every replay reader skips a null slot.
      */
     static void fanRosterAppendChunks(PilotIntentDatagramServer door,
             List<RosterAppendFrameCodec.AppendRow> appendRows,

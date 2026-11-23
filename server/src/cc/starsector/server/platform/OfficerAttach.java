@@ -168,6 +168,43 @@ public final class OfficerAttach {
     }
 
     /**
+     * The captain the live attach WOULD give an AI hull of {@code variantId}, minted DETACHED: the
+     * variant-keyed table row's person through the same {@link PersonMint} recipe
+     * {@link #attachOrNull} runs, or null when no captain would attach (knob off, no row).
+     * Side-effect free: no member is touched, the attach count and the per-boot skill-check memo
+     * stay as they were, and this call prints no row (the table's own load row prints once per
+     * JVM, whichever reader loads the table first). The same fail-closed skill-id check runs
+     * before the mint: an unknown id THROWS. WHY: the fleet context's shadow members are built as
+     * their live twins, and an AI shadow must carry the captain kind its twin carries.
+     *
+     */
+    public static synchronized Object captainPersonOrNull(String variantId) {
+        if (!OFFICER_SKILLS || variantId == null) {
+            return null;
+        }
+        OfficerRosterCodec.OfficerSpec spec = tableOrLoad().get(variantId);
+        if (spec == null) {
+            return null;
+        }
+        SkillProbe probe = skillProbeOrNull();
+        if (probe != null) {
+            // the inert-id set is the attach's WARN input; a detached mint prints nothing
+            OfficerSkillCheck.validate(variantId, spec, resolverFor(probe));
+        }
+        try {
+            return PersonMint.mint(spec.personality, spec.skills, spec.firstName, spec.lastName,
+                    spec.level, spec.portraitPath, spec.aiCoreId);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            Throwable cause = (e instanceof InvocationTargetException && e.getCause() != null)
+                    ? e.getCause() : e;
+            throw new IllegalStateException("detached officer mint failed for variant '"
+                    + variantId + "': " + cause, cause);
+        }
+    }
+
+    /**
      * SEAT-hull overload — the officer-TRANSFER law (the design rule: "the player's skills should
      * stay attached wherever the seat goes"): try the FIELDED variant's curated row first (a
      * {@code /ship} pick that has its own row keeps the variant-tuned officer — t=0 behavior
@@ -403,16 +440,7 @@ public final class OfficerAttach {
         }
         // Law body hoisted to the shared OfficerSkillCheck (the client twin
         // runs the SAME check at table load); this end feeds it the reflective probe.
-        Set<String> inert = OfficerSkillCheck.validate(variantId, spec,
-                new OfficerSkillCheck.SkillResolver() {
-                    public Object skillSpecOrNull(String skillId) throws Exception {
-                        return probe.getSkillSpec.invoke(probe.settings, skillId);
-                    }
-
-                    public boolean isCombatOfficerSkill(Object skillSpec) throws Exception {
-                        return Boolean.TRUE.equals(probe.isCombatOfficerSkill.invoke(skillSpec));
-                    }
-                });
+        Set<String> inert = OfficerSkillCheck.validate(variantId, spec, resolverFor(probe));
         for (String skillId : inert) {
             if (inertSkillWarned.add(skillId)) {
                 System.out.println("cc-officer skill WARN: '" + skillId + "' (first seen on"
@@ -421,6 +449,19 @@ public final class OfficerAttach {
             }
         }
         skillCheckedVariants.add(variantId);
+    }
+
+    /** The skill-id resolver over {@code probe}: the one the attach check and the detached mint share. */
+    private static OfficerSkillCheck.SkillResolver resolverFor(final SkillProbe probe) {
+        return new OfficerSkillCheck.SkillResolver() {
+            public Object skillSpecOrNull(String skillId) throws Exception {
+                return probe.getSkillSpec.invoke(probe.settings, skillId);
+            }
+
+            public boolean isCombatOfficerSkill(Object skillSpec) throws Exception {
+                return Boolean.TRUE.equals(probe.isCombatOfficerSkill.invoke(skillSpec));
+            }
+        };
     }
 
     /** The settings + skill-spec handles for {@link #validateSkillIds}, or null game-free. */

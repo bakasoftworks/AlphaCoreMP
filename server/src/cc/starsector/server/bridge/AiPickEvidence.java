@@ -1,5 +1,6 @@
 package cc.starsector.server.bridge;
 
+import cc.starsector.server.names.EngineSym;
 import java.lang.reflect.Method;
 import java.util.List;
 
@@ -73,7 +74,7 @@ public final class AiPickEvidence {
         }
         String text;
         try {
-            Class<?> mm = Class.forName("com.fs.starfarer.launcher.ModManager", true, loader);
+            Class<?> mm = EngineSym.MOD_MANAGER_CLASS.load(loader);
             Object instance = mm.getMethod("getInstance").invoke(null);
             List<?> plugins = (List<?>) mm.getMethod("getEnabledModPlugins").invoke(instance);
             StringBuilder sb = new StringBuilder(" mod-plugins=[");

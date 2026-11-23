@@ -7,6 +7,7 @@ import org.lwjgl.util.vector.Vector2f;
 import com.fs.starfarer.api.combat.CombatEngineAPI;
 import com.fs.starfarer.api.combat.ShipAPI;
 import com.fs.starfarer.api.combat.ShipHullSpecAPI;
+import com.fs.starfarer.api.impl.combat.dweller.DwellerShroud;
 import com.fs.starfarer.api.impl.combat.threat.FragmentSwarmHullmod;
 import com.fs.starfarer.api.impl.combat.threat.RoilingSwarmEffect;
 import com.fs.starfarer.api.impl.combat.threat.SwarmLauncherEffect;
@@ -75,8 +76,11 @@ final class SwarmLaunchSeed {
                     continue;
                 }
                 RoilingSwarmEffect ds = RoilingSwarmEffect.getSwarmFor(s);
-                if (ds == null) {
-                    continue; // no cloud at all = not a swarm hull; an EMPTY cloud still marks the launcher (top-up below)
+                if (ds == null || ds instanceof DwellerShroud) {
+                    // no cloud at all = not a swarm hull; an EMPTY cloud still marks the launcher (top-up below).
+                    // A dweller shroud is no fragment cloud: vanilla's launch drops it as the source the same
+                    // way, so it never donates.
+                    continue;
                 }
                 float d = Misc.getDistance(loc, s.getLocation()) - s.getCollisionRadius();
                 if (d <= DONOR_REACH && d < best) {

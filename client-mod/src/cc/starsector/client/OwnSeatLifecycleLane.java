@@ -1,8 +1,12 @@
 package cc.starsector.client;
 
+import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.characters.PersonAPI;
 import com.fs.starfarer.api.combat.CombatFleetManagerAPI;
 import com.fs.starfarer.api.combat.ShipAPI;
+import com.fs.starfarer.api.combat.ShipSystemAPI;
+import com.fs.starfarer.api.fleet.FleetMemberAPI;
+import com.fs.starfarer.api.fleet.FleetMemberType;
 
 import org.lwjgl.util.vector.Vector2f;
 
@@ -48,6 +52,8 @@ final class OwnSeatLifecycleLane {
     /** B2(c): fresh own hulls re-minted from the engine's neutral (100) at the spawn instant. */
     private int ownSpawnOwnerMints;
     private static final int OWNER_MINT_LOG_MAX = 20;
+    /** Same-spec reserves members taken out at an all-skills own-seat spawn (the first one logs). */
+    private int ownReservesDropped;
     /**
      * The own-seat churn bound. A hostile own-id flap
      * (alive, absent, alive every few frames) mints a fresh hull per re-field and a corpse plus a
@@ -63,6 +69,8 @@ final class OwnSeatLifecycleLane {
     private int ownDeathEdgesThisRound;
     private int ownRefieldsRefusedThisRound;
     private int ownSpawnNullThisRound;
+    /** A spawn that THROWS counts here: its stack is written once a round, never once a frame. */
+    private int ownSpawnThrowThisRound;
     private int ownCountedRound;
 
     /** Close the counted round once the plugin applied a reset since. */
@@ -81,14 +89,17 @@ final class OwnSeatLifecycleLane {
      * which never reaches a reset. Bounded tokens only (counts, the cap, a code-literal tag).
      */
     void closeOwnRoundTotals(String why) {
-        if (ownDeathEdgesThisRound > 0 || ownRefieldsRefusedThisRound > 0 || ownSpawnNullThisRound > 0) {
+        if (ownDeathEdgesThisRound > 0 || ownRefieldsRefusedThisRound > 0 || ownSpawnNullThisRound > 0
+                || ownSpawnThrowThisRound > 0) {
             PilotWatchLog.info("predict own-seat round totals (" + why + "): deathEdges=" + ownDeathEdgesThisRound
                     + " refieldRefused=" + ownRefieldsRefusedThisRound + " spawnNull=" + ownSpawnNullThisRound
+                    + " spawnThrow=" + ownSpawnThrowThisRound
                     + " cap=" + RosterAppendLane.MAX_ROUND_ENTITIES);
         }
         ownDeathEdgesThisRound = 0;
         ownRefieldsRefusedThisRound = 0;
         ownSpawnNullThisRound = 0;
+        ownSpawnThrowThisRound = 0;
     }
 
     /**
@@ -306,32 +317,49 @@ final class OwnSeatLifecycleLane {
      * THE own-seat
      * MINT, shared by the three OWN spawn sites (the death-edge / re-field core {@link #fieldOwnAtPose},
      * the registry match-reset rebuild and the 1v1 match-reset rebuild in
-     * {@link PredictReconcileCombatPlugin#applyMatchReset}): feed gate muted (no
-     * "Incoming vessels" line), the captain-bearing 5-arg overload (a fresh seat hull must
-     * carry the SAME json-assigned officer the mission build attached and the server re-attaches on every
-     * remount, or it predicts with vanilla-default stats against an officered authority; a null captain is
-     * the 4-arg body verbatim), then the post-spawn sequence in
-     * the order the H-A fix requires: {@link #fixOwnSpawnOwner} BEFORE the player re-point (B2(c)), the
-     * CR seam, native player control ({@code setShipAI(null)}, the mission-deploy shape),
-     * {@code setPlayerShipExternal} (the full vanilla UI re-point). {@code locOrNull} = the
-     * engine-edge spawn (the match-reset expired-hold pose, never a hardcoded loc). Returns null when the
-     * engine declines; every site keeps its own null branch (retry / bindShips-binds-what-exists).
+     * {@link PredictReconcileCombatPlugin#applyMatchReset}). The seat
+     * spawns MEMBER-FIRST ({@link #mintOwnSeatMember}, then the attach): the member carries its captain AND,
+     * for a seat under the all-skills knob, the commander pair with its side's fleet data BEFORE the hull
+     * exists, so the engine's threshold skills read the fleet size at the ship's create as the server's seat
+     * does. The engine's own by-variant mint (the former call here) installs no pair, so every respawn, match
+     * reset and claim fielded the hull unthrottled while the server throttled it. Order: the own absolute side
+     * noted ({@link #ownSeatAbsoluteSide}: the pair reads the fleet context of the side this hull is fielded
+     * on), the reserves rule ({@link #reservesMemberAsIsOrNull}), the mint (owner first), the attach, then
+     * feed gate muted (no "Incoming vessels" line), {@code spawnFleetMember}, then the
+     * post-spawn sequence in the order the H-A fix requires: {@link #fixOwnSpawnOwner} BEFORE the player
+     * re-point (B2(c)), the CR seam, native player control ({@code setShipAI(null)}, the
+     * mission-deploy shape), {@code setPlayerShipExternal} (the full vanilla UI re-point).
+     * {@code locOrNull} = the engine-edge spawn (the match-reset expired-hold pose, never a hardcoded loc).
+     * Returns null when the engine declines; every site keeps its own null branch (retry /
+     * bindShips-binds-what-exists). The member-first member never enters the side's mission list or its
+     * reserves (the engine's by-variant mint added it to both); no client lane reads either for the own hull.
      */
     ShipAPI spawnOwnSeat(CombatFleetManagerAPI mgr, int side, String variantId, Vector2f locOrNull,
             float facing, float flyinBurnSec, String where) {
+        int seatAbs = ownSeatAbsoluteSide();
+        OfficerLoadout.noteOwnAbsoluteSide(seatAbs);
+        FleetMemberAPI reserved = reservesMemberAsIsOrNull(mgr, variantId);
+        FleetMemberAPI member = reserved != null ? reserved : mintOwnSeatMember(side, variantId);
+        if (reserved == null) {
+            OfficerLoadout.attach(member, variantId,
+                    MatchMissionBuilder.ownDescriptorVariantOrNull(), // the transfer case
+                    MatchMissionBuilder.isOwnSeatShipId(), // the officer rule + W4 seat exclusion
+                    plugin.session != null ? plugin.session.shipId() : 0L); // the own hull's stamp is its row's
+        }
         Boolean feedTok = plugin.feedGate.mute(mgr);
         ShipAPI newOwn;
         try {
-            newOwn = mgr.spawnShipOrWing(variantId, locOrNull, facing, flyinBurnSec,
-                    OfficerLoadout.captainOrNull(variantId,
-                            MatchMissionBuilder.ownDescriptorVariantOrNull(), // the transfer case
-                            MatchMissionBuilder.isOwnSeatShipId())); // the officer rule + W4 seat exclusion
+            newOwn = mgr.spawnFleetMember(member, locOrNull, facing, flyinBurnSec);
         } finally {
             plugin.feedGate.unmute(mgr, feedTok);
         }
         if (newOwn == null) {
             return null;
         }
+        // The per-ship fleet-context row for the fresh own hull, read off the
+        // hull right after it exists (the own wire id, the own FIELDED absolute side = the side noted above).
+        FleetCtxShipEcho.echo(newOwn, plugin.session != null ? Long.toString(plugin.session.shipId()) : "0",
+                seatAbs);
         // The registry match-reset SITE (not this shared mint) marks its fresh own
         // body for the adopt's fly-in keep — a respawn / re-field mint never adopts, the 1v1 reset's
         // server twin is a deployAll context burn.
@@ -341,6 +369,98 @@ final class OwnSeatLifecycleLane {
         plugin.engine.setPlayerShipExternal(newOwn); // includes the CombatUI re-point
         plugin.driveLock.reassertOn(newOwn); // this frame's hold ran on the body newOwn replaces
         return newOwn;
+    }
+
+    /**
+     * The ABSOLUTE side the server fields the own seat on (0 south, 1 north,
+     * -1 unknown). The plugin's own-side value: the own descriptor row's side at init, re-keyed from the own
+     * row's live fleet side by a team change. A claim at play is the one path where that value can be a
+     * placeholder: init writes 0 when the seat has NO descriptor row, and then the document names no side
+     * either, so the claim reads the document's side for the seat (-1 = unknown: the pair installs with no
+     * fleet data, unthrottled, said once). Every other path (respawn, the first-life re-field, both match
+     * resets) reads the plugin's value; a 1v1 build keeps 0 there, the side its build noted.
+     */
+    int ownSeatAbsoluteSide() {
+        int live = plugin.ownDescSide;
+        if (!plugin.claimPending || plugin.session == null) {
+            return live;
+        }
+        return MatchMissionBuilder.descriptorSideForShipIdOrMinusOne(plugin.session.shipId()) < 0 ? -1 : live;
+    }
+
+    /**
+     * The reserves member the own seat spawns AS IS, else null (= mint
+     * member-first). The engine's by-variant spawn first takes a reserves member of the same spec as is;
+     * such a member carries the pair the mission build installed, when
+     * the own side may not have been known (the pair with no fleet data). So under the all-skills knob a
+     * same-spec reserves member is NEVER spawned: it is taken out of the reserves through the engine's typed
+     * {@code removeFromReserves} (the engine's own spawn would have consumed it) and the seat mints
+     * member-first. Knob off = the engine's own behaviour: the reserves member spawned as is (its build-time
+     * captain kept, as the engine's spawn kept it), else the member-first mint.
+     */
+    FleetMemberAPI reservesMemberAsIsOrNull(CombatFleetManagerAPI mgr, String variantId) {
+        FleetMemberAPI reserved = sameSpecReservesMemberOrNull(mgr, variantId);
+        if (reserved == null || !OfficerLoadout.allSkillsEnabled()) {
+            return reserved;
+        }
+        mgr.removeFromReserves(reserved);
+        if (ownReservesDropped++ == 0) {
+            PilotWatchLog.info("predict own-seat: a same-spec reserves member was taken out of the reserves"
+                    + " and the seat minted member-first (all-skills: the reserves pair predates the own side;"
+                    + " later drops counted)");
+        }
+        return null;
+    }
+
+    /** The first reserves member of {@code variantId}'s spec, else null (a
+     *  null reserves list = none). */
+    private static FleetMemberAPI sameSpecReservesMemberOrNull(CombatFleetManagerAPI mgr, String variantId) {
+        java.util.List<FleetMemberAPI> reserves = mgr.getReservesCopy();
+        if (reserves == null || variantId == null) {
+            return null;
+        }
+        for (FleetMemberAPI m : reserves) {
+            if (m != null && variantId.equals(m.getSpecId())) {
+                return m;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The member-first mint of the own seat, the replica lane's order
+     * ({@code PredictReconcileCombatPlugin.spawnReplicaMemberFirst}): the factory member (its owner hardcoded
+     * to 0) takes the seat's side FIRST (the attach that follows in {@link #spawnOwnSeat} resolves the fielded
+     * side from it), the prior own body's ship name (a factory member has none; the engine's by-variant mint
+     * named it from its name store), the descriptor deploy CR, the crew the replica lane seeds (a factory
+     * member has zero crew, under the engine's deployable floor). The caller then attaches = the mission
+     * build's own-seat attach with the seat's descriptor variant (the transfer case): the captain, and for a
+     * seat under the all-skills knob the pair with its side's fleet data, before the hull exists (a pair never
+     * heals a ship that already exists). Never {@code setFlagship}: a flagship flag set after the fleet data
+     * swaps the captain for the fleet's bare commander.
+     */
+    private FleetMemberAPI mintOwnSeatMember(int side, String variantId) {
+        FleetMemberAPI member = Global.getFactory().createFleetMember(FleetMemberType.SHIP, variantId);
+        member.setOwner(side);
+        String name = priorOwnShipNameOrNull();
+        if (name != null) {
+            member.setShipName(name);
+        }
+        member.getRepairTracker().setCR(plugin.descriptorDeployCr);
+        member.getCrewComposition().setCrew(
+                PredictReconcileCombatPlugin.replicaCrew(member.getMaxCrew(), member.getMinCrew()));
+        return member;
+    }
+
+    /** The ship name the prior own body's member carries (null = none, or
+     *  the prior body is the engine's shuttle pod). */
+    private String priorOwnShipNameOrNull() {
+        ShipAPI prior = plugin.ownShip;
+        if (prior == null || prior.isShuttlePod()) {
+            return null;
+        }
+        FleetMemberAPI m = prior.getFleetMember();
+        return m != null ? m.getShipName() : null;
     }
 
     /**
@@ -415,6 +535,102 @@ final class OwnSeatLifecycleLane {
     }
 
     /**
+     * The 1v1 first-life captain latch. A legacy 1v1 build fields the
+     * own hull at mission build, before any captain is attached, and the engine fixes a weapon's max ammo when
+     * the weapon is BUILT: a later setCaptain re-derives the ship stats, the system and the cloak, never the
+     * ammo. The server builds
+     * its seat hull WITH the captain, so the first life read server max 6 against client max 4. Armed once at
+     * the session bind ({@link #firstLifeCaptainArms}), fired at the first alive own pose
+     * ({@link #refieldFirstLifeCaptained}), cleared by every match reset (the 1v1 round reset spawns the seat
+     * hull captained already, so the latch is one-shot per match). While armed it holds the initial-world
+     * adopt ({@link #holdsInitialAdopt}).
+     */
+    boolean firstLifeCaptainPending;
+    /**
+     * first-life captain re-fields made. Counted apart from
+     * {@code plugin.ownRefields}, which the meter rows read as a variant fork: this swap keeps the variant.
+     */
+    int firstLifeRefields;
+    /** Failed first-life re-fields this arming (bounded like the alive re-field, then a loud give-up). */
+    private int firstLifeAttempts;
+
+    /**
+     * The latch's arm predicate. A legacy 1v1 (not a registry shape)
+     * whose mission build fielded the own hull ({@code lastBuiltOwnShipId != 0}) for a seat that holds a hull
+     * ({@code seatShipId != 0}; 0 = observer, any other value is a hull id) outside observer mode. The
+     * claim-at-play build (built id 0) takes the claim instead.
+     */
+    static boolean firstLifeCaptainArms(boolean registryShape, long seatShipId, long lastBuiltOwnShipId,
+            boolean observerMode) {
+        return !registryShape && seatShipId != 0L && lastBuiltOwnShipId != 0L && !observerMode;
+    }
+
+    /**
+     * The initial-world adopt's latch test. An armed latch holds the
+     * adopt, so the server's initial world lands on the captained hull, never on the hull it replaces.
+     */
+    boolean holdsInitialAdopt() {
+        return firstLifeCaptainPending;
+    }
+
+    /**
+     * THE own-seat drive burn, shared by the claim's spawn, the claim's
+     * in-place adopt and the first-life captain re-field. The server flies its seat hull in under the engine's
+     * travel drive (shield, cloak, system and fire blocked) and says so with the pose's drive-lock bit; a client
+     * hull fielded at burn 0 has no drive, so a shield press went up about 80 ticks before the server's. Returns
+     * the own fly-in burn when {@code pose} is the fresh, alive, flags-known own pose with the bit SET (the read
+     * {@link DriveLockLane} gates its hold on) and no re-admission burn-kill window is open; else {@code 0f}. On a
+     * re-join the window wins, as before: it kills every own drive until the adopt and hard-cuts it there, so a
+     * drive lit under it would only flicker. The drive ENDS at the drive lane's falling edge (the server's drive
+     * ended) or when its burn runs out.
+     */
+    float ownDriveBurnSec(ServerEntityPose pose, boolean stale) {
+        if (pose == null || !(pose.hitpoints() > 0f) || stale || !pose.hasFluxFlags() || !pose.isDriveLockBit()) {
+            return 0f;
+        }
+        return plugin.rejoin.burnKillWindowOpen() ? 0f : PredictReconcileCombatPlugin.OWN_SPAWN_FLYIN_BURN_SEC;
+    }
+
+    /**
+     * The keep mark for a body fielded or lit at {@code burnSec > 0}, so
+     * the initial-world adopt keeps its drive (an unmarked burning body is turned off there). The facing is the
+     * one the drive latched: the wire facing, 90 when non-finite, exactly as {@link #fieldOwnAtPose} spawns.
+     */
+    private void markOwnDriveMint(ShipAPI body, ServerEntityPose pose, float burnSec) {
+        if (body != null && burnSec > 0f) {
+            plugin.rejoin.noteOwnFlyinMint(body, Float.isFinite(pose.facing()) ? pose.facing() : 90f, burnSec);
+        }
+    }
+
+    /**
+     * The in-place adopt's drive. The engine's own
+     * {@code turnOnTravelDrive(sec)} on the adopted hull (already snapped to the wire pose, so the drive latches
+     * the wire facing on its first burning frame) plus the keep mark. A drive already ON is left alone and
+     * unmarked: the engine call no-ops while ON, and that burn latched the local deploy facing, so the adopt's
+     * kill applies as before. Returns true when it lit the drive.
+     */
+    private boolean lightOwnDriveInPlace(ShipAPI body, ServerEntityPose pose, float burnSec) {
+        if (burnSec <= 0f) {
+            return false;
+        }
+        try {
+            ShipSystemAPI drive = body.getTravelDrive();
+            if (drive == null || drive.isOn()) {
+                return false;
+            }
+            body.turnOnTravelDrive(burnSec);
+        } catch (Throwable t) {
+            PilotWatchLog.error("predict claim: turnOnTravelDrive threw (the adopted hull flies in without"
+                    + " the drive)", t);
+            return false;
+        }
+        // The lit-in-place mark, not the spawn's: this drive fires on the hull's NEXT advance, and the adopt
+        // runs later in this same frame, where a plain mark would read it as OFF and turn it off.
+        plugin.rejoin.noteOwnFlyinLitInPlace(body, Float.isFinite(pose.facing()) ? pose.facing() : 90f, burnSec);
+        return true;
+    }
+
+    /**
      * W13 leg 2c: THE CLAIM — field the WELCOME's seat hull at its first alive wire
      * pose and re-point the player from the engine's placeholder pod (the observer posture the
      * zero-hull claim-at-play build leaves). Respawn core = {@link #fieldOwnAtPose} at rest (burn
@@ -426,24 +642,46 @@ final class OwnSeatLifecycleLane {
      * pod is NEVER removed or nulled ({@code setPlayerShipExternal(null)} dereferences
      * {@code getShield()}). The respawn core's log row says "AT REST"; the claim row
      * below is the grade tell.
+     *
+     * <p>Both branches take the shared drive burn
+     * ({@link #ownDriveBurnSec}; {@code stale} = no fresh frame within the plugin's wall gate): the spawn is
+     * fielded at it, the in-place adopt lights the engine's own drive ({@link #lightOwnDriveInPlace}); either
+     * body is marked for the adopt's keep. Bit clear, flags unknown, stale or a re-join window = burn 0, no
+     * mark, as before.
      */
-    void claimOwnSeatAtPose(ServerEntityPose pose) {
+    void claimOwnSeatAtPose(ServerEntityPose pose, boolean stale) {
         ShipAPI before = plugin.ownShip;
         plugin.claimAttempts++;
         // The build fields ONE placeholder flagship (reserves==1 auto-deploy,
-        // no deploy dialog) and it is the anchor here. Variants already agree => adopt it IN PLACE
-        // (no spawn, no swap; snapped to the wire pose); else the respawn core fields the seat hull
+        // no deploy dialog) and it is the anchor here. Variants already agree AND the seat carries no
+        // captain => adopt it IN PLACE (no spawn, no swap; snapped to the wire pose); else the respawn core fields the seat hull
         // with the placeholder as the stale body (removed after the re-point). An engine shuttle
         // anchor (a build that fielded nothing) is never passed as stale — it is not in getShips().
         String announced = plugin.variantById.get(Long.valueOf(plugin.session.shipId()));
         String fielded = before != null && before.getVariant() != null
                 ? before.getVariant().getHullVariantId() : null;
         boolean placeholderAlive = before != null && before.isAlive() && !before.isShuttlePod();
-        if (placeholderAlive && announced != null && announced.equals(fielded)) {
+        boolean agree = placeholderAlive && announced != null && announced.equals(fielded);
+        // The in-place adopt is faithful ONLY for a seat that carries NO captain. The
+        // mission-built placeholder's weapons were constructed captain-less, and the engine fixes a weapon's
+        // construction-time skill effects (Missile Specialization's max ammo) when the weapon is BUILT: a later
+        // setCaptain (the t0 stats lever) re-derives ship stats only.
+        //
+        // So a captained seat goes through the respawn
+        // core below (spawnOwnSeat = the member-first spawn carrying the captain, the path lives 2+ and the
+        // server's own seat spawn already take), with the placeholder as the stale body. The mint here is the
+        // spawn's own predicate (same triple); the spawn mints its own person.
+        // The in-place adopt needs no fleet-data carrier. Under the all-skills
+        // knob a seat's captain is the all-skills person, so the mint below is never null for a seat and every
+        // knob-on claim takes the member-first spawn, whose member carries the pair with its side's fleet data;
+        // only a captain-less seat (knob off, no curated row) is adopted, and it takes no pair on either end.
+        PersonAPI seatCaptain = agree ? mintAdoptTwinOrNull(fielded) : null;
+        if (agree && seatCaptain == null) {
             plugin.claimPending = false;
             plugin.claimHold.release(before); // rider 6: the held placeholder IS the seat hull now
-            rememberAdopted(before, mintAdoptTwinOrNull(fielded)); // its own original = the seat's twin, never the build-time person
+            rememberAdopted(before, null); // captain-less: the BEGIN revert keeps the hull's own original
             plugin.rejoin.hardSnapToPose(before, pose);
+            boolean driveLit = lightOwnDriveInPlace(before, pose, ownDriveBurnSec(pose, stale));
             try {
                 plugin.engine.setShipPlayerLastTransferredCommandTo(before);
             } catch (Throwable t) {
@@ -454,11 +692,13 @@ final class OwnSeatLifecycleLane {
             CcClientModPlugin.noteClaimSettled();
             PilotWatchLog.info("predict claim: seat " + plugin.session.shipId() + " placeholder flagship IS the"
                     + " seat hull (" + fielded + ") -> adopted IN PLACE at wire pose (" + pose.locX() + ","
-                    + pose.locY() + ") on attempt " + plugin.claimAttempts + " (no spawn; W13 leg 2c CLAIM AT"
-                    + " PLAY)");
+                    + pose.locY() + ") on attempt " + plugin.claimAttempts + " (no spawn, no seat captain"
+                    + (driveLit ? ", travel drive lit under the server's drive lock" : "") + "; W13"
+                    + " leg 2c CLAIM AT PLAY)");
             return;
         }
-        fieldOwnAtPose(pose, placeholderAlive ? before : null, placeholderAlive ? fielded : null, 0f);
+        float burn = ownDriveBurnSec(pose, stale);
+        fieldOwnAtPose(pose, placeholderAlive ? before : null, placeholderAlive ? fielded : null, burn);
         if (plugin.ownShip == null || plugin.ownShip == before) {
             if (plugin.claimAttempts == 1 || plugin.claimAttempts % 120 == 0) {
                 PilotWatchLog.error("predict claim: own seat hull did NOT field at wire pose (attempt "
@@ -466,6 +706,7 @@ final class OwnSeatLifecycleLane {
             }
             return;
         }
+        markOwnDriveMint(plugin.ownShip, pose, burn);
         plugin.claimPending = false;
         plugin.claimHold.release(plugin.ownShip); // rider 6: the held body was the stale placeholder (removed)
         try {
@@ -480,7 +721,68 @@ final class OwnSeatLifecycleLane {
                 + (plugin.ownShip.getVariant() != null ? plugin.ownShip.getVariant().getHullVariantId() : "?")
                 + " on attempt " + plugin.claimAttempts + " -> player re-pointed from the placeholder "
                 + (placeholderAlive ? "flagship " + fielded + " (removed)" : "engine pod")
+                + " burn=" + burn + (burn > 0f ? " (under the server's drive lock)" : "")
                 + " (W13 leg 2c CLAIM AT PLAY)");
+    }
+
+    /**
+     * Fire the 1v1 first-life captain latch
+     * ({@link #firstLifeCaptainPending}) at an alive own pose. The seat's captain is minted HERE, after the
+     * session bind delivered the match's officer flag, by the spawn's own predicate: none = the mission-built
+     * hull already IS the seat hull (latch cleared, nothing spawned). Else the hull is re-fielded through
+     * {@link #fieldOwnAtPose} (the captain-bearing spawn every later life and the server's seat take) at the
+     * shared drive burn, with the mission hull as the stale body: spawned, re-pointed, THEN removed, a
+     * same-frame body swap. A failed spawn retries next frame, bounded; at the bound the latch clears LOUD and
+     * the mission hull is adopted as before. Its row and counter are its own, never the variant re-field's.
+     */
+    void refieldFirstLifeCaptained(ServerEntityPose pose, boolean stale) {
+        ShipAPI before = plugin.ownShip;
+        if (!firstLifeCaptainPending || before == null) {
+            return; // nothing armed, or the mission hull is not bound yet (the adopt waits for it too)
+        }
+        long seat = plugin.session.shipId();
+        String fielded = before.getVariant() != null ? before.getVariant().getHullVariantId() : null;
+        String announced = plugin.variantById.get(Long.valueOf(seat));
+        String seatVariant = announced != null ? announced : fielded; // what fieldOwnAtPose spawns
+        String keepWhy = !before.isAlive() ? "the mission hull is not alive"
+                : seatVariant == null ? "no variant resolves"
+                : mintAdoptTwinOrNull(seatVariant) == null ? "the seat carries no captain" : null;
+        if (keepWhy != null) {
+            firstLifeCaptainPending = false;
+            PilotWatchLog.info("predict first-life captain: seat " + seat + " keeps the mission-built hull ("
+                    + keepWhy + ") -> no spawn, latch cleared");
+            return;
+        }
+        float burn = ownDriveBurnSec(pose, stale);
+        fieldOwnAtPose(pose, before, fielded, burn, true);
+        if (plugin.ownShip == null || plugin.ownShip == before) {
+            firstLifeAttempts++;
+            if (firstLifeAttempts >= OWN_REFIELD_MAX_ATTEMPTS) {
+                firstLifeCaptainPending = false;
+                PilotWatchLog.error("predict first-life captain: GAVE UP after " + firstLifeAttempts
+                        + " failed re-fields -> the mission-built hull is adopted as built (its weapon max ammo"
+                        + " stays below the server's)", null);
+            } else if (firstLifeAttempts == 1) {
+                PilotWatchLog.error("predict first-life captain: the captained hull did NOT field -> retrying"
+                        + " next frame, the initial-world adopt held (bounded at " + OWN_REFIELD_MAX_ATTEMPTS + ")",
+                        null);
+            }
+            return;
+        }
+        firstLifeCaptainPending = false;
+        firstLifeRefields++;
+        markOwnDriveMint(plugin.ownShip, pose, burn);
+        try {
+            plugin.engine.setShipPlayerLastTransferredCommandTo(plugin.ownShip);
+        } catch (Throwable t) {
+            PilotWatchLog.error("predict first-life captain: setShipPlayerLastTransferredCommandTo threw"
+                    + " (transfer pointer stays on the removed mission hull)", t);
+        }
+        PilotWatchLog.info("predict first-life captain: seat " + seat + " hull RE-FIELDED WITH its captain at wire"
+                + " pose (" + pose.locX() + "," + pose.locY() + ") variant=" + FallbackAnnounce.sanitize(seatVariant, 64)
+                + " burn=" + burn + (burn > 0f ? " (under the server's drive lock)" : "")
+                + " -> the mission-built hull (built before its captain) removed; firstLifeRefields="
+                + firstLifeRefields + " (apart from the variant re-field count)");
     }
 
     /**
@@ -545,6 +847,16 @@ final class OwnSeatLifecycleLane {
      */
     private void fieldOwnAtPose(ServerEntityPose pose, ShipAPI staleAlive, String staleVariant,
             float flyinBurnSec) {
+        fieldOwnAtPose(pose, staleAlive, staleVariant, flyinBurnSec, false);
+    }
+
+    /**
+     * The core with {@code firstLifeLatch} = the 1v1 first-life captain
+     * re-field ({@link #refieldFirstLifeCaptained}), which writes its own row and counter: here it bumps neither
+     * {@code plugin.ownRefields} nor the variant re-field's row, and its failure row names the latch.
+     */
+    private void fieldOwnAtPose(ServerEntityPose pose, ShipAPI staleAlive, String staleVariant,
+            float flyinBurnSec, boolean firstLifeLatch) {
         if (plugin.engine == null || pose == null) {
             return;
         }
@@ -581,7 +893,7 @@ final class OwnSeatLifecycleLane {
             if (newOwn == null) {
                 // The retry stays every frame; the row is one a round.
                 if (ownSpawnNullThisRound++ == 0) {
-                    PilotWatchLog.error("predict respawnOwn: spawnShipOrWing returned null (variant="
+                    PilotWatchLog.error("predict respawnOwn: spawnFleetMember returned null (variant="
                             + FallbackAnnounce.sanitize(variantId, 64) + ") -> retry next frame (first this round;"
                             + " later failures counted, totals at round close)", null);
                 }
@@ -642,14 +954,18 @@ final class OwnSeatLifecycleLane {
             plugin.ownRefieldPending = false;
             ownRefieldAttempts = 0;
             ownRefieldHeldForPodLogged = false;
-            if (staleAlive != null) {
+            if (staleAlive != null && !firstLifeLatch) {
                 plugin.ownRefields++;
-                PilotWatchLog.info("predict refieldOwn: announced OWN variant != fielded while ALIVE"
+                // A same-variant stale body = the claim's captain-less placeholder (the claim's law)
+                boolean captainlessPlaceholder = variantId.equals(staleVariant);
+                PilotWatchLog.info("predict refieldOwn: " + (captainlessPlaceholder
+                        ? "the claim placeholder carries the announced variant but was BUILT WITHOUT the seat captain"
+                        : "announced OWN variant != fielded while ALIVE")
                         + " -> fresh own ship fielded at wire pose (" + pose.locX() + ","
                         + pose.locY() + ") variant=" + FallbackAnnounce.sanitize(variantId, 64)
                         + " (stale " + staleVariant
                         + " removed) refields=" + plugin.ownRefields);
-            } else {
+            } else if (staleAlive == null) {
                 plugin.ownRespawns++;
                 PilotWatchLog.info("predict respawnOwn: OWN wire id reappeared ALIVE -> fresh own ship"
                         + " fielded at wire pose (" + pose.locX() + "," + pose.locY() + ") variant="
@@ -665,10 +981,17 @@ final class OwnSeatLifecycleLane {
             ownRespawnSampleEndMillis = System.currentTimeMillis() + 5_000L;
             ownRespawnSampleNextMillis = 0L;
         } catch (Throwable t) {
-            PilotWatchLog.error((staleAlive != null ? "predict refieldOwn" : "predict respawnOwn")
-                    + ": fresh own spawn FAILED -> retry next frame ("
-                    + (staleAlive != null ? "ownRefieldPending stays armed, bounded"
-                            : "ownKilled stays latched") + ")", t);
+            // The retry stays every frame (a give-up would leave the joiner flying the
+            // placeholder against the server's seat); the stack is written once a round, later throws are counted.
+            if (ownSpawnThrowThisRound++ == 0) {
+                PilotWatchLog.error((firstLifeLatch ? "predict first-life captain"
+                        : staleAlive != null ? "predict refieldOwn" : "predict respawnOwn")
+                        + ": fresh own spawn FAILED -> retry next frame ("
+                        + (firstLifeLatch ? "the latch stays armed, bounded"
+                                : staleAlive != null ? "ownRefieldPending stays armed, bounded"
+                                : "ownKilled stays latched")
+                        + "; first this round; later failures counted, totals at round close)", t);
+            }
         }
     }
 

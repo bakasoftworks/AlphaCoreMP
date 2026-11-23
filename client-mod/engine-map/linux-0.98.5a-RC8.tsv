@@ -1,0 +1,43 @@
+# cc-engine-map v1
+# id=linux-0.98.5a-RC8
+# game=0.98.5a-RC8
+# source=b6aa266d667c0e1701e96c05a8b5e5142e99c6f50f7c75453366e66034b7719f
+# target=e571af5f0ad532ace229a052934db143297b3fe43db92ce4ade7d4418fd748d7
+# columns: class<TAB>win-internal<TAB>linux-internal | <kind><TAB>win-owner<TAB>name<TAB>win-desc<TAB>linux-name | touched<TAB>mod-class-internal
+# kind = static-method | method | static-field | field (the static bit decides the probe's lookup: findStatic / findVirtual / findStaticGetter / findGetter)
+# A Linux descriptor = the Windows descriptor mapped through the class rows. Keys are exact, case-sensitive internal names.
+class	com/fs/starfarer/String/do	com/fs/starfarer/D/oO0O
+class	com/fs/starfarer/combat/C/A	com/fs/starfarer/combat/ooOO/oOOO
+class	com/fs/starfarer/combat/C/o0oo	com/fs/starfarer/combat/ooOO/b
+class	com/fs/starfarer/combat/OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO	com/fs/starfarer/combat/OoOO
+class	com/fs/starfarer/combat/OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO$o	com/fs/starfarer/combat/OoOO$o
+class	com/fs/starfarer/combat/ai/oO0O	com/fs/starfarer/combat/ai/oO0OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
+class	com/fs/starfarer/combat/entities/ship/A/E	com/fs/starfarer/combat/entities/ship/A/o0OO
+class	com/fs/starfarer/combat/entities/ship/A/int	com/fs/starfarer/combat/entities/ship/A/I
+class	com/fs/starfarer/combat/oOOO	com/fs/starfarer/combat/super
+class	com/fs/starfarer/combat/systems/Q	com/fs/starfarer/combat/systems/interface
+class	com/fs/starfarer/combat/tasks/C	com/fs/starfarer/combat/tasks/ooOO
+class	com/fs/starfarer/loading/Q	com/fs/starfarer/loading/o00O
+class	com/fs/starfarer/loading/specs/a	com/fs/starfarer/loading/specs/O0oo
+class	com/fs/starfarer/loading/specs/dosuper	com/fs/starfarer/loading/specs/oO0o
+class	com/fs/starfarer/loading/specs/g	com/fs/starfarer/loading/specs/O00o
+class	com/fs/starfarer/o0OO/OoOO/O0OO	com/fs/starfarer/E/B/O0OO
+class	com/fs/starfarer/ui/forsuper	com/fs/starfarer/ui/c
+class	sound/ooOO	sound/C
+static-field	com/fs/starfarer/combat/OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO$o	new	Lcom/fs/starfarer/combat/OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO$o;	Ò00000
+static-field	com/fs/starfarer/combat/OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO$o	Ô00000	Lcom/fs/starfarer/combat/OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO$o;	String
+static-method	com/fs/starfarer/loading/OoOO	String	(Ljava/lang/String;)Z	Ô00000
+static-method	com/fs/starfarer/loading/OoOO	super	()Ljava/util/List;	o00000
+static-method	com/fs/starfarer/loading/OoOO	super	(Lcom/fs/starfarer/loading/specs/HullVariantSpec;Z)V	o00000
+static-method	com/fs/starfarer/loading/OoOO	super	(Ljava/lang/String;)Lcom/fs/starfarer/loading/specs/HullVariantSpec;	o00000
+static-method	com/fs/starfarer/loading/OoOO	Ò00000	(Ljava/lang/String;)V	new
+static-method	com/fs/starfarer/loading/specs/dosuper	super	(Lorg/json/JSONObject;)Lcom/fs/starfarer/loading/specs/dosuper;	o00000
+method	com/fs/starfarer/combat/oOOO	Ó00000	()Ljava/util/List;	Object
+touched	cc/starsector/client/BootVariantRegistry
+touched	cc/starsector/client/FighterWingHudLane$EngineReach
+touched	cc/starsector/client/MatchOverLane
+touched	cc/starsector/client/MissileSplitLane
+touched	cc/starsector/client/ReplicaOrderSweep
+touched	cc/starsector/client/SoundReinitAdapter
+touched	cc/starsector/client/TeleportCursorLane
+touched	cc/starsector/client/TransferManagerAdapter

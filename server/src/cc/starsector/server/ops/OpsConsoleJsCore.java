@@ -63,6 +63,18 @@ package cc.starsector.server.ops;
  * every {@code data-cc} in that row is a listed id or a dotted part of one (the Game folder and Recording rows
  * hide whole; the map row keeps half size / station / backdrop). The two literal arrays copy those lists (the
  * served block cannot read Java); the setup part's own toggles give the same verdict and run after.
+ *
+ * <p>{@code _launchDialog} pops the launch-failure dialog only for
+ * the failure its {@code failId} counted and only while the server is not live. WHY: the tab-scoped seen-key
+ * starts empty in every new tab, while {@link OpsConsole} keeps serving the last {@code failId} after a later
+ * Start, so a fresh tab popped an old failure over a listening server. The server bumps {@code failId} only
+ * when the served launch ({@code launch}, the last Start) turns terminal REFUSED / FAILED
+ * ({@code OpsConsole.launchJsonOrNull}), so a served launch that is pending, stopped, ended or absent (gone live)
+ * marks that failure superseded; live = the snapshot's {@code stateKey} {@code listening} / {@code run}
+ * ({@link ServerOpsCore#statusJson}). A live answer also takes back a failure dialog still up or queued
+ * ({@code _dropLaunchErr}; error entries carry {@code kind}); every other queued error keeps its place
+ * (rows {@code page-launch-fail-stale-live}, {@code page-launch-fail-live-dismiss},
+ * {@code page-launch-fail-current-pops}).
  */
 final class OpsConsoleJsCore {
 
@@ -233,10 +245,12 @@ const CC = {
     return p;
   },
 
-  // the copyable error dialog (queued when one is already open); resolves when it closes
-  dialogError(title, text) {
+  // the copyable error dialog (queued when one is already open); resolves when it closes; kind
+  // 'launch' marks a launch failure, the one entry a live server takes back (_dropLaunchErr)
+  dialogError(title, text, kind) {
     return new Promise((resolve) => {
-      CC._errQ.push({title: title ? String(title) : 'Error', text: text, resolve: resolve});
+      CC._errQ.push({title: title ? String(title) : 'Error', text: text, resolve: resolve,
+        kind: kind === 'launch' ? 'launch' : ''});
       const d = CC.el('dlg-error');
       if (CC._errQ.length === 1 && !(d && d.open)) {
         CC._errNext();
@@ -781,16 +795,59 @@ const CC = {
     CC.show(box, true);
   },
 
-  // the launch-failure dialog, once per failId (remembered for this tab and key)
+  // the launch-failure dialog, once per failId (remembered for this tab and key). The server bumps
+  // failId when its last Start turns REFUSED, or FAILED past pending, and always serves that last
+  // Start as the launch: so failId names the served launch only while it shows that failure. Any
+  // other launch beside it means a later Start superseded the failure. A live server (listening or
+  // run) pops nothing and takes back a failure dialog still up or queued. A superseded or live
+  // failId is marked seen, except beside a launch still pending: there the next answers settle it
+  // (live or stopped marks it; the pending launch's own failure arrives under a new failId), and a
+  // poll from another tab may already have counted that pending launch's failure in this failId.
   _launchDialog(s) {
     const id = Math.trunc(Number(s.failId) || 0);
     const l = s.launch;
-    if (id <= 0 || String(id) === CC._failSeen || !l || !l.headline) {
+    const live = s.stateKey === 'listening' || s.stateKey === 'run';
+    if (live) {
+      CC._dropLaunchErr();
+    }
+    if (id <= 0 || String(id) === CC._failSeen) {
+      return;
+    }
+    const own = !!l && (l.headline === 'REFUSED' || (l.headline === 'FAILED' && l.phase !== 'PENDING'));
+    if (!live && !own && l && l.phase === 'PENDING') {
       return;
     }
     CC._failSeen = String(id);
     CC._store('cc.failSeen', CC._failSeen);
-    CC.dialogError(l.headline, l.text);
+    if (own && !live) {
+      CC.dialogError(l.headline, l.text, 'launch');
+    }
+  },
+
+  // a live server takes back every launch-failure entry, each resolved as an OK press resolves it:
+  // one on screen gives the dialog to the next queued error (or closes it); every other entry keeps
+  // its place and its text. A head with the dialog shut is a close already under way: its handler
+  // owns that entry.
+  _dropLaunchErr() {
+    const d = CC.el('dlg-error');
+    const head = CC._errQ[0];
+    CC._errQ = CC._errQ.filter((it, i) => {
+      if (i === 0 || it.kind !== 'launch') {
+        return true;
+      }
+      it.resolve();
+      return false;
+    });
+    if (!d || !d.open || !head || head.kind !== 'launch') {
+      return;
+    }
+    CC._errQ.shift();
+    head.resolve();
+    if (CC._errQ.length) {
+      CC._errNext();
+    } else {
+      d.close();
+    }
   },
 
   // each sent verb's echo test, re-run on the next 5 answers; a hit extends its note

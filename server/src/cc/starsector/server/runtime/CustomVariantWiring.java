@@ -115,6 +115,13 @@ public final class CustomVariantWiring {
         // Step 3(c): /ship + HELLO picks resolve against the author's OWN customs; a pick held
         // for an in-flight submission seeds the moment the lane ACCEPTs it.
         door.variantPicks().attachCustomSource(lane);
+        // A HELLO pick naming a ship the host replaced flies its listed kept copy (never a hold).
+        // The chain source too, so a remembered kept stem follows it on the real door.
+        // And the removed list (the reader HiddenShipsLane's restore uses: the last scans' lists,
+        // any thread, no file I/O), so a remembered kept copy the host removed is not served at once, never held.
+        door.variantPicks().attachSupersedeSource(promo == null ? null : SeatVariantPicks.SupersedeSource.of(
+                promo::copySupersedingOrNull, promo::removedSupersededByOrNull,
+                id -> CustomVariantOps.removedStemOrNull(lane, id) != null));
         lane.setAcceptListener(door.variantPicks()::onCustomAccepted);
         // A REJECT releases a held pick at once (never the 30 s wait).
         lane.setRejectListener(door.variantPicks()::onCustomRejected);

@@ -4,6 +4,7 @@ import cc.starsector.client.net.ClientAsteroidFrame;
 import cc.starsector.client.net.ClientAsteroidRow;
 import cc.starsector.client.net.PredictReconcileDatagramSession;
 import cc.starsector.client.net.PredictSession;
+import cc.starsector.client.net.WireWorldLaw;
 import com.fs.starfarer.api.combat.CombatAsteroidAPI;
 import com.fs.starfarer.api.combat.CombatEngineAPI;
 import com.fs.starfarer.api.combat.CombatEntityAPI;
@@ -637,10 +638,14 @@ final class AsteroidLane {
         return presentedTick == Long.MIN_VALUE ? 0f : (presentedTick - simTick) / tickRate;
     }
 
-    /** Ballistic lead: {@code {x + vx*dt, y + vy*dt, wrap360(facing + angVel*dt)}}. */
+    /**
+     * Ballistic lead: {@code {x + vx*dt, y + vy*dt, wrap360(facing + angVel*dt)}}.
+     * The lead's seconds come from host-chosen ticks, so a led coordinate
+     * outside the world bound stays at its base ({@link WireWorldLaw#ledCoord}); the facing is wrapped, no bound.
+     */
     static float[] lead(float x, float y, float facing, float vx, float vy, float angVel,
             float dtSeconds) {
-        return new float[] {x + vx * dtSeconds, y + vy * dtSeconds,
+        return new float[] {WireWorldLaw.ledCoord(x, vx, dtSeconds), WireWorldLaw.ledCoord(y, vy, dtSeconds),
                 ((facing + angVel * dtSeconds) % 360f + 360f) % 360f};
     }
 

@@ -705,8 +705,13 @@ rem fail-closed against a relaunch loop no one asked for.
 echo Game closed? You can rejoin without re-entering anything.
 echo   R = rejoin now (the game relaunches and re-dials %CCHOST%:%CCPORT%)
 echo   Q or close this window = quit
+rem The prompt waits OUTSIDE the kit folder (the :cancelled law: a console parked in mods\CC_Client
+rem blocks the folder's delete); a rejoin pass returns to it first, so nothing else sees the move.
+pushd "%~dp0..\.."
 choice /c RQ /n /m "Press R to rejoin, or Q to quit: "
-if "%errorlevel%"=="1" goto refreshmatch
+set "CCRQ=%errorlevel%"
+popd
+if "%CCRQ%"=="1" goto refreshmatch
 exit /b 0
 
 :dryrun
@@ -745,6 +750,9 @@ del "%CCPLAN%.cancel" >nul 2>&1
 del "%CCPLAN%.alive" >nul 2>&1
 del "%CCPLAN%.tmp" >nul 2>&1
 call :planclaimfree
+rem Leave the kit folder before waiting: a console whose working folder is mods\CC_Client makes
+rem Windows refuse the folder's delete ("file in use"), and the cancel advice IS to delete it.
+cd /d "%~dp0..\.."
 pause
 exit /b 1
 
@@ -758,6 +766,8 @@ echo kit zip the host sent you and copy its CC_Client folder back in.
 echo Then tell the host what happened.
 if defined CC_JOIN_VERIFY_ONLY exit /b 1
 if defined CC_JOIN_DRYRUN exit /b 1
+rem Same law as :cancelled - the FIX above is a delete of this folder, so the wait leaves it first.
+cd /d "%~dp0..\.."
 pause
 exit /b 1
 

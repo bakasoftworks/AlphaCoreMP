@@ -1,9 +1,8 @@
 package cc.starsector.client;
 
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
@@ -35,6 +34,11 @@ import java.util.WeakHashMap;
  * flash, sound and projectile it showed before), and the kept fire-sound handle (only when the weapon spec stops the
  * previous fire sound; the stop runs before the next present of the same weapon, as the engine's own fire does).
  *
+ * <p><b>The budget</b> ({@link #pay}): a host announces the shots, so nothing else bounds how many relayed onFire
+ * bodies a frame or a second runs; every relayed onFire CALL pays a token bucket at the price of its class
+ * ({@link #VANILLA_PRICE}). See {@link #CALLS_PER_SECOND} for the unit, the load it serves and what it leaves unbounded.
+ *
+ *
  * <p>Threads: the combat thread only (the presenter's present core). No lock.
  *
  */
@@ -62,22 +66,76 @@ public final class PresentedFireRelayLaw {
     static final String KIT_PREFIX = "cc.starsector.";
 
     /**
-     * The audited vanilla onFire classes allowed on a replica shot, beside the every-frame swap's audited-dormant list.
-     * Visual only: the cryoblaster, heavy adjudicator, rift torpedo and cryoflux transducer bodies (particles, flashes,
-     * a trail plugin). Faithful listeners: the squall and voidblaster bodies (a damage-dealt listener the engine
-     * consults on a hit this window predicts anyway). The neutron torpedo slows its own projectile (velocity x0.33).
-     * The shock repeater's fire-time arc is an EMP arc dealt by the replica, which the arc door zeroes. Everything
-     * else vanilla is refused (see the class doc).
+     * THE RELAY'S BUDGET, in tokens: one token = one relayed onFire CALL
+     * actually made, after the admission, on either relay entry (a shot whose spec plugin and effect plugin both run
+     * pays twice; a weapon with neither pays nothing); the previous-sound stop and the one-cycle barrel animation
+     * allocate nothing and are not priced. WHY: a host announces the shots this window presents, so a hostile host's
+     * shot flood ran onFire bodies without limit (one cryoblaster call builds 30 trail sprites). THE BUCKET
+     * ({@link #pay}) holds at most {@link #CALLS_BURST} tokens and refills at this rate per ENGINE second, with the
+     * arc belt's clock rules: a lower read = a new engine = a full bucket, a clock that is not a number refills
+     * nothing, and the combat boundary ({@link #reset}) refills.
+     *
+     * <p>THE LAWFUL LOAD: the cryoflux transducer and the pseudoparticle jet fire 13 to 20 shots a second a mount, and
+     * Lidar Array and Temporal Shell multiply a rate by 3. The served size is a 400 DP fight: its lawful peak is about
+     * 770 calls a second, about 2,300 with every Temporal Shell synced, a margin of 1.7x under this refill; past it,
+     * overlapping shells lose onFire effects. A predicted window never pauses, so a lawful burst is a HITCH, and a
+     * burst of one second of refill covers it.
+     *
+     * <p>THE HOSTILE CEILING: the engine clock can run 2x wall time, so a flood is held to twice this rate a wall
+     * second, each call at its class's price. NOT bounded by this bucket: the engine's own onHit on a presented shot,
+     * the projectile mint itself, and the frame time of the live set.
      */
-    public static final Set<String> VANILLA_ALLOW = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
-            "com.fs.starfarer.api.impl.combat.CryoblasterEffect",
-            "com.fs.starfarer.api.impl.combat.HeavyAdjudicatorEffect",
-            "com.fs.starfarer.api.impl.combat.RiftTorpedoEffect",
-            "com.fs.starfarer.api.impl.combat.CryofluxTransducerEffect",
-            "com.fs.starfarer.api.impl.combat.SquallOnFireEffect",
-            "com.fs.starfarer.api.impl.combat.threat.VoidblasterEffect",
-            "com.fs.starfarer.api.impl.combat.threat.NeutronTorpedoOnFireEffect",
-            "com.fs.starfarer.api.impl.combat.ShockRepeaterOnFireEffect")));
+    public static final int CALLS_PER_SECOND = 4_000;
+    /** The bucket's size in tokens: the most one frame may spend (one second of refill). */
+    public static final int CALLS_BURST = 4_000;
+    /** The price, in tokens a call, of every class the column below names no other price for. */
+    public static final int PRICE_CALL = 1;
+    /** The price of a class that is ALWAYS called: it takes nothing and is never refused. */
+    public static final int PRICE_FREE = 0;
+    /** The one allowed class that draws an arc inside its own onFire: it pays the arc belt too ({@link ArcCharge}). */
+    public static final String SHOCK_REPEATER = "com.fs.starfarer.api.impl.combat.ShockRepeaterOnFireEffect";
+
+    /**
+     * THE PRICE COLUMN: the audited vanilla onFire classes allowed on a replica shot (beside the every-frame swap's
+     * audited-dormant list), each with its price in budget tokens a CALL ({@link #price}).
+     * <ul>
+     * <li>{@link #PRICE_FREE}, always called (a price over the tokens in hand is refused, and the tokens never go
+     * under zero): the squall and voidblaster bodies (a damage-dealt listener the engine consults on a hit this window
+     * predicts anyway) and the neutron torpedo (it slows its own projectile, velocity x0.33). A refusal would change
+     * STATE (a refused neutron torpedo flies 3x too fast on this window; the listener installs late) and none of the
+     * three allocates per call.</li>
+     * <li>8, the cryoblaster: 30 trail sprites a call that live about 1 s and draw every frame, on screen or off. At 8
+     * the hostile ceiling is 500 calls an engine second (about 15,000 live sprites) instead of 4,000 (about 120,000);
+     * lawful = 1 shot a second a mount.</li>
+     * <li>4, the heavy adjudicator: 60 to 90 particles a call; lawful = 3 a second for 20 shots a mount.</li>
+     * <li>1 plus the arc belt, the shock repeater: its fire-time arc is an EMP arc dealt by the replica (the arc door
+     * zeroes it), drawn inside vanilla's onFire and so outside the belt; the caller charges the belt for one arc of
+     * the weapon's range first ({@link ArcCharge}).</li>
+     * <li>1, the rift torpedo and the cryoflux transducer. Neither is visual only: the first also sets the missile's
+     * EMP resistance and an ECCM override, the second links each shot to the previous one.</li>
+     * </ul>
+     * Every other class, the kit's own and a mod's, pays {@link #PRICE_CALL}: a mod call's cost is unknowable, so only
+     * the COUNT is bounded. Every other vanilla class is refused (see the class doc). Every price is at most
+     * {@link #CALLS_BURST} (a price over the burst could never be admitted).
+     *
+     */
+    public static final Map<String, Integer> VANILLA_PRICE;
+
+    static {
+        Map<String, Integer> p = new LinkedHashMap<String, Integer>();
+        p.put("com.fs.starfarer.api.impl.combat.CryoblasterEffect", Integer.valueOf(8));
+        p.put("com.fs.starfarer.api.impl.combat.HeavyAdjudicatorEffect", Integer.valueOf(4));
+        p.put("com.fs.starfarer.api.impl.combat.RiftTorpedoEffect", Integer.valueOf(PRICE_CALL));
+        p.put("com.fs.starfarer.api.impl.combat.CryofluxTransducerEffect", Integer.valueOf(PRICE_CALL));
+        p.put("com.fs.starfarer.api.impl.combat.SquallOnFireEffect", Integer.valueOf(PRICE_FREE));
+        p.put("com.fs.starfarer.api.impl.combat.threat.VoidblasterEffect", Integer.valueOf(PRICE_FREE));
+        p.put("com.fs.starfarer.api.impl.combat.threat.NeutronTorpedoOnFireEffect", Integer.valueOf(PRICE_FREE));
+        p.put(SHOCK_REPEATER, Integer.valueOf(PRICE_CALL));
+        VANILLA_PRICE = Collections.unmodifiableMap(p);
+    }
+
+    /** The audited vanilla onFire classes allowed on a replica shot: the price column's names. */
+    public static final Set<String> VANILLA_ALLOW = VANILLA_PRICE.keySet();
 
     /** The engine calls a mod plugin may not name: each mints, deletes, damages or re-drives a body the server owns. */
     static final String[] SIM_DOOR_NAMES = {
@@ -102,14 +160,23 @@ public final class PresentedFireRelayLaw {
         /** Read the projectile spec's onFire plugin: called once per weapon, the answer cached (null = none). */
         Object readSpecPlugin();
 
-        /** Admit and run the cached spec plugin's onFire; true when it ran. */
+        /** Admit, pay ({@link PresentedFireRelayLaw#pay}) and run the cached spec plugin's onFire; true when it ran. */
         boolean runSpec(Object specPlugin);
 
-        /** Admit and run the weapon's own effect plugin's onFire; true when it ran. */
+        /** Admit, pay ({@link PresentedFireRelayLaw#pay}) and run the weapon's own effect plugin's onFire; true when it ran. */
         boolean runPlugin();
 
         /** Start one barrel animation cycle; true when one was started. */
         boolean startAnimation();
+    }
+
+    /**
+     * The arc belt's charge for the one arc an allowed class draws inside its own onFire ({@link #SHOCK_REPEATER}'s):
+     * the engine face pays the belt for one arc of the weapon's range; true = paid, false = the belt refused (the
+     * belt's own census counts it).
+     */
+    public interface ArcCharge {
+        boolean chargeArc();
     }
 
     /** The relay's state for one replica weapon. */
@@ -148,6 +215,12 @@ public final class PresentedFireRelayLaw {
     private String lastDenyWhy;
     private Throwable lastThrown;
     private boolean lastShotRan;
+    /** The budget's bucket (0 to {@link #CALLS_BURST}), the engine clock it last refilled at (+inf = unread), its
+     *  refusal census and the one-row latch. */
+    private float tokens = CALLS_BURST;
+    private float budgetClock = Float.POSITIVE_INFINITY;
+    private long refusedCalls;
+    private boolean refusalRowTaken;
 
     /** The weapon's state, created at its first relayed shot. */
     public State state(Object weapon) {
@@ -338,6 +411,62 @@ public final class PresentedFireRelayLaw {
         return p <= b.length ? null : UNREADABLE;
     }
 
+    /**
+     * THE BUDGET's gate for one onFire call of an ADMITTED class, asked by
+     * either relay entry after the admission and before the call. {@code now} = the engine clock in seconds
+     * ({@code getTotalElapsedTime(false)}: 0 and up; a value that is not a number refills nothing). True = call it
+     * (its price is taken); false = REFUSED: the onFire is not called, the shot stands (its projectile, flash and
+     * fire sound are the presenter's; the sound stop and the animation still run) and the weapon's relay stays ON
+     * (the fence is for throws). A price over the tokens in hand is counted ({@link #refusedCalls}; the first a
+     * combat asks for one row, {@link #takeRefusalRow}). {@link #SHOCK_REPEATER} charges {@code arc} only once its
+     * token is in hand (an empty bucket spends no belt points); a charge the belt refuses, or a null {@code arc},
+     * refuses the call with the token KEPT, counted by the belt's census, not this one.
+     */
+    public boolean pay(String className, float now, ArcCharge arc) {
+        if (now < budgetClock) { // the first read, or a new engine
+            tokens = CALLS_BURST;
+            budgetClock = now;
+        } else if (now > budgetClock) {
+            tokens = Math.min(CALLS_BURST, tokens + (now - budgetClock) * CALLS_PER_SECOND);
+            budgetClock = now;
+        } // a clock that is not a number refills nothing
+        int price = price(className);
+        if (price > tokens) {
+            refusedCalls++;
+            return false;
+        }
+        if (SHOCK_REPEATER.equals(className) && (arc == null || !arc.chargeArc())) {
+            return false;
+        }
+        tokens -= price;
+        return true;
+    }
+
+    /** A class's price in budget tokens a call: the price column's, else {@link #PRICE_CALL}. Pure. */
+    public static int price(String className) {
+        Integer p = className == null ? null : VANILLA_PRICE.get(className);
+        return p == null ? PRICE_CALL : p.intValue();
+    }
+
+    /** True exactly once a combat, after its first refused call: the caller writes its ONE error row then. */
+    public boolean takeRefusalRow() {
+        if (refusedCalls == 0L || refusalRowTaken) {
+            return false;
+        }
+        refusalRowTaken = true;
+        return true;
+    }
+
+    /** The tokens in hand as of the last {@link #pay} (no refill is applied by this read). */
+    public float tokens() {
+        return tokens;
+    }
+
+    /** Calls the budget refused this combat (a price over the tokens in hand; the belt's refusals are its own). */
+    public long refusedCalls() {
+        return refusedCalls;
+    }
+
     /** The ordinal the next relay would get (the caller times relay 1 and relay {@link #WARM_RELAY}). */
     public long nextRelay() {
         return relays + 1L;
@@ -365,8 +494,13 @@ public final class PresentedFireRelayLaw {
         return lastDenyWhy;
     }
 
-    /** The combat boundary: every weapon state, every class verdict and every counter starts over. */
+    /** The combat boundary: every weapon state, every class verdict and every counter starts over; the budget's
+     *  bucket is full again and its one refusal row re-armed. */
     public void reset() {
+        tokens = CALLS_BURST;
+        budgetClock = Float.POSITIVE_INFINITY;
+        refusedCalls = 0L;
+        refusalRowTaken = false;
         states.clear();
         verdicts.clear();
         relays = 0L;
@@ -390,7 +524,8 @@ public final class PresentedFireRelayLaw {
                 + " onfire_threw=" + threw
                 + " onfire_off=" + offWeapons
                 + " onfire_denied=" + denied
-                + " fx_sound_fade_residue=" + fadeResidue;
+                + " fx_sound_fade_residue=" + fadeResidue
+                + " onfire_refused=" + refusedCalls;
     }
 
     private static int u2(byte[] b, int at) {

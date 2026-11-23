@@ -817,7 +817,7 @@ public final class AwsdSnapshotReader {
                 .velX(kf.qvx() * VEL_GRID)
                 .velY(kf.qvy() * VEL_GRID)
                 .facing(kf.qFacing() * FACING_GRID_DEG)
-                .angularVelocity(kf.qAngVel() * ANG_VEL_GRID)
+                .angularVelocity(WireWorldLaw.boundedAngularRate(kf.qAngVel() * ANG_VEL_GRID)) //
                 .hitpoints(hullLevel * kf.maxHp())
                 // The keyframe's max hull rides through as-is — the
                 // server engine's live getMaxHitpoints (script-grown for a construction swarm),
@@ -1186,7 +1186,15 @@ public final class AwsdSnapshotReader {
             }
             requireU16("contentId", contentId);
             requireU16("ownerWire", ownerWire);
-            // qx/qy are full i32 carriers (the pose-grid widen): any int value is legal.
+            // Qx/qy ride full i32 carriers (the pose-grid widen),
+            //but only a grid position inside the world law is legal: the place
+            // resolvePose mints (q * POS_GRID_SU) must pass WireWorldLaw.coordOk, since a huge finite
+            // place hangs the engine. qAngVel is i16, whose top reaches past the angular-rate bound: a
+            // rate is BOUNDED where resolvePose mints it, never refused here (the stored
+            // q stays the wire's own, so a later delta still resolves against the server's anchor).
+            if (!WireWorldLaw.coordOk(qx * POS_GRID_SU) || !WireWorldLaw.coordOk(qy * POS_GRID_SU)) {
+                throw new IllegalArgumentException("qx/qy outside the world law: " + qx + "/" + qy);
+            }
             requireI16("qvx", qvx);
             requireI16("qvy", qvy);
             if (qFacing < 0 || qFacing >= FACING_STEPS_PER_TURN) {

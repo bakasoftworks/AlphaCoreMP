@@ -137,11 +137,15 @@ public final class HandshakeCodec {
      * F1 (flag set frozen at {@code 0x3F}) earns the version-19-SHAPED {@code kit_outdated}
      * ({@link WelcomePayload#encodeRejectedKitOutdatedV19}), armed door fingerprint or not.
      *
+     * v21: the version-20 bytes unchanged; the bump gates the game-version cut, so a kit built for the previous
+     * game version (every version-20 kit) bounces {@code kit_outdated} at HELLO whether or not the door
+     * fingerprint is armed — its well-formed F1 (flag set frozen at {@code 0x3F}) earns the version-20-SHAPED
+     * {@code kit_outdated} ({@link WelcomePayload#encodeRejectedKitOutdatedV20}).
      * A bump (always with {@link Handshake13#VERSION}, the byte heading every frozen hs-13 message)
      * re-mints the {@code Handshake13KatRows} K0..K7 goldens in the SAME commit (two temporary hex-print
      * passes, never committed); the 15 and 16 bumps both went red on it.
-     * v20 admit / v19..v1 bounce / garbage silent. */
-    public static final int HANDSHAKE_VERSION = 20;
+     * v21 admit / v20..v1 bounce / garbage silent. */
+    public static final int HANDSHAKE_VERSION = 21;
     /** HELLO v12 cookie tail cap (the door's {@code DoorCookie.BYTES} is 17; the cap leaves room
      * for a future shape without another bump). A longer tail REJECTS at decode, fail-closed. */
     public static final int HELLO_COOKIE_MAX_BYTES = 32;
@@ -854,6 +858,21 @@ public final class HandshakeCodec {
         public static byte[] encodeRejectedKitOutdatedV19(long nonceEcho, int startingRoundId,
                 int tickRate, long serverLife) {
             return frame(19, WELCOME_REJECTED, nonceEcho, 0L, startingRoundId,
+                    DoorRejectReasons.KIT_OUTDATED, 0L, tickRate, 0, serverLife,
+                    CUSTOM_TIER_STANDARD, 4, CUSTOM_S_MOD_CAP_ENGINE, 0);
+        }
+
+        /**
+         * The v20-SHAPED {@code kit_outdated} bounce: version byte <b>20</b>, the same REJECTED
+         * layout and values as {@link #encodeRejectedKitOutdatedV19} (a kit reads only a REJECT headed
+         * by its OWN version byte). A version-20 kit — every v0.6.7–v0.6.9 joiner kit, built for the
+         * previous game version — at a version-21 door reads "kit outdated", door fingerprint armed or
+         * not, instead of a silent drop and a connect timeout. 57 B payload: never larger than the
+         * 123 B F1 it answers.
+         */
+        public static byte[] encodeRejectedKitOutdatedV20(long nonceEcho, int startingRoundId,
+                int tickRate, long serverLife) {
+            return frame(20, WELCOME_REJECTED, nonceEcho, 0L, startingRoundId,
                     DoorRejectReasons.KIT_OUTDATED, 0L, tickRate, 0, serverLife,
                     CUSTOM_TIER_STANDARD, 4, CUSTOM_S_MOD_CAP_ENGINE, 0);
         }

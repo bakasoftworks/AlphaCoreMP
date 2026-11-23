@@ -1,6 +1,6 @@
 # AlphaCoreMP
 
-AlphaCoreMP is a multiplayer mod for Starsector 0.98a-RC8, together with the dedicated server that runs its
+AlphaCoreMP is a multiplayer mod for Starsector 0.98.5a-RC8, together with the dedicated server that runs its
 battles. This tree is the source of both. Each player flies their own ship: together against AI ships or in two
 teams against each other, depending on the match the host picks. The server package's own match holds 32 players
 defending a station against waves of AI ships (the host can switch it to two player teams); the other included
@@ -13,7 +13,7 @@ For readers who know their way around - everything here is covered in full below
 - To play, you do not need this source: use the joiner kit. To host on the released server, use
   the server package. This tree is for building the mod and the server, or for hosting on your own build.
 - Build, from the tree's root folder (the one holding `build.ps1`), on Windows or Linux with PowerShell 7,
-  Starsector 0.98a-RC8, a JDK 17 or newer and a JDK 25:
+  Starsector 0.98.5a-RC8, a JDK 17 or newer and a JDK 25:
 
       .\build.ps1 -GameDir "<Starsector folder>" -Jdk17Bin "<JDK 17>\bin" -Jdk25Bin "<JDK 25>\bin"
 
@@ -53,7 +53,7 @@ The build runs on Windows or Linux, installs nothing and writes nothing into the
 - PowerShell 7 (`pwsh`). On Windows, not the older Windows PowerShell that comes with Windows. On Linux, install it
   as Microsoft describes (apt or dnf packages, or a tar.gz):
   https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-linux
-- Starsector 0.98a-RC8's game files: the build compiles against the game's jars; nothing from the game is copied
+- Starsector 0.98.5a-RC8's game files: the build compiles against the game's jars; nothing from the game is copied
   into this tree. On Windows, the installed game. On Linux, a copy of the Windows install's `starsector-core`
   folder (`scp` or a USB stick, about 220 MB): the Linux download of the same version is a different build of the
   game, which the mod does not compile against and the server refuses to start on.

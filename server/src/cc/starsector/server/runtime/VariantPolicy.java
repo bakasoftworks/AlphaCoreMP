@@ -128,7 +128,14 @@ public final class VariantPolicy {
             Set<String> tags,
             /** {@code hull_mods.csv} {@code unlocked} — a no_drop mod that is unlocked anyway. */
             boolean alwaysUnlocked,
-            boolean modDefined) {
+            boolean modDefined,
+            /**
+             * The effect's {@code hasSModEffect()}. Read ONLY for a mod some hull builds in and false for
+             * every other mod: the s-modded built-in law is its one reader and asks about built-ins alone.
+             */
+            boolean sModEffect,
+            /** The effect's {@code isSModEffectAPenalty()}; the same read scope as {@code sModEffect}. */
+            boolean sModEffectPenalty) {
         public HullModFacts {
             Objects.requireNonNull(id, "id");
             tags = Set.copyOf(tags);
@@ -790,6 +797,43 @@ public final class VariantPolicy {
                 return new Refusal(DoorRejectReasons.CUSTOM_SHAPE_INVALID,
                         "sModdedBuiltIns names a mod the hull does not build in: " + s);
             }
+            String sModWhy = sModdedBuiltInRefusal(catalog.hullMods().get(s));
+            if (sModWhy != null) {
+                return new Refusal(DoorRejectReasons.CUSTOM_SHAPE_INVALID,
+                        "built-in hullmod cannot be s-modded (" + sModWhy + "): " + s);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Vanilla's law for s-modding a hullmod the hull BUILDS IN: null when the built-in qualifies, else a
+     * fixed reason. WHY: the refit screen offers the s-mod on a built-in only when the mod is visible, not
+     * a d-mod, may be built in at all, has an s-mod effect, and that effect is not a penalty (the refit
+     * mod picker's eligibility line and {@code Misc.hasSModdableBuiltIns}); the engine's own variant
+     * loader checks none of it, so a hand-written document could otherwise field a state no player can
+     * build, such as Expanded Missile Racks s-modded on a hull that builds them in. An s-modded built-in
+     * takes no s-mod slot, so no count is checked here. The caller has already established that the id
+     * is one of the hull's built-ins.
+     */
+    static String sModdedBuiltInRefusal(HullModFacts m) {
+        if (m == null) {
+            return "unknown hullmod";
+        }
+        if (m.hidden() || m.hiddenEverywhere()) {
+            return "hidden";
+        }
+        if (m.isDMod()) {
+            return "d-mod";
+        }
+        if (m.tags().contains("no_build_in")) {
+            return "cannot be built in";
+        }
+        if (!m.sModEffect()) {
+            return "no s-mod effect";
+        }
+        if (m.sModEffectPenalty()) {
+            return "its s-mod effect is a penalty";
         }
         return null;
     }

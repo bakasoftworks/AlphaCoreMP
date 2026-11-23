@@ -274,6 +274,7 @@ final class EditorGameThread extends BaseEveryFrameCombatPlugin {
         appendSorted(b, def.hullMods());
         appendSorted(b, def.permaMods());
         appendSorted(b, def.sMods());
+        appendSorted(b, def.sModdedBuiltIns()); // an s-modded built-in changes the candidate the engine grades
         return b.toString();
     }
 

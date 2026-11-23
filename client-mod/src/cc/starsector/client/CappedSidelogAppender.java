@@ -82,16 +82,29 @@ class CappedSidelogAppender extends RollingFileAppender {
     private boolean stopped;
     /** Non-null while BOTH reopens failed: the writer is null and {@link #append} retries this name. */
     private String stalledName;
+    /** The gate whose in-flight slot each {@link #append} gives back; null = none (a selftest's bare appender). */
+    private final LogRowGateLaw ringGate;
+
+    /** No ring gate: an appender outside {@link PilotWatchLog}'s async ring (the selftest's own rigs). */
+    CappedSidelogAppender(Layout layout, String path, boolean append, long capChars, int headMaxChars,
+            String prefix) throws IOException {
+        this(layout, path, append, capChars, headMaxChars, prefix, null);
+    }
 
     /**
+     * The ring-gated form; every row gives its in-flight slot back
+     * to {@code ringGate} ({@link #append}'s {@code finally}).
+     *
      * @param path         the live file (operator-config path, never wire-derived)
      * @param capChars     the restart threshold in chars; ≤ 0 = never restart
      * @param headMaxChars the pinned head bound in chars; ≤ 0 = an empty head
      * @param prefix       the {@link PilotWatchLog} row label at attach time (bounded token)
+     * @param ringGate     the gate whose slot every row gives back; null = none
      */
     CappedSidelogAppender(Layout layout, String path, boolean append, long capChars, int headMaxChars,
-            String prefix) throws IOException {
+            String prefix, LogRowGateLaw ringGate) throws IOException {
         super(layout, path, append);
+        this.ringGate = ringGate;
         // The native rename roll must never fire mid-session (it deletes .1); the caller sets it too.
         this.maxFileSize = Long.MAX_VALUE;
         this.capChars = capChars;
@@ -133,7 +146,10 @@ class CappedSidelogAppender extends RollingFileAppender {
     }
 
     /** The only entry log4j still calls once the writer is null: drops (counted) while stopped or
-     *  stalled, retrying a stalled reopen every 1024th row. Never throws (F2). */
+     *  stalled, retrying a stalled reopen every 1024th row. Never throws (F2).
+     *  Every path out, the stopped and stalled drops included,
+     *  gives the row's in-flight ring slot back in the {@code finally}, so a dead file never parks the
+     *  logging thread on a full ring. */
     @Override
     public void append(LoggingEvent e) {
         try {
@@ -150,6 +166,10 @@ class CappedSidelogAppender extends RollingFileAppender {
             super.append(e);
         } catch (Throwable t) {
             fault(t);
+        } finally {
+            if (ringGate != null) {
+                ringGate.releaseRing();
+            }
         }
     }
 

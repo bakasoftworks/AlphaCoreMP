@@ -66,7 +66,8 @@ import org.objectweb.asm.Opcodes;
  * {@code advanceInternal}'s max_stack at least {@link #P3_STACK_PEAK} (the edit keeps the original maxs).
  *
  * <p>Provenance: the window, the edit and the self-check are measured verify-clean on Java 17 and 25 for MagicLib
- * 1.4.5 through 1.5.8-dev14; {@code --golden} re-prints the per-input output hashes.
+ * 1.4.5 through 1.5.8-dev14, and 1.6.1, whose input class is byte-identical to 1.5.8-dev14's;
+ * {@code --golden} re-prints the per-input output hashes.
  *
  *
  */

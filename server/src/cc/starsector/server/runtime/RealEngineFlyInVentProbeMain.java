@@ -7,6 +7,7 @@ import cc.starsector.server.bridge.PilotApplyState;
 import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
 import cc.starsector.server.bridge.RealEngineDemoRoster;
 import cc.starsector.server.bridge.SeatRebind;
+import cc.starsector.server.names.EngineSym;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -60,8 +61,6 @@ import java.util.TreeSet;
  */
 public final class RealEngineFlyInVentProbeMain {
 
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     private static final String FLUX_TRACKER_API = "com.fs.starfarer.api.combat.FluxTrackerAPI";
     private static final String LWJGL_VECTOR2F_CLASS = "org.lwjgl.util.vector.Vector2f";
@@ -220,14 +219,14 @@ public final class RealEngineFlyInVentProbeMain {
     private static Rig buildRig() throws Exception {
         ClassLoader loader = RealEngineFlyInVentProbeMain.class.getClassLoader();
         Rig r = new Rig();
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
         r.engine = engineClass.getMethod("getInstance").invoke(null);
         if (r.engine == null) {
             throw new IllegalStateException("CombatEngine.getInstance() null after gated create()");
         }
         r.getObjects = engineClass.getMethod("getObjects");
         r.repoGetList = r.getObjects.invoke(r.engine).getClass().getMethod("getList", Class.class);
-        r.shipClass = Class.forName(SHIP_CLASS, false, loader);
+        r.shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         Class<?> shipApi = Class.forName(SHIP_API, false, loader);
         Class<?> fluxApi = Class.forName(FLUX_TRACKER_API, false, loader);
         Class<?> vec2 = Class.forName(LWJGL_VECTOR2F_CLASS, false, loader);

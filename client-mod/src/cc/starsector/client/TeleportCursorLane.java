@@ -156,8 +156,7 @@ final class TeleportCursorLane {
         if (map == null) {
             return null;
         }
-        // The map-screen → world inverse — the name via the Unicode escape
-        // Ó (O with acute) so the identifier survives any javac file encoding.
-        return map.Ó00000(mx, my);
+        // The map-screen → world inverse.
+        return map.computeWorldLocation(mx, my);
     }
 }

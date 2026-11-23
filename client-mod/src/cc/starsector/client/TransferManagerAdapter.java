@@ -17,7 +17,7 @@ import com.fs.starfarer.api.combat.ShipAPI;
  * {@code getShipPlayerIsTransferringCommandTo} — its engine bug returns FROM); the FROM
  * getter; last-ship set = the one-ship overload; trigger/retarget
  * = the three-arg overload (non-IDLE else-branch = in-flight retarget, re-pins
- * the landing key {@code do$do} — the ABORT-return lever; the IDLE branch is the
+ * the landing key — the ABORT-return lever; the IDLE branch is the
  * spawn branch, {@link #driveSpawn}); CR-flag set
  * = the boolean setter; state enum (IDLE /
  * IN_FLIGHT / LANDING). Engine identifiers ride as raw unicode
@@ -40,8 +40,9 @@ final class TransferManagerAdapter {
         return !dead;
     }
 
-    /** The {@link MatchOverLane#ensureDestroyedRoster} cast chain — API engine -> API getFleetManager(int) -> engine downcast -> B. */
-    private com.fs.starfarer.combat.B manager(int ownSide) {
+    /** The {@link MatchOverLane#ensureDestroyedRoster} cast chain — API engine -> API getFleetManager(int) -> engine downcast -> the transfer manager. */
+    // RC8 name, 280 chars; = com.fs.starfarer.combat.B at RC7 (client-worklist.tsv)
+    private com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO manager(int ownSide) {
         CombatEngineAPI engine = Global.getCombatEngine();
         if (engine == null) {
             return null;
@@ -56,18 +57,19 @@ final class TransferManagerAdapter {
             return STATE_UNKNOWN;
         }
         try {
-            com.fs.starfarer.combat.B tm = manager(ownSide);
+            com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO tm = manager(ownSide);
             if (tm == null) {
                 return STATE_UNKNOWN;
             }
-            com.fs.starfarer.combat.B.o s = tm.ÖØO000(); // state get
-            if (s == com.fs.starfarer.combat.B.o.Ó00000) {   // IDLE
+            // RC8 name, 282 chars; = com.fs.starfarer.combat.B.o at RC7 (client-worklist.tsv)
+            com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO.o s = tm.ÓÔO000(); // state get
+            if (s == com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO.o.Ó00000) {   // IDLE
                 return STATE_IDLE;
             }
-            if (s == com.fs.starfarer.combat.B.o.String) {        // IN_FLIGHT
+            if (s == com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO.o.Ô00000) {        // IN_FLIGHT
                 return STATE_IN_FLIGHT;
             }
-            if (s == com.fs.starfarer.combat.B.o.Ò00000) {   // LANDING
+            if (s == com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO.o.new_) {   // LANDING
                 return STATE_LANDING;
             }
             return STATE_UNKNOWN;
@@ -83,8 +85,8 @@ final class TransferManagerAdapter {
             return null;
         }
         try {
-            com.fs.starfarer.combat.B tm = manager(ownSide);
-            return tm != null ? (ShipAPI) tm.ØØO000() : null;
+            com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO tm = manager(ownSide);
+            return tm != null ? (ShipAPI) tm.String_for() : null;
         } catch (Throwable t) {
             die("transferTarget", t);
             return null;
@@ -97,9 +99,9 @@ final class TransferManagerAdapter {
             return;
         }
         try {
-            com.fs.starfarer.combat.B tm = manager(ownSide);
+            com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO tm = manager(ownSide);
             if (tm != null) {
-                tm.ÖO0000(enabled);
+                tm.OO0000(enabled);
             }
         } catch (Throwable t) {
             die("setCrDeductEnabled", t);
@@ -112,9 +114,9 @@ final class TransferManagerAdapter {
             return;
         }
         try {
-            com.fs.starfarer.combat.B tm = manager(ownSide);
+            com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO tm = manager(ownSide);
             if (tm != null) {
-                tm.o00000(ship);
+                tm.super_(ship);
             }
         } catch (Throwable t) {
             die("setLastShip", t);
@@ -123,7 +125,7 @@ final class TransferManagerAdapter {
 
     /**
      * Typed retarget-back: the trigger/retarget call {@code (from, from, null)} — the non-IDLE else-branch
-     * re-pins the landing key {@code do$do} to the SOURCE and retargets the in-flight pod's
+     * re-pins the landing key to the SOURCE and retargets the in-flight pod's
      * {@code TransferCommandAI}, so a late landing swaps onto the source (a no-op restore),
      * never hijacks onto a server-denied target. Guarded IN_FLIGHT-only (the
      * {@link #retargetTo} mirror): at LANDING the else-branch's unconditional
@@ -137,15 +139,15 @@ final class TransferManagerAdapter {
             return false;
         }
         try {
-            com.fs.starfarer.combat.B tm = manager(ownSide);
-            if (tm == null || tm.ÖØO000() != com.fs.starfarer.combat.B.o.String) { // IN_FLIGHT only
+            com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO tm = manager(ownSide);
+            if (tm == null || tm.ÓÔO000() != com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO.o.Ô00000) { // IN_FLIGHT only
                 return false;
             }
-            com.fs.starfarer.combat.entities.Ship from = tm.öØO000(); // FROM get
+            com.fs.starfarer.combat.entities.Ship from = tm.void_for(); // FROM get
             if (from == null) {
                 return false;
             }
-            tm.o00000(from, from, null);
+            tm.super_(from, from, null);
             return true;
         } catch (Throwable t) {
             die("retargetToSource", t);
@@ -168,15 +170,15 @@ final class TransferManagerAdapter {
             return false;
         }
         try {
-            com.fs.starfarer.combat.B tm = manager(ownSide);
-            if (tm == null || tm.ÖØO000() != com.fs.starfarer.combat.B.o.String) { // IN_FLIGHT only
+            com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO tm = manager(ownSide);
+            if (tm == null || tm.ÓÔO000() != com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO.o.Ô00000) { // IN_FLIGHT only
                 return false;
             }
-            com.fs.starfarer.combat.entities.Ship from = tm.öØO000(); // FROM get
+            com.fs.starfarer.combat.entities.Ship from = tm.void_for(); // FROM get
             if (from == null) {
                 return false;
             }
-            tm.o00000(from, (com.fs.starfarer.combat.entities.Ship) target, null);
+            tm.super_(from, (com.fs.starfarer.combat.entities.Ship) target, null);
             return true;
         } catch (Throwable t) {
             die("retargetTo", t);
@@ -201,8 +203,8 @@ final class TransferManagerAdapter {
             return false;
         }
         try {
-            com.fs.starfarer.combat.B tm = manager(ownSide);
-            if (tm == null || tm.ÖØO000() != com.fs.starfarer.combat.B.o.Ó00000) { // IDLE only
+            com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO tm = manager(ownSide);
+            if (tm == null || tm.ÓÔO000() != com.fs.starfarer.combat.OoOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO.o.Ó00000) { // IDLE only
                 return false;
             }
             // The trigger's FIRST gate is
@@ -214,8 +216,8 @@ final class TransferManagerAdapter {
             // last-landed module, not the wreck). Clear it through the public last-ship setter
             // (the one-ship overload); its only other seams are the landing write
             // that re-arms it every flight, the getter, the gate + override.
-            tm.o00000((ShipAPI) null);
-            tm.o00000((com.fs.starfarer.combat.entities.Ship) from,
+            tm.super_((ShipAPI) null);
+            tm.super_((com.fs.starfarer.combat.entities.Ship) from,
                     (com.fs.starfarer.combat.entities.Ship) to, null);
             return true;
         } catch (Throwable t) {

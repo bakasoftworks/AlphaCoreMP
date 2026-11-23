@@ -35,7 +35,7 @@ import cc.starsector.client.net.ClientMatchOverRecord;
  * the drive joins identity from the id-contract registries handed in at construction
  * ({@code variantById}: descriptor walk + RAPP; {@code remoteEntities}: rows for
  * every non-own id at init) and injects synthetic members into the debrief's own data: the
- * mission roster panel iterates {@code cfm.getFleet().Object()} and labels via
+ * mission roster panel iterates the fleet's member list and labels via
  * {@code getFinalStatus} set-membership, so each member
  * is appended to that live list + the live {@code getDestroyed()} set (engine-typed cast — the API's
  * {@code getDestroyedCopy} is a dead copy; {@code java.lang.reflect} is B-denied, direct
@@ -242,7 +242,7 @@ final class MatchOverLane {
         }
         com.fs.starfarer.campaign.fleet.FleetMember fm =
                 (com.fs.starfarer.campaign.fleet.FleetMember) member;
-        mgrs[owner].getFleet().Object().add(fm); // the debrief roster iterates this
+        mgrs[owner].getFleet().Ó00000().add(fm); // the debrief roster iterates this
         mgrs[owner].getDestroyed().add(fm);      // live set => getFinalStatus DESTROYED
         return INJECTED;
     }

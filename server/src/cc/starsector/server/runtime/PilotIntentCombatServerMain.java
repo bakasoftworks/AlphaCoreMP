@@ -8,6 +8,7 @@ import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
 import cc.starsector.server.bridge.RealEngineDemoRoster;
 import cc.starsector.server.bridge.SeatRebind;
 import cc.starsector.server.platform.ActivationGate;
+import cc.starsector.server.platform.AllSkillsAttach;
 import cc.starsector.server.runtime.PersistentPilotIntentCombatServer.NPeerHooks;
 import cc.starsector.server.runtime.PersistentPilotIntentCombatServer.PilotRoundSummary;
 import cc.starsector.server.runtime.PersistentPilotIntentCombatServer.PilotServeConfig;
@@ -251,6 +252,15 @@ public final class PilotIntentCombatServerMain {
                         "-Dcc.server.roundsPerSocket=" + roundsPerSocket + " (>1) under cc.server.npeer"
                                 + " requires the gated reset hook: set -Dcc.server.matchReset=true"
                                 + " (RealEngineCombatBindingFactory.resetForRedeploy(occupiedSeatIds))");
+            }
+            // The three facts meet here, before the serve
+            // config is built — the round count + the MRST knob (resolved above) and the all-skills
+            // knob (the deploy lanes' own predicate; read after the binding build, so its class
+            // initializes with the engine already loaded).
+            String fleetEpochRefusal = fleetRecordEpochRefusalOrNull(roundsPerSocket,
+                    emitMatchResetFrame, AllSkillsAttach.enabled());
+            if (fleetEpochRefusal != null) {
+                throw new IllegalArgumentException(fleetEpochRefusal);
             }
 
             PilotServeConfig config = new PilotServeConfig(
@@ -591,6 +601,25 @@ public final class PilotIntentCombatServerMain {
      * flies in mid-round through the serve loop's seat machine. A factory without the gated
      * overload cannot serve the N-peer lane: fail-closed, naming the requirement.
      */
+    /**
+     * The fleet-record epoch refusal. With the all-skills
+     * knob ON every seat fielding writes the round's fleet record and its roster-append row carries
+     * that write; the client folds those rows per round, and its round epoch advances ONLY on the
+     * match-reset frame. A serve of more than one round with that frame OFF would fold every later
+     * round's writes into the first round's record (the client's fleet key, and every hull context
+     * minted from it, would part from the server's). Returns the one-line refusal, or null when
+     * the posture is lawful ({@code roundsPerSocket} is the resolved count, 1 = a single round).
+     */
+    public static String fleetRecordEpochRefusalOrNull(int roundsPerSocket,
+            boolean emitMatchResetFrame, boolean allSkills) {
+        if (roundsPerSocket > 1 && !emitMatchResetFrame && allSkills) {
+            return "cc.server.officerSkillsAll=true with cc.server.roundsPerSocket=" + roundsPerSocket
+                    + " (>1) requires cc.server.emitMatchResetFrame=true: the client's fleet record"
+                    + " advances its round only on the match-reset frame";
+        }
+        return null;
+    }
+
     private static EngineCombatBinding buildNPeerBinding(String factoryClassName) throws Exception {
         Class<?> factory = Class.forName(factoryClassName);
         Method create;
@@ -653,7 +682,8 @@ public final class PilotIntentCombatServerMain {
                 for (RealEngineDemoRoster.SeatDeployResult result : results) {
                     flyIns.add(new NPeerHooks.FlyInResult(result.wireId(), result.stableId(),
                             result.variantId(), result.descriptorVariantId(), result.side(),
-                            result.shipName(), result.crPerMille()));
+                            result.shipName(), result.crPerMille(), result.fleetKeyDigest(),
+                            result.fleetRoundOpen()));
                 }
                 return flyIns;
             };
@@ -1073,7 +1103,8 @@ public final class PilotIntentCombatServerMain {
                         return new NPeerHooks.FlyInResult(entry.getKey(), entry.getValue(),
                                 deployResult.variantId(), deployResult.descriptorVariantId(),
                                 deployResult.side(), deployResult.shipName(),
-                                deployResult.crPerMille());
+                                deployResult.crPerMille(), deployResult.fleetKeyDigest(),
+                                deployResult.fleetRoundOpen());
                     }
                 }
                 throw new IOException("seat fly-in for seat " + seatId
@@ -1089,6 +1120,25 @@ public final class PilotIntentCombatServerMain {
                             + " wire id " + wireId + ": " + vacateFailure.getMessage(),
                             vacateFailure);
                 }
+            }
+
+            /**
+             * The roster's own fleet record removal, on every serve (the record is written with
+             * the all-skills knob off too); a fault surfaces as the serve's IOException.
+             *
+             */
+            @Override
+            public NPeerHooks.SeatFlyInHook.FleetRemoval removeFleetEntry(long wireId)
+                    throws IOException {
+                RealEngineDemoRoster.FleetRemoval removal;
+                try {
+                    removal = RealEngineDemoRoster.removeFleetEntry(wireId);
+                } catch (RuntimeException removeFailure) {
+                    throw new IOException("fleet record removal failed for wire id " + wireId
+                            + ": " + removeFailure.getMessage(), removeFailure);
+                }
+                return removal == null ? null : new NPeerHooks.SeatFlyInHook.FleetRemoval(
+                        removal.side(), removal.goalId(), removal.keyDigest());
             }
         };
     }

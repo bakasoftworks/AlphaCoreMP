@@ -176,7 +176,7 @@ final class ArcHitFxLane {
                 from = new Vector2f(to);
             }
         }
-        engine.spawnEmpArcVisual(from, toAnchor, to, toAnchor, ION_THICKNESS, ION_FRINGE, ION_CORE);
+        ArcBelt.spawn(engine, from, toAnchor, to, toAnchor, ION_THICKNESS, ION_FRINGE, ION_CORE);
         Global.getSoundPlayer().playSound("tachyon_lance_emp_impact", 1.0F, 1.0F, to, new Vector2f());
     }
 
@@ -532,7 +532,7 @@ final class ArcHitFxLane {
         look.segmentLengthMult = 4.0F;
         look.zigZagReductionFactor = 1.0F;
         Color glow = DwellerShroud.SHROUD_GLOW_COLOR;
-        EmpArcEntityAPI arc = engine.spawnEmpArcVisual(from, source, to, toAnchor, ARC_THICKNESS, glow, glow, look);
+        EmpArcEntityAPI arc = ArcBelt.spawnWarped(engine, from, source, to, toAnchor, ARC_THICKNESS, glow, glow, look);
         if (arc != null) {
             arc.setCoreWidthOverride(ARC_THICKNESS);
             arc.setSingleFlickerMode();
@@ -598,6 +598,12 @@ final class ArcHitFxLane {
     static void presentVoltaic(CombatEngineAPI engine, ShipAPI source, ShipAPI target,
             Vector2f to, CombatEntityAPI toAnchor) {
         RoilingSwarmEffect swarm = RoilingSwarmEffect.getSwarmFor(source);
+        // A dweller shroud is not a fragment swarm, so the
+        // arc never starts on a shroud member; vanilla's own onFire read drops it the same way.
+        //
+        if (swarm instanceof DwellerShroud) {
+            swarm = null;
+        }
         RoilingSwarmEffect.SwarmMember fragment = swarm == null ? null
                 : VoltaicDischargeOnFireEffect.pickFragmentTowardsPointWithinRange(
                         swarm, victimPoint(target, to), VOLTAIC_FRAGMENT_RANGE);
@@ -624,7 +630,7 @@ final class ArcHitFxLane {
         look.minFadeOutMult = 1.0F;
         look.segmentLengthMult = 8.0F;
         look.zigZagReductionFactor = 0.5F;
-        EmpArcEntityAPI arc = engine.spawnEmpArcVisual(from, source, to, toAnchor, ARC_THICKNESS,
+        EmpArcEntityAPI arc = ArcBelt.spawn(engine, from, source, to, toAnchor, ARC_THICKNESS,
                 palette[0], palette[1], look);
         if (arc != null) {
             arc.setCoreWidthOverride(0.75F * ARC_THICKNESS);
@@ -662,7 +668,7 @@ final class ArcHitFxLane {
         Color[] palette = lashPalette(target != null && target.isPhased(),
                 VoltaicDischargeOnFireEffect.EMP_FRINGE_COLOR, VoltaicDischargeOnFireEffect.PHASE_FRINGE_COLOR,
                 VoltaicDischargeOnFireEffect.PHASE_CORE_COLOR);
-        EmpArcEntityAPI arc = engine.spawnEmpArcVisual(lashSlotPosition(source), source, to, toAnchor,
+        EmpArcEntityAPI arc = ArcBelt.spawn(engine, lashSlotPosition(source), source, to, toAnchor,
                 LASH_THICKNESS, palette[0], palette[1], lashLook(0.4F));
         if (arc != null) {
             arc.setCoreWidthOverride(LASH_CORE_WIDTH);
@@ -719,7 +725,7 @@ final class ArcHitFxLane {
         CombatEntityAPI endAnchor = allyKnown ? target : toAnchor;
         Color[] palette = lashFriendlyPalette(allyKnown && ThreatSwarmAI.isAttackSwarm(target),
                 VoltaicDischargeOnFireEffect.EMP_FRINGE_COLOR, VoltaicDischargeOnFireEffect.PHASE_FRINGE_COLOR);
-        EmpArcEntityAPI arc = engine.spawnEmpArcVisual(lashMainSlotPosition(source), source, end, endAnchor,
+        EmpArcEntityAPI arc = ArcBelt.spawn(engine, lashMainSlotPosition(source), source, end, endAnchor,
                 LASH_FRIENDLY_THICKNESS, palette[0], palette[1], lashLook(0.3F));
         if (arc != null) {
             arc.setCoreWidthOverride(LASH_FRIENDLY_CORE_WIDTH);

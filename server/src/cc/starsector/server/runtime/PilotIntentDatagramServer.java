@@ -3382,7 +3382,7 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
      * The NEWER-kit rung, ahead of the stale ladder: a WELL-FORMED F1 at a version byte ABOVE the door's own (a kit
      * released after this server; the gate = {@link HandshakeBounceLadder#classifyNewerOrNull}, parsed outside the
      * lock) earns ONE readable {@code server_outdated} REJECT at THAT kit's byte, so its player reads "this server
-     * is older than this kit" instead of a connect timeout. The 13..19 rungs' posture exactly: pre-admission (only a
+     * is older than this kit" instead of a connect timeout. The 13..20 rungs' posture exactly: pre-admission (only a
      * version byte and a nonce leave the parse; nothing is compared or stored), no budget, cookie leg or ledger (the
      * reply is constant and never larger than the request), the print sampled like every REJECT, garbage silent.
      * An un-armed door answers too: the rung reads no door state. The print names the door's version from the
@@ -3435,6 +3435,9 @@ public final class PilotIntentDatagramServer implements AutoCloseable {
             // The version-19 tally (never v1's) — the v0.6.1–v0.6.6 kits' rung; it
             // exists while the door's own version is above 19.
             case 19 -> readerCounters.helloV19Bounced++;
+            // The version-20 tally (never v1's) — the v0.6.7–v0.6.9 kits'
+            // rung (built for the previous game version); it exists while the door's own version is above 20.
+            case 20 -> readerCounters.helloV20Bounced++;
             default -> readerCounters.helloV1Bounced++;
         }
     }

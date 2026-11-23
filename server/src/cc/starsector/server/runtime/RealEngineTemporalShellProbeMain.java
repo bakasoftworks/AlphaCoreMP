@@ -7,6 +7,7 @@ import cc.starsector.server.bridge.EngineCombatBinding;
 import cc.starsector.server.bridge.PilotApplyState;
 import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
 import cc.starsector.server.bridge.RealEngineDemoRoster;
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.protocol.ShipSystemStateSnapshot;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -60,8 +61,6 @@ import java.util.TreeSet;
  */
 public final class RealEngineTemporalShellProbeMain {
 
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     private static final String SHIP_SYSTEM_API = "com.fs.starfarer.api.combat.ShipSystemAPI";
     private static final String SHIP_STATS_API = "com.fs.starfarer.api.combat.MutableShipStatsAPI";
@@ -343,7 +342,7 @@ public final class RealEngineTemporalShellProbeMain {
     private static Rig buildRig() throws Exception {
         ClassLoader loader = RealEngineTemporalShellProbeMain.class.getClassLoader();
         Rig r = new Rig();
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
         r.engine = engineClass.getMethod("getInstance").invoke(null);
         if (r.engine == null) {
             throw new IllegalStateException("CombatEngine.getInstance() null after gated create()");
@@ -351,7 +350,7 @@ public final class RealEngineTemporalShellProbeMain {
         r.engineGetTimeMult = engineClass.getMethod("getTimeMult");
         r.getObjects = engineClass.getMethod("getObjects");
         r.repoGetList = r.getObjects.invoke(r.engine).getClass().getMethod("getList", Class.class);
-        r.shipClass = Class.forName(SHIP_CLASS, false, loader);
+        r.shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         Class<?> shipApi = Class.forName(SHIP_API, false, loader);
         Class<?> sysApi = Class.forName(SHIP_SYSTEM_API, false, loader);
         Class<?> statsApi = Class.forName(SHIP_STATS_API, false, loader);

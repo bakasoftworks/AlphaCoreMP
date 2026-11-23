@@ -18,7 +18,7 @@ import org.json.JSONObject;
 
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.combat.ShipVariantAPI;
-import com.fs.starfarer.loading.B;
+import com.fs.starfarer.loading.OoOO;
 import com.fs.starfarer.loading.specs.HullVariantSpec;
 
 import cc.starsector.client.net.ClientVariantDefinition;
@@ -28,7 +28,7 @@ import cc.starsector.client.net.ClientVariantJson;
  * The two laws that keep a server's {@code VDEF}
  * catalog from rewriting what THIS game shipped, and from outliving the session that delivered it.
  *
- * <p><b>Law A — the boot keyset.</b> The engine fills its variant registry ({@code B.Object}, the
+ * <p><b>Law A — the boot keyset.</b> The engine fills its variant registry (the
  * process-global {@code id → HullVariantSpec} map) EAGERLY during resource load
  * BEFORE the {@code onApplicationLoad}
  * plugin loop — vanilla core + every enabled mod's {@code data/variants} + the mission
@@ -50,10 +50,12 @@ import cc.starsector.client.net.ClientVariantJson;
  * (evict → fold order by construction: a re-delivered id leaves the map before its fresh spec is
  * put) — the first fold of the next session runs with the old match's UI gone and no body of the
  * new match deployed under a retired id. The remover is the engine's own stock-safe
- * {@code B.new(String)} (removes iff the live spec is neither stock nor
+ * remove-by-id (removes iff the live spec is neither stock nor
  * empty-hull — a folded spec has {@code source == null}, so it goes; a shipped spec never does).
- * {@code new} is a Java keyword, so the call is a {@code MethodHandles.lookup().findStatic} — the
- * {@code MissileSplitLane} idiom; {@code java.lang.invoke} is not on the classloader-B deny list.
+ * The registry's keyset getter, by-id getter and put are all named {@code super}, a Java keyword, so
+ * those calls (and the remover with them) are {@code MethodHandles.lookup().findStatic} handles resolved
+ * once in {@code Registry} — the {@code MissileSplitLane} idiom; {@code java.lang.invoke} is not on the
+ * classloader-B deny list.
  * Law B ships only WITH Law A: with boot ids never folded, no boot id is ever in the tracker, and the
  * remover's own guard is the second layer, not the first. Between matches the map holds at most one
  * session's specs (bounded by that server's catalog); a vanilla mission in between never folds, so
@@ -113,14 +115,104 @@ public final class BootVariantRegistry {
     private BootVariantRegistry() {
     }
 
+    /**
+     * The engine variant registry's by-name members, resolved ONCE on first
+     * use — a holder class, so the lookup runs after the engine-name latch, which precedes the Law A snapshot at
+     * application load. The keyset getter, by-id getter and overwrite put overload one name, {@code super} (a Java
+     * keyword no source can spell), told apart by descriptor; the remover sits beside
+     * them; all four resolve by name through {@link EngineNames#member}. A handle that fails to resolve stays null, the
+     * first failure is kept in {@link #FAILURE}, and every call through it throws an
+     * {@link IllegalStateException} the caller's existing fault arm already absorbs. The Law A snapshot refuses the
+     * start on a non-null {@link #FAILURE}, so past application load those arms see runtime faults only.
+     */
+    static final class Registry {
+        private static final String OWNER = "com.fs.starfarer.loading.OoOO";
+        private static Throwable firstFailure;
+        static final MethodHandle KEYSET = find("super", "()Ljava/util/List;",
+                MethodType.methodType(List.class));
+        static final MethodHandle BY_ID = find("super", "(Ljava/lang/String;)Lcom/fs/starfarer/loading/specs/HullVariantSpec;",
+                MethodType.methodType(HullVariantSpec.class, String.class));
+        static final MethodHandle PUT = find("super", "(Lcom/fs/starfarer/loading/specs/HullVariantSpec;Z)V",
+                MethodType.methodType(void.class, HullVariantSpec.class, boolean.class));
+        static final MethodHandle REMOVE = find(((char) 0xD2) + "00000", "(Ljava/lang/String;)V",
+                MethodType.methodType(void.class, String.class));
+        /** The first resolve failure, null when every handle resolved. */
+        static final Throwable FAILURE = firstFailure;
+
+        private Registry() {
+        }
+
+        private static MethodHandle find(String name, String desc, MethodType type) {
+            try {
+                return MethodHandles.lookup().findStatic(OoOO.class, EngineNames.member(OWNER, name, desc), type);
+            } catch (Throwable t) {
+                if (firstFailure == null) {
+                    firstFailure = t;
+                }
+                return null;
+            }
+        }
+
+        private static MethodHandle need(MethodHandle h) {
+            if (h == null) {
+                throw new IllegalStateException("variant registry handle unresolved", FAILURE);
+            }
+            return h;
+        }
+
+        private static RuntimeException rethrow(Throwable t) {
+            if (t instanceof RuntimeException) {
+                return (RuntimeException) t;
+            }
+            if (t instanceof Error) {
+                throw (Error) t;
+            }
+            return new IllegalStateException(t);
+        }
+
+        /** The registry's keyset, a fresh copy per call. */
+        @SuppressWarnings("unchecked")
+        static List<String> keyset() {
+            try {
+                return (List<String>) need(KEYSET).invokeExact();
+            } catch (Throwable t) {
+                throw rethrow(t);
+            }
+        }
+
+        /** The registered spec for an id, falling back to the campaign's saved variants; throws on a miss. */
+        static HullVariantSpec byId(String variantId) {
+            try {
+                return (HullVariantSpec) need(BY_ID).invokeExact(variantId);
+            } catch (Throwable t) {
+                throw rethrow(t);
+            }
+        }
+
+        /** Put a spec under its own id; {@code overwrite} false throws on an id already present. */
+        static void put(HullVariantSpec spec, boolean overwrite) {
+            try {
+                need(PUT).invokeExact(spec, overwrite);
+            } catch (Throwable t) {
+                throw rethrow(t);
+            }
+        }
+    }
+
     /** Law A snapshot — the FIRST statement of {@code CcClientModPlugin.onApplicationLoad}; once per process. */
     public static void snapshotAtApplicationLoad() {
         if (snapshotTaken) {
             return;
         }
+        // A by-name member that did not resolve is a LINK failure, never a runtime fault: it stays as loud as the
+        // compiled call's NoSuchMethodError was (the game's own Fatal at application load, a half-linked client is
+        // refused, never degraded). Falling into the arm below instead would run Law A open beside a put that resolves.
+        if (Registry.FAILURE != null) {
+            throw new LinkageError("boot-variant registry: an engine registry member did not resolve", Registry.FAILURE);
+        }
         Set<String> ids;
         try {
-            ids = new HashSet<String>(B.o00000());
+            ids = new HashSet<String>(Registry.keyset());
         } catch (RuntimeException fault) {
             PilotWatchLog.error("boot-variant registry: keyset snapshot FAILED — every delivered id folds unguarded", fault);
             ids = new HashSet<String>();
@@ -271,7 +363,7 @@ public final class BootVariantRegistry {
     /**
      * Law B, immediate form (the title drill; never the teardown — see the class javadoc) — evict every
      * tracked id through the engine's stock-safe remover; returns the number that left the live map.
-     * Never throws: a handle failure logs once and keeps the tracker (the next call retries).
+     * Never throws: a handle failure logs and keeps the tracker (the handle resolves once per process).
      */
     public static int evictFolded(String logTag) {
         return evict(folded, logTag);
@@ -285,14 +377,10 @@ public final class BootVariantRegistry {
         if (ids.isEmpty()) {
             return 0;
         }
-        MethodHandle remover;
-        try {
-            remover = MethodHandles.lookup().findStatic(B.class,
-                    EngineNames.member("com.fs.starfarer.loading.B", "new", "(Ljava/lang/String;)V"),
-                    MethodType.methodType(void.class, String.class));
-        } catch (Throwable t) {
-            PilotWatchLog.error(logTag + ": boot-variant registry — B.new(String) handle unavailable; "
-                    + ids.size() + " folded spec(s) retained", t);
+        MethodHandle remover = Registry.REMOVE;
+        if (remover == null) {
+            PilotWatchLog.error(logTag + ": boot-variant registry — remover handle unavailable; "
+                    + ids.size() + " folded spec(s) retained", Registry.FAILURE);
             return 0;
         }
         int gone = 0, kept = 0;
@@ -326,7 +414,7 @@ public final class BootVariantRegistry {
      *  definition on the render thread. */
     public static boolean isRegistered(String variantId) {
         try {
-            return B.Ô00000(variantId);
+            return OoOO.String(variantId);
         } catch (RuntimeException fault) {
             return false;
         }
@@ -344,7 +432,7 @@ public final class BootVariantRegistry {
             return false;
         }
         try {
-            HullVariantSpec spec = B.o00000(variantId);
+            HullVariantSpec spec = Registry.byId(variantId);
             return spec == null || (spec.getStationModules() != null && !spec.getStationModules().isEmpty());
         } catch (RuntimeException fault) {
             return true;
@@ -356,7 +444,7 @@ public final class BootVariantRegistry {
             return null;
         }
         try {
-            HullVariantSpec spec = B.o00000(variantId);
+            HullVariantSpec spec = Registry.byId(variantId);
             return spec == null ? null : signature(spec, withModules);
         } catch (RuntimeException fault) {
             return null;
@@ -371,6 +459,8 @@ public final class BootVariantRegistry {
         sb.append(" mods=").append(new TreeSet<String>(v.getHullMods()));
         sb.append(" perma=").append(new TreeSet<String>(v.getPermaMods()));
         sb.append(" smods=").append(new TreeSet<String>(v.getSMods()));
+        // both gate sides are engine specs read through the same .variant JSON key; an empty set prints "sbi=[]"
+        sb.append(" sbi=").append(new TreeSet<String>(v.getSModdedBuiltIns()));
         List<String> wings = new ArrayList<String>(v.getWings());
         Collections.sort(wings);
         sb.append(" wings=").append(wings);
@@ -424,9 +514,10 @@ public final class BootVariantRegistry {
                         + " tracked=" + BootVariantRegistry.folded.contains("cc_drill_wolf");
             }
             if ("stockguard".equals(op)) {
-                MethodHandle remover = MethodHandles.lookup().findStatic(B.class,
-                        EngineNames.member("com.fs.starfarer.loading.B", "new", "(Ljava/lang/String;)V"),
-                        MethodType.methodType(void.class, String.class));
+                MethodHandle remover = Registry.REMOVE;
+                if (remover == null) {
+                    return "error=remover handle unavailable";
+                }
                 remover.invoke("wolf_Assault");
                 return "wolf_Assault=" + isRegistered("wolf_Assault");
             }
@@ -546,7 +637,7 @@ public final class BootVariantRegistry {
         String hull = null;
         try {
             if (isRegistered(id)) {
-                HullVariantSpec spec = B.o00000(id);
+                HullVariantSpec spec = Registry.byId(id);
                 hull = spec == null || spec.getHullSpec() == null ? null : spec.getHullSpec().getHullId();
             }
         } catch (RuntimeException fault) {

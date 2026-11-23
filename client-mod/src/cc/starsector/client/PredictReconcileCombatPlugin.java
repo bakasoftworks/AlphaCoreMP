@@ -1158,15 +1158,14 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
 
     // === Remote-entity registry (descriptor shapes bots:* — and, since a later
     // extension, seats:K + gauntlet:N). Engaged once in init() off MatchMissionBuilder.cachedDescriptor();
-    // when registryShape is false every field below stays dormant and the certified 1v1 single-foe
-    // path above runs byte-identical (the untouched-path proof). Server id contract (
+    // when registryShape is false (no document, or a vanilla: window) every field below stays dormant and the
+    // single-foe path above runs byte-identical (the untouched-path proof). Server id contract (
     // generalized): entity ids are DENSE 1..N in descriptor roster build order × count
     // (bots: seat=1, side-0 allies 2..A+1, side-1 enemies A+2..; seats:/gauntlet:: seat i = ship i). ===
     private boolean botsShape;
-    /** A seats:/gauntlet: descriptor — registry-driven like bots, but all rows are
-     *  SEAT rows (a hull is ABSENT until claim⇒fly-in), so first sight can arrive mid-round. */
-    private boolean npeerShape;
-    /** botsShape || npeerShape — the registry-vs-single-foe routing gate (D5). */
+    /** The registry-vs-single-foe routing gate: the shared shape law's key ({@code MatchMissionBuilder.isRegistryShape},
+     *  bots + the n-peer seat shapes + the exact 1v1). A seat row's hull is ABSENT until claim then fly-in, so first
+     *  sight can arrive mid-round. */
     boolean registryShape; // package: MissilePoseLane resolves presence-adopt sources per shape
     /** TRUE-VANILLA: a vanilla: compare-instrument window (never served). The
      *  serverless sim-touching lanes — engine-global timeMult scrub, servo mult apply, shared-time
@@ -1331,6 +1330,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         boolean droneIntangible;
         /** Transition-line budget (flap guard; state keeps switching past the cap). */
         int droneGateLogs;
+        /** The roster wing note printed (once per entry: a re-point re-mints it, the note stays quiet). */
+        boolean wingNoteLogged;
         /** Unconditional raw hull ledger (created/seeded lazily at first maintain;
          *  nulled at the MRST sweep / respawn / finishMatchReset so re-lives reseed from wire only). */
         FoeHullReconcileLane.HullLedger ledger;
@@ -2157,9 +2158,12 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     // untouched — presentFoeDischarge spawns via CombatEngineAPI.spawnProjectile, which bypasses the
     // weapon fire cycle. Own ship NEVER in the set (native player fire is the by-design zero-RTT
     // prediction). Meter: distinct replay-ship-source projectiles NOT presenter-spawned, SPLIT on
-    // getWeapon(): weaponless = the engine's OWN source-attributed death-explosion
-    // class (expected at client-side death mirrors — counted apart); weapon-backed = AUTONOMOUS
-    // (bar: 0 while suppression is live; >0 = the gate leaked — the state-1 defect class is back). ===
+    // EngineBlastLaw.nonWeaponDamager: weaponless or an engine blast = the engine's OWN
+    // source-attributed explosion class (death blasts, which stay weaponless, and fuse / explosion-spec
+    // bursts, which now carry their launcher's weapon; expected, counted apart); any other weapon-backed
+    // body = AUTONOMOUS (bar: 0 while suppression is live; >0 = the gate leaked — the state-1 defect
+    // class is back). ===
+    // the meter split above is keyed on the engine's blast identity.
     final Set<ShipAPI> replayDrivenShips = Collections.newSetFromMap(new IdentityHashMap<ShipAPI, Boolean>());
     private final Set<Object> seenReplayShipProj = Collections.newSetFromMap(new IdentityHashMap<Object, Boolean>());
     // Package: MissilePoseLane adds its presence-adopt spawns (same exclusion discipline).
@@ -2566,6 +2570,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         lateAttachPolling = false;
         this.engine = engine;
         HullCapBound.resetReplicaFallback(); // The static slot never outlives its combat
+        FleetCtxShipEcho.resetForBuild(); // the per-ship fleet-context rows print the first ships of each build
         ReplicaPilotWindow.clearForMatch(); // new combat: empty stack/index/own ship, zeroed meters; a latch stays
         cc.starsector.client.replica.OwnInputSample.reset(); // own key twins: the real call until this combat's first sample
         ObserverFrameDump.registerIfArmed(engine, this); // no-op unless observer + frameDir
@@ -2707,7 +2712,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             // skips registry shapes, and the late-attach hold below may still bind a stream into
             // this window; ESC is the exit) and suppress the native "enemy fleet is defeated"
             // one-shot (seam map = StartBannerGuard); PredictFailBannerCombatPlugin owns the
-            // player-facing messaging. Non-registry shapes (1v1, vanilla:) field both sides
+            // player-facing messaging. Non-registry windows (vanilla:, no document) field both sides
             // locally — left untouched.
             String failShape = vanillaDesc != null ? vanillaDesc.shape() : "";
             if (MatchMissionBuilder.isRegistryShape(failShape)) {
@@ -2831,9 +2836,12 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // mid-stream entity-appear: an unoccupied seat's hull is ABSENT until claim⇒fly-in).
         // teams: joined the key list afterwards (
         // its SEAT rows split across two sides + explicit AI rows — npeer semantics; the dense id-contract
-        // walk below reads roster rows directly, so the two-sided layout needs no special case).
-        // 1v1/unset leaves the registry empty and registryShape false — the single-foe path runs
-        // untouched.
+        // walk (OwnSideRoute.ownSideRoute) reads roster rows directly, so the two-sided layout needs no
+        // special case).
+        // The routing key IS the shared shape law's, never re-derived
+        // here, so the mission build, the dial and this init cannot disagree on a shape. A 1v1 document is a
+        // registry shape (the server serves it as seats:2 and re-points a seat's pick); only a vanilla:
+        // window or no document leaves the registry empty and registryShape false (the single-foe path).
         cc.starsector.server.match.MatchDescriptor desc = MatchMissionBuilder.cachedDescriptor();
         if (desc != null) {
             // The live kit descriptor's rules.deployCr — the CR every
@@ -2841,15 +2849,19 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             descriptorDeployCr = desc.deployCr();
         }
         String descShape = desc != null ? desc.shape() : "";
-        npeerShape = MatchMissionBuilder.isNpeerShape(descShape);
         botsShape = descShape.startsWith("bots");
-        registryShape = botsShape || npeerShape;
+        OwnSideRoute route = OwnSideRoute.ownSideRoute(desc, s.shipId()); // pure: its answer is applied below, in place
+        registryShape = route.registryShape;
         // W13 leg 2c: the mission fielded NO own hull (claim-at-play build, built==0)
         // while the WELCOME assigned a real seat -> the seat hull fields at the FIRST alive wire
         // sight of the own id (claimOwnSeatAtPose), re-pointing the player from the engine's
         // placeholder pod. Observer (seat 0) and legacy builds (built != 0) never arm this.
         claimPending = registryShape && s.shipId() != 0L && !ObserverMode.ON
                 && MatchMissionBuilder.lastBuiltOwnShipId() == 0L;
+        // The claim's legacy-1v1 neighbour, the first-life captain
+        // latch (the mission build fielded the own hull before its captain; field javadoc in the own-seat lane).
+        ownSeat.firstLifeCaptainPending = OwnSeatLifecycleLane.firstLifeCaptainArms(registryShape, s.shipId(),
+                MatchMissionBuilder.lastBuiltOwnShipId(), ObserverMode.ON);
         claimAttempts = 0;
         MatchMissionBuilder.noteSessionSeat(s.shipId()); // the mission-relative lanes' seat under a zero-hull build
         if (claimPending) {
@@ -2859,21 +2871,12 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     + " is first seen alive, then the seat hull fields at its pose (W13 leg 2c)");
         }
         if (registryShape) {
-            // Dense id-contract walk (ids 1..N in roster build order × count): descriptor side +
-            // variant per wire id — reads the rows DIRECTLY, so SEAT rows count like any other (kills
-            // the old side-0 SEAT-exclusion asymmetry and its dense-offset arithmetic, D5).
-            java.util.Map<Long, Integer> descSideById = new java.util.TreeMap<Long, Integer>();
-            long id = 0L;
-            for (cc.starsector.server.match.MatchDescriptor.RosterRow row : desc.roster()) {
-                for (int i = 0; i < row.count(); i++) {
-                    id++;
-                    variantById.put(Long.valueOf(id), row.variantId());
-                    descSideById.put(Long.valueOf(id), Integer.valueOf(row.side()));
-                }
-            }
-            long total = id;
-            Integer ownRowSide = descSideById.get(Long.valueOf(s.shipId()));
-            ownDescSide = ownRowSide != null ? ownRowSide.intValue() : 0;
+            // The dense id-contract walk's answer (ids 1..N in roster build order × count; the walk =
+            // OwnSideRoute.ownSideRoute): descriptor variant + side per wire id, the id count, and the own seat's side.
+            variantById.putAll(route.variantById);
+            java.util.Map<Long, Integer> descSideById = route.descSideById;
+            long total = route.total;
+            ownDescSide = route.ownDescSide;
             int sameSideTotal = 0;
             int otherSideTotal = 0;
             for (long eid = 1; eid <= total; eid++) {
@@ -2901,7 +2904,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     + " side0=" + sameSideTotal + " side1=" + otherSideTotal
                     + " remoteEntities=" + remoteEntities.size() + " ownId=" + s.shipId()
                     + " ownDescSide=" + ownDescSide + " primaryFoe=" + primaryFoeId
-                    + (ownRowSide == null ? " (ERROR: own id has NO descriptor row — presenting as side 0)" : "")
+                    + (!route.ownRowFound ? " (ERROR: own id has NO descriptor row — presenting as side 0)" : "")
                     + (botsShape && s.shipId() != 1L ? " (WARN: seat contract expects ownId=1)" : ""));
             // Spawn-on-sight: the bots-shape client fields
             // ONLY the seat ship locally — every remote body is spawned at first wire sight by
@@ -2959,7 +2962,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
     private void pinServedStatics() {
         moteReplica.tick();
         if (OWN_BAY_MINT_SUPPRESS) {
-            com.fs.starfarer.combat.entities.ship.A.C.REFIT_MODE_ADVANCE = true;
+            com.fs.starfarer.combat.entities.ship.A.B.REFIT_MODE_ADVANCE = true;
             bayKillSwitchLatched = true; // the live mirror the own-carrier lock skip reads
             PilotWatchLog.info("predict own-bay-mint: REFIT_MODE_ADVANCE latched TRUE for this window"
                     + " (every local launch-bay advance OFF -> no local wing mint/replacement on any hull;"
@@ -3611,6 +3614,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
 
     @Override
     public void advance(float amount, List<InputEventAPI> events) {
+        OfficerLoadout.fleetCtxRenderFrame++; // the fleet contexts' frame ordinal: one census a refused frame
         // The WALL SPLIT: the plugin's own advance wall per
         // frame, stamped onto the frame ledger's row for this frame (adv_ms beside total_ms), so a
         // stutter read can say whether the hitch is ours BEFORE any per-lane timer exists.
@@ -4133,15 +4137,18 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     if (fireLanes.presentedOwnProj.remove(p)) {
                         continue;
                     }
-                    // A weaponless own-source damager is NOT a weapon discharge — it is
-                    // the engine's own explosion entity (ProximityFuseAI.explode() spawns the flak/
-                    // devastator burst DamagingExplosion with weapon=null, and DamagingExplosion.getWeapon()
-                    // hardcodes null; the own death explosion is the same class). The server's
-                    // GPEE never emits for these (mount cooldown/ammo signals only), so counting them minted
-                    // mount=−1 pair-any thieves in the rebase pairing (one run's pair_any_fallback
-                    // w1=98, the 74.7° tail's prime suspect) AND a spurious legacy fire decl per burst
-                    // (weapon==null falls past the autofire-group check in declareFireDischarge).
-                    if (p.getWeapon() == null) {
+                    // A weaponless own-source damager, or any engine blast, is NOT a weapon
+                    // discharge — it is the engine's own explosion entity: the flak / devastator fuse burst,
+                    // a missile's explosion-spec burst, the own death explosion. The current
+                    // engine hands a fuse or missile burst its LAUNCHER's weapon, so the test is the
+                    // engine's blast identity OR a null weapon (EngineBlastLaw), never the weapon alone; a
+                    // death blast stays weaponless. The server's GPEE never emits for these (mount
+                    // cooldown/ammo signals only), so counting them minted pair-any thieves in the rebase
+                    // pairing (one run's pair_any_fallback w1=98, the 74.7° tail's
+                    // prime suspect), a weapon-carrying burst would steal the pairing of its mount's real
+                    // next shot, AND each burst would ride a spurious fire decl up the wire.
+                    // The blast identity joins the null weapon.
+                    if (EngineBlastLaw.nonWeaponDamager(p)) {
                         ownNonWeaponDamagers++;
                         // The piloted Mine Strike's local newborn is an own WEAPONLESS
                         // mine — its link-only twin is minted here (the witness below is weapon-keyed:
@@ -4168,22 +4175,26 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     // Same destructive consume-on-first-sight, now counted —
                     // the earlier structural argument becomes a measured number (adds/consumed/residual).
                     if (!localFire.consumePresented(p)) {
-                        if (p.getWeapon() == null) {
-                            // A weaponless damager is the engine's own source-attributed
-                            // explosion entity — the ship-death DamagingExplosion (the engine's Ship death block
-                            // spawns it with the DYING ship itself as source, and it lands in
-                            // getProjectiles()), which tripped the autonomous meter 0→1 at every
-                            // client-side foe-death mirror. advanceAuto fire always
-                            // carries its weapon, so weapon==null is never the state-1 leak class.
+                        if (EngineBlastLaw.nonWeaponDamager(p)) {
+                            // A weaponless damager or an engine blast is the engine's own
+                            // source-attributed explosion entity — the ship-death DamagingExplosion (the engine's
+                            // Ship death block spawns it with the DYING ship itself as source, weaponless, and it
+                            // lands in getProjectiles()), which tripped the autonomous meter 0→1 at every
+                            // client-side foe-death mirror — or a presented foe's
+                            // fuse / explosion-spec burst, which the current engine hands its LAUNCHER's weapon.
+                            // Read by the weapon alone, that burst fell to the autonomous arm below: counted a
+                            // leak and REMOVED, so its local hit was lost. advanceAuto fire always carries its
+                            // weapon and is never a blast, so neither half is ever the state-1 leak class.
+                            // The blast identity joins the null weapon.
                             // SPLIT the bucket. A weaponless damager is NOT always a
                             // death explosion: a hullmod-minted mine is spawned
                             // spawnProjectile(source, NULL weapon, "minelayer1", …) and lands here too,
                             // so a live minefield silently inflated a counter whose stated contract is
                             // "expected == client-side death mirrors of replay-driven ships".
                             // The discriminator is the spec id, and the engine hardcodes it: a genuine
-                            // DamagingExplosion returns null from BOTH getWeapon() and
-                            // getProjectileSpecId(), while a spawned
-                            // mine carries its real spec. Neither arm changes behavior — both only
+                            // DamagingExplosion returns null from getProjectileSpecId() whatever its weapon,
+                            //while a spawned mine (never
+                            // a blast) carries its real spec. Neither arm of the split changes behavior — both only
                             // count and log, and control flow past the if/else is identical — so this
                             // is a METER/LOG correction, and in particular the graded
                             // ..._autonomous_discharge bar (watch-verdict.ps1:236, ==0) is untouched.
@@ -4461,9 +4472,15 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // orphaned — it is never in getShips()). A failed spawn retries next frame (claimPending stays).
         // Runs BEFORE adoption so the initial world adopts onto the real hull, never the pod.
         if (claimPending && ownPose != null && ownPose.hitpoints() > 0f && !xfer.ownTransit()) {
-            ownSeat.claimOwnSeatAtPose(ownPose);
+            ownSeat.claimOwnSeatAtPose(ownPose, staleSnapshot);
         }
-        if (freshSnapshot && !initialWorldAdopted && ownShip != null && ownPose != null) {
+        // The 1v1 first-life captain re-field, on the claim's
+        // preconditions and BEFORE the adopt, which an armed latch holds so it lands on the captained hull.
+        if (ownSeat.firstLifeCaptainPending && ownPose != null && ownPose.hitpoints() > 0f && !xfer.ownTransit()) {
+            ownSeat.refieldFirstLifeCaptained(ownPose, staleSnapshot);
+        }
+        if (freshSnapshot && !initialWorldAdopted && ownShip != null && ownPose != null
+                && !ownSeat.holdsInitialAdopt()) {
             // (83) CL-8: latch ONLY on a fully-clean adopt — a swallowed snap/vitals throw now
             // retries on the next fresh snapshot (adopt is idempotent absolute-state).
             initialWorldAdopted =
@@ -4476,8 +4493,11 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     MatchMissionBuilder.ownDescriptorVariantOrNull(),
                     MatchMissionBuilder.isOwnSeatShipId(), "t0", true);
             flagshipLeverApplied = true;
-            leverSettledRefireAtMillis = System.currentTimeMillis()
-                    + LEVER_SETTLED_REFIRE_DELAY_MILLIS;
+            // Keep the LATER deadline: a first life under the fly-in burn already armed now + burn + delay
+            // (OwnSeatLifecycleLane), and a bare overwrite here sampled the "settled" row mid-drive.
+            //
+            leverSettledRefireAtMillis = Math.max(leverSettledRefireAtMillis,
+                    System.currentTimeMillis() + LEVER_SETTLED_REFIRE_DELAY_MILLIS);
         }
         // The settled re-fire (idempotent, id-keyed-modifier law): one-shot per arming, on the live own hull.
         if (leverSettledRefireAtMillis != 0L && ownShip != null
@@ -6784,6 +6804,18 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     + " frames / " + (now - mrstHoldStartMillis) + " ms with no live own-id frame"
                     + " (server never deployed the seat?) -> engine-edge fallback spawn"
                     + " (loc=null; never (0,-2000))", null);
+        } else if (registryShape && ownSeat.ownSeatAbsoluteSide() >= 0) {
+            // The NEW round's own row is the side authority for this rebuild. This
+            // runs before the frame's teamChange.advance, so without the re-key the own spawn below noted the
+            // ENDING round's side and the fresh hull read the wrong side's fleet context for a whole life
+            // (the WHY = TeamChangeLane.rekeyOwn). The expired hold above has no own row: it keeps
+            // the cached side (the next frame's pass corrects the value, not that life's mint).
+            // The two guards (the first-contact lens) keep every other path as it was: the per-frame
+            // pass runs under registryShape only, so the no-document fallback gains no writer here; and a
+            // claim at play with no descriptor row spawns on side -1 whatever is keyed, so its re-key (and
+            // the side note it leaves standing after the frame) stays the per-frame pass's.
+            teamChange.rekeyOwn(ownPoseHold.fleetSide(), snapshot.simTick(),
+                    "the own row's live fleetSide at the match-reset rebuild; this frame's pass re-sides the registry");
         }
         int sweptProj = 0;
         int sweptBodies = 0;
@@ -7079,6 +7111,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         ReplicaPilotWindow.clearOwn(); // the swept own hull never stays bound as "not a replica pilot"
         foeShip = null;
         claimPending = false; // W13 leg 2c: a match reset fields its own hulls — no claim in flight across it
+        ownSeat.firstLifeCaptainPending = false; // the 1v1 reset spawns captained: the latch is one-shot per match
         claimHold.release(null); // rider 6: the held body is swept with the round (no restore target)
         driveLock.release(); // No held state / previous-bit memory crosses a round
         CcClientModPlugin.noteClaimSettled();
@@ -7517,25 +7550,33 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                 float flyinBurn = replicaFlyinBurn(re, variantId);
                 ShipAPI ship;
                 // The damage-divergence root fix: EVERY replica hull — roster AND
-                // appended — mints through the ONE member-first helper below, so the member's
+                // appended — mints through a member-first helper below, so the member's
                 // captain + fleetCommanderForStats + fleet context exist BEFORE the engine bakes
                 // the combat stats at instantiate (the server's AllSkillsAttach/OfficerAttach
                 // deploy shape). The former bare spawnShipOrWing lane minted its member INSIDE the
                 // engine and installed the commander post-spawn ⇒ Cybernetic Augmentation + the
                 // threshold-scaled fleetwide damage-taken writers ELIDED on the first instantiate
                 // of every seat replica (measured 1.21× client over-damage, bare-hull regime).
-                // WING ids alone keep spawnShipOrWing (spawnFleetMember is a SHIP lane; roster
-                // rows are never wings — loud if one ever is).
-                boolean wingVariant = isWingVariantId(variantId);
-                if (re.appended && wingVariant) {
+                // A roster WING id mints as a FIGHTER_WING member through the wing sibling of the
+                // SHIP helper (spawnFleetMember takes either member type); roster rows are never
+                // wings on the standing shape, so that lane logs loud when one is.
+                RosterAppendLane.WingIdKind wingKind = RosterAppendLane.wingIdKind(variantId);
+                boolean wingVariant = wingKind != RosterAppendLane.WingIdKind.SHIP;
+                if (!re.appended && wingKind == RosterAppendLane.WingIdKind.UNKNOWN_WING) {
+                    // A ROSTER id that only LOOKS like a wing is
+                    // never minted (the engine throws for it): its budget is spent at once, one row.
+                    rapp.onSpawnRefused(re, variantId, "UNKNOWN_WING_ID", snapshot.simTick());
+                    continue;
+                }
+                if (re.appended && wingVariant && rapp.admitWingNote(re)) {
                     // The growth lane announces PER-FIGHTER variant ids; a
                     // _wing SPEC id SHIP-minted here silently substitutes errorShipVariant
-                    // (FleetMember.updateVariantIfNeeded SHIP branch) — log loud, mint anyway
-                    // so the substitute stays visible in the census. Fighter
-                    // VARIANT ids no longer trip this (isWingVariantId keys on the wing table).
-                    PilotWatchLog.info("predict bots bind: WARNING entity " + re.entityId
-                            + " appended variant '" + variantId + "' is a WING SPEC id -- the growth"
-                            + " lane announces per-fighter ids; errorShipVariant expected");
+                    // (FleetMember.updateVariantIfNeeded SHIP branch) — noted (row-capped, the id
+                    // quoted), minted anyway so the substitute stays visible in the census.
+                    // Fighter VARIANT ids never trip this (wingIdKind reads ships first).
+                    PilotWatchLog.info("predict bots bind: WARNING entity " + re.entityId + " appended variant "
+                            + FallbackAnnounce.quote(variantId, 64) + " is a WING SPEC id -- the growth lane"
+                            + " announces per-fighter ids; errorShipVariant expected");
                 }
                 if (re.appended || !wingVariant) {
                     ship = spawnReplicaMemberFirst(spawnMgr, spawnOwner, re, variantId,
@@ -7543,37 +7584,23 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                             re.appended ? re.appendShipName : null,
                             re.appended ? re.appendCrPerMille / 1000f : descriptorDeployCr);
                 } else {
-                    // Roster WING row (never seen on the standing shape): the engine's own
-                    // captain-bearing overload — a null captain (no officer row / knob off) is
-                    // the exact pre-officer call shape.
-                    PilotWatchLog.info("predict bots bind: entity " + re.entityId
-                            + " roster variant '" + variantId + "' is a WING id -> spawnShipOrWing"
-                            + " lane (member minted in-engine; the commander residual applies)");
-                    Boolean feedTok = feedGate.mute(spawnMgr); //
-                    try {
-                        ship = spawnMgr.spawnShipOrWing(variantId,
-                                new Vector2f(pose.locX(), pose.locY()),
-                                facing, flyinBurn, // burn-0 unless remounted; (77) fighters 0
-                                OfficerLoadout.captainOrNull(variantId,
-                                        MatchMissionBuilder.descriptorVariantForShipIdOrNull(
-                                                re.entityId),
-                                        MatchMissionBuilder.isSeatShipId(re.entityId)));
-                    } finally {
-                        feedGate.unmute(spawnMgr, feedTok);
+                    // A roster WING row (never seen on the standing shape)
+                    // mints member-first like every other roster row, so its captain and its side's fleet-context
+                    // pair exist before the engine first builds the hull's stats.
+                    if (rapp.admitWingNote(re)) {
+                        PilotWatchLog.info("predict bots bind: entity " + re.entityId
+                                + " roster variant " + FallbackAnnounce.quote(variantId, 64)
+                                + " is a WING id -> member-first FIGHTER_WING lane (spawnFleetMember)");
                     }
-                    if (ship != null) {
-                        // this lane applies NO CR — the engine defaults
-                        // 0.7 while the server deploys every body at descriptor CR; the CR seam corrects it.
-                        CrDeploySeam.applyDeployCr(ship, descriptorDeployCr);
-                    }
+                    ship = spawnRosterWingMemberFirst(spawnMgr, spawnOwner, re, variantId,
+                            new Vector2f(pose.locX(), pose.locY()), facing, flyinBurn, descriptorDeployCr);
                 }
                 if (ship == null) {
                     // A NULL mint spends the entry's spawn
                     // budget (the lane logs the first and the spent budget, never every frame).
+                    // Every lane here mints through spawnFleetMember, wings included.
                     awaiting++;
-                    rapp.onSpawnFailed(re, variantId,
-                            (re.appended || !wingVariant) ? "spawnFleetMember" : "spawnShipOrWing",
-                            null, snapshot.simTick());
+                    rapp.onSpawnFailed(re, variantId, "spawnFleetMember", null, snapshot.simTick());
                     continue;
                 }
                 re.ship = ship;
@@ -7594,13 +7621,10 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                     // and the commander field must be on the member the engine will reuse.
                     OfficerLoadout.installSeatCommanderVisibility(ship);
                     OfficerLoadout.applySeatDisplayTwin(ship);
-                } else {
-                    // Grunt coverage for the spawnShipOrWing lane (member minted
-                    // inside the engine — pair installs post-spawn, heals from the next
-                    // instantiate; the commander-residual class). Side gate as above.
-                    OfficerLoadout.attachFleetContext(ship,
-                            MatchMissionBuilder.descriptorSideForShipIdOrMinusOne(re.entityId));
                 }
+                // Grunt coverage: a non-seat row took its side's fleet-context pair on the
+                // MEMBER before the spawn (both lanes above mint member-first), so nothing pairs the hull
+                // here: a pair set once the hull exists reaches none of the stats its creation derived.
                 if (cc.starsector.client.net.ClientCommandTransfer.POD_WIRE_VARIANT_ID
                         .equals(variantId)) {
                     // The pod collision-class fix: match the SERVER's body,
@@ -7809,8 +7833,8 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                 MatchMissionBuilder.descriptorVariantForShipIdOrNull(re.entityId), seatRow, transferPod,
                 re.entityId);
         if (!transferPod) {
-            OfficerLoadout.attachFleetContext(member,
-                    MatchMissionBuilder.descriptorSideForShipIdOrMinusOne(re.entityId));
+            OfficerLoadout.attachFleetContext(member, MatchMissionBuilder.gruntContextSideOrMinusOne(seatRow,
+                    re.appendAllSkillsCaptain, re.entityId), re.entityId); // a seat keeps its own stamp's context
         }
         // A non-seat row takes the commander pair
         // the server resolves for it, keyed on its ABSOLUTE side (re.side is relative to the own team)
@@ -7831,8 +7855,54 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             feedGate.unmute(spawnMgr, feedTok);
         }
         if (ship != null) {
+            // The per-ship fleet-context row, read off the hull right after
+            // it exists (before the CR seam), keyed on the FIELDED absolute side.
+            FleetCtxShipEcho.echo(ship, Long.toString(re.entityId),
+                    OfficerLoadout.absoluteSideOrMinusOne(re.side, ownDescSide));
             // the server twin's post-spawn CR set: through the engine seam, so
             // cr_effect applies (a bare field stamp never crossed it).
+            CrDeploySeam.applyDeployCr(ship, deployCr);
+        }
+        return ship;
+    }
+
+    /**
+     * The member-first mint of a document roster row whose variant is a fighter
+     * WING id, the sibling of {@link #spawnReplicaMemberFirst} (which builds SHIP members only). The member is the
+     * engine's own wing member type ({@code FleetMemberType.FIGHTER_WING}, the type the engine's wing mint builds),
+     * owned by the spawning side, at the deploy CR with a full crew, and it takes the SHIP helper's roster-row steps
+     * unchanged: the captain arm (the seat pair for a seat row), a non-seat row's fleet-context pair, the appended-commander
+     * law. All of it lands BEFORE {@code spawnFleetMember}, which takes a wing member as it takes a ship, so the
+     * fleet-size throttle reads the side's fleet data when the hull's stats are first built; the engine's wing mint
+     * this replaces paired its member only after the hull existed. Unlike that mint, and like the SHIP helper, the
+     * member takes no name from the engine's name store and joins neither the side's mission list nor its reserves.
+     * A wing is never the transfer pod's variant and a roster row is never appended. Returns the hull, or null when
+     * the engine declines the spawn.
+     */
+    private ShipAPI spawnRosterWingMemberFirst(CombatFleetManagerAPI spawnMgr, int spawnOwner, RemoteEntity re,
+            String variantId, Vector2f loc, float facing, float flyinBurn, float deployCr) {
+        FleetMemberAPI member = Global.getFactory().createFleetMember(FleetMemberType.FIGHTER_WING, variantId);
+        member.setOwner(spawnOwner);
+        member.getRepairTracker().setCR(deployCr);
+        member.getCrewComposition().setCrew(replicaCrew(member.getMaxCrew(), member.getMinCrew()));
+        boolean seatRow = MatchMissionBuilder.isSeatShipId(re.entityId);
+        appendedCaptainArm(member, re.appendOfficer, re.appendAllSkillsCaptain, RealizedVariantId.goalOf(variantId),
+                MatchMissionBuilder.descriptorVariantForShipIdOrNull(re.entityId), seatRow, false, re.entityId);
+        OfficerLoadout.attachFleetContext(member, MatchMissionBuilder.gruntContextSideOrMinusOne(seatRow,
+                re.appendAllSkillsCaptain, re.entityId), re.entityId); // a seat keeps its own stamp's context
+        OfficerLoadout.attachAppendedCommander(member, false,
+                appendedPairSeatFlag(seatRow, re.appendAllSkillsCaptain), false, false, re.side, ownDescSide);
+        Boolean feedTok = feedGate.mute(spawnMgr);
+        ShipAPI ship;
+        try {
+            ship = spawnMgr.spawnFleetMember(member, loc, facing, flyinBurn);
+        } finally {
+            feedGate.unmute(spawnMgr, feedTok);
+        }
+        if (ship != null) {
+            // the per-ship fleet-context row, read off the hull before the CR seam, on the FIELDED absolute side
+            FleetCtxShipEcho.echo(ship, Long.toString(re.entityId),
+                    OfficerLoadout.absoluteSideOrMinusOne(re.side, ownDescSide));
             CrDeploySeam.applyDeployCr(ship, deployCr);
         }
         return ship;
@@ -7876,7 +7946,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
             return "pod";
         }
         if (appendAllSkillsCaptain && OfficerLoadout.allSkillsEnabled()) {
-            OfficerLoadout.attach(member, variantId, null, true);
+            OfficerLoadout.attach(member, variantId, null, true, entityId);
             return "all-skills";
         }
         String arm = "bare";
@@ -7890,7 +7960,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                         + " - bare captain", null);
             }
         }
-        OfficerLoadout.attach(member, variantId, descriptorVariantOrNull, seatRow);
+        OfficerLoadout.attach(member, variantId, descriptorVariantOrNull, seatRow, entityId);
         return arm;
     }
 
@@ -7900,33 +7970,6 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
      *  as the server's vacated hull keeps its own (a non-seat pair there would split the stats). */
     static boolean appendedPairSeatFlag(boolean seatRow, boolean appendAllSkillsCaptain) {
         return seatRow || appendAllSkillsCaptain;
-    }
-
-    /** Is this id a fighter WING SPEC id (the {@code spawnFleetMember} SHIP lane cannot mint it)?
-     *  A resolvable SHIP VARIANT — fighter hulls included ({@code hoplon_Escort},
-     *  {@code attack_swarm_Attack}) — is NOT a wing: the member-first lane mints every one of them
-     *  as a wing-less FIGHTER-hull ship (the former {@code v.isFighter()} read
-     *  fired the WING warning on every appended fighter while the engine substituted nothing).
-     *  Engine-table reads, fail-soft to the {@code _wing} suffix the growth lane keys on. */
-    private static boolean isWingVariantId(String variantId) {
-        if (variantId == null) {
-            return false;
-        }
-        try {
-            if (Global.getSettings().getVariant(variantId) != null) {
-                return false; // a ship variant (any hull size) — the SHIP lane mints it
-            }
-        } catch (RuntimeException ignore) {
-            // unknown id may throw instead of returning null — fall through to the wing-spec read
-        }
-        try {
-            if (Global.getSettings().getFighterWingSpec(variantId) != null) {
-                return true;
-            }
-        } catch (RuntimeException ignore) {
-            // unknown wing id may throw — fall through to the suffix law
-        }
-        return variantId.endsWith("_wing");
     }
 
     /**
@@ -8589,6 +8632,10 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
                 + " predict_roster_append_reset_folded_frames=" + rapp.framesFoldedAtReset()
                 + " fold_skipped_mount=" + matchResetFoldSkippedMountSeats
                 + " predict_roster_append_epoch_failopen=" + rapp.epochFailOpens()
+                // The row-log cap's unlogged counts of the CURRENT round (the lane
+                // prints them at a round reset only, and no reset follows the last round).
+                + " predict_roster_append_unlogged_rows=" + rapp.rowsUnlogged()
+                + " predict_roster_append_unlogged_recv=" + rapp.recvUnlogged()
                 // These meters — posthumous (late) dead
                 // sources, classify throws, door-det expectations armed / acked.
                 // Here (not the FoeHullReconcileLane line) so verify-hull-ledger's source compile of
@@ -9389,7 +9436,7 @@ public class PredictReconcileCombatPlugin extends BaseEveryFrameCombatPlugin {
         // Rider: symmetric with the init latch — a
         // process-wide static must not outlive the served window (a later vanilla mission in the
         // same JVM would field no fighters); FIRST statement so no flush below can skip it.
-        com.fs.starfarer.combat.entities.ship.A.C.REFIT_MODE_ADVANCE = false;
+        com.fs.starfarer.combat.entities.ship.A.B.REFIT_MODE_ADVANCE = false;
         bayKillSwitchLatched = false; // the live mirror follows the engine static, same statement order
         cc.starsector.client.luna.LunaSyncState.markRestorePending(); // MARK only: the watchdog exits run off the game thread
         // Same law for the vanilla mote table — the served window's generator pin

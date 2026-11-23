@@ -10,9 +10,8 @@ import com.fs.starfarer.campaign.fleet.FleetMember;
 import com.fs.starfarer.combat.CombatEngine;
 import com.fs.starfarer.combat.CombatFleetManager;
 import com.fs.starfarer.combat.CombatState;
-import com.fs.starfarer.combat.ai.M;
-import com.fs.starfarer.ui.c;
-import com.fs.starfarer.ui.d;
+// RC8 name, 276 chars; = com.fs.starfarer.ui.d at RC7 (client-worklist.tsv)
+import com.fs.starfarer.ui.oO0oOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO;
 import com.fs.starfarer.ui.interfacenew;
 
 import java.util.ArrayList;
@@ -390,19 +389,19 @@ final class FighterWingHudLane implements OwnCarrierDrones.Roster {
             FleetMember member = new FleetMember(owner, wingId, FleetMemberType.FIGHTER_WING);
             CombatFleetManager.O0 dfm = mgr.addWing(new CombatFleetManager.oo(member),
                     carrier.getLocation().x, carrier.getLocation().y, false);
-            M wing = dfm.getWingIfFighter();
+            var wing = dfm.getWingIfFighter();
             wing.setSourceShip(carrier);
             wing.setSourceBay(bay);
             return wing;
         }
 
         /** A held label is live while it still hangs off its panel: the wing panel re-mints its
-         *  labels through {@code interfacenew.clearChildren} (nulls each child's
+         *  labels through the panel's {@code clearChildren} (nulls each child's
          *  parent) whenever its wing count changes; the ship-info panel itself
          *  persists for the combat and only
-         *  {@code setShip}s the wing panel on a pilot change ({@code class/new/return.java}). */
+         *  {@code setShip}s the wing panel on a pilot change ({@code E/new/return.java}). */
         static boolean attached(LabelAPI label) {
-            return label instanceof d && ((d) label).getParent() != null;
+            return label instanceof oO0oOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO && ((oO0oOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO) label).getParent() != null;
         }
 
         /** The wing panel's rate label: ship-info panel → its child panels → a {@code d} whose text
@@ -417,15 +416,15 @@ final class FighterWingHudLane implements OwnCarrierDrones.Roster {
             if (shipInfo == null) {
                 return null;
             }
-            for (c child : shipInfo.getChildrenCopy()) {
+            for (var child : shipInfo.getChildrenCopy()) {
                 if (!(child instanceof interfacenew)) {
                     continue;
                 }
-                for (c leaf : ((interfacenew) child).getChildrenCopy()) {
-                    if (leaf instanceof d) {
-                        String text = ((d) leaf).getText();
+                for (var leaf : ((interfacenew) child).getChildrenCopy()) {
+                    if (leaf instanceof oO0oOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO) {
+                        String text = ((oO0oOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO) leaf).getText();
                         if (text != null && text.startsWith(RATE_PREFIX)) {
-                            return (d) leaf;
+                            return (oO0oOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO) leaf;
                         }
                     }
                 }

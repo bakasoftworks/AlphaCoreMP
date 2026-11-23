@@ -59,7 +59,7 @@ public final class DownFrameFamily {
         family.put(RosterAppendFrameCodec.MAGIC, (magic, in) -> {
             DataInputStream data = new DataInputStream(in);
             data.readInt();                                  // consume the peeked RAPP magic
-            RosterAppendFrameCodec.readArchivedFrameAfterMagic(data); // v4 + v5 reels
+            RosterAppendFrameCodec.readArchivedFrameAfterMagic(data); // v4..v7 reels
         });
         family.put(ModuleMountFrameCodec.MAGIC, (magic, in) -> {
             DataInputStream data = new DataInputStream(in);

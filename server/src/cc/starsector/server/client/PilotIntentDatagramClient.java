@@ -228,7 +228,11 @@ public final class PilotIntentDatagramClient {
     private volatile long vcfgReceived; // W12 L2: VCFG voice sheets on ctrl
     private volatile long rappReceived; // roster-append frames delivered on ctrl
     private volatile long rappRowsReceived; // total rows across those frames (dupes counted)
-    /** Distinct appended wire ids seen in RAPP frames (reader thread writes, receipt reads) —
+    /** Fleet-record REMOVAL rows (row flag 0x10) among {@link #rappRowsReceived}: a removal is
+     * never a hull announce, so its wire id never reaches {@link #rappWireIds}; the receipt's
+     * {@code rapp_vacated=} row. */
+    private volatile long rappVacatedRows;
+    /** Distinct appended HULL wire ids seen in RAPP frames (reader thread writes, receipt reads) —
      * the wave-rig's both-sides witness: these must equal the serve log's wave_spawn wire_ids. */
     private final java.util.concurrent.ConcurrentSkipListSet<Long> rappWireIds =
             new java.util.concurrent.ConcurrentSkipListSet<>();
@@ -504,6 +508,21 @@ public final class PilotIntentDatagramClient {
         /** The receipt's {@code family_tolerated=} value ({@code ""} = none). */
         public String familyToleratedRow() {
             return client.familyToleratedRow();
+        }
+
+        /** The receipt's RAPP trio: every row ({@code rapp_rows_received=}), the 0x10 removal rows
+         * among them ({@code rapp_vacated=}), and the hull wire ids ({@code rapp_wire_ids=},
+         * ascending). */
+        public long rappRowsReceived() {
+            return client.rappRowsReceived;
+        }
+
+        public long rappVacatedRows() {
+            return client.rappVacatedRows;
+        }
+
+        public List<Long> rappWireIds() {
+            return List.copyOf(client.rappWireIds);
         }
     }
 
@@ -1665,8 +1684,15 @@ public final class PilotIntentDatagramClient {
                 in.readInt(); // magic
                 for (RosterAppendFrameCodec.AppendRow row
                         : RosterAppendFrameCodec.readFrameAfterMagic(in)) {
-                    rappWireIds.add(row.wireId());
                     rappRowsReceived++;
+                    // A 0x10 row REMOVES its wire id's
+                    // fleet-record entry; its variant/name fields are the inert goal id, never a
+                    // hull announce — counted apart, kept out of the hull wire-id witness.
+                    if (row.fleetVacated()) {
+                        rappVacatedRows++;
+                        continue;
+                    }
+                    rappWireIds.add(row.wireId());
                 }
                 rappReceived++;
             } else if (magic == MatchOverFrameCodec.MATCH_OVER_MAGIC) {
@@ -2303,6 +2329,7 @@ public final class PilotIntentDatagramClient {
         lines.add("hkcg_received=" + hkcgReceived);
         lines.add("rapp_received=" + rappReceived);
         lines.add("rapp_rows_received=" + rappRowsReceived);
+        lines.add("rapp_vacated=" + rappVacatedRows);
         StringBuilder rappIds = new StringBuilder();
         for (Long id : rappWireIds) {
             if (rappIds.length() > 0) {

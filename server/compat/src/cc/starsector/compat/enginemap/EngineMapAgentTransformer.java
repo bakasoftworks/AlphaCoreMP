@@ -62,8 +62,21 @@ public final class EngineMapAgentTransformer implements ClassFileTransformer, Su
     public static final String RECEIPT_NO_ENGINE_JAR = "disarmed:no_engine_jar";
     /** The agent jar folder the map files are embedded under, one {@code <id>.tsv} each. */
     public static final String MAP_DIR = "META-INF/cc-compat/engine-map/";
-    /** Present on the Windows build only (its name differs in the other build): the identity test. */
-    public static final String WINDOWS_MARKER = "com/fs/starfarer/loading/B.class";
+    /**
+     * Present on the Windows build only (the Linux build carries the same class under another name, and no Linux jar
+     * holds this entry): the identity test. The lookup is an exact, case-sensitive jar entry name - the engine's
+     * packages hold classes whose names differ only in letter case, so it must never be folded.
+     *
+     *
+     * <p>RE-PICKED AT EVERY GAME BUILD: each build renames the engine's classes afresh, on
+     * both downloads, so an entry that was Windows-only can turn up in the next Linux jar. It did at 0.98.5a-RC8: the
+     * marker of the four builds before it is an entry of BOTH engine jars there, and a Linux start would have read
+     * as the Windows build, never armed the map and failed to link. The pick = a class row's Windows key from the
+     * build's engine map (a class the mod itself links, renamed on Linux by the map's own measurement); at this build
+     * no Linux jar holds this entry in any letter case. THE GATE: the engine-map build check's marker leg reads this
+     * constant and fails the kit build when a jar of the pinned Linux download holds it or no Windows jar does.
+     */
+    public static final String WINDOWS_MARKER = "com/fs/starfarer/loading/specs/dosuper.class";
     /** The game's launcher class: the jar holding it is the engine jar whose sha-256 picks the map. */
     public static final String LAUNCHER_RESOURCE = "com/fs/starfarer/StarfarerLauncher.class";
     /** The row prefix (the agent's own tag). */

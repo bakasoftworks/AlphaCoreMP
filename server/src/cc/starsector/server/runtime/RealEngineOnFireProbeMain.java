@@ -5,6 +5,7 @@ import cc.starsector.server.bridge.EngineBackedCombatWorldState;
 import cc.starsector.server.bridge.EngineCombatBinding;
 import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
 import cc.starsector.server.bridge.RealEngineDemoRoster;
+import cc.starsector.server.names.EngineSym;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -47,9 +48,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class RealEngineOnFireProbeMain {
 
-    // ---- PINNED 0.98a-RC8 identities (af-flyin sibling set + the API surface). ----
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
+    // ---- PINNED 0.98.5a-RC4 (names unchanged from 0.98a-RC8) identities (af-flyin sibling set + the API surface). ----
     private static final String LWJGL_VECTOR2F_CLASS = "org.lwjgl.util.vector.Vector2f";
     private static final String GLOBAL_CLASS = "com.fs.starfarer.api.Global";
     private static final String SETTINGS_API = "com.fs.starfarer.api.SettingsAPI";
@@ -368,13 +367,13 @@ public final class RealEngineOnFireProbeMain {
 
     private static Rig resolveRig(ClassLoader loader) throws Exception {
         Rig r = new Rig();
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
         r.engine = engineClass.getMethod("getInstance").invoke(null);
         if (r.engine == null) {
             throw new IllegalStateException("CombatEngine.getInstance() null after gated create()");
         }
         r.engineGetProjectiles = engineClass.getMethod("getProjectiles");
-        Class<?> shipClass = Class.forName(SHIP_CLASS, false, loader);
+        Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         r.shipGetLocation = shipClass.getMethod("getLocation");
         r.shipGetVelocity = shipClass.getMethod("getVelocity");
         r.shipGetId = shipClass.getMethod("getId");

@@ -2,6 +2,8 @@ package cc.starsector.server.bridge;
 
 import cc.starsector.server.match.MatchDescriptor;
 import cc.starsector.server.match.OfficerRosterCodec;
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymBridgeSeams;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -47,14 +49,7 @@ import java.util.Set;
  */
 public final class EngineBornGrowthSeam {
 
-    // ---- PINNED 0.98a-RC8 (the RealEngineDemoRoster pin block's siblings). ----
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
-    private static final String HULL_VARIANT_SPEC_CLASS =
-            "com.fs.starfarer.loading.specs.HullVariantSpec";
-    /** DoNotObfuscate listener slot interface. */
-    private static final String REPO_LISTENER_INTERFACE =
-            "com.fs.util.container.repo.ObjectRepository$o";
+    // ---- PINNED 0.98.5a-RC4 (names unchanged from 0.98a-RC8; the RealEngineDemoRoster pin block's siblings). ----
     /** ShipSystemSpec type enum constant naming a drone-launcher system. */
     private static final String DRONE_LAUNCHER_TYPE = "DRONE_LAUNCHER";
     /** The api package the captain read's interfaces live in (starfarer.api.jar). */
@@ -198,7 +193,7 @@ public final class EngineBornGrowthSeam {
         }
         ClassLoader loader = EngineBornGrowthSeam.class.getClassLoader();
         try {
-            Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+            Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
             Object engine = engineClass.getMethod("getInstance").invoke(null);
             if (engine == null) {
                 throw new EngineBornGrowthSeamException(
@@ -210,11 +205,12 @@ public final class EngineBornGrowthSeam {
                 throw new EngineBornGrowthSeamException(
                         "CombatEngine.getObjects() returned null at growth-seam install");
             }
-            Class<?> listenerInterface = Class.forName(REPO_LISTENER_INTERFACE, false, loader);
+            Class<?> listenerInterface = Class.forName(
+                    EngineSymBridgeSeams.BRIDGE_SEAMS_REPO_LISTENER_CLASS.className(), false, loader);
             Method getListener = repo.getClass().getMethod("getListener");
             Method setListener = repo.getClass().getMethod("setListener", listenerInterface);
 
-            shipClass = Class.forName(SHIP_CLASS, false, loader);
+            shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
             shipGetId = shipClass.getMethod("getId");
             shipGetOwner = shipClass.getMethod("getOwner");
             shipGetVariant = shipClass.getMethod("getVariant");
@@ -255,7 +251,8 @@ public final class EngineBornGrowthSeam {
             skillLevelGetSkill = skillLevelApi.getMethod("getSkill");
             skillSpecGetId = skillSpecApi.getMethod("getId");
             skillSpecIsAptitudeEffect = skillSpecApi.getMethod("isAptitudeEffect");
-            Class<?> hullVariantClass = Class.forName(HULL_VARIANT_SPEC_CLASS, false, loader);
+            Class<?> hullVariantClass =
+                    Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader);
             variantGetHullVariantId = hullVariantClass.getMethod("getHullVariantId");
 
             Object prior = getListener.invoke(repo);
@@ -323,7 +320,8 @@ public final class EngineBornGrowthSeam {
             Method getListener = installedRepo.getClass().getMethod("getListener");
             Object current = getListener.invoke(installedRepo);
             if (current == installedListener) {
-                Class<?> listenerInterface = Class.forName(REPO_LISTENER_INTERFACE, false,
+                Class<?> listenerInterface = Class.forName(
+                        EngineSymBridgeSeams.BRIDGE_SEAMS_REPO_LISTENER_CLASS.className(), false,
                         installedRepo.getClass().getClassLoader());
                 Method setListener =
                         installedRepo.getClass().getMethod("setListener", listenerInterface);
@@ -366,7 +364,8 @@ public final class EngineBornGrowthSeam {
         }
         ClassLoader loader = EngineBornGrowthSeam.class.getClassLoader();
         try {
-            Class<?> hullVariantClass = Class.forName(HULL_VARIANT_SPEC_CLASS, false, loader);
+            Class<?> hullVariantClass =
+                    Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader);
             Object variant =
                     RealEngineDemoRoster.resolveVariantById(loader, hullVariantClass, variantId);
             List<?> wingIds = (List<?>) hullVariantClass.getMethod("getWings").invoke(variant);
@@ -429,7 +428,8 @@ public final class EngineBornGrowthSeam {
         }
         ClassLoader loader = EngineBornGrowthSeam.class.getClassLoader();
         try {
-            Class<?> hullVariantClass = Class.forName(HULL_VARIANT_SPEC_CLASS, false, loader);
+            Class<?> hullVariantClass =
+                    Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader);
             Object variant =
                     RealEngineDemoRoster.resolveVariantById(loader, hullVariantClass, variantId);
             Object isStation = hullVariantClass.getMethod("isStation").invoke(variant);

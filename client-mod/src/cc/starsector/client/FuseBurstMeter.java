@@ -19,7 +19,8 @@ import java.util.Map;
  * — effective range = {@code base·(1−0.75·Math.random())}
  * ({@code shotRangeVariance:0.75}, {@code devastator_shot.proj}), lifetime = range/moveSpeed —
  * with {@code ProximityFuseAI} fully deterministic downstream (fade-onset → {@code explode()} →
- * weaponless {@code DamagingExplosion}). The wire carries bearing only and the presenter re-enters
+ * a {@code DamagingExplosion} that carries the shell's weapon on the current engine, weaponless on the old
+ * one). The wire carries bearing only and the presenter re-enters
  * the same factory, so each JVM rolls independently BY CONSTRUCTION; this meter puts the
  * distribution on both windows' logs so the offline pair can prove it (and price the carry-cells
  * fuse-cell fix, which is NOT this batch).
@@ -29,8 +30,9 @@ import java.util.Map;
  * discharge tick, bearing ≈0.1° checksum), first/last-seen loc + engine {@code getElapsed()} +
  * first velocity, and the presenter catch-up {@code ageTicks}. On disappearance from
  * {@code getProjectiles()} it classifies {@code didDamage()} ⇒ {@code HIT} (excluded from the fuse
- * distribution — PD kills land here too) else {@code FUSE_BURST}, cross-checked against a
- * weaponless explosion ({@code getWeapon()==null} + {@code getExplosionSpecIfExplosion()!=null})
+ * distribution — PD kills land here too) else {@code FUSE_BURST}, cross-checked against an engine
+ * blast ({@link EngineBlastLaw#isEngineBlast}: an explosion spec, whatever its weapon — the burst carries
+ * the shell's weapon on the current engine, so a weapon-null clause would never confirm one)
  * within {@value #XCHECK_RADIUS_SU} su of the last-seen point on the disappearance frame.
  * <b>Flight TIME (last-seen {@code getElapsed()}) is the primary diff quantity</b> — the rolled
  * lifetime is range/spec.moveSpeed, independent of actual speed, so time isolates the fuse RNG
@@ -42,6 +44,8 @@ import java.util.Map;
  * <p>Render-thread only (tick + tag both run inside {@code advance()}), fail-soft throughout,
  * per-role line caps (counters continue past them — the per-kind-cap lesson). Force-loaded at
  * application load ({@link #describe()}) per the classloader-B pre-warm pattern.
+ *
+ * <p>The burst cross-check keyed on the engine's blast identity.
  */
 final class FuseBurstMeter {
 
@@ -218,7 +222,7 @@ final class FuseBurstMeter {
     }
 
     /** Disappearance: classify + capped per-shell line. {@code live} = this frame's projectile
-     *  list, scanned for the weaponless-explosion burst cross-check. */
+     *  list, scanned for the engine-blast burst cross-check. */
     private void closeShell(Shell s, List<DamagingProjectileAPI> live) {
         boolean hit = false;
         try {
@@ -234,7 +238,7 @@ final class FuseBurstMeter {
             boolean confirmed = false;
             try {
                 for (DamagingProjectileAPI q : live) {
-                    if (q.getWeapon() == null && q.getExplosionSpecIfExplosion() != null) {
+                    if (EngineBlastLaw.isEngineBlast(q)) {
                         Vector2f loc = q.getLocation();
                         if (loc != null) {
                             float dx = loc.x - s.lastX;

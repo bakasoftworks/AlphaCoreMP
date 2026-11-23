@@ -95,7 +95,7 @@ public class CcWrapIonBeamEffect extends IonBeamEffect {
             return;
         }
         CcReplicaEffectGate.doorShut(tag);
-        engine.spawnEmpArcVisual(point, ship, EmpArcNodeLaw.pick(ship, point, true), ship,
+        ArcBelt.spawn(engine, point, ship, EmpArcNodeLaw.pick(ship, point, true), ship,
                 beam.getWidth() + widthPad, beam.getFringeColor(), beam.getCoreColor());
         CcReplicaEffectGate.visualMinted(tag);
         Global.getSoundPlayer().playSound(cue, 1.0F, 1.0F, point, new Vector2f());

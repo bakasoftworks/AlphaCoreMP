@@ -4,7 +4,6 @@ import cc.starsector.client.net.ClientVariantDefinition;
 import cc.starsector.client.net.PredictReconcileDatagramSession;
 import cc.starsector.client.net.VariantModuleResolveLaw;
 
-import com.fs.starfarer.loading.B;
 import com.fs.starfarer.loading.specs.HullVariantSpec;
 
 import org.json.JSONArray;
@@ -199,7 +198,7 @@ final class VariantDefinitionLane {
                 PilotWatchLog.info(logTag + ": SKIP-ENTRY " + def.variantId() + " module=" + bad + " " + why);
                 return false;
             }
-            B.o00000(spec, true);
+            BootVariantRegistry.Registry.put(spec, true);
             BootVariantRegistry.trackFolded(def.variantId());
             for (ClientVariantDefinition.ModuleMount mount : def.modules()) {
                 BootVariantRegistry.trackModuleBody(mount.moduleVariantId()); // The law's 4th predicate

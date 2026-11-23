@@ -5,6 +5,7 @@ import cc.starsector.server.bridge.EngineBackedCombatWorldState;
 import cc.starsector.server.bridge.EngineCombatBinding;
 import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
 import cc.starsector.server.bridge.RealEngineDemoRoster;
+import cc.starsector.server.names.EngineSym;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -45,7 +46,6 @@ import java.util.TreeSet;
  */
 public final class RealEngineVanillaInheritProbeMain {
 
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     private static final String WEAPON_API = "com.fs.starfarer.api.combat.WeaponAPI";
     private static final String ENTITY_API = "com.fs.starfarer.api.combat.CombatEntityAPI";
@@ -274,7 +274,7 @@ public final class RealEngineVanillaInheritProbeMain {
     private static Rig resolveRig() throws Exception {
         ClassLoader loader = RealEngineVanillaInheritProbeMain.class.getClassLoader();
         Rig r = new Rig();
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
         r.engine = engineClass.getMethod("getInstance").invoke(null);
         if (r.engine == null) {
             throw new IllegalStateException("CombatEngine.getInstance() null after gated create()");
@@ -288,7 +288,7 @@ public final class RealEngineVanillaInheritProbeMain {
         r.entityGetLocation = entityApi.getMethod("getLocation");
         r.entityGetVelocity = entityApi.getMethod("getVelocity");
         r.entityGetFacing = entityApi.getMethod("getFacing");
-        Class<?> shipClass = Class.forName("com.fs.starfarer.combat.entities.Ship", false, loader);
+        Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         r.shipGetLocation = shipClass.getMethod("getLocation");
         r.shipGetVelocity = shipClass.getMethod("getVelocity");
         r.vecX = vec2.getField("x");

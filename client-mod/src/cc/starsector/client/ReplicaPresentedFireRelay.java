@@ -36,7 +36,15 @@ import java.util.Arrays;
  * because the kit's damage doors do NOT cover an onFire body (a script damage call carries no
  * damaging param, a weaponless blast is only counted, a weaponed child leaks a frame, a
  * removeEntity deletes the presented shot, a wing mint is a ghost body). {@link #onPresented} is
- * every OTHER caller (the presence-adopt missile mint): today's wrapper-only relay, unchanged.
+ * every OTHER caller (the presence-adopt missile mint): today's wrapper-only relay.
+ *
+ * <p><b>Both entries pay the budget.</b> Every onFire call either entry makes, after the admission,
+ * first pays {@link PresentedFireRelayLaw#pay} at the engine clock (the host announces the shots,
+ * so nothing else bounds how many run): a refused call is not made, the shot stands, the weapon's
+ * relay stays on, the {@code onfire_refused} token counts it and the first a combat writes one
+ * error row. The shock repeater's onFire draws an arc outside the arc belt, so the shot entry
+ * charges the belt for one arc of the weapon's range first ({@link Face#chargeArc}).
+ *
  *
  * <p><b>Only on a treated replica.</b> Every entry refuses a shooter that is not
  * {@code CcReplicaEffectGate.isTreatedReplica}. Own-adopt shots never reach it (the presenter
@@ -62,6 +70,12 @@ final class ReplicaPresentedFireRelay {
     private static final int ROW_MAX = 16;
     /** A class file over this is refused as unreadable (no unbounded read on the combat thread). */
     private static final int MAX_CLASS_BYTES = 1 << 20;
+    /** The shock repeater arc's belt price inputs: vanilla draws it through {@code spawnEmpArc} (a
+     *  target) or {@code spawnEmpArcVisual} (none), neither with arc params, so at the engine's
+     *  default segment length (the belt prices its own param-less spawn at mult 1), and never
+     *  warps it (one list). */
+    private static final float SHOCK_ARC_SEGMENT_MULT = 1f;
+    private static final int SHOCK_ARC_LISTS = 1;
 
     /** The shot entry's decisions, per-weapon state and meters. Combat thread only. */
     private static final PresentedFireRelayLaw LAW = new PresentedFireRelayLaw();
@@ -178,7 +192,7 @@ final class ReplicaPresentedFireRelay {
             if (!(fx instanceof PresentedFireAware) || !(fx instanceof OnFireEffectPlugin)) {
                 return;
             }
-            if (!CcReplicaEffectGate.isTreatedReplica(shooter)) {
+            if (!CcReplicaEffectGate.isTreatedReplica(shooter) || !paid(fx, engine, null)) {
                 return;
             }
             ((OnFireEffectPlugin) fx).onFire((DamagingProjectileAPI) spawned, weapon, engine);
@@ -197,6 +211,32 @@ final class ReplicaPresentedFireRelay {
     static String meterTokens() {
         return " predict_presented_fire_relayed=" + relayed + " predict_presented_fire_relay_throws=" + threw
                 + LAW.meterTokens();
+    }
+
+    /**
+     * The budget's gate for one ADMITTED onFire call, on either entry: true = make the call (its
+     * price is taken); false = refused, and the first refusal a combat writes the ONE error row
+     * (later ones ride the {@code onfire_refused} token only). {@code arc} = the shock repeater's
+     * belt charge (the shot entry's face), null on the wrapper-only entry.
+     *
+     */
+    private static boolean paid(Object plugin, CombatEngineAPI engine, PresentedFireRelayLaw.ArcCharge arc) {
+        if (LAW.pay(plugin.getClass().getName(), clockOf(engine), arc)) {
+            return true;
+        }
+        if (LAW.takeRefusalRow()) {
+            PilotWatchLog.error("predict presented-fire relay: the onFire budget ("
+                    + PresentedFireRelayLaw.CALLS_PER_SECOND + " calls an engine second, "
+                    + PresentedFireRelayLaw.CALLS_BURST + " at once) is spent, an onFire effect is not run"
+                    + " (the backlog of a hitch on a lawful host, or a host flooding shots; the shot stands;"
+                    + " later refusals are counted silently in onfire_refused)", null);
+        }
+        return false;
+    }
+
+    /** The budget's clock: the engine's own, NaN for no engine (a NaN read refills nothing). */
+    private static float clockOf(CombatEngineAPI engine) {
+        return engine == null ? Float.NaN : engine.getTotalElapsedTime(false);
     }
 
     /** One bounded row, capped per combat. */
@@ -229,7 +269,8 @@ final class ReplicaPresentedFireRelay {
      * reusable object (bound before a shot, cleared after) so a presented shot allocates nothing here.
      *
      */
-    private static final class Face implements PresentedFireRelayLaw.Shot, PresentedFireRelayLaw.ClassBytes {
+    private static final class Face implements PresentedFireRelayLaw.Shot, PresentedFireRelayLaw.ClassBytes,
+            PresentedFireRelayLaw.ArcCharge {
         private DamagingProjectileAPI projectile;
         private WeaponAPI weapon;
         private CombatEngineAPI engine;
@@ -288,7 +329,7 @@ final class ReplicaPresentedFireRelay {
 
         @Override
         public boolean runSpec(Object specPlugin) {
-            if (!(specPlugin instanceof OnFireEffectPlugin) || !admitted(specPlugin)) {
+            if (!(specPlugin instanceof OnFireEffectPlugin) || !admitted(specPlugin) || !paid(specPlugin, engine, this)) {
                 return false;
             }
             ((OnFireEffectPlugin) specPlugin).onFire(projectile, weapon, engine);
@@ -298,11 +339,25 @@ final class ReplicaPresentedFireRelay {
         @Override
         public boolean runPlugin() {
             EveryFrameWeaponEffectPlugin fx = weapon.getEffectPlugin();
-            if (!(fx instanceof OnFireEffectPlugin) || !admitted(fx)) {
+            if (!(fx instanceof OnFireEffectPlugin) || !admitted(fx) || !paid(fx, engine, this)) {
                 return false;
             }
             ((OnFireEffectPlugin) fx).onFire(projectile, weapon, engine);
             return true;
+        }
+
+        /**
+         * The shock repeater's arc, paid to the belt before vanilla's onFire draws it: one arc from
+         * the shot as long as the weapon's range (vanilla's no-target end lands within that range of
+         * the shot; a found target lies within range plus its targeting radius), at the engine's
+         * default segment length (mult 1) and no warp (one list); a 300 su arc prices at the belt's
+         * floor. A range over the belt's arc bound (or not a number) is refused by the belt.
+         *
+         */
+        @Override
+        public boolean chargeArc() {
+            return ArcBelt.charge(engine, projectile.getLocation(), projectile.getLocation(), weapon.getRange(),
+                    SHOCK_ARC_SEGMENT_MULT, SHOCK_ARC_LISTS);
         }
 
         /**

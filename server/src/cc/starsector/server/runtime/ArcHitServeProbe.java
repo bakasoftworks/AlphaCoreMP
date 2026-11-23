@@ -1,5 +1,7 @@
 package cc.starsector.server.runtime;
 
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymArcWarm;
 import cc.starsector.server.protocol.GameplayEdgeEvent;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -55,9 +57,9 @@ import java.util.function.ToLongFunction;
  *
  *
  * <p>Flavor: {@code EmpArcEntity.impactSet} (private field) is the
- * {@code com.fs.starfarer.loading.specs.K} spec resolved at spawn from the impact-set id
+ * impact-set spec ({@code EngineSymArcWarm.ARCWARM_IMPACT_SET_CLASS}) resolved at spawn from the impact-set id
  * (a map-backed store lookup, one instance per
- * id). {@code K} carries NO id string (a sounds map only), so the
+ * id). The spec carries NO id string (a sounds map only), so the
  * probe resolves the two known specs by id through the SAME store at install and classifies by
  * IDENTITY: {@code inimical_emanation_impact} ⇒ {@link GameplayEdgeEvent#ARC_FLAVOR_INIMICAL},
  * {@code voltaic_discharge_emp_impact} ⇒ {@link GameplayEdgeEvent#ARC_FLAVOR_VOLTAIC}, else
@@ -87,12 +89,6 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
     static final String MARKER = "cc-arc-hit-listener";
     /** The hit-cell tap's dedupe marker — the literal lives in {@link ArcHitCellTap}. */
     public static final String HIT_CELL_MARKER = ArcHitCellTap.HIT_CELL_MARKER;
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
-    private static final String MISSILE_CLASS = "com.fs.starfarer.combat.entities.Missile";
-    private static final String ARC_CLASS = "com.fs.starfarer.combat.systems.EmpArcEntity";
-    /** The engine's explosion entity: the param of every blast report (the applier sets it just before
-     *  {@code Ship.applyDamage}). */
-    private static final String BLAST_EXPLOSION_CLASS = "com.fs.starfarer.combat.entities.DamagingExplosion";
     /** {@code BLAST_HIT} records one tick may carry; the excess is counted ({@code blast_over_cap=}). A fuse
      *  burst names each victim once, so 32 = a dense swarm landing on many hulls in one frame. */
     public static final int BLAST_TICK_CAP = 32;
@@ -102,8 +98,6 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
             "com.fs.starfarer.api.combat.listeners.CombatListenerManagerAPI";
     private static final String RESULT_API =
             "com.fs.starfarer.api.combat.listeners.ApplyDamageResultAPI";
-    private static final String SPEC_STORE = "com.fs.starfarer.loading.SpecStore";
-    private static final String IMPACT_SET_CLASS = "com.fs.starfarer.loading.specs.K";
     private static final String IMPACT_SET_FIELD = "impactSet";
     /**
      * The Voltaic CANNON ({@code VoltaicCannonEffect}) spawns via
@@ -1477,13 +1471,13 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
                 }
             }
         }
-        shipClass = Class.forName(SHIP_CLASS, false, loader);
+        shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         hitCellTap.bindShipClass(shipClass);
-        arcClass = Class.forName(ARC_CLASS, false, loader);
+        arcClass = Class.forName(EngineSymArcWarm.ARCWARM_EMP_ARC_CLASS.className(), false, loader);
         Class<?> resultApi = Class.forName(RESULT_API, false, loader);
         shipGetParam = accessible(shipClass.getMethod("getParamAboutToApplyDamage"));
         try {
-            missileClass = Class.forName(MISSILE_CLASS, false, loader);
+            missileClass = Class.forName(EngineSym.MISSILE_CLASS.className(), false, loader);
             missileGetParam = accessible(missileClass.getMethod("getParamAboutToApplyDamage"));
         } catch (Throwable missileMiss) {
             // Missile-node arcs then pass uncounted — a census nicety, not a wire fact.
@@ -1555,7 +1549,8 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
      *  on the install line, one row here) and never fails the install. */
     private void resolveBlastLane(long simTick, ClassLoader loader) {
         try {
-            resolveBlastHandles(Class.forName(BLAST_EXPLOSION_CLASS, false, loader), shipClass);
+            // the engine's explosion entity = the param of every blast report (set just before Ship.applyDamage)
+            resolveBlastHandles(Class.forName(EngineSym.DAMAGING_EXPLOSION_CLASS.className(), false, loader), shipClass);
         } catch (Throwable blastMiss) {
             blastClass = null;
             System.out.println("arc-hit probe blast_lane_unresolved tick=" + simTick
@@ -1614,7 +1609,8 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
     public static final class BlastSpecIndex {
         /** The engine's two fuse-family AI classes; a subclass resolves through the hierarchy walk. */
         static final Set<String> ENGINE_FUSE_AI_CLASSES = Set.of(
-                "com.fs.starfarer.combat.ai.ProximityFuseAI", "com.fs.starfarer.combat.ai.GuidedProximityFuseAI");
+                EngineSymArcWarm.ARCWARM_PROXIMITY_FUSE_AI_CLASS.className(),
+                EngineSymArcWarm.ARCWARM_GUIDED_PROXIMITY_FUSE_AI_CLASS.className());
         private static final String SPEC_FIELD = "explosionSpec";
 
         private final Set<String> familyAiClassNames;
@@ -1769,9 +1765,9 @@ public final class ArcHitServeProbe { // public: the forTest seam's rows live in
                 System.out.println("arc-hit probe pierce_field_unresolved tick=" + simTick
                         + " [voltaic cannon arcs flavor VOLTAIC] " + pierceMiss.getClass().getName());
             }
-            Class<?> specStore = Class.forName(SPEC_STORE, true, loader);
-            Class<?> impactSetClass = Class.forName(IMPACT_SET_CLASS, false, loader);
-            Method lookup = specStore.getMethod("o00000", Class.class, String.class);
+            Class<?> specStore = EngineSym.SPEC_STORE_CLASS.load(loader);
+            Class<?> impactSetClass = Class.forName(EngineSymArcWarm.ARCWARM_IMPACT_SET_CLASS.className(), false, loader);
+            Method lookup = EngineSymArcWarm.ARCWARM_SPEC_LOOKUP_METHOD.method(specStore);
             inimicalImpactSet = lookup.invoke(null, impactSetClass, INIMICAL_IMPACT_SET_ID);
             voltaicImpactSet = lookup.invoke(null, impactSetClass, VOLTAIC_IMPACT_SET_ID);
             try {

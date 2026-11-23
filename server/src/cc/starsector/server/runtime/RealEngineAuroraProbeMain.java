@@ -7,6 +7,7 @@ import cc.starsector.server.bridge.EngineBackedCombatWorldState;
 import cc.starsector.server.bridge.EngineCombatBinding;
 import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
 import cc.starsector.server.match.MatchDescriptors;
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.protocol.ShipSystemStateSnapshot;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -61,9 +62,8 @@ import java.util.TreeSet;
  */
 public final class RealEngineAuroraProbeMain {
 
-    // ---- PINNED 0.98a-RC8 identities, byte-identical to RealEnginePhaseProbeMain. ----
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
+    // ---- PINNED 0.98.5a-RC4 (names unchanged from 0.98a-RC8) identities,
+    //      byte-identical to RealEnginePhaseProbeMain. ----
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     private static final String SHIP_COMMAND_CLASS = "com.fs.starfarer.api.combat.ShipCommand";
 
@@ -827,8 +827,8 @@ public final class RealEngineAuroraProbeMain {
     private static Rig buildRig() throws Exception {
         ClassLoader loader = RealEngineAuroraProbeMain.class.getClassLoader();
         Rig rig = new Rig();
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
-        rig.shipClass = Class.forName(SHIP_CLASS, false, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
+        rig.shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         Class<?> shipApiClass = Class.forName(SHIP_API, false, loader);
         Class<?> shipCommandClass = Class.forName(SHIP_COMMAND_CLASS, false, loader);
         rig.engine = engineClass.getMethod("getInstance").invoke(null);

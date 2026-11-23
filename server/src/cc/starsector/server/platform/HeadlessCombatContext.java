@@ -5,6 +5,7 @@ import cc.starsector.server.adapter.CombatWorldState;
 import cc.starsector.server.adapter.TreatedOuterWrapperCombatStepBoundary;
 import cc.starsector.server.bridge.CrDeploySeam;
 import cc.starsector.server.bridge.TerrainStatSeam;
+import cc.starsector.server.names.EngineSymGlowAutofire;
 import cc.starsector.server.runtime.ClientIntentGate;
 import cc.starsector.server.runtime.ClientManeuverGate;
 import java.lang.reflect.Constructor;
@@ -2020,7 +2021,8 @@ public final class HeadlessCombatContext implements AutoCloseable {
         // INSTEAD (REPLACES, never stacks); station/AI specs always stay on the curated lane
         // (guard (c): a station captain fans to child modules).
         if (spec.seat && AllSkillsAttach.enabled()) {
-            AllSkillsAttach.attachAllSkillsCaptain(member, spec.shipName);
+            // The fielded side's fleet context rides the attach (pair + the member's fleet data).
+            AllSkillsAttach.attachAllSkillsCaptain(member, spec.shipName, spec.owner);
         } else if (spec.seatDescriptorVariantId != null) {
             // A descriptor SEAT hull takes the seat
             // lookup law (fielded row, else the seat's descriptor row — the officer
@@ -2030,11 +2032,13 @@ public final class HeadlessCombatContext implements AutoCloseable {
         } else {
             OfficerAttach.maybeAttachByVariant(member, spec.variant);
         }
-        // EVERY side-0 non-station member carries the fleet-context pair — grunts and
-        // seats alike (a pair-less member's stats derive short-circuits the engine's threshold
-        // throttle to full bonus, the defect). Station skip mirrors the shared walk law:
-        // a station is never a campaign fleet member. Knob-gated no-op inside.
-        if (spec.owner == 0 && !spec.station) {
+        // Every side-0 non-station AI member carries side 0's fleet context (the pair
+        // and the member's own fleet data) — a fleet-data-less member's stats derive
+        // short-circuits the engine's threshold throttle to full bonus. Seats took their fielded
+        // side's context at the captain attach above (once: a second install would run a second
+        // stats update). Station skip mirrors the shared walk law: a station is never a campaign
+        // fleet member. Knob-gated no-op inside. Seat skip.
+        if (spec.owner == 0 && !spec.station && !spec.seat) {
             AllSkillsAttach.installFleetContext(member);
         }
         diagOut[0] = deployDiag;
@@ -2241,32 +2245,34 @@ public final class HeadlessCombatContext implements AutoCloseable {
         installedTreatmentCount++;
     }
 
-    /** Font path the engine's own message-widget ctor hardcodes. The
+    /** Font path the engine's own message-widget ctor hardcodes.
+     * The
      *  headless server's {@code ResourceLoaderState.init(Map)} drains the whole resource queue
-     *  synchronously — fonts included — so
+     *  synchronously — fonts included
+     * — so
      *  this font is in the engine font cache before any seam installs. */
     private static final String MESSAGE_WIDGET_FONT_PATH = "graphics/fonts/insignia21LTaa.fnt";
-    /** Verified runtime name of the widget's font-size float (the shipped jar has dotted
-     *  keyword field names); the engine ctor's value is 25. The one other instance float is the
-     *  layout y-extent (class default 475; real ctor derives screen-height − 250 — layout-only,
-     *  never rendered headless). */
-    private static final String MESSAGE_WIDGET_FONT_SIZE_FIELD = "super.interface$do";
+    /** The engine ctor's value of the widget's font-size float (its name = the name table's font-size row). The one
+     *  other instance float is the layout y-extent (class default 475; real ctor derives screen-height − 250 —
+     *  layout-only, never rendered headless). */
     private static final float MESSAGE_WIDGET_FONT_SIZE = 25.0F;
     private static final float MESSAGE_WIDGET_LAYOUT_EXTENT = 475.0F;
 
     /**
-     * Seed the Unsafe-allocated REAL message widget ({@code com.fs.starfarer.class.C} —
-     * the concrete return type of {@code CombatUIAPI.getMessageWidget()}; its package name is a Java
-     * keyword, so every touch is reflective) with exactly the state its message-ADD path reads.
+     * Seed the Unsafe-allocated REAL message widget (an engine-internal class
+     * — the return type
+     * of the engine combat-UI interface's {@code getMessageWidget()}, so every touch is reflective) with exactly
+     * the state its message-ADD path reads.
      * {@code Ship.advance}'s combat-readiness callouts call
      * {@code getCombatUI().getMessageWidget()}'s message-add method UNGUARDED, so the engine requires a
      * real widget in combat; the prior null-returning proxy killed a recorded run at ~t9000. The real
      * ctor is deliberately NOT run: it registers the widget as an engine combat listener and fetches
      * a scanline UI sprite — presentation crossings the serve loop must not depend on. Fields are
-     * matched by unique TYPE (descriptor-grade identity; names are dotted keywords): the entry List,
+     * matched by unique TYPE (descriptor-grade identity; the engine-internal names move between builds): the entry List,
      * the add-path Fader (engine ctor values 0/0.5/5), the label font path, the message-sound flag
      * (true = ctor default; the sound statics on this exact path ran headless-safe in a measured run
      * pre-NPE), and the two layout floats by name. The scanline field
+     *
      * stays null: only the widget's render lane reads it, which the serve loop never drives.
      */
     private Object seedMessageWidgetFields(CombatUiConfig c) {
@@ -2296,7 +2302,7 @@ public final class HeadlessCombatContext implements AutoCloseable {
                 continue;
             }
             floatCount++;
-            float seed = MESSAGE_WIDGET_FONT_SIZE_FIELD.equals(field.getName())
+            float seed = EngineSymGlowAutofire.GLOWAF_MSG_WIDGET_FONT_SIZE_FIELD.matches(field)
                     ? MESSAGE_WIDGET_FONT_SIZE
                     : MESSAGE_WIDGET_LAYOUT_EXTENT;
             setField(field, widget, Float.valueOf(seed), "MessageWidget.float." + field.getName());
@@ -2328,8 +2334,8 @@ public final class HeadlessCombatContext implements AutoCloseable {
     private void selfCheckMessageWidgetStringPost(Object widget) {
         Method post;
         try {
-            post = widget.getClass().getMethod("o00000", Object[].class);
-        } catch (NoSuchMethodException e) {
+            post = cc.starsector.server.names.EngineSymBridgeFactory.BF_MESSAGE_WIDGET_POST_METHOD.method(widget.getClass());
+        } catch (NoSuchMethodException | IllegalStateException e) {
             throw new HeadlessCombatContextException("MessageWidget varargs post method missing", e);
         }
         Object entry = invoke(post, widget, "MessageWidget.selfPost", (Object) new Object[] {

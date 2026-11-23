@@ -1,5 +1,9 @@
 package cc.starsector.server.runtime;
 
+import cc.starsector.server.names.EngineRow;
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymGlowAutofire;
+
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.List;
@@ -14,13 +18,13 @@ import java.util.Locale;
  * REJECTED under measure-first).
  *
  * <p>Gate anchors (on the engine autofire plugin,
- * member names in the constants below): the state-enum field
+ * member names on the engine-name table's rows): the state-enum field
  * (ordinal 0=IDLE, 1=HAS_TARGET, 2=FIRING); the target field;
  * the FF line-block and FF path-block flags (either true forces
  * {@code shouldFire()} false); the ammo-conserve flag (gates the FIRING transition);
  * flux gate {@code weapon.getFluxCostToFire() > ship.getFluxAvailable()} (called directly);
  * fog gate {@code getFogOfWar(shipOwner).isVisible(target)} with a null-fog pass and a drone exemption;
- * slew/arc/range check = a private method (pure — its helpers are getters); hold
+ * slew/arc/range check = a private method (getters + one write to its own scratch turn tracker); hold
  * flags {@code ship.isHoldFire()/isHoldFireOneFrame()} applied by WeaponGroup.advanceAuto.
  * The target-valid check is NOT invoked (it clears the target on an expired read —
  * side effect); its checks are decomposed read-only.
@@ -51,22 +55,8 @@ import java.util.Locale;
  */
 final class FoeAutofireGateSampler {
 
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String PLUGIN_CLASS = "com.fs.starfarer.combat.ai.private";
     private static final String ENTITY_API = "com.fs.starfarer.api.combat.CombatEntityAPI";
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
-    /** U+00F4 (o-circumflex) + digits — the plugin's current-target entity field. */
-    private static final String TARGET_FIELD = (char) 0xF4 + "00000";
-    /** {@code for} — instantaneous friendly-in-line-of-fire block. */
-    private static final String FF_LINE_FIELD = "for";
-    /** U+00D2 (O-grave) + capital O + digits — projectile-travel friendly-fire block. */
-    private static final String FF_PATH_FIELD = (char) 0xD2 + "O0000";
-    /** U+00D5 (O-tilde) + capital O + digits — ammo-conserve commit flag. */
-    private static final String CONSERVE_FIELD = (char) 0xD5 + "O0000";
-    /** State-machine enum field (type: the plugin's nested state enum). */
-    private static final String STATE_FIELD = "int";
-    /** Private slew/arc/range check {@code boolean super(float)} — pure, safe to invoke. */
-    private static final String SLEW_METHOD = "super";
     private static final String[] STATE_NAMES = {"IDLE", "TGT", "FIRE"};
 
     private static final String P = "npeer-serve af_gate";
@@ -75,16 +65,6 @@ final class FoeAutofireGateSampler {
     private static final int ARM_SCAN_EVERY = 60;
     private static final int FAIL_DISARM_AT = 50;
 
-    // af_v2 anchors
-    /** U+00D5 (O-tilde) + capital O + digits — AttackAIModule's private autofire-manager field. */
-    private static final String MANAGER_FIELD = (char) 0xD5 + "O0000";
-    private static final String BASIC_AI_CLASS = "com.fs.starfarer.combat.ai.BasicShipAI";
-    private static final String MGR_V2_CLASS =
-            "com.fs.starfarer.combat.ai.attack.AutofireManagerV2";
-    private static final String MGR_V1_CLASS = "com.fs.starfarer.combat.ai.attack.ooOO";
-    /** V2 holds its IntervalTracker in a field literally named {@code Object}; V1 in {@code int}. */
-    private static final String MGR_V2_TRACKER_FIELD = "Object";
-    private static final String MGR_V1_TRACKER_FIELD = "int";
     private static final int V2_ELAPSE_LINE_MAX = 250;
     private static final int V2_EVENT_LINE_MAX = 150;
 
@@ -213,7 +193,7 @@ final class FoeAutofireGateSampler {
         }
         armScanCountdown = ARM_SCAN_EVERY;
         if (engine == null) {
-            Class<?> engineClass = Class.forName(ENGINE_CLASS);
+            Class<?> engineClass = Class.forName(EngineSym.COMBAT_ENGINE_CLASS.className());
             engine = engineClass.getMethod("getInstance").invoke(null);
             getShips = engineClass.getMethod("getShips");
             getFogOfWar = engineClass.getMethod("getFogOfWar", int.class);
@@ -262,7 +242,7 @@ final class FoeAutofireGateSampler {
 
     private void arm(Object s, Object g, Object w, Object p, long tick,
             String variantId, String weaponId) throws Exception {
-        if (!PLUGIN_CLASS.equals(p.getClass().getName())) {
+        if (!EngineSym.AF_PLUGIN_CLASS.names(p.getClass())) {
             // Itself a verdict: the mount is not running the default plugin.
             System.out.println(P + " arm_unexpected_class tick=" + tick
                     + " class=" + p.getClass().getName());
@@ -270,17 +250,19 @@ final class FoeAutofireGateSampler {
             return;
         }
         Class<?> pluginClass = p.getClass();
-        stateField = pluginClass.getDeclaredField(STATE_FIELD);
-        targetField = pluginClass.getDeclaredField(TARGET_FIELD);
-        ffLineField = pluginClass.getDeclaredField(FF_LINE_FIELD);
-        ffPathField = pluginClass.getDeclaredField(FF_PATH_FIELD);
-        conserveField = pluginClass.getDeclaredField(CONSERVE_FIELD);
+        // The gate fields + the slew check, each bound by name, descriptor and static bit off the name table
+        // (state enum, current target, FF line / path blocks, ammo-conserve flag).
+        stateField = EngineSym.AF_STATE_FIELD.field(pluginClass);
+        targetField = EngineSym.AF_TARGET_FIELD.field(pluginClass);
+        ffLineField = EngineSym.AF_FF_LINE_FIELD.field(pluginClass);
+        ffPathField = EngineSym.AF_FF_PATH_FIELD.field(pluginClass);
+        conserveField = EngineSym.AF_CONSERVE_FIELD.field(pluginClass);
         stateField.setAccessible(true);
         targetField.setAccessible(true);
         ffLineField.setAccessible(true);
         ffPathField.setAccessible(true);
         conserveField.setAccessible(true);
-        slewMethod = pluginClass.getDeclaredMethod(SLEW_METHOD, float.class);
+        slewMethod = EngineSym.AF_SLEW_METHOD.method(pluginClass);
         slewMethod.setAccessible(true);
         pluginShouldFire = pluginClass.getMethod("shouldFire");
         Class<?> shipClass = s.getClass();
@@ -326,7 +308,7 @@ final class FoeAutofireGateSampler {
         lastElapseTick = -1;
         try {
             Object ai = s.getClass().getMethod("getShipAI").invoke(s);
-            if (ai == null || !BASIC_AI_CLASS.equals(ai.getClass().getName())) {
+            if (ai == null || !EngineSymGlowAutofire.GLOWAF_BASIC_SHIP_AI_CLASS.names(ai.getClass())) {
                 mgrLabel = ai == null ? "no_ai" : "ai:" + ai.getClass().getName();
                 System.out.println(P + " af2_no_basic_ai tick=" + tick + " ai=" + mgrLabel);
                 return;
@@ -337,19 +319,22 @@ final class FoeAutofireGateSampler {
                 System.out.println(P + " af2_no_attack_module tick=" + tick);
                 return;
             }
-            Field mgrField = attack.getClass().getDeclaredField(MANAGER_FIELD);
+            // V2 manager (ships) and V1 (fighters / drones) each hold their IntervalTracker in their own field; the
+            // manager class picks the row.
+            Field mgrField = EngineSymGlowAutofire.GLOWAF_ATTACK_MANAGER_FIELD.field(attack.getClass());
             mgrField.setAccessible(true);
             Object mgr = mgrField.get(attack);
-            String mgrClass = mgr == null ? null : mgr.getClass().getName();
-            String trackerFieldName = MGR_V2_CLASS.equals(mgrClass) ? MGR_V2_TRACKER_FIELD
-                    : MGR_V1_CLASS.equals(mgrClass) ? MGR_V1_TRACKER_FIELD : null;
+            Class<?> mc = mgr == null ? null : mgr.getClass();
+            String mgrClass = mc == null ? null : mc.getName();
+            EngineRow trackerRow = EngineSym.MGR_V2_CLASS.names(mc) ? EngineSym.MGR_V2_TRACKER_FIELD
+                    : EngineSym.MGR_V1_CLASS.names(mc) ? EngineSym.MGR_V1_TRACKER_FIELD : null;
             mgrLabel = mgrClass == null ? "null_mgr"
                     : mgrClass.substring(mgrClass.lastIndexOf('.') + 1);
-            if (trackerFieldName == null) {
+            if (trackerRow == null) {
                 System.out.println(P + " af2_unknown_mgr tick=" + tick + " mgr=" + mgrClass);
                 return;
             }
-            Field trackerField = mgr.getClass().getDeclaredField(trackerFieldName);
+            Field trackerField = trackerRow.field(mc);
             trackerField.setAccessible(true);
             tracker = trackerField.get(mgr);
             if (tracker == null) {

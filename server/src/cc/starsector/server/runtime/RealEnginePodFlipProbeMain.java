@@ -8,6 +8,7 @@ import cc.starsector.server.bridge.RealEngineDemoRoster;
 import cc.starsector.server.bridge.SeatRebind;
 import cc.starsector.server.bridge.TransferPodSpawner;
 import cc.starsector.server.match.MatchDescriptors;
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.platform.AllSkillsAttach;
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
@@ -59,12 +60,11 @@ import java.util.TreeSet;
  */
 public final class RealEnginePodFlipProbeMain {
 
-    // ---- PINNED 0.98a-RC8 identities, byte-identical to RealEngineZeroHullProbeMain. ----
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
+    // ---- PINNED 0.98.5a-RC4 (names unchanged from 0.98a-RC8) identities, byte-identical to RealEngineZeroHullProbeMain. ----
     private static final String LWJGL_VECTOR2F_CLASS = "org.lwjgl.util.vector.Vector2f";
-    /** Vanilla's transfer-command AI (the engine's own class; it
-     * {@code implements AI} only) — asserted by simple class name, never by package. */
+    /** Vanilla's transfer-command AI (the engine's own class; it {@code implements AI} only)
+     * — asserted
+     * by simple class name, never by package. */
     private static final String TRANSFER_AI_SIMPLE_NAME = "TransferCommandAI";
 
     private static final String P = "probe-pod-flip";
@@ -102,8 +102,8 @@ public final class RealEnginePodFlipProbeMain {
         EngineBackedCombatStepBoundary step = new EngineBackedCombatStepBoundary(world, binding);
 
         ClassLoader loader = RealEnginePodFlipProbeMain.class.getClassLoader();
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
-        Class<?> shipClass = Class.forName(SHIP_CLASS, false, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
+        Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         Object engine = engineClass.getMethod("getInstance").invoke(null);
         if (engine == null) {
             throw new IllegalStateException("CombatEngine.getInstance() null after gated create()");

@@ -29,8 +29,10 @@ public final class ClientPilotAimFrame {
                 throw new IllegalArgumentException("pilot-aim shipWireId must be positive: "
                         + shipWireIds[i]);
             }
-            if (Math.abs(qx[i]) > ClientPilotAimReader.MAX_QUANT_ABS
-                    || Math.abs(qy[i]) > ClientPilotAimReader.MAX_QUANT_ABS) {
+            // two-sided compares, never Math.abs, since
+            // Math.abs(Integer.MIN_VALUE) stays negative and would pass an abs bound.
+            if (qx[i] < -ClientPilotAimReader.MAX_QUANT_ABS || qx[i] > ClientPilotAimReader.MAX_QUANT_ABS
+                    || qy[i] < -ClientPilotAimReader.MAX_QUANT_ABS || qy[i] > ClientPilotAimReader.MAX_QUANT_ABS) {
                 throw new IllegalArgumentException("pilot-aim point implausible: qx=" + qx[i]
                         + " qy=" + qy[i]);
             }

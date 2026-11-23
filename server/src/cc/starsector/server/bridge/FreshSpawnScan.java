@@ -21,7 +21,7 @@ import java.util.Map;
  * the birth-speed read (the spawn's own |velocity| as the poll-path birth speed) lands
  * HERE, never in ECB.
  *
- * <p>Port = the five injected {@code projectileGet*} {@link Method} handles: the real engine
+ * <p>Port = the six injected {@code projectileGet*} {@link Method} handles: the real engine
  * binds {@code DamagingProjectileAPI}/{@code CombatEntityAPI} interface Methods
  * ({@code RealEngineCombatBindingFactory} → the ECB Builder's {@code projectileSpawnReads},
  * still the one bind point), so a game-free fake drives this byte-identical reflective body
@@ -40,10 +40,26 @@ final class FreshSpawnScan {
     private final Method projectileGetVelocity; // nullable: same v3 degrade
     private final Method projectileGetLocation; // nullable: GPEE-v8 freshSpawnMuzzleX/Y read NaN (same degrade)
     private final Method projectileGetFacing; // nullable: freshSpawnFacingDeg reads NaN (same degrade)
+    /**
+     * Nullable {@code DamagingProjectileAPI.getExplosionSpecIfExplosion()}: the engine's own
+     * "this entity is a blast" identity (the API default returns null; only the engine's
+     * explosion entity overrides it). WHY: on the current engine a missile's explosion-spec
+     * blast and a proximity / guided fuse burst carry their LAUNCHER's weapon, and a missile's
+     * blast keeps the missile's velocity, so without this skip the blast passes every gate and
+     * stamps its impact point and heading as the launcher's muzzle and spawn bearing. The older
+     * engine returned null from a blast's {@code getWeapon()}, so the weapon gate dropped it.
+     * Null = the pre-skip behaviour (a weaponed blast can be taken), the same degrade as the
+     * other optional reads.
+     *
+     *
+     *
+     *
+     */
+    private final Method projectileGetExplosionSpec;
 
     FreshSpawnScan(Object engine, Method combatGetProjectiles, Method combatGetMissiles,
             Method projectileGetElapsed, Method projectileGetWeapon, Method projectileGetVelocity,
-            Method projectileGetLocation, Method projectileGetFacing) {
+            Method projectileGetLocation, Method projectileGetFacing, Method projectileGetExplosionSpec) {
         this.engine = engine;
         this.combatGetProjectiles = combatGetProjectiles;
         this.combatGetMissiles = combatGetMissiles;
@@ -52,6 +68,7 @@ final class FreshSpawnScan {
         this.projectileGetVelocity = projectileGetVelocity;
         this.projectileGetLocation = projectileGetLocation;
         this.projectileGetFacing = projectileGetFacing;
+        this.projectileGetExplosionSpec = projectileGetExplosionSpec;
     }
 
     /**
@@ -79,7 +96,8 @@ final class FreshSpawnScan {
      * ({@code MissileAPI extends DamagingProjectileAPI}; the projectile list holds the
      * missiles too — the scan tags a missile spawn by the list it was found in
      * FIRST, and also carries its birth facing). First fresh projectile per
-     * weapon wins (a linked-barrel multi-spawn carries one representative line). Fail-soft:
+     * weapon wins (a linked-barrel multi-spawn carries one representative line); an engine
+     * blast never counts while its identity read is bound. Fail-soft:
      * unbound handles or a failed list read return an empty map; a failing per-entity read
      * skips that entity; a failing location read alone degrades just that entry's muzzle
      * pair to NaN — the mount tier itself never degrades on this supplementary read.
@@ -124,7 +142,18 @@ final class FreshSpawnScan {
                     continue;
                 }
                 Object weapon = projectileGetWeapon.invoke(entity);
-                if (weapon == null || byWeapon.containsKey(weapon)) {
+                if (weapon == null) {
+                    continue;
+                }
+                // An engine blast is never a weapon's fresh spawn, even when it carries its
+                // launcher's weapon (the projectileGetExplosionSpec field's javadoc). Skipped
+                // before anything is stored, so a blast never holds its launcher's
+                // first-per-weapon slot against a real shot of the same tick; a throwing read
+                // skips the entity (the outer catch).
+                if (projectileGetExplosionSpec != null && projectileGetExplosionSpec.invoke(entity) != null) {
+                    continue;
+                }
+                if (byWeapon.containsKey(weapon)) {
                     continue;
                 }
                 float[] velocity = readXY(projectileGetVelocity.invoke(entity));

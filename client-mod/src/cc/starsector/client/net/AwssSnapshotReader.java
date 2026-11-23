@@ -126,8 +126,12 @@ public final class AwssSnapshotReader {
         return projectileRowsDecodedPast;
     }
 
-    /** The content-0 subset of {@link #projectileRowsDecodedPast()} — the script-det class
-     *  (script-spawned explosions carry no firing weapon ⇒ empty contentKey). */
+    /** The content-0 subset of {@link #projectileRowsDecodedPast()} — the script-det class: a
+     *  script-spawned explosion (and a ship-death blast) carries no firing weapon ⇒ empty contentKey.
+     *  A missile or fuse burst carries its LAUNCHER's weapon on the current engine, so
+     *  whether its row joins this subset is the server's content-key choice for a blast; this
+     *  counter only reads the wire.
+     * */
     public static int projectileContent0RowsDecodedPast() {
         return projectileContent0RowsDecodedPast;
     }
@@ -252,7 +256,7 @@ public final class AwssSnapshotReader {
      * different roster: {@code cr} = the engine's {@code getCurrentCR()};
      * {@code timeDeployedSec} = the RAW deployed-seconds accumulator (the HUD subtracts
      * from its local peak itself — never "PPT remaining"); {@code peakSec} =
-     * diagnostic-grade effective peak (never-lose-CR hulls carry ≥ 1e5 s by design).
+     * diagnostic-grade effective peak (a never-lose-CR hull loads 9,999,999 s, sent unclamped).
      */
     public static final int SHIP_CR_SCHEMA_VERSION = 14;
     /**
@@ -415,6 +419,20 @@ public final class AwssSnapshotReader {
             float velY = WireBytes.readFloat(data);
             float facing = WireBytes.readFloat(data);
             float angularVelocity = WireBytes.readFloat(data);
+            // These six reach the engine as a place, a velocity
+            // and an angle, so they obey the shared world law (finite AND bounded: a huge finite value
+            // hangs the engine's grid and facing loops). The frame is refused before the rest of the
+            // record is read; hitpoints stay raw.
+            // The law's two postures: the place and the facing are REFUSED outside their
+            // bounds; a finite rate is BOUNDED, never refused (a collision can lawfully spike a small
+            // body's spin, and a refused frame ends the session); a non-finite rate is refused.
+            if (!WireWorldLaw.coordOk(locX) || !WireWorldLaw.coordOk(locY) || !WireWorldLaw.facingOk(facing)
+                    || !Float.isFinite(velX) || !Float.isFinite(velY) || !Float.isFinite(angularVelocity)) {
+                throw new IOException("world snapshot ship kinematics outside the world law at record " + i);
+            }
+            velX = WireWorldLaw.boundedSpeed(velX);
+            velY = WireWorldLaw.boundedSpeed(velY);
+            angularVelocity = WireWorldLaw.boundedAngularRate(angularVelocity);
             float hitpoints = WireBytes.readFloat(data); // hull — lifecycle reason
             WireBytes.readInt(data); // hullLevel
             WireBytes.readInt(data); // armorCellCount
@@ -560,6 +578,12 @@ public final class AwssSnapshotReader {
      * fail-closed, the v9/v10 precedent), while a FUTURE frame (stamped above v14) may
      * legally carry an empty forced-to-be-written CR section. Fail-closed on a
      * negative/overrunning count.
+     *
+     * <p>A bad CR VALUE diverges from the server codec
+     * on purpose: that codec throws on a non-finite or negative value, while here the record
+     * reaches {@link ServerEntityPose#withShipCr}, which drops it (counted) or holds a finite
+     * value to its bound ({@link WireScalarLaw}). The frame decodes either way: a thrown reader
+     * ends the session, and the count law above already guards the frame's shape.
      */
     private static List<ServerEntityPose> applyShipCrTier(
             ByteArrayInputStream data, List<ServerEntityPose> poses, int schemaVersion)
@@ -736,7 +760,8 @@ public final class AwssSnapshotReader {
      * value-based stamp predicate would have stamped lower — the v13/v16 predicates ride
      * the missile side ALONE, so such frames may carry all-sentinel beam sources), while a
      * FUTURE frame may legally carry none. Fail-closed on a negative/overrunning count and on
-     * a non-finite base pos pair (the shared beam/missile engine input).
+     * a base pos pair outside the world law, non-finite or beyond {@link WireWorldLaw#MAX_COORD_SU}
+     * (the shared beam/missile engine input).
      */
     private static void readNonShipTier(
             ByteArrayInputStream data, int schemaVersion, List<ServerBeamState> beams,
@@ -769,9 +794,16 @@ public final class AwssSnapshotReader {
             // (MissilePoseLane) — so a non-finite value NaN-propagates into engine state. Guard
             // at the one decode site all consumers share (the FoeStateLaneCoordinator ship-pose
             // isFinite idiom, promoted to the non-ship tier).
-            if (!Float.isFinite(posX) || !Float.isFinite(posY)) {
+            // A finite value far outside the world hangs the
+            // engine the same way, so the bound is WireWorldLaw.MAX_COORD_SU (its predicate also
+            // refuses NaN and both infinities). A PROJECTILE row is decoded past and never reaches the
+            // engine (the last branch below), so it keeps the finite law alone: the world bound would
+            // buy no safety there and could end a session over a lawful far-flying shot.
+            if (kind == NON_SHIP_KIND_PROJECTILE
+                    ? !Float.isFinite(posX) || !Float.isFinite(posY)
+                    : !WireWorldLaw.coordOk(posX) || !WireWorldLaw.coordOk(posY)) {
                 throw new IOException(
-                        "world snapshot non-ship pos not finite at record " + i);
+                        "world snapshot non-ship pos outside the world law at record " + i);
             }
             int contentId = WireBytes.readInt(data);
             if (kind == NON_SHIP_KIND_BEAM) {
@@ -819,8 +851,9 @@ public final class AwssSnapshotReader {
                 // Overlap law: PROJECTILE rows are decoded PAST (the base
                 // record was fully consumed above), never retained or presented — counted here
                 // so the debrief line proves the GPEE kind-8 lane is the ONE det presenter.
-                // The content-0 subset is the script-det class (script-spawned explosions carry
-                // no firing weapon ⇒ empty contentKey, the census shape).
+                // The content-0 subset is the script-det class: a script-spawned explosion carries
+                // no firing weapon ⇒ empty contentKey; a missile or fuse burst now carries its
+                // launcher's weapon, so its subset membership is the server's content-key choice.
                 projectileRowsDecodedPast++;
                 if (contentId == 0) {
                     projectileContent0RowsDecodedPast++;

@@ -110,7 +110,7 @@ public class CcWrapAssayingRiftEffect extends AssayingRiftEffect
 
     /**
      * The replica {@code onHit}, rewritten from the functional
-     * spec. Census: a non-shield hit on a non-hulk ship counts
+     * spec. Census: a non-shield hit on a ship never flagged a hulk counts
      * {@code doorShut} ({@link #healDoorReached}: that is where the parent's shroud-ally heal search
      * would run). With a weapon, the parent's {@code onHit} runs with its shield-hit flag forced TRUE —
      * the flag gates only that heal search, so the rift look and sound stay and no hull is written on
@@ -122,7 +122,7 @@ public class CcWrapAssayingRiftEffect extends AssayingRiftEffect
     private void replicaOnHit(DamagingProjectileAPI projectile, CombatEntityAPI target, Vector2f point,
             boolean shieldHit, ApplyDamageResultAPI damageResult, CombatEngineAPI engine) {
         boolean ship = target instanceof ShipAPI;
-        if (healDoorReached(shieldHit, ship, ship && ((ShipAPI) target).isHulk())) {
+        if (healDoorReached(shieldHit, ship, ship && ((ShipAPI) target).isWasHulk())) {
             CcReplicaEffectGate.doorShut(TAG);
         }
         if (projectile.getWeapon() != null) {
@@ -142,10 +142,11 @@ public class CcWrapAssayingRiftEffect extends AssayingRiftEffect
     /**
      * The heal-door census pick, pure (game-free row
      * {@code ApiRwD2Rows}): the parent's shroud-ally heal search would run on a hit that is NOT on
-     * shields and lands on a ship that is not a hulk.
+     * shields and lands on a ship never flagged a hulk. The caller passes {@code isWasHulk()}, the flag
+     * the parent's heal gate reads, not {@code isHulk()}.
      */
-    static boolean healDoorReached(boolean shieldHit, boolean targetIsShip, boolean targetIsHulk) {
-        return !shieldHit && targetIsShip && !targetIsHulk;
+    static boolean healDoorReached(boolean shieldHit, boolean targetIsShip, boolean targetWasHulk) {
+        return !shieldHit && targetIsShip && !targetWasHulk;
     }
 
     /**

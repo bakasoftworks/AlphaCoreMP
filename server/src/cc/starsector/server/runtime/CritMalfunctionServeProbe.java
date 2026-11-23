@@ -1,5 +1,6 @@
 package cc.starsector.server.runtime;
 
+import cc.starsector.server.names.EngineSymContentInit;
 import cc.starsector.server.protocol.GameplayEdgeEvent;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
@@ -67,7 +68,6 @@ public final class CritMalfunctionServeProbe {
 
     /** {@code toString()} of the installed proxy — the dedupe key on (re)install. */
     public static final String MARKER = "cc-crit-malfunction-plugin";
-    static final String SETTINGS_CLASS = "com.fs.starfarer.settings.StarfarerSettings";
     static final String PLUGIN_IFACE = "com.fs.starfarer.api.combat.CombatReadinessPlugin";
     static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     static final String WEAPON_API = "com.fs.starfarer.api.combat.WeaponAPI";
@@ -514,7 +514,7 @@ public final class CritMalfunctionServeProbe {
     /** One-time reflective resolution + the singleton swap (marker-dedupe first). */
     private void install(long simTick, Object anyShip) throws Exception {
         ClassLoader loader = anyShip.getClass().getClassLoader();
-        Class<?> settings = Class.forName(SETTINGS_CLASS, true, loader);
+        Class<?> settings = EngineSymContentInit.CONTENT_INIT_SETTINGS_CLASS.load(loader);
         Class<?> iface = Class.forName(PLUGIN_IFACE, false, loader);
         Class<?> shipApi = Class.forName(SHIP_API, false, loader);
         weaponApi = Class.forName(WEAPON_API, false, loader);

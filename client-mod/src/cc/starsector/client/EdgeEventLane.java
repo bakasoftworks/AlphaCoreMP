@@ -338,14 +338,10 @@ final class EdgeEventLane {
                 presentEdgeEvent(held, snapshotTick);
             }
         }
-        while (true) {
-            ClientGameplayEdgeEvent event;
-            synchronized (plugin.edgeEventQueue) {
-                event = plugin.edgeEventQueue.pollFirst();
-            }
-            if (event == null) {
-                break;
-            }
+        // The intake drain is bounded by the queue size read at its
+        // entry, so a net thread refilling the queue mid-drain can never stretch one frame's drain; the late
+        // arrivals wait, in order, for the next drain. A refusal or a hold spends one unit of that budget.
+        EdgeEventDrain.drainEntrySize(plugin.edgeEventQueue, plugin.edgeEventQueue, event -> {
             plugin.eventReplayReceived++;
             long aheadTicks = event.simTick() - snapshotTick;
             if (aheadTicks > 0) {
@@ -356,17 +352,17 @@ final class EdgeEventLane {
                         logFirstRefusal("gpee-ahead-cap", "ahead bound (" + AHEAD_MAX_TICKS
                                 + " ticks past the applied snapshot)", event, aheadTicks);
                     }
-                    continue;
+                    return;
                 }
                 plugin.eventReplayAheadOfSnapshot++;
                 if (aheadTicks > plugin.eventReplayAheadMaxTicks) {
                     plugin.eventReplayAheadMaxTicks = aheadTicks;
                 }
                 holdAhead(event, aheadTicks);
-                continue;
+                return;
             }
             presentEdgeEvent(event, snapshotTick);
-        }
+        });
         // Treat this frame's expiries at the drain site, post-scan same frame
         // — the mid-scan expire calls only QUEUED them.
         plugin.fireLanes.processDischargeTreatments(snapshotTick);
@@ -678,9 +674,12 @@ final class EdgeEventLane {
         // tracker, selection-independent), so a selected group's
         // discharges ARE input and must be declared or the server's mirror weapons stay cold
         // (flux/ammo diverge; its own autofire later re-fires them on ITS clock = unpaired
-        // server_only). Weaponless damagers never reach here anymore — the scan excludes the
-        // engine-own explosion class before discharge accounting; a REAL weapon
-        // that still fails identity resolve falls through to the legacy declare (mountIndex -1).
+        // server_only). Weaponless damagers and engine blasts never reach here — the own-projectile
+        // scan excludes the engine-own explosion class before discharge accounting,
+        // keyed on EngineBlastLaw.nonWeaponDamager because the current engine hands a fuse or missile
+        // burst its LAUNCHER's weapon (a weapon-null test alone would declare that burst as fire); a
+        // REAL weapon that still fails identity resolve falls through to the legacy declare (mountIndex -1).
+        // The exclusion is the engine's blast identity, not a null weapon.
         int mount = -1;
         WeaponAPI mountWeapon = null; // The resolved weapon, for the degenerate-speed compose
         boolean systemSlot = false; // A ship-SYSTEM weapon's shot rides the system press, not the fire level
@@ -1071,6 +1070,11 @@ final class EdgeEventLane {
                 // lagged-replica muzzle re-derivation error the override retires).
                 + " predict_event_rebase_foe_fire_muzzle_applied=" + plugin.presenter.foeFireMuzzleApplied()
                 + " predict_event_rebase_foe_fire_muzzle_xcheck_max_abs_u=" + plugin.presenter.foeFireMuzzleXcheckMaxAbsU()
+                // Usable muzzles the drift bound sent to the
+                // local fire point, by role
+                + " predict_event_rebase_foe_fire_muzzle_drift_fallback=" + plugin.presenter.foeFireMuzzleDriftFallback()
+                + " predict_event_rebase_own_adopt_muzzle_drift_fallback="
+                + plugin.presenter.ownAdoptMuzzleDriftFallback()
                 + " predict_event_rebase_foe_fire_bearing_applied=" + plugin.presenter.foeFireBearingApplied()
                 + " predict_event_rebase_foe_fire_bearing_fallback_nan_wire=" + plugin.presenter.foeFireBearingFallbackNanWire()
                 + " predict_event_rebase_foe_fire_bearing_fallback_spawn_null=" + plugin.presenter.foeFireBearingFallbackSpawnNull()

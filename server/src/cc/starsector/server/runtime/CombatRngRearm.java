@@ -1,5 +1,6 @@
 package cc.starsector.server.runtime;
 
+import cc.starsector.server.names.EngineSymContentInit;
 import cc.starsector.server.platform.HeadlessCombatContext.HeadlessCombatContextException;
 import cc.starsector.server.platform.WaveShipNamer;
 import cc.starsector.server.rngpin.CcRngKeyed;
@@ -123,8 +124,6 @@ public final class CombatRngRearm {
     private static final String COLLECTIONS_FIELD = "r";
     private static final String MISC_CLASS = "com.fs.starfarer.api.util.Misc";
     private static final String MISC_FIELD = "random";
-    /** The engine's hulk-cut tesselator; its generator field's name is engine-internal — resolved by type. */
-    public static final String TESSELATOR_CLASS = "com.fs.starfarer.util.Tesselator";
     /** The tesselator stream's salt off the round seed (0..4 are taken above; the contract row pins this value). */
     public static final long TESSELATOR_SALT = 5L;
 
@@ -202,7 +201,7 @@ public final class CombatRngRearm {
             throw new IllegalArgumentException(CombatRngPinBoot.SEED_SYSPROP + " must be a long seed or '"
                     + CombatRngPinBoot.UNPINNED + "', got: " + raw, e);
         }
-        return arm(seed, true, TESSELATOR_CLASS);
+        return arm(seed, true, EngineSymContentInit.CONTENT_INIT_TESSELATOR_CLASS.className());
     }
 
     /**
@@ -211,7 +210,7 @@ public final class CombatRngRearm {
      * initialize) or tesselator is reported under {@code missing=} instead of thrown. Never called by the serve.
      */
     public static String armForRows(long master) {
-        return arm(master, false, TESSELATOR_CLASS);
+        return arm(master, false, EngineSymContentInit.CONTENT_INIT_TESSELATOR_CLASS.className());
     }
 
     /**

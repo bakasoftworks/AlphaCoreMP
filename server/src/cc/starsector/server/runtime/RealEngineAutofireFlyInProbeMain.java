@@ -6,6 +6,7 @@ import cc.starsector.server.bridge.EngineCombatBinding;
 import cc.starsector.server.bridge.PilotApplyState;
 import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
 import cc.starsector.server.bridge.RealEngineDemoRoster;
+import cc.starsector.server.names.EngineSym;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -57,14 +58,11 @@ import java.util.TreeSet;
  */
 public final class RealEngineAutofireFlyInProbeMain {
 
-    // ---- PINNED 0.98a-RC8 identities, byte-identical to RealEngineZeroHullProbeMain. ----
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
+    // ---- PINNED 0.98.5a-RC4 (names unchanged from 0.98a-RC8) identities. ----
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     private static final String ENTITY_API = "com.fs.starfarer.api.combat.CombatEntityAPI";
     private static final String DAMAGE_TYPE = "com.fs.starfarer.api.combat.DamageType";
     private static final String LWJGL_VECTOR2F_CLASS = "org.lwjgl.util.vector.Vector2f";
-    private static final String PROJECTILE_CLASS = "com.fs.starfarer.combat.entities.BallisticProjectile";
 
     private static final String P = "af-flyin-probe";
 
@@ -613,12 +611,12 @@ public final class RealEngineAutofireFlyInProbeMain {
     private static Rig resolveRig() throws Exception {
         ClassLoader loader = RealEngineAutofireFlyInProbeMain.class.getClassLoader();
         Rig r = new Rig();
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
         r.engine = engineClass.getMethod("getInstance").invoke(null);
         if (r.engine == null) {
             throw new IllegalStateException("CombatEngine.getInstance() null after gated create()");
         }
-        r.shipClass = Class.forName(SHIP_CLASS, false, loader);
+        r.shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         Class<?> shipApi = Class.forName(SHIP_API, false, loader);
         Class<?> entityApi = Class.forName(ENTITY_API, false, loader);
         Class<?> damageType = Class.forName(DAMAGE_TYPE, false, loader);
@@ -650,7 +648,7 @@ public final class RealEngineAutofireFlyInProbeMain {
         r.vecY = vec2.getField("y");
         r.vec2Ctor = vec2.getConstructor(float.class, float.class);
         try {
-            r.projClass = Class.forName(PROJECTILE_CLASS, false, loader);
+            r.projClass = Class.forName(EngineSym.BALLISTIC_PROJECTILE_CLASS.className(), false, loader);
         } catch (ClassNotFoundException e) {
             r.projClass = null;
         }
@@ -874,7 +872,7 @@ public final class RealEngineAutofireFlyInProbeMain {
             if (!SwallowCosmeticFxAuthoritativeDamageSink.isHeadlessCosmeticFxNpe(cause)
                     && !(cause instanceof NullPointerException
                             && java.util.Arrays.stream(cause.getStackTrace()).anyMatch(
-                                    el -> el.getClassName().startsWith("com.fs.graphics")))) {
+                                    el -> el.getClassName().startsWith(EngineSym.GRAPHICS_PKG.dottedPrefix())))) {
                 throw new IllegalStateException("applyDamage threw a non-cosmetic boundary", cause);
             }
         }

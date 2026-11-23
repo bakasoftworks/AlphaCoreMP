@@ -2,6 +2,22 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.7.0 - 2026-11-23
+
+- For Starsector 0.98.5a-RC8 only. Hosts and players update together: the new server package and the new joiner kit. A 0.6.9 or older kit cannot join. 0.6.9 stays the last release for Starsector 0.98a.
+- Hosts: "Start server" and "Join from this PC" in the ops GUI now refuse a Game folder that holds another build of Starsector.
+- Security: a modified host could freeze or crash a joined player's game with impossible ship positions or combat readiness, floods of game events, EMP arcs or weapon effects, an impossible match, or runaway writes to cc-client.log. All of these are now refused or limited. 0.6.9 and older kits have these weaknesses. Join hosts you trust.
+- Hosts: `switch-team <seat> instant` for a player who had left the match could later crash the server; fixed.
+- All skills: bonuses that shrink as a fleet grows now scale with each side's fleet size, as in the base game's campaign battles. A player who leaves stops counting once their ship is destroyed or taken over.
+- Your ship's first life now starts as the server's copy does: under the travel drive, and with its captain's skills (such as Missile Specialization's extra ammo) from the start.
+- A Graviton Beam on a shield now raises the shield damage shown in a joined player's game, as on the server; the numbers could read about 10% low.
+- Ship editor: shift+click S-mods an eligible built-in hullmod, as in the base game; the server refuses a build that S-mods one the base game does not allow.
+- The Afflictor "Antimatter" and Onslaught "Hephaestus" builds are refitted for the 0.98.5a-RC8 hulls.
+- 1v1: a player who picked a ship other than the listed one now flies it in both games.
+- A remembered ship the host has replaced or removed now resolves at once: the newest version, or the default ship.
+- Windows: the join-cc window no longer keeps the CC_Client folder in use while it waits.
+- The bundled Java runtimes are updated to the releases that fix CVE-2026-114938: Temurin 25.0.5.1+2 in the kit, 17.0.21.1+2 in the server packages.
+
 ## 0.6.9 - 2026-11-11
 
 - In a joined player's game, some shots the server sends without the weapon that fired them, such as a flare from a fighter that has since landed or been destroyed, or a missile or torpedo still flying after the ship that fired it retreated or its wreck was destroyed, could appear with a minefield mine's fade-in and sound and end with a mine's explosion and sound. Only real mines look and explode like mines now. A proximity charge in that case now bursts with its own explosion, and an Unstable Fragment, which could show a mine's explosion instead of its own, or both, now bursts once with its own. An ordinary missile in that case now ends without an explosion.

@@ -1,6 +1,8 @@
 package cc.starsector.server.bridge;
 
 import cc.starsector.server.match.MatchDescriptors;
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymBridgeSeams;
 import cc.starsector.server.runtime.TransferPodLane;
 
 import java.lang.reflect.Constructor;
@@ -56,15 +58,8 @@ import java.util.List;
  */
 public final class TransferPodSpawner implements TransferPodLane.Port {
 
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     private static final String COLLISION_CLASS = "com.fs.starfarer.api.combat.CollisionClass";
-    private static final String SPEC_STORE = "com.fs.starfarer.loading.SpecStore";
-    private static final String HULL_VARIANT_SPEC = "com.fs.starfarer.loading.specs.HullVariantSpec";
-    private static final String SHIP_FACTORY = "com.fs.starfarer.loading.specs._";
-    private static final String TRANSFER_AI =
-            "com.fs.starfarer.combat.ai.movement.maneuvers.TransferCommandAI";
     private static final String VECTOR2F = "org.lwjgl.util.vector.Vector2f";
     private static final String POD_VARIANT_ID = "shuttlepod_xfer";
     /** The PILOTABLE shape — our mod's file variant of the same hull
@@ -82,12 +77,6 @@ public final class TransferPodSpawner implements TransferPodLane.Port {
      * mover snaps it) — the strand pushes it out past both collision radii plus
      * this margin BEFORE the NONE→SHIP flip, else the engine's push-apart fires inside a hulk. */
     private static final float STRAND_CLEARANCE = 25f;
-    /** Combat-map edge getters: minX, minY,
-     * maxX, maxY — legal-name reflection, UTF-8 source (JEP 400). */
-    private static final String MAP_MIN_X = "Ò00000";
-    private static final String MAP_MIN_Y = "Õ00000";
-    private static final String MAP_MAX_X = "Ö00000";
-    private static final String MAP_MAX_Y = "void";
     /** Vanilla clamps the pod to the map edges ±1000 OUTSIDE. */
     private static final float MAP_SLACK = 1000f;
     /** A STRANDED body ({@link #toPilotable}) is clamped this far
@@ -182,14 +171,15 @@ public final class TransferPodSpawner implements TransferPodLane.Port {
         }
         try {
             ClassLoader loader = TransferPodSpawner.class.getClassLoader();
-            Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
-            Class<?> shipClass = Class.forName(SHIP_CLASS, false, loader);
+            Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
+            Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
             Class<?> shipApiClass = Class.forName(SHIP_API, false, loader);
-            Class<?> aiClass = Class.forName(TRANSFER_AI, false, loader);
+            Class<?> aiClass = Class.forName(
+                    EngineSymBridgeSeams.BRIDGE_SEAMS_POD_TRANSFER_AI_CLASS.className(), false, loader);
             Class<?> vecClass = Class.forName(VECTOR2F, false, loader);
             Handles h = new Handles();
             h.shipClass = shipClass;
-            h.specClass = Class.forName(HULL_VARIANT_SPEC, false, loader);
+            h.specClass = Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader);
             h.aiClass = aiClass;
             h.getInstance = engineClass.getMethod("getInstance");
             h.getShips = engineClass.getMethod("getShips");
@@ -197,9 +187,12 @@ public final class TransferPodSpawner implements TransferPodLane.Port {
             h.addObject = methodAccepting(engineClass, "addObject", shipClass);
             h.removeObject = methodAccepting(engineClass, "removeObject", shipClass);
             h.getId = shipClass.getMethod("getId");
-            h.specFetch = Class.forName(SPEC_STORE, true, loader)
-                    .getMethod("o00000", Class.class, String.class);
-            h.factoryBuild = factoryBuild(Class.forName(SHIP_FACTORY, true, loader), h.specClass);
+            h.specFetch = cc.starsector.server.names.EngineSymArcWarm.ARCWARM_SPEC_LOOKUP_METHOD
+                    .method(EngineSym.SPEC_STORE_CLASS.load(loader));
+            // The 3-arg builder taking (HullVariantSpec, Person, Person): the
+            // overload vanilla's pod construction calls; both Persons ride null here.
+            h.factoryBuild = EngineSymBridgeSeams.BRIDGE_SEAMS_POD_SHIP_BUILD_METHOD
+                    .method(EngineSymBridgeSeams.BRIDGE_SEAMS_POD_SHIP_FACTORY_CLASS.load(loader));
             h.collisionNone = Class.forName(COLLISION_CLASS, false, loader)
                     .getField("NONE").get(null);
             h.setCollisionClass =
@@ -255,20 +248,6 @@ public final class TransferPodSpawner implements TransferPodLane.Port {
         }
         throw new NoSuchMethodException(owner.getName() + "." + name
                 + "(accepting " + argClass.getName() + ")");
-    }
-
-    /** The 3-arg builder on {@code _} taking (HullVariantSpec, Person, Person)
-     * — the overload vanilla's pod construction calls; both Persons ride null here. */
-    private static Method factoryBuild(Class<?> factoryClass, Class<?> specClass)
-            throws NoSuchMethodException {
-        for (Method m : factoryClass.getMethods()) {
-            if (m.getName().equals("o00000") && m.getParameterCount() == 3
-                    && m.getParameterTypes()[0].isAssignableFrom(specClass)) {
-                return m;
-            }
-        }
-        throw new NoSuchMethodException(factoryClass.getName()
-                + ".o00000(spec, Person, Person)");
     }
 
     private Object engineOrNull(Handles h) throws ReflectiveOperationException {
@@ -455,11 +434,12 @@ public final class TransferPodSpawner implements TransferPodLane.Port {
             return null;
         }
         if (h.mapMinX == null) {
+            // Combat-map edge getters: minX, minY, maxX, maxY.
             Class<?> mapClass = map.getClass();
-            h.mapMinX = mapClass.getMethod(MAP_MIN_X);
-            h.mapMinY = mapClass.getMethod(MAP_MIN_Y);
-            h.mapMaxX = mapClass.getMethod(MAP_MAX_X);
-            h.mapMaxY = mapClass.getMethod(MAP_MAX_Y);
+            h.mapMinX = EngineSymBridgeSeams.BRIDGE_SEAMS_MAP_MIN_X_METHOD.method(mapClass);
+            h.mapMinY = EngineSymBridgeSeams.BRIDGE_SEAMS_MAP_MIN_Y_METHOD.method(mapClass);
+            h.mapMaxX = EngineSymBridgeSeams.BRIDGE_SEAMS_MAP_MAX_X_METHOD.method(mapClass);
+            h.mapMaxY = EngineSymBridgeSeams.BRIDGE_SEAMS_MAP_MAX_Y_METHOD.method(mapClass);
         }
         return map;
     }

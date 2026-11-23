@@ -1,5 +1,6 @@
 package cc.starsector.client;
 
+import cc.starsector.client.net.WireWorldLaw;
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.combat.CollisionClass;
 import com.fs.starfarer.api.combat.ShipAPI;
@@ -1507,9 +1508,11 @@ final class FractureFamilyCoordinator {
                             // Base extrapolated to the presented tick. dt can run
                             // briefly negative on CTRL-ahead lane skew — backward
                             // extrapolation is equally exact on a ballistic piece, no clamp.
+                            // The ticks are host-chosen, so a
+                            // led place outside the world falls back to the anchor.
                             float dt = (presentedTick - coast.anchorTick) / tickRate;
-                            float px = coast.x + coast.velX * dt;
-                            float py = coast.y + coast.velY * dt;
+                            float px = WireWorldLaw.ledCoord(coast.x, coast.velX, dt);
+                            float py = WireWorldLaw.ledCoord(coast.y, coast.velY, dt);
                             float pf = coast.facing + coast.angVel * dt;
                             if (coast.glideStartTick != Long.MIN_VALUE) {
                                 // The adopt-time contact offset decays linearly to
@@ -2220,8 +2223,8 @@ final class FractureFamilyCoordinator {
             float lead = HULK_POSE_COAST && presentedTick != Long.MIN_VALUE
                     ? (presentedTick - record.simTick()) / (float) ServerTickRate.ticksPerSecond()
                     : 0f;
-            float targetX = record.locX() + record.velX() * lead;
-            float targetY = record.locY() + record.velY() * lead;
+            float targetX = WireWorldLaw.ledCoord(record.locX(), record.velX(), lead);
+            float targetY = WireWorldLaw.ledCoord(record.locY(), record.velY(), lead);
             float targetFacing =
                     ((record.facing() + record.angVel() * lead) % 360f + 360f) % 360f;
             float dx = targetX - piece.getLocation().x;

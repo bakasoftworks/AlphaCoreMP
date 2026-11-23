@@ -47,7 +47,17 @@ public final class EngineMap {
     public static final int MAX_BYTES = 1 << 20;
 
     private static final Pattern INTERNAL = Pattern.compile("([^./;\\[\\t]+/)*[^./;\\[\\t]+");
-    private static final Pattern MEMBER = Pattern.compile("[^./;\\[\\t]+");
+    /**
+     * A member name, on either build. It ADMITS a {@code '.'}: the engine's shipped jars carry member names the Java
+     * class-format rule forbids (0.98.5a Linux: {@code String.for} and {@code void.for} on the transfer manager;
+     * 0.98a Windows: {@code while.class}), and the game runs with that check off, so such a name resolves like any other
+     * name: {@code findVirtual} over the Linux jars finds it. A class name never carries one
+     * ({@link #INTERNAL} keeps refusing it: there a dot would be a mis-typed package separator), and {@code / ; [}
+     * stay refused in both. The build-side reader of the same file (client-mod/engine-map-codegen.ps1,
+     * Assert-EmMemberName) may be stricter but must admit nothing this refuses: a map the build takes and this
+     * refuses stops every Linux start in the agent's map read.
+     */
+    private static final Pattern MEMBER = Pattern.compile("[^/;\\[\\t]+");
     private static final String FIELD_TYPE = "\\[*(?:[BCDFIJSZ]|L[^.;\\[\\t]+;)";
     private static final Pattern FIELD_DESC = Pattern.compile(FIELD_TYPE);
     private static final Pattern METHOD_DESC = Pattern.compile("\\((?:" + FIELD_TYPE + ")*\\)(?:V|" + FIELD_TYPE + ")");
@@ -181,7 +191,7 @@ public final class EngineMap {
                 need(f.length == 5, n, "a member row has 5 columns");
                 need(INTERNAL.matcher(f[1]).matches(), n, "a member row's owner is an internal class name");
                 need(MEMBER.matcher(f[2]).matches() && MEMBER.matcher(f[4]).matches(), n,
-                        "a member row's two names are plain member names");
+                        "a member row's two names are member names (no '/', ';', '[' or tab)");
                 need((kind.isMethod() ? METHOD_DESC : FIELD_DESC).matcher(f[3]).matches(), n,
                         "the descriptor does not fit the row's kind");
                 Member m = new Member(kind, f[1], f[2], f[3], f[4]);

@@ -29,8 +29,11 @@ import cc.starsector.client.net.ClientGameplayEdgeEvent;
  * hand-painted particles, never a hand-made floating number.
  *
  * <p><b>The contact point is vanilla's</b>:
- * a SHIELD record lands on the radius-weighted shield contact for the burst's OWN radius
- * ({@link OwnDetLane#shieldContactOrNull}; the fuse fires off the target's edge, so a small fixed slack
+ *
+ * a SHIELD record lands on the explosion shield contact for the burst's
+ * OWN radius ({@link OwnDetLane#shieldContactOrNull} with {@code explosion} TRUE: the nearest point of the
+ * shield ring, the burst centre itself inside the bubble, since the engine deals a fuse burst as a
+ * DamagingExplosion; the fuse fires off the target's edge, so a small fixed slack
  * would miss most shield hits) with the shield branch allowed; a HULL record lands on the nearest point
  * of the exact bounds (else the collision-circle surface point) with {@code bypassShields} TRUE, because
  * the engine picks the shield branch from the bearing alone and a hull record must never show as a
@@ -541,12 +544,14 @@ final class BlastHitLane {
         into.ownSourced = own || (source != null && source == ownShip);
     }
 
-    /** Vanilla's contact point for one burst victim: shield record = the radius-weighted shield contact
-     *  (null = the local shield gives none: skip, never re-route to the hull); hull record = the nearest
+    /** Vanilla's contact point for one burst victim: shield record = the explosion shield contact, the
+     *  nearest point of the shield ring, since the engine deals a fuse burst as a DamagingExplosion
+     * (null = the local shield gives none:
+     *  skip, never re-route to the hull); hull record = the nearest
      *  exact-bounds point, else the collision-circle surface point toward the centre. */
     static Vector2f contactPoint(ShipAPI victim, Vector2f centre, boolean shieldHit, float burstRadius) {
         if (shieldHit) {
-            return OwnDetLane.shieldContactOrNull(victim, centre, burstRadius);
+            return OwnDetLane.shieldContactOrNull(victim, centre, burstRadius, true);
         }
         float[] b = OwnDetLane.nearestPointOnBounds(victim, centre);
         if (b != null) {

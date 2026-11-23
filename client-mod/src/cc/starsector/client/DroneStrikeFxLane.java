@@ -154,11 +154,13 @@ final class DroneStrikeFxLane {
             }
             if (apex != null) {
                 // DroneStrikeStats verbatim (anchor choice aside — see class doc).
-                EmpArcEntityAPI arc = mpl.plugin.engine.spawnEmpArcVisual(apex.getLocation(),
+                EmpArcEntityAPI arc = ArcBelt.spawn(mpl.plugin.engine, apex.getLocation(),
                         apex, missile.getLocation(), missile, ARC_THICKNESS, ARC_FRINGE,
                         Color.white, null);
-                arc.setCoreWidthOverride(ARC_THICKNESS * ARC_CORE_WIDTH_MULT);
-                arc.setSingleFlickerMode();
+                if (arc != null) { // null = ArcBelt drew none (a non-finite end); the conversion fx below still runs
+                    arc.setCoreWidthOverride(ARC_THICKNESS * ARC_CORE_WIDTH_MULT);
+                    arc.setSingleFlickerMode();
+                }
                 arcs++;
             } else {
                 arcSkipped++;

@@ -1,5 +1,6 @@
 package cc.starsector.client;
 
+import cc.starsector.server.match.AllSkillsFleetLaw;
 import cc.starsector.server.match.MatchDescriptor;
 import cc.starsector.server.match.MatchDescriptorCodec;
 import cc.starsector.server.match.MatchDocumentLaws;
@@ -45,8 +46,9 @@ import java.util.function.Predicate;
  *
  * <p>Failure shape: knob unset ⇒ silent {@code false} (an ordinary launch, the certified body). A
  * SET knob is FAIL-CLOSED ({@link #readAndCheck}): a file that is unreadable, larger than
- * {@link MatchDocumentLaws#FILE_READ_MAX}, undecodable, refused by {@link MatchDocumentLaws#check}
- * or naming a roster variant this game lacks leaves {@link #cachedDescriptor()} {@code null} and
+ * {@link MatchDocumentLaws#FILE_READ_MAX}, undecodable, refused by {@link MatchDocumentLaws#check},
+ * naming a roster variant this game lacks or refused by the local-field law
+ * ({@link MatchDocumentLaws#checkLocalField}) leaves {@link #cachedDescriptor()} {@code null} and
  * {@link #loadFailure()} naming the refusal (a {@code match_doc_*} reason + OUR field, never file
  * text). The certified body is then the mission that opens, only so the in-combat banner can say
  * why: the dial planner arms that banner instead of dialing, so a match this game cannot build is
@@ -123,8 +125,8 @@ public final class MatchMissionBuilder {
 
     /**
      * The cached descriptor (loadOnce-backed), or {@code null} when unset or refused ({@link #loadFailure()}) —
-     * the predict plugin's shape key: {@code shape().startsWith("bots")} engages
-     * the remote-entity registry; null/1v1 leaves the certified single-foe path byte-identical.
+     * the predict plugin's shape key: a registry shape ({@link #isRegistryShape}, a 1v1
+     * document too) engages the remote-entity registry; null leaves the certified single-foe path byte-identical.
      */
     public static synchronized MatchDescriptor cachedDescriptor() {
         loadOnce();
@@ -226,34 +228,37 @@ public final class MatchMissionBuilder {
      * {@code descriptor} onto {@code api} with EXACTLY the certified call shape — per side in
      * order: initFleet, setFleetTagline, then that side's roster rows expanded {@code count}
      * times; the FIRST seat-bound player-side ship is the flagship; initMap last. Registry
-     * shapes (bots:/seats:/gauntlet:/teams:/bastion:) instead field ONLY the own seat's ship as
-     * PLAYER flagship — see the body comment.
+     * shapes (bots:/seats:/gauntlet:/teams:/bastion: and the exact 1v1) instead field ONLY the own
+     * seat's ship as PLAYER flagship — see the body comment.
      */
     /**
-     * The registry-shape key list, single-sourced: a registry shape fields ONLY
-     * the own seat locally — every other body spawns at first wire sight — so the three
-     * consumers (build()'s roster suppression, the plugin's engage path, and the plugin's
-     * connect-fail hold-open) must never disagree on it: a shape keyed in one site but not the
-     * others either fields fake vanilla-AI combatants or presents a connect failure as a frame-0
-     * native victory. Lives HERE (not on the plugin) because the game-free verify harness
+     * The n-peer SUBSET of the registry-shape key list; every routing site keys on the whole list,
+     * {@link #isRegistryShape}, the predict plugin's engage path too, so no caller routes on this subset
+     * alone. The list is single-sourced:
+     * a registry shape fields ONLY the own seat locally — every other body spawns at first wire sight —
+     * so its consumers (build()'s roster suppression, the plugin's engage path and connect-fail
+     * hold-open, the dial's claim-at-play lane, the document laws) must never disagree on it: a shape
+     * keyed in one site but not the others either fields fake vanilla-AI combatants or presents a
+     * connect failure as a frame-0 native victory. Lives HERE (not on the plugin) because the game-free verify harness
      * (verify-match-descriptor.ps1 rows V5/V6) compiles this class without the plugin.
      * bastion:A:B joined the list: seat-1 skipper + A× skipper AI (side 0) +
      * B× grendel AI (side 1) — without its key the non-registry fallback would field every
      * roster row locally with vanilla AI.
      */
     static boolean isNpeerShape(String shape) {
-        return shape.startsWith("seats:") || shape.startsWith("gauntlet:")
-                || shape.startsWith("teams:") || shape.startsWith("bastion:");
+        return MatchDocumentLaws.isNpeerShape(shape);
     }
 
-    /** Registry = bots (D-0 canonicalizes bots:0:N -> bots:N, so startsWith covers both) + npeer. */
+    /** Registry = bots (D-0 canonicalizes bots:0:N -> bots:N, so startsWith covers both) + npeer + the exact 1v1
+     *  (served as seats:2 is). The key list's ONE home is the shared {@link MatchDocumentLaws#isRegistryShape}:
+     *  the local-field law keys on the same list, so the build and the law cannot disagree on it. */
     static boolean isRegistryShape(String shape) {
-        return shape.startsWith("bots") || isNpeerShape(shape);
+        return MatchDocumentLaws.isRegistryShape(shape);
     }
 
     public static void build(MissionDefinitionAPI api, MatchDescriptor descriptor) {
         // Spawn-on-sight: registry shapes
-        // (bots:/seats:/gauntlet:/teams:/bastion: — the plugin's registryShape key) field ONLY the own seat's ship
+        // (bots:/seats:/gauntlet:/teams:/bastion: and the exact 1v1 — the plugin's registryShape key) field ONLY the own seat's ship
         // locally — every other body is spawned at first wire sight by the predict plugin's
         // registry, so roster rows must NOT materialize here (a local roster races the engine's
         // deploy ramp, and a surplus local ship would fight as a fake combatant). Both fleets
@@ -277,8 +282,8 @@ public final class MatchMissionBuilder {
         // and initFleet's 4th arg (useDefaultAI) wires that admiral's allyMode:
         // false = ally-mode admiral that NEVER deploys the side's own reserves. Vanilla
         // convention (API javadoc + every vanilla mission): ENEMY true, PLAYER false. Gated to
-        // vanilla: shapes so the certified 1v1 and every served/registry lane stay byte-identical
-        // (their local sides never hold >1 reserve, so the old false/false never bit them).
+        // vanilla: shapes so every served registry lane (a 1v1 document among them) stays byte-identical
+        // (its local side never holds >1 reserve, so the old false/false never bit it).
         boolean vanillaCompare = shape.startsWith("vanilla:");
         // The own seat's DESCRIPTOR side, resolved from the same dense-id walk the
         // plugin uses (PredictReconcileCombatPlugin's ownDescSide) — NOT the absolute
@@ -310,9 +315,13 @@ public final class MatchMissionBuilder {
         }
         int ownDescSide = registryShape ? sideForShipId(descriptor, ownShipId) : 0;
         boolean flagshipPlaced = false;
-        // Mint the side-0 fleet context FIRST — every attach/skill-up below installs
-        // it fail-closed (knob-gated no-op inside).
-        OfficerLoadout.mintSideZeroFleetContext(descriptor);
+        // Open the build's fleet contexts FIRST (its document, the per-build latches), then
+        // note the own team's absolute side: every pair below reads the context of the side its
+        // member is fielded on. A claim-at-play build fields no own hull and
+        // does not know its side yet; the session's seat names it later (buildOwnAbsoluteSide).
+        openBuildFleetContexts(descriptor);
+        OfficerLoadout.noteOwnAbsoluteSide(
+                buildOwnAbsoluteSide(registryShape, ObserverMode.ON, claimAtPlay, ownDescSide));
         for (int s = 0; s < descriptor.sides().size(); s++) {
             MatchDescriptor.Side side = descriptor.sides().get(s);
             FleetSide fleetSide = (s == 0) ? FleetSide.PLAYER : FleetSide.ENEMY;
@@ -340,8 +349,8 @@ public final class MatchMissionBuilder {
                             + " expect a stat desync until this is explained)");
                 } else {
                     OfficerLoadout.skillUpMissionCommander(commander);
-                    // The engine's mission default commander is a SECOND
-                    // union-sheeted person — its fleetwide applies need the fleet token too.
+                    // The engine's mission default commander IS the own
+                    // fielded side's union person: it takes that side's fleet token, every build.
                     OfficerLoadout.installMissionCommanderFleetToken(commander);
                     commanderLanesFired = true;
                 }
@@ -441,12 +450,16 @@ public final class MatchMissionBuilder {
                     }
                     FleetMemberAPI added = api.addToFleet(fleetSide, row.variantId(),
                             FleetMemberType.SHIP, flagship);
+                    boolean seat = row.pilot() == MatchDescriptor.PilotKind.SEAT;
                     // Parity attach; seat-ness = the row's own pilot kind.
-                    OfficerLoadout.attach(added, row.variantId(),
-                            row.pilot() == MatchDescriptor.PilotKind.SEAT);
-                    // Grunt coverage: every descriptor-side-0 member carries the
-                    // fleet-context pair (server twin: mintCrewedMember's install).
-                    OfficerLoadout.attachFleetContext(added, row.side());
+                    OfficerLoadout.attach(added, row.variantId(), seat);
+                    // Grunt coverage: every descriptor-side-0 NON-seat member carries the
+                    // fleet-context pair (server twin: mintCrewedMember's install, skipped for a seat
+                    // spec); a seat took its own context at the attach above and keeps it.
+                    // Seat skip.
+                    if (takesGruntFleetContext(seat, false)) {
+                        OfficerLoadout.attachFleetContext(added, row.side());
+                    }
                 }
             }
         }
@@ -696,6 +709,32 @@ public final class MatchMissionBuilder {
         return -1;
     }
 
+    /**
+     * Does a roster hull take its side's round-open grunt context ({@link OfficerLoadout#attachFleetContext})? Only a
+     * NON-seat row does. A seat row, and a hull whose restored captain is the all-skills seat mint (read as a seat),
+     * already took the context of its own row's stamp at the captain attach; a second install would re-key that hull
+     * to the side's round-open key, silently, and its stats would sum another roster than the server's twin hull
+     * (the server installs the grunt context for a non-seat spec only). The callers decide, never the install
+     * itself: a mission-build AI row still takes it. {@code allSkillsCaptain} = the wire's all-skills bit (a
+     * mission-build row carries none: false).
+     *
+     *
+     */
+    static boolean takesGruntFleetContext(boolean seatRow, boolean allSkillsCaptain) {
+        return !seatRow && !allSkillsCaptain;
+    }
+
+    /**
+     * The descriptor side a replica hull's grunt context install reads ({@link #descriptorSideForShipIdOrMinusOne}),
+     * or {@code -1}, the install's no-op, for a hull {@link #takesGruntFleetContext} keeps off it. {@code shipId} =
+     * the hull's u32 wire id (&gt; 0); {@code seatRow} and {@code allSkillsCaptain} as that predicate reads them.
+     *
+     *
+     */
+    static int gruntContextSideOrMinusOne(boolean seatRow, boolean allSkillsCaptain, long shipId) {
+        return takesGruntFleetContext(seatRow, allSkillsCaptain) ? descriptorSideForShipIdOrMinusOne(shipId) : -1;
+    }
+
     private static boolean isSeatShipId(MatchDescriptor descriptor, long shipId) {
         long id = 0;
         for (MatchDescriptor.RosterRow row : descriptor.roster()) {
@@ -819,11 +858,46 @@ public final class MatchMissionBuilder {
                 + " prior own hull, no join pick, no probed default, no t=0 placeholder, no SEAT row)");
     }
 
+    /**
+     * The build's fleet-context entry: the app-wide stamp fold begins THIS build's document (dropping the
+     * previous rounds' folds, re-arming its latches), then the contexts open the same document. The begin lives
+     * here, beside {@link OfficerLoadout#mintSideZeroFleetContext} and never inside it: the commander-lane
+     * recovery replays that method mid-combat, and a begin there would wipe the round's folded stamps. The fold
+     * holding the same document the contexts hold is what lets each hull mint ask its stamp.
+     *
+     *
+     */
+    static void openBuildFleetContexts(MatchDescriptor descriptor) {
+        FleetStamps.shared().begin(AllSkillsFleetLaw.DocumentIds.of(descriptor));
+        OfficerLoadout.mintSideZeroFleetContext(descriptor);
+    }
+
+    /**
+     * The own team's ABSOLUTE side a mission build notes for the fleet contexts.
+     * 0 for a non-registry build. 0 for an OBSERVER window: its view is side 0's, no own
+     * seat ever names a side there, and its replicas' local owner IS their absolute side (the plugin resolves an
+     * un-named seat to descriptor side 0), so each seat replica reads the fleet context of the side the server
+     * fields it on. -1 for a claim-at-play build (no own hull at the click: the session's seat names the side at
+     * combat init, {@link #noteSessionSeat}). Else the own hull's descriptor side. An observer used to
+     * note -1: every seat replica was paired with NO fleet data and kept every threshold bonus at maximum
+     * while the server throttled the same ship. Pure; pinned by row {@code allskills-fielded-side}.
+     */
+    static int buildOwnAbsoluteSide(boolean registryShape, boolean observer, boolean claimAtPlay, int ownDescSide) {
+        if (!registryShape || observer) {
+            return 0;
+        }
+        return claimAtPlay ? -1 : ownDescSide;
+    }
+
     /** W13 leg 2: the bound session's seat under a zero-hull build (0 = none this round). */
     private static volatile long claimedSessionSeat;
 
     static void noteSessionSeat(long shipId) {
         claimedSessionSeat = shipId;
+        if (lastBuiltOwnShipId == 0L && !ObserverMode.ON && shipId != 0L) {
+            // A zero-hull build learns its own absolute side here.
+            OfficerLoadout.noteOwnAbsoluteSide(descriptorSideForShipIdOrMinusOne(shipId));
+        }
     }
 
     /**
@@ -906,7 +980,8 @@ public final class MatchMissionBuilder {
             // the knob names no lawful path: the same refusal as an unreadable file, counted by the sink below
         }
         Outcome outcome = file == null ? Outcome.refused(MatchDocumentLaws.REASON_MALFORMED, "file")
-                : readAndCheck(file, MatchMissionBuilder::variantResolves);
+                : readAndCheck(file, MatchMissionBuilder::variantResolves, MatchMissionBuilder::isStationVariant,
+                        vanillaRigKnob());
         Failure failure = outcome.failure();
         if (failure != null) {
             cached = null;
@@ -940,12 +1015,25 @@ public final class MatchMissionBuilder {
      *   <li>Every roster row's variant checked in ONE pass BEFORE any {@code addToFleet}: the engine's
      *       {@code addToFleet} looks a missing variant up again outside its own try, so a missing hull is a
      *       Fatal at mission build - {@code match_doc_variant_missing <n>}, n = the DISTINCT missing ids.</li>
+     *   <li>THE LOCAL-FIELD LAW (MATCH-DOC-4096; {@link MatchDocumentLaws#checkLocalField}),
+     *       after the variant pass so {@code isStation} reads resolved variants only: the shape is a registry
+     *       shape ({@code 1v1} among them), a {@code vanilla:} shape only under {@code vanillaRig} - {@code
+     *       match_doc_out_of_range shape}; the station hulls the document makes THIS game field locally stay
+     *       within the cap - {@code roster.local}. WHY HERE as well as at the join
+     *       window: three boots never pass the window's law (a Launch on the file already on disk, a refresh the
+     *       server answers with no document, a hand-saved {@code match.txt}), and this read is the one every
+     *       document the game builds from passes.</li>
+     *   <li>THE SIDE-0 FLEET LAW (MDLF-1; {@link MatchDocumentLaws#checkSideZeroFleet}): a
+     *       document with no side-0 ship that is not a station - {@code match_doc_out_of_range roster.side0}. The
+     *       all-skills fleet context's walk throws on such a roster, inside {@link #build} or from the predict
+     *       plugin's frame loop, and the bit that arms it arrives after this load.</li>
      * </ol>
      * UTF-8 decode (the window and the packer both write UTF-8); lines split like {@code BufferedReader.readLine}.
      *
      *
      */
-    static Outcome readAndCheck(Path path, Predicate<String> variantExists) {
+    static Outcome readAndCheck(Path path, Predicate<String> variantExists, Predicate<String> isStation,
+            boolean vanillaRig) {
         String text;
         try (FileChannel ch = FileChannel.open(path, StandardOpenOption.READ)) {
             if (ch.size() > MatchDocumentLaws.FILE_READ_MAX) {
@@ -983,7 +1071,33 @@ public final class MatchMissionBuilder {
         if (!missing.isEmpty()) {
             return Outcome.refused(MatchDocumentLaws.REASON_VARIANT_MISSING, Integer.toString(missing.size()));
         }
+        try {
+            MatchDocumentLaws.checkLocalField(d, isStation, vanillaRig);
+            MatchDocumentLaws.checkSideZeroFleet(d, isStation);
+        } catch (MatchDocumentRefused refused) {
+            return Outcome.refused(refused.reason(), refused.field());
+        }
         return Outcome.loaded(d);
+    }
+
+    /**
+     * THE RIG KNOB for a {@code vanilla:} compare window: {@code cc.match.vanillaRig} / {@code CC_MATCH_VANILLA_RIG}
+     * = {@code true} (case-blind; anything else, unset or unreadable = false, the refusing side). WHY a knob and
+     * not the document: a {@code vanilla:} shape fields the whole roster locally under a deploying admiral
+     * (MATCH-DOC-4096), so the say-so must come from the one who launched this JVM - the two rig scripts
+     * set it; the kit's launchers
+     * never do, and a host can author a file but not this process's properties or environment.
+     */
+    static boolean vanillaRigKnob() {
+        try {
+            String raw = System.getProperty("cc.match.vanillaRig");
+            if (raw == null || raw.trim().isEmpty()) {
+                raw = System.getenv("CC_MATCH_VANILLA_RIG");
+            }
+            return raw != null && "true".equalsIgnoreCase(raw.trim());
+        } catch (RuntimeException unreadable) {
+            return false;
+        }
     }
 
     /** {@code BufferedReader.readLine}'s split ({@code \n}, {@code \r}, {@code \r\n}; no trailing empty line). */

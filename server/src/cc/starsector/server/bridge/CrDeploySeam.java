@@ -1,5 +1,8 @@
 package cc.starsector.server.bridge;
 
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymBridgeSeams;
+
 import java.lang.reflect.Method;
 
 /**
@@ -26,8 +29,6 @@ import java.lang.reflect.Method;
  */
 public final class CrDeploySeam {
 
-    private static final String REPAIR_TRACKER = "com.fs.starfarer.campaign.fleet.RepairTracker";
-    private static final String OBF_SHIP = "com.fs.starfarer.combat.entities.Ship";
     private static final String STATS_API = "com.fs.starfarer.api.combat.MutableShipStatsAPI";
     private static final String HULL_SIZE = "com.fs.starfarer.api.combat.ShipAPI$HullSize";
 
@@ -44,8 +45,8 @@ public final class CrDeploySeam {
      */
     public static void applyDeployCr(Object ship, float cr) throws Exception {
         ClassLoader loader = ship.getClass().getClassLoader();
-        Class<?> tracker = Class.forName(REPAIR_TRACKER, false, loader);
-        Class<?> shipCls = Class.forName(OBF_SHIP, false, loader);
+        Class<?> tracker = Class.forName(EngineSymBridgeSeams.BRIDGE_SEAMS_CR_TRACKER_CLASS.className(), false, loader);
+        Class<?> shipCls = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         Class<?> statsApi = Class.forName(STATS_API, false, loader);
         Class<?> hullSize = Class.forName(HULL_SIZE, false, loader);
         if (!shipCls.isInstance(ship)) {

@@ -71,11 +71,18 @@ public final class Handshake13 {
      * the labelled spawn-listing rows). The kit-bytes door check runs only when a host arms it, so this byte is the one
      * guard that holds in every configuration: a version-19 kit's F1 meets the {@code HandshakeBounceLadder} v19 rung
      * and reads {@code kit_outdated}.
+     * 21 = the version-20 bytes unchanged (no new F1 bit; {@link #FLAGS_DEFINED} stays {@code 0x3F}); the bump gates the
+     * game-version cut from 0.98a, so a kit built for 0.98a (every version-20 kit) never opens at this door:
+     * its F1 meets the {@code HandshakeBounceLadder} v20 rung and reads {@code kit_outdated} at HELLO whether or not the
+     * door fingerprint is armed (an unarmed door has no other check that tells 0.98a from 0.98.5a).
+     *
+     * The move between two 0.98.5a release candidates (RC4 to RC7) kept 21: no version-21 kit for the older candidate
+     * was published, and only an armed door fingerprint tells two candidates' kits apart.
      * A bump re-mints the {@code Handshake13KatRows} K0..K7 goldens in the SAME commit (two temporary hex-print
      * passes, never committed): the byte heads every frozen message, so the 15 and 16 bumps both went red on it.
      *
      */
-    public static final int VERSION = 20;
+    public static final int VERSION = 21;
     /** The highest lawful {@code team} byte; a sealed 3..255 opens as {@code bodyOk == false}. */
     public static final int TEAM_MAX = 2;
     /** The sealed F2 body's trailing pilot keymap: one byte per {@link PilotIntentFrame#CONTROL_KEY_NAMES} entry. */

@@ -1,6 +1,6 @@
 #Requires -Version 7
-# engine-map-codegen.ps1 - turns the engine map into the client mod's constant table: reads one engine map (default:
-# engine-map/linux-0.98a-RC8.tsv beside this script) and writes <Out>/cc/starsector/client/EngineNameTable.java. Called
+# engine-map-codegen.ps1 - turns the engine map into the client mod's constant table: reads one engine map (-Tsv; default:
+# the ONE engine-map/linux-*.tsv beside this script) and writes <Out>/cc/starsector/client/EngineNameTable.java. Called
 # by this tree's build.ps1 and by the maintainer's own client build, so there is one parser and one table layout, never
 # a second copy that drifts: one map always generates the same file bytes.
 #
@@ -29,7 +29,15 @@ param(
     [string] $Tsv = ''
 )
 $ErrorActionPreference = 'Stop'
-if (-not $Tsv) { $Tsv = Join-Path $PSScriptRoot 'engine-map/linux-0.98a-RC8.tsv' }
+if (-not $Tsv) {
+    # No map named: the folder must hold exactly one Linux map. None = nothing to generate from; two or more = the
+    # caller names the game build's map with -Tsv (a map is per game build, so a pick by file order could compile
+    # another build's names into the jar).
+    $emDir = Join-Path $PSScriptRoot 'engine-map'
+    $emFound = @(Get-ChildItem -LiteralPath $emDir -Filter 'linux-*.tsv' -File -ErrorAction SilentlyContinue)
+    if ($emFound.Count -ne 1) { throw "engine map: $($emFound.Count) linux-*.tsv files under $emDir, want exactly one (pass -Tsv <the game build's map>)" }
+    $Tsv = $emFound[0].FullName
+}
 if (-not (Test-Path -LiteralPath $Tsv -PathType Leaf)) { throw "engine map missing: $Tsv" }
 
 $emId = $null
@@ -44,6 +52,12 @@ $emKinds = @('static-method', 'method', 'static-field', 'field')
 # (an internal name is '/'-separated; a dot would collide with the dotted form).
 function Assert-EmName([string]$s, [string]$what, [int]$lineNo) {
     if ([string]::IsNullOrEmpty($s) -or $s -cmatch '[\s\x00-\x1f"\\.;\[]') { throw "engine map line ${lineNo}: bad $what '$s'" }
+}
+# A MEMBER name may carry a '.': the engine's shipped builds name members like 'String.for' (Linux 0.98.5a-RC4) or
+# 'while.class' (Windows 0.98a-RC8), legal only because the game runs with the class-format check off. A member name
+# is never converted between dotted and internal form, so the dot collides with nothing; ';' '[' '/' stay refused.
+function Assert-EmMemberName([string]$s, [string]$what, [int]$lineNo) {
+    if ([string]::IsNullOrEmpty($s) -or $s -cmatch '[\s\x00-\x1f"\\;\[/]') { throw "engine map line ${lineNo}: bad $what '$s'" }
 }
 $emLineNo = 0
 foreach ($emLine in [IO.File]::ReadAllLines($Tsv, [Text.Encoding]::UTF8)) {
@@ -65,7 +79,7 @@ foreach ($emLine in [IO.File]::ReadAllLines($Tsv, [Text.Encoding]::UTF8)) {
         $emClassMap.Add($f[1], $f[2]); $emClassOrder.Add($f[1])
     } elseif ($emKinds -ccontains $f[0]) {
         if ($f.Count -ne 5) { throw "engine map line ${emLineNo}: a member row has 5 fields, found $($f.Count)" }
-        Assert-EmName $f[1] 'member owner' $emLineNo; Assert-EmName $f[2] 'member name' $emLineNo; Assert-EmName $f[4] 'member target name' $emLineNo
+        Assert-EmName $f[1] 'member owner' $emLineNo; Assert-EmMemberName $f[2] 'member name' $emLineNo; Assert-EmMemberName $f[4] 'member target name' $emLineNo
         $isMethod = $f[0].EndsWith('method', [StringComparison]::Ordinal)
         $descOk = if ($isMethod) { $f[3] -cmatch '^\([^\s"\\]*\)[^\s"\\]+$' } else { $f[3] -cmatch '^\[*([BCDFIJSZ]|L[^\s"\\;]+;)$' }
         if (-not $descOk) { throw "engine map line ${emLineNo}: descriptor '$($f[3])' does not fit kind $($f[0])" }

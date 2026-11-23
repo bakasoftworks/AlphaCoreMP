@@ -33,7 +33,8 @@ import org.lwjgl.util.vector.Vector2f;
  * damage-free) drawn locally to the missile twin via {@link ArcHitFxLane#presentInimical} — the
  * server's probe names ship victims only, it emits nothing for a missile, which it damages
  * (usually kills) authoritatively — a survivor shows a survived arc hit on both sides, as vanilla
- * does; no local target ⇒ the whole call goes to the parent's
+ * does; no local target ⇒ once the arc belt takes its charge
+ * ({@link ArcBelt#charge}; refused = nothing drawn) the whole call goes to the parent's
  * {@code onFire}, whose own re-run of the same search finds none and draws vanilla's NO-TARGET
  * visual itself (the miss flail — the server emits nothing for a miss, rewritten from the
  * functional spec). Zero wire bytes on the miss and missile paths; the ship
@@ -43,6 +44,19 @@ public class CcWrapInimicalEmanationOnFireEffect extends InimicalEmanationOnFire
         implements ReplicaPresentedFireRelay.PresentedFireAware {
 
     static final String TAG = "inimical";
+
+    /**
+     * Vanilla's own numbers for its no-target arc, which the replica branch
+     * charges to {@link ArcBelt#charge} before vanilla draws it: the segment mult 4, two point lists (the arc is
+     * warped), and the drawn end at most 350 su past the shot (a destination up to 300 su out, then a point within 50
+     * of it).
+     *
+     *
+     *
+     */
+    static final float NO_TARGET_ARC_PAD_SU = 350f;
+    static final float NO_TARGET_ARC_SEGMENT_MULT = 4f;
+    static final int NO_TARGET_ARC_LISTS = 2;
 
     @Override
     public void onFire(DamagingProjectileAPI projectile, WeaponAPI weapon, CombatEngineAPI engine) {
@@ -87,6 +101,15 @@ public class CcWrapInimicalEmanationOnFireEffect extends InimicalEmanationOnFire
         // range can only miss again) - so the parent's own re-run inside super.onFire finds no
         // target either and takes its visual-only no-target path (vanilla's miss flail). Its
         // damaging branch needs a target and is unreachable from here.
+        // Vanilla draws its no-target arc once per presented
+        // shot, outside the client's arc door, so it pays the arc belt first, priced from this hull to
+        // 350 su past the shot (vanilla starts it at the shot, or near the hull under a shroud). A refused
+        // charge draws nothing (counted in the census; the shot itself was already presented).
+        if (!ArcBelt.charge(engine, ship.getLocation(), projectile.getLocation(), NO_TARGET_ARC_PAD_SU,
+                NO_TARGET_ARC_SEGMENT_MULT, NO_TARGET_ARC_LISTS)) {
+            CcReplicaEffectGate.doorShut(TAG + "_beltrefused");
+            return;
+        }
         super.onFire(projectile, weapon, engine);
         CcReplicaEffectGate.visualMinted(TAG);
     }

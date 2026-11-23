@@ -486,6 +486,7 @@ table.gMatrix { width: 100%; table-layout: fixed; }
 .mrow.bad { border-left-color: rgba(255,60,30,.6); }
 .mrow.bad .nm { color: #ff8a70; }
 .mrow.builtin { cursor: default; } .mrow.builtin .nm { color: var(--dim); } .mrow.builtin .st { color: var(--dim); font-size: var(--fsSm); }
+.mrow.builtin.smod .st { color: var(--story); font-family: var(--display); font-weight: 700; font-size: var(--fsMd); }
 .mrow.hide { display: none; }
 #mods section[data-cat="Installed"] h4 { color: var(--accent); }   
 

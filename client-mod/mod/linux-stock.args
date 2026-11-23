@@ -1,7 +1,7 @@
 # linux-stock.args - the Java options join-cc.sh starts the game with when it cannot read the java command
 # out of the install's own starsector.sh (a renamed Java folder, a distro wrapper script, shell syntax in it).
-# Source = the stock starsector.sh of Starsector 0.98a-RC8 (sha256
-# feee3b953ccf9ffbc925def7f126a9a699e94c1f33e486f0bc2fa7b0ac55e3e2), reduced by the SAME drop list join-cc.sh
+# Source = the stock starsector.sh of Starsector 0.98.5a-RC8 (sha256
+# 28b8a817fb7f3335bfc0eb8d32413f17658b54ca1a488835dc9e4684cbaac097), reduced by the SAME drop list join-cc.sh
 # applies to a line it reads: so this file equals what join-cc.sh reads out of that stock file, token for token.
 # One option per line, no quoting (the stock line has none); lines starting with # are skipped. The java
 # binary, the compatibility agent, -XX:-ShowMessageBoxOnError and the main class are added by join-cc.sh.
@@ -64,6 +64,8 @@
 -XX:-BytecodeVerificationLocal
 -XX:-BytecodeVerificationRemote
 -Djava.util.Arrays.useLegacyMergeSort=true
+-Djdk.attach.allowAttachSelf=true
+-XX:+EnableDynamicAgentLoading
 --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
 --add-opens=java.base/java.nio=ALL-UNNAMED
 --add-opens=java.base/java.nio.Buffer.UNSAFE=ALL-UNNAMED

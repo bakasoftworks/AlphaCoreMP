@@ -17,16 +17,17 @@ package cc.starsector.client;
  * whose launcher died) takes neither the minefield spawn dressing nor a mine det at its END.
  *
  * <p>The decisions routed through this class: the adopt's intangible / dressing / {@code sourcelessMine} /
- * {@code sourcelessClass} writes ({@code MissilePoseLane.adoptSourceless}), the mine END arm
- * ({@code MineBombEndFxLane.presentMineEndFx}), the plain END ({@code MineBombEndFxLane.presentPlainEnd}), the bomb
- * END guard and its stand-in paint route ({@code MineBombEndFxLane.presentBombEndFx}) and the same-tick serve gate
- * ({@code SourcedMissileEndLane.consumeTwin}).
+ * {@code sourcelessClass} writes ({@code MissilePoseLane.adoptSourceless}), the SOURCED adopt's {@code sourcelessMine}
+ * write for a script's mine minted through the gun ({@link #sourcedScriptMine}, {@code MissilePoseLane.presenceAdopt}),
+ * the mine END arm ({@code MineBombEndFxLane.presentMineEndFx}), the plain END
+ * ({@code MineBombEndFxLane.presentPlainEnd}), the bomb END guard and its stand-in paint route
+ * ({@code MineBombEndFxLane.presentBombEndFx}) and the same-tick serve gate ({@code SourcedMissileEndLane.consumeTwin}).
  *
  * <p>The OTHER readers of {@code Twin.sourcelessMine}, NOT routed through this class (a change to the flag's
  * meaning must check them too): {@code MissilePoseLane.laneFor}, the own-twin absence arm of
  * {@code MissilePoseLane.tickAbsence}, {@code MineBombEndFxLane.trackMinePrime}, the own-twin arm of
- * {@code SourcedMissileEndLane.consumeTwin} and {@code SourcedMissileEndLane.ownPuppetImpactDoor}. The second
- * WRITER of the flag is {@code OwnMissileHandoffLane.enrollOwnMine}.
+ * {@code SourcedMissileEndLane.consumeTwin} and {@code SourcedMissileEndLane.ownPuppetImpactDoor}. The other
+ * WRITERS of the flag are the sourced adopt above and {@code OwnMissileHandoffLane.enrollOwnMine}.
  *
  * <p>LOADING LIMIT: no imports and no static state beyond {@code static final int} constants — every knob and
  * every engine read arrives as a parameter, so the row table loads this class with nothing else on its path.
@@ -130,6 +131,19 @@ final class SourcelessClassLaw {
      *  UNSTABLE leave it, so no ordinary sourceless body takes the mine det at its END. Pure (rows T0, T1-T54). */
     static boolean sourcelessMine(int cls) {
         return cls == MINE || cls == MINE_PAINTED;
+    }
+
+    /** The {@code Twin.sourcelessMine} flag for a SOURCED adopt (a live source hull and a wire mount): a mine a
+     *  script minted through the gun. All four hold: pose apply on (else nothing is minted to present), the
+     *  script-spawn verdict (the body's spec is not the gun's own projectile; an unreadable verdict is no verdict),
+     *  the engine's mine fuse kept on the body (the explode() door gates on it), and the body minted from its own
+     *  minelayer recipe (the registry copy carries no weapon damage). The vanilla case: the rift lightning mine, whose
+     *  spawner binds the gun. Every other sourced body (a MIRV child: a script spec, no mine, the registry mint)
+     *  leaves the flag. The class stays NOT_SOURCELESS: no spawn dressing (the vanilla spawner plays none), and the
+     *  END is {@link #mineEndArm} (the ENGINE DOOR, QUIET on a shot-down END). Pure (rows S1-S7).
+     * */
+    static boolean sourcedScriptMine(boolean apply, boolean specScript, boolean nativeMine, boolean recipeBody) {
+        return apply && specScript && nativeMine && recipeBody;
     }
 
     /** A wire END is served on its own tick when the body names a source hull, when it is a sourceless

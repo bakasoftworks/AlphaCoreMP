@@ -1,5 +1,6 @@
 package cc.starsector.server.bridge;
 
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.runtime.VariantPolicy;
 import cc.starsector.server.runtime.VariantPolicy.HullFacts;
 import cc.starsector.server.runtime.VariantPolicy.HullModFacts;
@@ -39,7 +40,6 @@ import org.json.JSONObject;
 public final class RealEngineVariantFacts {
 
     private static final String GLOBAL_CLASS = "com.fs.starfarer.api.Global";
-    private static final String MOD_MANAGER_CLASS = "com.fs.starfarer.launcher.ModManager";
     /** Per-skin-file read guard (a .skin is ~1–3 KB). */
     static final int MAX_SKIN_FILE_BYTES = 262144;
 
@@ -65,8 +65,13 @@ public final class RealEngineVariantFacts {
         Object settings = settings();
         Set<String> modSkinIds = enabledModSkinHullIds();
         try {
-            return new VariantPolicy.Catalog(hulls(settings, modSkinIds), weapons(settings),
-                    hullMods(settings), wings(settings));
+            Map<String, HullFacts> hulls = hulls(settings, modSkinIds);
+            Set<String> builtInAnywhere = new LinkedHashSet<>();
+            for (HullFacts hull : hulls.values()) {
+                builtInAnywhere.addAll(hull.builtInMods());
+            }
+            return new VariantPolicy.Catalog(hulls, weapons(settings),
+                    hullMods(settings, builtInAnywhere), wings(settings));
         } catch (ReflectiveOperationException e) {
             throw new IllegalStateException("variant facts snapshot failed: " + unwrap(e), unwrap(e));
         }
@@ -151,19 +156,56 @@ public final class RealEngineVariantFacts {
         return out;
     }
 
-    private static Map<String, HullModFacts> hullMods(Object settings) throws ReflectiveOperationException {
+    /**
+     * {@code builtInAnywhere} = every hullmod id some hull builds in. The two s-mod effect facts are read for
+     * those ids alone: the read goes through {@code getEffect()}, which makes the engine create the mod's
+     * effect object on first use, and the s-modded built-in law never asks about any other mod. A built-in's
+     * effect is one the engine creates anyway the first time such a hull is fielded.
+     */
+    private static Map<String, HullModFacts> hullMods(Object settings, Set<String> builtInAnywhere)
+            throws ReflectiveOperationException {
         Map<String, HullModFacts> out = new LinkedHashMap<>();
         Collection<?> specs = (Collection<?>) call(settings, "getAllHullModSpecs");
+        int effectRead = 0;
+        int withEffect = 0;
+        int penalty = 0;
+        int effectUnread = 0;
         for (Object spec : specs) {
             String id = (String) call(spec, "getId");
             if (id == null || id.isEmpty()) {
                 continue;
             }
+            boolean sModEffect = false;
+            boolean sModEffectPenalty = false;
+            if (builtInAnywhere.contains(id)) {
+                try {
+                    Object effect = call(spec, "getEffect");
+                    if (effect != null) {
+                        sModEffect = (Boolean) call(effect, "hasSModEffect");
+                        sModEffectPenalty = (Boolean) call(effect, "isSModEffectAPenalty");
+                    }
+                    effectRead++;
+                    withEffect += sModEffect ? 1 : 0;
+                    penalty += sModEffect && sModEffectPenalty ? 1 : 0;
+                } catch (Throwable broken) {
+                    // A mod's effect that will not load or answer grades as "no s-mod effect": the law then
+                    // refuses the s-mod on it, the same fail-closed read as an effect-less mod.
+                    sModEffect = false;
+                    sModEffectPenalty = false;
+                    effectUnread++;
+                }
+            }
             out.put(id, new HullModFacts(id, (Boolean) call(spec, "isHidden"),
                     (Boolean) call(spec, "isHiddenEverywhere"),
                     strings((Collection<?>) call(spec, "getTags")),
-                    (Boolean) call(spec, "isAlwaysUnlocked"), sourceModPresent(spec)));
+                    (Boolean) call(spec, "isAlwaysUnlocked"), sourceModPresent(spec),
+                    sModEffect, sModEffectPenalty));
         }
+        // ONE boot line: the read's own census. "effect" = built-in mods with an s-mod effect, "penalty" = those
+        // whose effect is a penalty; a boot where read > 0 and effect = 0 means the effect read is broken, and every
+        // s-modded built-in a player submits is then refused.
+        System.out.println("custom-variant smod_builtins read=" + effectRead + " effect=" + withEffect
+                + " penalty=" + penalty + " unread=" + effectUnread);
         return out;
     }
 
@@ -248,7 +290,7 @@ public final class RealEngineVariantFacts {
     static List<File> enabledModDataRoots(String relative) throws ReflectiveOperationException {
         List<File> roots = new java.util.ArrayList<>();
         ClassLoader loader = RealEngineVariantFacts.class.getClassLoader();
-        Class<?> modManagerClass = Class.forName(MOD_MANAGER_CLASS, true, loader);
+        Class<?> modManagerClass = EngineSym.MOD_MANAGER_CLASS.load(loader);
         Object modManager = modManagerClass.getMethod("getInstance").invoke(null);
         List<?> enabledMods = (List<?>) modManagerClass.getMethod("getEnabledMods").invoke(modManager);
         for (Object spec : enabledMods) {

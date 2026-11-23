@@ -41,7 +41,8 @@ public final class ClientHulkPoseRecord {
      * @throws IllegalArgumentException on any field outside the server record's exact guards
      *     (negative simTick, rootEntityId &lt; 1, a deathTick outside {@code 0..simTick} — a
      *     family's keyframes never precede its death — a pieceCount outside 1..255, a sizeRank
-     *     outside {@code 0..pieceCount-1}, or any non-finite pose component). The reader
+     *     outside {@code 0..pieceCount-1}, or any pose component outside {@link WireWorldLaw},
+     *     non-finite or beyond its bound). The reader
      *     translates this to an {@link java.io.IOException} so a bad frame fails closed like
      *     every other wire decode.
      */
@@ -72,9 +73,14 @@ public final class ClientHulkPoseRecord {
             throw new IllegalArgumentException("sizeRank must be 0.." + (pieceCount - 1)
                     + " (< pieceCount); got " + sizeRank);
         }
-        if (!Float.isFinite(locX) || !Float.isFinite(locY) || !Float.isFinite(facing)
+        // Finite is not enough, a huge finite pose hangs the
+        // engine's grid and facing loops, so each component obeys the shared world law.
+        // The law's two postures: a place or a facing outside its bound is refused; a
+        // finite rate is BOUNDED below, never refused (a rammed piece can lawfully spin past the bound,
+        // and a refused record ends the session); a non-finite rate is refused.
+        if (!WireWorldLaw.coordOk(locX) || !WireWorldLaw.coordOk(locY) || !WireWorldLaw.facingOk(facing)
                 || !Float.isFinite(velX) || !Float.isFinite(velY) || !Float.isFinite(angVel)) {
-            throw new IllegalArgumentException("pose components must all be finite; got locX="
+            throw new IllegalArgumentException("pose components must all be finite and inside the world law; got locX="
                     + locX + " locY=" + locY + " facing=" + facing + " velX=" + velX
                     + " velY=" + velY + " angVel=" + angVel);
         }
@@ -86,9 +92,9 @@ public final class ClientHulkPoseRecord {
         this.locX = locX;
         this.locY = locY;
         this.facing = facing;
-        this.velX = velX;
-        this.velY = velY;
-        this.angVel = angVel;
+        this.velX = WireWorldLaw.boundedSpeed(velX);
+        this.velY = WireWorldLaw.boundedSpeed(velY);
+        this.angVel = WireWorldLaw.boundedAngularRate(angVel);
     }
 
     /** The server sim tick the keyframe was emitted on. */

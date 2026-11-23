@@ -1,5 +1,7 @@
 package cc.starsector.server.bridge;
 
+import cc.starsector.server.names.EngineRow;
+import cc.starsector.server.names.EngineSym;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -1007,7 +1009,7 @@ final class EngineReflectionBinding {
     // ---- Piloted-cloak wall-clock tracker family. ----
     // The phase system impl (combat.systems.F, what getPhaseCloak() returns) holds its state
     // tracker in the UNOBFUSCATED protected field `chargeTracker`; the tracker class
-    // (combat.systems.super) keeps ONE shared elapsed accumulator in `private float class`
+    // (combat.systems.A) keeps ONE shared elapsed accumulator in a `private float` field
     // and the SystemState in a `private SystemState` field — both
     // private, reachable ONLY via getDeclaredField+setAccessible. Fail-soft null
     // here; the caller (PilotedCloakWallClock) treats a null after a non-null cloak as a resolve
@@ -1032,7 +1034,7 @@ final class EngineReflectionBinding {
     Object cloakTrackerStateOrNull(Object tracker) {
         try {
             if (cloakTrackerStateField == null) {
-                cloakTrackerStateField = findFieldInHierarchy(tracker.getClass(), "o00000");
+                cloakTrackerStateField = openRowField(EngineSym.CLOAK_TRACKER_STATE_FIELD, tracker.getClass());
             }
             return cloakTrackerStateField == null ? null : cloakTrackerStateField.get(tracker);
         } catch (ReflectiveOperationException | RuntimeException e) {
@@ -1040,11 +1042,11 @@ final class EngineReflectionBinding {
         }
     }
 
-    /** The tracker's shared elapsed accumulator (`super#class`), or null on any reflective miss. */
+    /** The tracker's shared elapsed accumulator, or null on any reflective miss. */
     Float cloakTrackerElapsedOrNull(Object tracker) {
         try {
             if (cloakTrackerElapsedField == null) {
-                cloakTrackerElapsedField = findFieldInHierarchy(tracker.getClass(), "class");
+                cloakTrackerElapsedField = openRowField(EngineSym.CLOAK_TRACKER_ELAPSED_FIELD, tracker.getClass());
             }
             Object value = cloakTrackerElapsedField == null ? null : cloakTrackerElapsedField.get(tracker);
             return value instanceof Float ? (Float) value : null;
@@ -1057,7 +1059,7 @@ final class EngineReflectionBinding {
     boolean cloakTrackerElapsedWrite(Object tracker, float value) {
         try {
             if (cloakTrackerElapsedField == null) {
-                cloakTrackerElapsedField = findFieldInHierarchy(tracker.getClass(), "class");
+                cloakTrackerElapsedField = openRowField(EngineSym.CLOAK_TRACKER_ELAPSED_FIELD, tracker.getClass());
             }
             if (cloakTrackerElapsedField == null) {
                 return false;
@@ -1081,5 +1083,19 @@ final class EngineReflectionBinding {
             }
         }
         return null;
+    }
+
+    /**
+     * The engine-table field {@code row} names, found from {@code lookupOwner} up its hierarchy and made accessible
+     * before the caller caches it (a failed open throws, so no inaccessible field is ever cached). A miss throws
+     * {@link NoSuchFieldException}, and an owner that is not {@code lookupOwner} or a supertype of it throws
+     * {@link IllegalStateException}; the tracker readers catch both and degrade to their null / false miss.
+     *
+     *
+     */
+    private static Field openRowField(EngineRow row, Class<?> lookupOwner) throws NoSuchFieldException {
+        Field f = row.field(lookupOwner);
+        f.setAccessible(true);
+        return f;
     }
 }

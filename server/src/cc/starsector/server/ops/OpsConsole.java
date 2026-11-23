@@ -1775,6 +1775,17 @@ public final class OpsConsole {
         boolean started;
         LaneFollow.LaneLaunch launched = null;
         String kitNote = null;
+        // The serve's Game folder holding another
+        // game build refuses EVERY Start here - before any spawn, row save or kit check - with one sentence naming
+        // the row and this server's game version, instead of the serve's own drift exit after it was spawned. The
+        // build is judged by the launcher-check bytes the drift guard pins (OpsJoinSelf.Live, no engine class
+        // loaded); unreadable = proceed, that drift exit the backstop.
+        String otherGame = startGameVersionRefusalOrNull(gameRoot, gameRootSecond, gameRootPlayer);
+        if (otherGame != null) {
+            System.out.println("cc-console start game_version=refused");
+            respond(ex, 200, JSON, OpsConsoleForms.errorJson("Start refused", otherGame));
+            return;
+        }
         if (debugWatch) {
             // Fold: the player kit check BEFORE the Start and OUTSIDE startLock (a
             // refresh moves folders - seconds of disk - never under the lock that serializes the props writes; the
@@ -3204,6 +3215,23 @@ public final class OpsConsole {
     }
 
     /**
+     * The Start's game-build check: the serve's Game folder as this Start is about to save it ({@link #watchRows},
+     * the form's typed folder over the saved row) through {@link OpsJoinSelf#serveGameVersionRefusalOrNull}. Rows
+     * that cannot be read = null (proceed as before; ONE {@code cc-console start game_version=unread} row) - this
+     * check never adds a refusal of its own beyond another game build.
+     */
+    private String startGameVersionRefusalOrNull(String typedGameRoot, String typedSecond, String typedPlayer) {
+        Map<String, String> rows;
+        try {
+            rows = watchRows(typedGameRoot, typedSecond, typedPlayer);
+        } catch (IOException | RuntimeException fault) {
+            System.out.println("cc-console start game_version=unread (" + fault.getClass().getSimpleName() + ")");
+            return null;
+        }
+        return OpsJoinSelf.serveGameVersionRefusalOrNull(roots.pkg(), rows);
+    }
+
+    /**
      * The debug watch's player-kit check before its Start ({@link OpsJoinSelf#kitCheckOrNull}: the install law, then
      * the installed kit against the package's stamps, a stale kit refreshed from the package's kit zip). The inputs
      * are the hand press's with NO secrets (password blank, no arm: the check reads neither) over {@code rows} = the
@@ -3214,6 +3242,7 @@ public final class OpsConsole {
      * match over the wire, so the read died with the field at the fold).
      *
      */
+
     private OpsJoinSelf.KitCheck watchKitCheckOrNull(Map<String, String> rows) throws IOException {
         OpsSnapshot live = liveOrNull();
         return OpsJoinSelf.kitCheckOrNull(pressInputs(live, rows, "", false, System.getProperty("os.name")),

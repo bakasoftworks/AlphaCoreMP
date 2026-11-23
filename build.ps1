@@ -1,8 +1,10 @@
 #Requires -Version 7
 # build.ps1 - builds this source tree, on Windows or on Linux (PowerShell 7 on either): the headless server's classes
-# and agent jars, then the client mod jar. No tests, and one check only (the built mod jar's start-up self-check
-# against the game's jars, step 10); nothing is installed or copied into the game: every output lands inside this tree
-# (but the server folder -ServerFolder names and the kit zip -KitZip names).
+# and agent jars, then the client mod jar. No tests, and three checks only, all on the client: the engine-name alias
+# check (no alias spelling left in any compiled client class, step 6b), the alias link check (every engine reference in
+# the packed mod jar resolves in the game's jars, step 10) and the built mod jar's start-up self-check against the
+# game's jars (step 10); nothing is installed or copied into the game: every output lands inside this tree (but the
+# server folder -ServerFolder names and the kit zip -KitZip names).
 #
 # OUTPUTS (the same relative paths the maintainer's internal build writes, so the two can be compared file by file):
 #   server/classes                          the server, the vendored Concentus audio codec, the game-API probe classes
@@ -13,13 +15,14 @@
 #   client-mod/gen                          the engine-name table generated from client-mod/engine-map (compiled into the jar)
 #   client-mod/build/classes                the client mod's classes plus the server classes it shares
 #   client-mod/build/stub-classes           the MagicLib compile-only stubs (on the client compile class path, never jarred)
+#   client-mod/build/engine-alias           the alias step's compiled tool and its aliased engine-jar copies
 #   client-mod/mod/jars/cc-client-mod.jar   the client mod jar
 #   client-mod/mod/SoundProbe.class         the mod kit's stand-alone sound self-check (a loose class, not in the jar)
 #   build/kit-stage, build/kit-entries.txt  -KitZip only: the joiner kit's staged files and the entry list packed
 #   client-mod/mod/jre-cc, client-mod/mod/kit-jvm.args  -KitRuntime only: the kit's own Java runtime + its launch options
 #
 # NEEDS: PowerShell 7; a JDK 17 or newer (javac + jar + java); for the client, a JDK 25 as well; an installed
-# Starsector 0.98a (its jars are on the compile class path; nothing in the game folder is written). The same script
+# Starsector 0.98.5a-RC8 (its jars are on the compile class path; nothing in the game folder is written). The same script
 # runs on Linux under pwsh with Linux JDKs and a copy of the WINDOWS game's starsector-core folder (the Linux download
 # is a different build of the game: the client does not compile against it and the server does not start on it; the
 # server alone builds against either); only -KitRuntime is a Windows step (below).
@@ -164,15 +167,15 @@ if (-not $SkipClient) { $gameJars += @("starfarer_obf.jar", 'fs.common_obf.jar',
 $absent = @($gameJars | Where-Object { -not (Test-Path -LiteralPath (Join-Path $core $_) -PathType Leaf) })
 if ($absent.Count -gt 0) { throw "game jar(s) missing under ${core}: $($absent -join ', ') (pass -GameDir <Starsector folder>)" }
 $jsonJar = Join-Path $core 'json.jar'
-# The client sources name the engine's class names as the WINDOWS download of 0.98a-RC8 has them; the Linux download
+# The client sources name the engine's class names as the WINDOWS download of 0.98.5a-RC8 has them; the Linux download
 # is a separate build of the same version (its internal names differ), so a client build against it fails deep in
-# javac. Tell the two apart up front by the engine jar's sha256: the Windows download's jar (6,029,184 bytes) is the one
+# javac. Tell the two apart up front by the engine jar's sha256: the Windows download's jar (6,151,983 bytes) is the one
 # the client sources match, and the one the server runs from.
 if (-not $SkipClient) {
     $engineJar = Join-Path $core "starfarer_obf.jar"
     $engineSha = (Get-FileHash -LiteralPath $engineJar -Algorithm SHA256).Hash.ToLowerInvariant()
-    $windowsBuild = $engineSha -eq '5dd222b9e266d2ac2d63b3dad4983eb05caaf5a247d7dfb82aaeba47ea774cc8'
-    if (-not $windowsBuild) { throw "client: $core does not hold the Windows build of Starsector 0.98a-RC8 that the client sources (and the server at start) need (its engine jar's sha256 is $engineSha; the Linux download's jars are a separate build): point -GameDir at a copy of the Windows game's folder (the one with starsector-core), the folder a Linux host serves from; or pass -SkipClient (the server alone builds against either)" }
+    $windowsBuild = $engineSha -eq 'b6aa266d667c0e1701e96c05a8b5e5142e99c6f50f7c75453366e66034b7719f'
+    if (-not $windowsBuild) { throw "client: $core does not hold the Windows build of Starsector 0.98.5a-RC8 that the client sources (and the server at start) need (its engine jar's sha256 is $engineSha; the Linux download's jars are a separate build): point -GameDir at a copy of the Windows game's folder (the one with starsector-core), the folder a Linux host serves from; or pass -SkipClient (the server alone builds against either)" }
 }
 
 # The ASM library ships beside the sources with its sha256; a missing or changed jar stops the build before any use.
@@ -316,11 +319,11 @@ foreach ($m in $engineMaps) { Copy-Item -LiteralPath $m.FullName -Destination (J
 Write-Host "server compat-agent: $($compatAgentSources.Count) sources + $agentShaded ASM classes + the compat magic + pilotship + enginemap packages + $($engineMaps.Count) engine map(s) -> server/compat-agent/classes"
 
 # 4. the two agent-side jars. cc-premain.jar = the agent + ASM + the product unit's transform package (the registry
-# classes the agent reads) + the compat unit; cc-rngpin-holder.jar = the product unit's rngpin package alone.
+# classes the agent reads) + its names package (the engine-name table the registry reads) + the compat unit; cc-rngpin-holder.jar = the product unit's rngpin package alone.
 $premainJar = Join-Path $premain 'cc-premain.jar'
 $holderJar = Join-Path $premain 'cc-rngpin-holder.jar'
 foreach ($j in @($premainJar, $holderJar)) { if (Test-Path -LiteralPath $j) { Remove-Item -LiteralPath $j -Force } }
-& $jar --create --file $premainJar --manifest (Join-Path $premain 'MANIFEST.MF') -C $premainClasses . -C $classes cc/starsector/server/transform -C $compatClasses cc/starsector/compat
+& $jar --create --file $premainJar --manifest (Join-Path $premain 'MANIFEST.MF') -C $premainClasses . -C $classes cc/starsector/server/transform -C $classes cc/starsector/server/names -C $compatClasses cc/starsector/compat
 Assert-Exit 'cc-premain.jar'
 & $jar --create --file $holderJar -C $classes cc/starsector/server/rngpin
 Assert-Exit 'cc-rngpin-holder.jar'
@@ -390,8 +393,28 @@ Reset-Dir $stubOut
 $stubSrc = @(Get-ChildItem -LiteralPath (Join-Path $client 'stubs') -Recurse -Filter '*.java' | ForEach-Object { $_.FullName })
 if ($stubSrc.Count -lt 2) { throw "client: the MagicLib compile stubs are missing under client-mod/stubs (found $($stubSrc.Count), need MagicSubsystem + MagicSubsystemsManager)" }
 Invoke-Javac 'client stubs' $javac @('--release', '17', '-Xlint:all', '-cp', (Join-Path $core 'starfarer.api.jar'), '-d', $stubOut) $stubSrc
-Invoke-Javac 'client main' $javac @('--release', '17', '-XDstringConcat=inline', '-Xlint:all', '-cp', "$cp$cpSep$out$cpSep$stubOut", '-d', $out) $srcFiles
+# 6a. the engine-name ALIAS step, forward. The engine's machine-made internal names include classes and members named
+# with words Java source cannot spell (a keyword such as 'for', a restricted identifier, a dotted name such as
+# 'Object.for'): legal in a class file, unspellable in a .java file. client-mod/engine-alias.ps1 (the same script the
+# maintainer's own client build calls, so both builds alias, restore and check alike) copies the three engine jars into
+# client-mod/build/engine-alias with each such name given a spellable alias (cached by the jars' sha256, the alias
+# rule's version and the tool's own hash), and stops the build when an alias would collide with a live name on this
+# class path. The aliased copies stand in for the three on the main pass's class path only; every other step reads the
+# game's own jars.
+$aliasEngineJars = @("starfarer_obf.jar", 'fs.common_obf.jar', 'fs.sound_obf.jar' | ForEach-Object { Join-Path $core $_ })
+$aliasToolArgs = @{ JdkBin = $Jdk17Bin; AsmJars = @($asmJar, $asmCommonsJar) }
+if (@($cpJars | Where-Object { $aliasEngineJars -contains $_ }).Count -ne $aliasEngineJars.Count) { throw "client: the main class path no longer holds the three engine jars ($($aliasEngineJars -join ', '))" }
+$aliasOtherCp = @($cpJars | Where-Object { $aliasEngineJars -notcontains $_ }) + @($jsonJar, $classes, $stubOut)
+$engineAlias = & (Join-Path $client 'engine-alias.ps1') -Forward -Jars $aliasEngineJars -Classpath $aliasOtherCp @aliasToolArgs
+$aliasCp = (@($cpJars | ForEach-Object { $i = [Array]::IndexOf($aliasEngineJars, $_); if ($i -ge 0) { $engineAlias.Jars[$i] } else { $_ } }) + @($jsonJar, $classes)) -join $cpSep
+Invoke-Javac 'client main' $javac @('--release', '17', '-XDstringConcat=inline', '-Xlint:all', '-cp', "$aliasCp$cpSep$out$cpSep$stubOut", '-d', $out) $srcFiles
 Write-Host "client: $($ffmSrcFiles.Count) + $($bridgeSrcFiles.Count) + $($srcFiles.Count) sources -> client-mod/build/classes"
+# 6b. the alias step, back, and the alias check: every compiled class holding an alias is rewritten with the engine's
+# live names (in place when that equals the rewrite through a fresh constant pool, else through the fresh pool), a
+# class holding none stays byte for byte, then the tool's constant-pool scan proves no class here holds an alias
+# spelling. So a source that spells no alias compiles to the same bytes as against the game's own jars.
+# Its holder list goes unread: the link probe, this build's one JVM row loading our classes, runs unverified already.
+$null = & (Join-Path $client 'engine-alias.ps1') -Back -Classes $out -AliasDir $engineAlias.Dir @aliasToolArgs
 
 # 7. the sound self-check probe: --release 8 so both the game's Java 17 and newer runtimes run it.
 $probeSrc = Join-Path $client 'sound-check/SoundProbe.java'
@@ -526,6 +549,22 @@ $probeWant = "engine-map: unset probe=ok rows=$($engineTable.Classes + $engineTa
 if (-not ($probeOut | Where-Object { $_ -ceq $probeWant })) { throw "client: EngineLinkProbe --selftest printed no '$probeWant' line" }
 if (-not ($probeOut | Where-Object { $_ -clike 'control: *' })) { throw 'client: EngineLinkProbe --selftest printed no control line' }
 Write-Host "client: start-up self-check ok ($probeWant; the other spelling misses)"
+# The alias link check, on the packed jar: EngineMapMain --control-only (the compat unit, 3.) walks every reference the
+# mod's classes make (never the raw constant pool) and resolves each member up the class hierarchy in the game's jars,
+# so a class the back step missed (its alias names nothing in the game) stops the build here, not at the game's start.
+# Its required --map input is any engine map (the control pass reads no map row); it splits --link on ';' everywhere.
+# Windows game jars only: the client step refuses any other engine jar up front (the sha256 check), on either system.
+$aliasLinkMain = Join-Path $compatClasses 'cc/starsector/compat/enginemap/EngineMapMain.class'
+if (-not (Test-Path -LiteralPath $aliasLinkMain -PathType Leaf)) { throw "client: the alias link check needs $aliasLinkMain (the compat unit, step 3, compiles it)" }
+$aliasLinkMap = @($engineMaps | Sort-Object Name)[0].FullName
+$aliasLinkJars = @('starfarer.api.jar', "starfarer_obf.jar", 'fs.common_obf.jar', 'fs.sound_obf.jar' | ForEach-Object { Join-Path $core $_ })
+$aliasLinkOut = @(& $java -cp (@($compatClasses, $asmJar, $asmCommonsJar) -join $cpSep) cc.starsector.compat.enginemap.EngineMapMain --map $aliasLinkMap --in $modJar --link ($aliasLinkJars -join ';') --control-only)
+$aliasLinkExit = $LASTEXITCODE
+if ($aliasLinkExit -ne 0 -or -not ($aliasLinkOut -ccontains 'control-unresolved=0')) {
+    $aliasLinkOut | Select-Object -First 40 | ForEach-Object { Write-Host "  $_" }
+    throw "client: the alias link check found a reference in the mod jar the game's jars do not resolve (EngineMapMain exited $aliasLinkExit): an alias the back step missed, or a stale engine reference"
+}
+Write-Host 'client: alias link check ok (EngineMapMain --control-only: the mod jar against the 4 game jars, control-unresolved=0)'
 # 10a. the kit's compat agent jar (3c.) beside the mod jar: join-cc.bat's bundled start passes it as -javaagent, and the
 # kit packer reads it from here.
 Copy-Item -LiteralPath $compatAgentJar -Destination (Join-Path $jarsDir 'cc-compat-agent.jar') -Force

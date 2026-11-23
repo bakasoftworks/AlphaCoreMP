@@ -103,22 +103,30 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
     private static final class DetSpec {
         final float dmgMax, dmgMin, radius, core, emp;
         final DamageType type;
+        /** TRUE = the engine deals this det as a DamagingExplosion, so a
+         *  raised shield takes it at the explosion contact law ({@link #shieldContactOrNull}); FALSE = a direct
+         *  missile-body hit, the radius-weighted law. The proximity-fuse rows (mine, bomb, unstable fragment) are
+         *  explosions;
+         * the terminator and swarmer rows
+         *  are the missile's own collision hit. */
+        final boolean explosion;
 
         DetSpec(float dmgMax, float dmgMin, float radius, float core, DamageType type,
-                float emp) {
+                float emp, boolean explosion) {
             this.dmgMax = dmgMax;
             this.dmgMin = dmgMin;
             this.radius = radius;
             this.core = core;
             this.type = type;
             this.emp = emp;
+            this.explosion = explosion;
         }
     }
 
     private static final DetSpec MINE =
-            new DetSpec(2000f, 1000f, 250f, 200f, DamageType.HIGH_EXPLOSIVE, 0f);
+            new DetSpec(2000f, 1000f, 250f, 200f, DamageType.HIGH_EXPLOSIVE, 0f, true);
     private static final DetSpec BOMB =
-            new DetSpec(500f, 250f, 150f, 75f, DamageType.HIGH_EXPLOSIVE, 0f);
+            new DetSpec(500f, 250f, 150f, 75f, DamageType.HIGH_EXPLOSIVE, 0f, true);
     /** The Apex terminator-CONVERSION direct hit (the terminator row of weapon_data.csv +
      *  terminator_missile_proj.proj, read first-hand): 1200 ENERGY on collision, flat
      *  (dmgMax==dmgMin — no falloff: the .proj explosionSpec carries NO damage keys, the AoE is
@@ -136,7 +144,7 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
     static final float TERMINATOR_HIT_EMP = 0f;
     private static final DetSpec TERMINATOR =
             new DetSpec(TERMINATOR_HIT_DAMAGE, TERMINATOR_HIT_DAMAGE, 120f, 120f,
-                    TERMINATOR_HIT_TYPE, TERMINATOR_HIT_EMP);
+                    TERMINATOR_HIT_TYPE, TERMINATOR_HIT_EMP, false);
     /** The Swarmer SRM direct hit (the weapon_data.csv rows {@code swarmer}/
      *  {@code swarmer_fighter} + type_1_srm.proj, read first-hand): 100 HIGH_EXPLOSIVE on
      *  collision, flat (dmgMax==dmgMin — the .proj carries NO damage keys; its
@@ -153,7 +161,7 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
      *  fade, unlike the exempted conversion class); a no-record/feed-gap end inside the belt
      *  = the disclosed fizzle-phantom class, bounded by 100 hp + ledger expiry. */
     private static final DetSpec SWARMER =
-            new DetSpec(100f, 100f, 120f, 120f, DamageType.HIGH_EXPLOSIVE, 0f);
+            new DetSpec(100f, 100f, 120f, 120f, DamageType.HIGH_EXPLOSIVE, 0f, false);
     /** The swarmer's spec id ({@link #specFor} maps it to {@link #SWARMER}). */
     static final String SWARMER_SPEC_ID = "type_1_srm";
 
@@ -172,7 +180,7 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
      *  this lane from the unstable-end relay (INTACT/FIZZLING ends only — the keying);
      *  own-ship only, reconcile-clamped like MINE/BOMB. EMP 0 = the CSV emp column (blank). */
     private static final DetSpec UNSTABLE =
-            new DetSpec(750f, 375f, 120f, 60f, DamageType.FRAGMENTATION, 0f);
+            new DetSpec(750f, 375f, 120f, 60f, DamageType.FRAGMENTATION, 0f, true);
 
     private static DetSpec specFor(String specId) {
         if (SourcedMissileEndLane.UNSTABLE_SPEC_ID.equals(specId)) {
@@ -329,13 +337,17 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
             // too generous, and 120-radius dets that vanilla MISSES still applied). Circle math
             // stays only as the fail-soft fallback when the bounds are unreadable/empty.
             // Vanilla's contact order:
-            // (i) a RAISED shield first — the radius-weighted point on the det→shield
-            // centre line, accepted only inside the shield arc; (ii) else the nearest point on
+            //
+            // (i) a RAISED shield first — for an explosion row the nearest point of the shield
+            // ring on the det→shield-centre line (the det itself when it sits inside the bubble),
+            // for a direct-hit row the radius-weighted point on that line; either accepted only
+            // inside the shield arc; (ii) else the nearest point on
             // the bounds perimeter when it lies within the blast radius; (iii) else, a det
             // whose centre sits INSIDE the polygon with no edge in reach hits at itself (d = 0);
             // (iv) else a miss. The circle is the fail-soft fallback only.
+            // Step (i) split by the row's explosion flag.
             String path;
-            Vector2f shieldHit = shieldContactOrNull(own, det, spec.radius);
+            Vector2f shieldHit = shieldContactOrNull(own, det, spec.radius, spec.explosion);
             float[] b = shieldHit == null ? nearestPointOnBounds(own, det) : null;
             if (shieldHit != null) {
                 hit = shieldHit;
@@ -643,22 +655,41 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
     /**
      * Vanilla's shield-first contact:
      * with the shield RAISED and the
-     * det within {@code shieldR + blastR} of the shield centre, the contact point is the
-     * radius-weighted point on the det→shield-centre line, {@code det + (shield − det) ·
-     * blastR / (shieldR + blastR)}, accepted only when the shield arc covers it; otherwise
-     * the bounds path runs. Null = no shield contact (off, out of reach, outside the arc, or an
+     * det within {@code shieldR + blastR} of the shield centre, the contact point lies on the
+     * det→shield-centre line, accepted only when the shield arc covers it; otherwise
+     * the bounds path runs. The point follows one of two engine laws,
+     * picked by {@code explosion}:
+     *
+     * <ul>
+     * <li>{@code explosion} FALSE (a projectile or missile BODY): the radius-weighted point
+     * {@code det + (shield − det) · blastR / (shieldR + blastR)}.</li>
+     * <li>{@code explosion} TRUE (a DamagingExplosion): the nearest point of the shield ring,
+     * {@code det + (shield − det) · max(d − shieldR, 0) / max(1, d)} with {@code d} = the det→centre distance,
+     * in the engine's float order; a det inside the bubble
+     * contacts at itself, and a det AT the centre is no early miss (the engine has none: k = 0, the
+     * contact is the det, then the arc test). The det→contact falloff distance is {@code max(d − shieldR, 0)}
+     * once {@code d >= 1}, never more than the weighted law's inside the reach.</li>
+     * </ul>
+     * Both laws share the reach test and the angle-only arc test, so WHETHER the shield takes a
+     * hit is the same under either; only WHERE and the falloff distance differ.
+     * Null = no shield contact (off, out of reach, outside the arc, or an
      * active arc under 1 degree: {@code isWithinArc} floors the arc at 1 degree
      * while the engine's own shield-branch test does not,
      * so an unfolding shield fails CLOSED here and no caller applies
-     * at a point the engine would send to the hull; callers = the own det {@link #onDet(Vector2f, String, boolean)},
-     * {@code MineBombEndFxLane.impactPoint}, {@code SourcedMissileEndLane} cause-3 guard — each falls
+     * at a point the engine would send to the hull; callers = the own det {@link #onDet(Vector2f, String, boolean)}
+     * (the row's flag), {@code BlastHitLane.contactPoint} (explosion), {@code MineBombEndFxLane.directShieldContact}
+     * (direct: its {@code impactPoint} and the {@code SourcedMissileEndLane} cause-3 guard) — each falls
      * to its bounds point or its counted skip; row = MineNativeFuseLawSmoke F-1424). ACCEPT-WHY:
      * the SERVER's native collision used the FLOORED test on its path into {@code applyDamage},
      * so inside a sub-1° cone on the first unfold frame the
      * server took the SHIELD while the own det / conversion-end callers here fall to the bounds point —
      * a near-measure-zero window, accepted; the cause-3 guard's counted skip is the faithful branch.
+     * Neither law has an early miss for a det exactly at the shield centre: the engine has none, the contact
+     * is the det itself and the arc test alone decides (true on a full-circle shield, false on a narrower
+     * one), so the old {@code cd <= 0} return is gone from both branches; nothing divides by the distance.
+     *
      */
-    static Vector2f shieldContactOrNull(ShipAPI ship, Vector2f det, float blastRadius) {
+    static Vector2f shieldContactOrNull(ShipAPI ship, Vector2f det, float blastRadius, boolean explosion) {
         try {
             com.fs.starfarer.api.combat.ShieldAPI shield = ship.getShield();
             if (shield == null || !shield.isOn()) {
@@ -672,13 +703,15 @@ final class OwnDetLane implements DamageTakenModifier, DamageListener {
             float dx = sl.x - det.x;
             float dy = sl.y - det.y;
             float cd = (float) Math.sqrt(dx * dx + dy * dy);
-            if (cd <= 0f || cd > sr + blastRadius) {
+            if (cd > sr + blastRadius) {
                 return null;
             }
             if (!SourcedMissileEndLane.ownRingArcUsable(shield.getActiveArc())) {
                 return null; // under 1 degree isWithinArc over-admits (see the javadoc)
             }
-            float k = blastRadius / (sr + blastRadius);
+            float k = explosion
+                    ? Math.max(cd - sr, 0f) / Math.max(1f, cd)
+                    : blastRadius / (sr + blastRadius);
             Vector2f p = new Vector2f(det.x + dx * k, det.y + dy * k);
             return shield.isWithinArc(p) ? p : null;
         } catch (Throwable ignore) {

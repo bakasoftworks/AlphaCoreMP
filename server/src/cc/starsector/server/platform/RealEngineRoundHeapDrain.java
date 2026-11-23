@@ -1,5 +1,7 @@
 package cc.starsector.server.platform;
 
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymContentInit;
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -74,34 +76,21 @@ import java.util.Map;
  *
  * <p><b>Option R — literal identities, pinned.</b> Like the sibling platform
  * classes, every engine-internal {@code com.fs.*} identity is rendered literally in the
- * {@code PINNED 0.98a-RC8} block, byte-identical to the proven scout lane; descriptor-grade
- * resolution is the documented next-RC upgrade (standing portability-drill trigger).
+ * {@code PINNED 0.98.5a-RC4} block (at 0.98a-RC8 byte-identical to the proven scout lane); the literals
+ * are re-derived by hand at each game build, last at the 0.98.5a-RC4 cut-over.
  *
  *
  *
  */
 public final class RealEngineRoundHeapDrain {
 
-    // ---- PINNED 0.98a-RC8 (descriptor-grade identity owed at the next RC). Option R. ----
+    // ---- PINNED 0.98.5a-RC4: the engine class and member names are rows of the engine-name table
+    // (EngineSymContentInit, EngineSym): the entity repository, the plugin wrapper addPlugin puts around every
+    // EveryFrameCombatPlugin (its unwrap accessor is resolved by SHAPE, see resolvePluginUnwrap), the combat map's
+    // advanceable-list getter, the animation registry and the particle group. Option R. ----
 
-    /** Engine-spawned entity repository; {@code toArray()} = the live object list to sweep. */
-    private static final String OBJECT_REPOSITORY_CLASS = "com.fs.util.container.repo.ObjectRepository";
-    /**
-     * Wrapper the engine's {@code addPlugin} wraps every {@code EveryFrameCombatPlugin} in before
-     * adding it to the combat map's advanceable list (its
-     * binary name confirmed by the omega F2 kill stack). The unwrap
-     * accessor's engine-internal name is non-ASCII, so it is resolved by SHAPE: the wrapper's one
-     * declared zero-arg method returning {@code EveryFrameCombatPlugin}.
-     */
-    private static final String PLUGIN_WRAPPER_CLASS = "com.fs.starfarer.title.Object.L$Oo";
     /** The api plugin interface — the unwrap method's return type and {@code removePlugin}'s param. */
     private static final String EVERY_FRAME_PLUGIN_INTERFACE = "com.fs.starfarer.api.combat.EveryFrameCombatPlugin";
-    /** Combat map's advanceable-list getter, a no-arg {@code List} method named {@code String}. */
-    private static final String COMBAT_MAP_ADVANCEABLES_METHOD = "String";
-    /** Static-managed animation registry ({@code DoNotObfuscate}); {@code getInstance(name)} + {@code clear()}. */
-    private static final String ANIMATION_MANAGER_CLASS = "com.fs.graphics.anim.AnimationManager";
-    /** Particle group ({@code DoNotObfuscate}); {@code getParticles()} returns the live list to empty. */
-    private static final String DYNAMIC_PARTICLE_GROUP_CLASS = "com.fs.graphics.particle.DynamicParticleGroup";
 
     /** The two static named animation managers the engine's entity-remove hook queues into. */
     private static final String ANIM_MANAGER_CE = "CEanim";
@@ -204,9 +193,10 @@ public final class RealEngineRoundHeapDrain {
             ClassLoader loader = engine.getClass().getClassLoader();
             Method getCombatMap = engine.getClass().getMethod("getCombatMap");
             Object combatMap = getCombatMap.invoke(engine);
-            Method advanceables = combatMap.getClass()
-                    .getMethod(COMBAT_MAP_ADVANCEABLES_METHOD);
-            Class<?> wrapperClass = Class.forName(PLUGIN_WRAPPER_CLASS, false, loader);
+            Method advanceables = EngineSymContentInit.CONTENT_INIT_COMBAT_MAP_ADVANCEABLES_METHOD
+                    .method(combatMap.getClass());
+            Class<?> wrapperClass = Class.forName(
+                    EngineSymContentInit.CONTENT_INIT_PLUGIN_WRAPPER_CLASS.className(), false, loader);
             Method unwrap = resolvePluginUnwrap(wrapperClass, loader);
             for (Object entry : (List<?>) advanceables.invoke(combatMap)) {
                 if (wrapperClass.isInstance(entry)) {
@@ -226,9 +216,9 @@ public final class RealEngineRoundHeapDrain {
     }
 
     /**
-     * SHAPE-resolve the wrapper's unwrap accessor (its engine-internal name is non-ASCII): the one
-     * declared zero-arg method returning {@code EveryFrameCombatPlugin}. Throws unless exactly one
-     * matches — ambiguity means the pinned identity drifted (next-RC portability drill).
+     * SHAPE-resolve the wrapper's unwrap accessor (its engine-internal name moves between builds):
+     * the one declared zero-arg method returning {@code EveryFrameCombatPlugin}. Throws unless exactly one
+     * matches — ambiguity means the pinned identity drifted at a game build.
      */
     private static Method resolvePluginUnwrap(Class<?> wrapperClass, ClassLoader loader)
             throws Exception {
@@ -253,7 +243,7 @@ public final class RealEngineRoundHeapDrain {
 
     private void resolveEntitySweep(Class<?> engineClass, ClassLoader loader) {
         try {
-            Class<?> objectRepositoryClass = Class.forName(OBJECT_REPOSITORY_CLASS, true, loader);
+            Class<?> objectRepositoryClass = EngineSym.OBJECT_REPOSITORY_CLASS.load(loader);
             getObjects = engineClass.getMethod("getObjects");
             repoToArray = objectRepositoryClass.getMethod("toArray");
             removeObject = engineClass.getMethod("removeObject", Object.class);
@@ -303,7 +293,8 @@ public final class RealEngineRoundHeapDrain {
 
     private void resolveAnimClear(ClassLoader loader) {
         try {
-            Class<?> animMgrClass = Class.forName(ANIMATION_MANAGER_CLASS, false, loader);
+            Class<?> animMgrClass = Class.forName(
+                    EngineSymContentInit.CONTENT_INIT_ANIMATION_MANAGER_CLASS.className(), false, loader);
             animGetInstance = animMgrClass.getMethod("getInstance", String.class);
             animClearMethod = animMgrClass.getMethod("clear");
             animClearEnabled = true;
@@ -319,7 +310,8 @@ public final class RealEngineRoundHeapDrain {
      */
     private void resolveParticleClear(Class<?> engineClass, ClassLoader loader) {
         try {
-            Class<?> dpgClass = Class.forName(DYNAMIC_PARTICLE_GROUP_CLASS, false, loader);
+            Class<?> dpgClass = Class.forName(
+                    EngineSymContentInit.CONTENT_INIT_DYNAMIC_PARTICLE_GROUP_CLASS.className(), false, loader);
             dpgGetParticles = dpgClass.getMethod("getParticles");
             for (Field f : engineClass.getDeclaredFields()) {
                 if (dpgClass.isAssignableFrom(f.getType())) {
@@ -394,8 +386,9 @@ public final class RealEngineRoundHeapDrain {
             }
             pluginGetCombatMap = engineClass.getMethod("getCombatMap");
             Object combatMap = pluginGetCombatMap.invoke(engine);
-            mapAdvanceables = combatMap.getClass().getMethod(COMBAT_MAP_ADVANCEABLES_METHOD);
-            pluginWrapperClass = Class.forName(PLUGIN_WRAPPER_CLASS, false, loader);
+            mapAdvanceables = EngineSymContentInit.CONTENT_INIT_COMBAT_MAP_ADVANCEABLES_METHOD.method(combatMap.getClass());
+            pluginWrapperClass = Class.forName(
+                    EngineSymContentInit.CONTENT_INIT_PLUGIN_WRAPPER_CLASS.className(), false, loader);
             pluginUnwrap = resolvePluginUnwrap(pluginWrapperClass, loader);
             removePlugin = engineClass.getMethod("removePlugin",
                     Class.forName(EVERY_FRAME_PLUGIN_INTERFACE, false, loader));

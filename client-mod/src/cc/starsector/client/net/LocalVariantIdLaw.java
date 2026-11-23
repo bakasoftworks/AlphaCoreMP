@@ -7,7 +7,7 @@ package cc.starsector.client.net;
  * ({@code StarfarerSettings}) THROWS on {@code ..}, {@code :}, {@code \} and a
  * leading {@code /}, so those never reach it; the file stem must also be a lawful wire id
  * (1..{@value #MAX_CHARS} chars) because the HELLO carries it verbatim. Charset =
- * {@code [0-9A-Za-z][0-9A-Za-z._-]*} with no {@code ..} run. java.lang-only ON PURPOSE — the
+ * {@code [0-9A-Za-z][0-9A-Za-z._-]*} with no {@code ..} run and no trailing {@code .}. java.lang-only ON PURPOSE — the
  * joiner window ({@code JoinGui}, a bare-jar JVM without json.jar) shares it, so it must never
  * drag {@code org.json} into class verification (the catch-type lesson). A Windows reserved
  * device stem ({@code CON PRN AUX NUL COM0-9 LPT0-9}, any case, the part before the first
@@ -28,6 +28,12 @@ public final class LocalVariantIdLaw {
     private LocalVariantIdLaw() {
     }
 
+    /**
+     * Whether {@code id} may name a local custom-variant file (the class law above).
+     * an id ending in {@code .} is refused too, because the file name is
+     * composed as {@code id + ".variant"}, so {@code foo.} becomes {@code foo..variant}, a name the
+     * engine's common-file API refuses; the {@code ..} test runs on the id, never on the composed name.
+     */
     public static boolean isLawful(String id) {
         if (id == null || id.isEmpty() || id.length() > MAX_CHARS) {
             return false;
@@ -41,7 +47,7 @@ public final class LocalVariantIdLaw {
                 return false;
             }
         }
-        return !id.contains("..") && !isReservedStem(id);
+        return !id.contains("..") && !id.endsWith(".") && !isReservedStem(id);
     }
 
     /**

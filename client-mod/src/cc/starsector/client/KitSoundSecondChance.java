@@ -56,8 +56,11 @@ final class KitSoundSecondChance {
             PilotWatchLog.info("onApplicationLoad: sound second chance: " + verdict + " "
                     + ((System.nanoTime() - t0) / 1000000L) + " ms librarypath=" + lp + set);
         } catch (Throwable t) {
+            // A failed static resolve in the adapter arrives wrapped with a null message of its own: name the cause.
+            Throwable why = t.getCause() != null ? t.getCause() : t;
             PilotWatchLog.info("onApplicationLoad: sound second chance: adapter FAIL " + t.getClass().getName()
-                    + ": " + FallbackAnnounce.sanitize(String.valueOf(t.getMessage()), 200));
+                    + ": " + why.getClass().getSimpleName() + " "
+                    + FallbackAnnounce.sanitize(String.valueOf(why.getMessage()), 200));
         }
     }
 }

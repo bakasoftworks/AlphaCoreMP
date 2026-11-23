@@ -136,7 +136,7 @@ public final class MatchSeatAuthority {
         /** W3-FIX: tick+wire-id a PARKED takeover freed this seat's fixed wire id at,
          * -1 = none — the commit's registry rekey releases the displaced seat's own id, which
          * surfaces as a same-tick despawn AFTER the loss was already recorded (the CTSL
-         * pre-step). Parallel to {@code dismountEchoTick}, id-verified — see
+         * commit block, once the verb landed). Parallel to {@code dismountEchoTick}, id-verified — see
          * {@link #armTakeoverDespawnEcho}/{@link #consumeTakeoverDespawnEcho}. */
         long takeoverEchoTick = -1L;
         long takeoverEchoWireId = -1L;
@@ -319,8 +319,10 @@ public final class MatchSeatAuthority {
         if (released && gracePolicy != null && !gracePolicy.off()
                 && cause != SeatStateCause.VACATE_DISPLACED) {
             // W5 GRACE entry mark: a TRUE vacate (BYE/silence — DISPLACED is a
-            // takeover, excluded) of a seat with a mounted plain hull. A module-riding or dead
-            // seat reads unmounted here and stays NONE (modules keep dismount-on-disconnect —
+            // takeover, excluded) of a seat with a mounted plain hull. A dead seat reads unmounted
+            // here and stays NONE. A module rider reads
+            // MOUNTED and is marked, but the next tick's module drain dismounts it (its mount loss
+            // clears the mark) before the grace pump runs (modules keep dismount-on-disconnect —
             // the restored station AI IS the module's grace). The sim thread's next
             // pumpGraceTransitions resolves the mark into GRACE and mints the deadline.
             SeatRuntime runtime = runtimeBySeatId.get(seatsByToken.get(t).seatId());
@@ -540,10 +542,10 @@ public final class MatchSeatAuthority {
     }
 
     /**
-     * W3-FIX: arm the PARKED-takeover despawn echo — the transfer drain's
-     * commit already recorded the displaced seat's mount loss (the CTSL pre-step), then the
-     * registry rekey FREES that seat's own fixed wire id, which the despawn pass sees leave the
-     * snapshot the same tick. Without this expectation the pass re-enters
+     * W3-FIX: arm the PARKED-takeover despawn echo — once the verb landed,
+     * the transfer drain's commit block records the displaced seat's mount loss and then arms
+     * this; the verb's registry rekey already FREED that seat's own fixed wire id, which the
+     * despawn pass sees leave the snapshot later the same tick. Without this expectation the pass re-enters
      * {@link #recordMountLoss} on the already-unmounted seat and the fail-closed throw kills
      * the serve (the flip-watch crash). Arm-only — the loss is NOT re-recorded
      * here; {@code freedWireId} is the parked seat's released id, verified at consume.
@@ -558,7 +560,7 @@ public final class MatchSeatAuthority {
      * Consume the seat's armed takeover-despawn echo, if any (sim thread, consulted beside
      * {@link #consumeDismountDespawnEcho} for a seat-mapped despawn): {@code true} exactly when
      * an echo is armed for {@code nowTick} AND {@code freedWireId} matches — the caller then
-     * skips the seat-loss block (the takeover pre-step already recorded it), and the consume
+     * skips the seat-loss block (the takeover's commit block already recorded it), and the consume
      * disarms (never {@code true} twice). Disarm rides ONLY the positive match or a passed
      * tick (0335-F2): a SAME-TICK id-mismatch keeps the echo armed — the (c-race) ordering can
      * deliver another same-tick despawn on this seat's map BEFORE the freed-id despawn, and

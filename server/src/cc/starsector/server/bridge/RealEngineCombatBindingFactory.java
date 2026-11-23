@@ -2,6 +2,9 @@ package cc.starsector.server.bridge;
 
 import cc.starsector.server.match.MatchDescriptor;
 import cc.starsector.server.match.MatchDescriptors;
+import cc.starsector.server.names.EngineRow;
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymBridgeFactory;
 import cc.starsector.server.platform.HeadlessCombatContext;
 import cc.starsector.server.platform.RealEngineContentInit;
 import cc.starsector.server.platform.RealEngineGlSubstrate;
@@ -56,7 +59,7 @@ import java.util.TreeSet;
  *       it survives reset rounds; session-lifecycle design).</li>
  *   <li>{@code getInstance()} — the lazy private-ctor singleton ({@code engineClass.getMethod("getInstance")},
  *       resolved reflectively); confirmed stable by a double-invoke + {@code hasInstance()}.</li>
- *   <li>{@code setCombatMap(new B())} then {@code init()} — install a real combat space + run the
+ *   <li>{@code setCombatMap(new A())} then {@code init()} — install a real combat space + run the
  *       engine's own init.</li>
  *   <li><b>Deploy the match roster (L1 Option A construction-time lane).</b>
  *       {@link RealEngineDemoRoster#deployMatchRoster()} spawns the roster (default: the fixed 1v1,
@@ -74,13 +77,12 @@ import java.util.TreeSet;
  *
  * <p><b>Option R — literal identities, pinned + centralized.</b>
  * Every engine-internal {@code com.fs.*} identity fed into live reflection is rendered <em>literally</em>,
- * byte-identical to the MEASURE lane the GREEN was proved under (resolving by a different
+ * at 0.98a-RC8 byte-identical to the MEASURE lane the GREEN was proved under (resolving by a different
  * method risks a different overload, so GREEN might not transfer). They are
- * confined to the {@code PINNED 0.98a-RC8} constant block; the adapter BOUNDARY
+ * confined to the {@code PINNED 0.98.5a-RC4} constant block; the adapter BOUNDARY
  * ({@link EngineCombatBinding} + the {@code *View} interfaces) gains no literal — this factory is
  * the documented "caller" that resolves version-specific handles and hands them in.
- * Descriptor-grade resolution is the documented upgrade for the next game RC (standing
- * portability-drill trigger), not now.
+ * The literals are re-derived by hand at each game build, last at the 0.98.5a-RC4 cut-over.
  *
  * <p><b>Required vs fail-soft handles.</b> The eight handles the {@link EngineCombatBinding}
  * constructor requires non-null (engine, advanceInner, getObjects, repositoryGetList, shipClass,
@@ -111,45 +113,49 @@ import java.util.TreeSet;
  */
 public final class RealEngineCombatBindingFactory {
 
-    // ---- PINNED 0.98a-RC8 (descriptor-grade identity owed at the next RC — standing
-    // portability-drill trigger). Option R: literal here, boundary clean. ----
+    // ---- PINNED 0.98.5a-RC4: literals re-derived by hand at each game build, last at the 0.98.5a-RC4
+    // cut-over. Option R: literal here, boundary clean. ----
 
     /** Combat engine singleton (private lazy ctor reached via {@code getInstance()}). */
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
+    private static final EngineRow ENGINE_CLASS = EngineSym.COMBAT_ENGINE_CLASS;
     /**
      * Campaign engine singleton — the game's ONE {@code SectorAPI} implementation
-     * ({@code setInstance} → {@code Global.setSector(instance)}). The real
+     * ({@code setInstance} → {@code Global.setSector(instance)}).
+     * The real
      * client mints a bare instance at title time, so title-screen missions — the mode this server
      * is faithful to — always see a non-null {@code Global.getSector()}; headless it was never
      * minted, and vanilla combat scripts that touch the sector mid-round NPE'd
      * ({@code getSector().getListenerManager()} on the shard-split spawn chain).
      */
-    private static final String CAMPAIGN_ENGINE_CLASS = "com.fs.starfarer.campaign.CampaignEngine";
+    private static final EngineRow CAMPAIGN_ENGINE_CLASS = EngineSymBridgeFactory.BF_CAMPAIGN_ENGINE_CLASS;
     /** The api static holder — {@code getSector()} is the null those sector NPEs die on. */
     private static final String GLOBAL_CLASS = "com.fs.starfarer.api.Global";
     /** Combat map / space; default no-arg ctor builds terrain + fog owners {0,1}. */
-    private static final String COMBAT_MAP_CLASS = "com.fs.starfarer.combat.A.B";
+    private static final EngineRow COMBAT_MAP_CLASS = EngineSymBridgeFactory.BF_COMBAT_MAP_CLASS;
     /** The input-events "amount" arg type for {@code advanceInner(float, amount)}. */
-    private static final String AMOUNT_CLASS = "com.fs.starfarer.util.A.new";
-    /** Background sprite; the static field the ctor's offset-965 {@code ifnonnull} guards. */
-    private static final String SPRITE_CLASS = "com.fs.graphics.Sprite";
+    private static final EngineRow AMOUNT_CLASS = EngineSymBridgeFactory.BF_ADVANCE_AMOUNT_CLASS;
+    /**
+     * Background sprite; the static field the ctor's offset-965 {@code ifnonnull} guards.
+     *
+     */
+    private static final EngineRow SPRITE_CLASS = EngineSymBridgeFactory.BF_BACKGROUND_SPRITE_CLASS;
     /** Concrete combat ship type; the {@code getList(Class)} key + the per-ship handle owner. */
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
+    private static final EngineRow SHIP_CLASS = EngineSym.SHIP_CLASS;
     /**
      * Engine-internal combat-UI interface ({@code CombatEngine.getCombatUI()} return type /
-     * {@code setCombatUI(K)} arg; descriptor {@code (Lcom/fs/starfarer/combat/K;)V}). A public
+     * {@code setCombatUI(float)} arg; descriptor {@code (Lcom/fs/starfarer/combat/float;)V}). A public
      * interface (it extends an internal interface and {@code CombatUIAPI}) — a valid {@link java.lang.reflect.Proxy}
      * target — whose {@code getEntityToFollow()} the damage path reads. Public so the suite's HUD-dark row
      * ({@code PilotShipRows} R8) proxies the SAME interface the serve does — the install API jar's {@code CombatUIAPI}
      * declares no {@code isHideHud()}, this engine interface does.
      */
-    public static final String COMBAT_UI_INTERFACE_CLASS = "com.fs.starfarer.combat.K";
+    public static final String COMBAT_UI_INTERFACE_CLASS = EngineSymBridgeFactory.BF_COMBAT_UI_CLASS.className();
     /**
      * Concrete combat viewport ({@code CombatEngine.getViewport()} return; constructed non-null in
      * the engine ctor, independent of any UI). The damage-path debris FX reads
      * {@code viewport.isNearViewport(...)}.
      */
-    private static final String COMBAT_VIEWPORT_CLASS = "com.fs.starfarer.combat.CombatViewport";
+    private static final EngineRow COMBAT_VIEWPORT_CLASS = EngineSymBridgeFactory.BF_COMBAT_VIEWPORT_CLASS;
     /**
      * Debris particle FX system ({@code CombatEngine.getDebrisSystem()} return; constructed non-null
      * in the engine ctor). Its {@code spawnDebris} (reached from {@code Ship.applyDamageInner} on
@@ -157,7 +163,7 @@ public final class RealEngineCombatBindingFactory {
      * {@code getViewport()} — but the headless serve loop drives {@code advanceInner} (never the
      * FX-system {@code advance()}), so the field stays null until impact.
      */
-    private static final String DEBRIS_SYSTEM_CLASS = "com.fs.starfarer.renderers.damage.DebrisParticleSystem";
+    private static final EngineRow DEBRIS_SYSTEM_CLASS = EngineSymBridgeFactory.BF_DEBRIS_SYSTEM_CLASS;
 
     // ---- Public API + LWJGL, plain names (identity-clean even under descriptor-grade). ----
     /** LWJGL 2's keyboard poll owner; its {@code created} / {@code keyDownBuffer} statics are the seed's targets. */
@@ -177,11 +183,10 @@ public final class RealEngineCombatBindingFactory {
     private static final String HULL_SIZE_ENUM = "com.fs.starfarer.api.combat.ShipAPI$HullSize";
     private static final String SHIP_COMMAND_ENUM = "com.fs.starfarer.api.combat.ShipCommand";
     // The vanilla retreat engage statics' declaring class.
-    private static final String RETREAT_MANEUVER_CLASS =
-            "com.fs.starfarer.combat.ai.movement.maneuvers.RetreatManeuver";
+    private static final EngineRow RETREAT_MANEUVER_CLASS = EngineSymBridgeFactory.BF_RETREAT_MANEUVER_CLASS;
     // The concrete class declaring setCurrentActive(int) — the tube-pointer write
     // is NOT WeaponGroupAPI-level (getType/getActiveWeapon/getWeaponsCopy are).
-    private static final String WEAPON_GROUP_CLASS = "com.fs.starfarer.combat.systems.WeaponGroup";
+    private static final EngineRow WEAPON_GROUP_CLASS = EngineSymBridgeFactory.BF_WEAPON_GROUP_CLASS;
     /** The group-type enum {@code WeaponGroupAPI.getType()} returns. */
     private static final String WEAPON_GROUP_TYPE_ENUM = "com.fs.starfarer.api.loading.WeaponGroupType";
     /** Ship-AI plugin (the arg type {@code Ship.setShipAI} takes) — the (B) AI-suppression handle owner. */
@@ -291,7 +296,7 @@ public final class RealEngineCombatBindingFactory {
 
         ClassLoader loader = RealEngineCombatBindingFactory.class.getClassLoader();
         try {
-            Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+            Class<?> engineClass = ENGINE_CLASS.load(loader);
 
             seedBackgroundSprite(engineClass, loader);
 
@@ -314,13 +319,14 @@ public final class RealEngineCombatBindingFactory {
                                 + " (engine_null=" + (engine == null) + ")");
             }
 
-            // ---- setCombatMap(new B()) then init() (real combat space + engine init) ----
-            Class<?> mapClass = Class.forName(COMBAT_MAP_CLASS, true, loader);
+            // ---- setCombatMap(new A()) then init() (real combat space + engine init) ----
+            Class<?> mapClass = COMBAT_MAP_CLASS.load(loader);
             Constructor<?> mapCtor = mapClass.getDeclaredConstructor();
             mapCtor.setAccessible(true);
             Object combatMap = mapCtor.newInstance();
             // Size the map BEFORE setCombatMap, the way
-            // every engine mission path does (initMap precedes setCombatMap) —
+            // every engine mission path does (initMap precedes setCombatMap)
+            //
             // so the two fog trackers setCombatMap
             // mints are born at the descriptor size and the BOOT
             // deploy + every warm-up re-deploy + the round-0 roster all see mapHeight=2*half.
@@ -373,7 +379,7 @@ public final class RealEngineCombatBindingFactory {
             seedDamagePathFxSeams(engineClass, engine, loader);
 
             // ---- Required handles (binding ctor requires these non-null) ----
-            Class<?> amountClass = Class.forName(AMOUNT_CLASS, true, loader);
+            Class<?> amountClass = AMOUNT_CLASS.load(loader);
             Constructor<?> amountCtor = amountClass.getDeclaredConstructor();
             amountCtor.setAccessible(true);
             Object amount = amountCtor.newInstance();
@@ -397,7 +403,7 @@ public final class RealEngineCombatBindingFactory {
             Method getObjects = engineClass.getMethod("getObjects");
             Method getFleetManagers = engineClass.getMethod("getFleetManagers");
             Method getPlayerShip = engineClass.getMethod("getPlayerShip");
-            Class<?> shipClass = Class.forName(SHIP_CLASS, false, loader);
+            Class<?> shipClass = Class.forName(SHIP_CLASS.className(), false, loader);
             Object repo = getObjects.invoke(engine);
             if (repo == null) {
                 throw new RealEngineCombatBindingFactoryException(
@@ -598,7 +604,7 @@ public final class RealEngineCombatBindingFactory {
                             (Class<?>) weaponSpecClass[6])
                     .projectileSpawnReads(
                             projectileSpawnReads[0], projectileSpawnReads[1], projectileSpawnReads[2],
-                            projectileSpawnReads[3], projectileSpawnReads[4])
+                            projectileSpawnReads[3], projectileSpawnReads[4], projectileSpawnReads[5])
                     .shipSystem(
                             edge[1], edge[2], edge[3], edge[4], edge[5], edge[6],
                             edge[7], edge[8], edge[9], edge[10], edge[11])
@@ -864,11 +870,21 @@ public final class RealEngineCombatBindingFactory {
                             + drainFailure.getClass().getName() + ": " + drainFailure.getMessage());
                 }
             }
+            // The outgoing round's document, read BEFORE the roster
+            // reset forgets it: the round-open pre-pass below lays the seats out on it.
+            MatchDescriptor prePassDescriptor = occupiedOrNull == null ? null
+                    : RealEngineDemoRoster.deployedDescriptorOrNull();
             RealEngineDemoRoster.resetForRedeploy();
             List<RealEngineDemoRoster.SeatDeployResult> flyIns = List.of();
             if (occupiedOrNull == null) {
                 RealEngineDemoRoster.deployMatchRoster();
             } else {
+                // The ROUND-OPEN PRE-PASS, after the reset (it clears
+                // the fleet record) and before the roster deploy (whose AI rows read the round-open key): one
+                // record write per seat this reset fields, from this hook's own parameters, through the same
+                // pure side + pick resolver each fielding below runs. It neither prints nor counts.
+                RealEngineDemoRoster.writeRoundOpenPrePass(prePassDescriptor, occupiedOrNull,
+                        variantOverrideBySeat, sideBySeat);
                 // The round's roster with EVERY seat
                 // excluded (AI rows + station keep the battle-start lane), then each occupied seat
                 // flies in through the join/respawn lane — one fly-in shape for the whole match.
@@ -888,7 +904,7 @@ public final class RealEngineCombatBindingFactory {
             // Fail-soft: a failed clear is presentation-only, never worth ending the match over.
             try {
                 ClassLoader loader = RealEngineCombatBindingFactory.class.getClassLoader();
-                Object engine = Class.forName(ENGINE_CLASS, true, loader).getMethod("getInstance").invoke(null);
+                Object engine = ENGINE_CLASS.load(loader).getMethod("getInstance").invoke(null);
                 Object combatUi = engine == null ? null : engine.getClass().getMethod("getCombatUI").invoke(engine);
                 Object widget = combatUi == null
                         ? null
@@ -963,7 +979,7 @@ public final class RealEngineCombatBindingFactory {
     private static RealEngineRoundHeapDrain roundHeapDrain() throws Exception {
         if (roundHeapDrain == null) {
             ClassLoader loader = RealEngineCombatBindingFactory.class.getClassLoader();
-            Object engine = Class.forName(ENGINE_CLASS, true, loader).getMethod("getInstance").invoke(null);
+            Object engine = ENGINE_CLASS.load(loader).getMethod("getInstance").invoke(null);
             if (engine == null) {
                 throw new RealEngineCombatBindingFactoryException(
                         "CombatEngine.getInstance() null at heap-drain resolve");
@@ -995,7 +1011,7 @@ public final class RealEngineCombatBindingFactory {
      */
     private static void bootBareCampaignEngine(ClassLoader loader) {
         try {
-            Class<?> campaignEngineClass = Class.forName(CAMPAIGN_ENGINE_CLASS, true, loader);
+            Class<?> campaignEngineClass = CAMPAIGN_ENGINE_CLASS.load(loader);
             boolean preExisting = Boolean.TRUE.equals(
                     campaignEngineClass.getMethod("hasInstance").invoke(null));
             if (!preExisting) {
@@ -1014,7 +1030,8 @@ public final class RealEngineCombatBindingFactory {
 
     /**
      * Pre-seed the engine's static background-{@code Sprite} field non-null (Option-C)
-     * so the ctor's offset-965 {@code ifnonnull} skips the in-ctor GL crossing. Idempotent: a
+     * so the ctor's offset-965 {@code ifnonnull}
+     * skips the in-ctor GL crossing. Idempotent: a
      * no-op if the field is already non-null (a prior seed, or content-init populated it) — the
      * ctor's guard then skips the crossing on its own. The seed is driven through the product
      * {@link HeadlessCombatContext} seam and kept installed (never restored) for the process
@@ -1022,7 +1039,7 @@ public final class RealEngineCombatBindingFactory {
      * dereferenced on the paused, non-rendering advance path.
      */
     private static void seedBackgroundSprite(Class<?> engineClass, ClassLoader loader) throws Exception {
-        Class<?> spriteClass = Class.forName(SPRITE_CLASS, false, loader);
+        Class<?> spriteClass = Class.forName(SPRITE_CLASS.className(), false, loader);
         Field backgroundSpriteField = uniqueStaticFieldOfType(engineClass, spriteClass);
         if (backgroundSpriteField == null) {
             throw new RealEngineCombatBindingFactoryException(
@@ -1055,7 +1072,7 @@ public final class RealEngineCombatBindingFactory {
      *       {@code this} (camera-follow check), never dereferenced. A
      *       {@link java.lang.reflect.Proxy} implementing the engine's own {@code K}/CombatUIAPI
      *       interface with engine-default returns (object methods → null) is installed via the
-     *       engine's own {@code setCombatUI(K)}, making {@code this == null} false (null-safe).
+     *       engine's own {@code setCombatUI(float)}, making {@code this == null} false (null-safe).
      *       Exception: {@code getMessageWidget()} returns a seeded REAL widget —
      *       {@code Ship.advance}'s CR callouts dereference it unguarded (a live-round NPE);
      *       see {@code HeadlessCombatContext.seedMessageWidgetFields}.</li>
@@ -1127,7 +1144,7 @@ public final class RealEngineCombatBindingFactory {
             throw new RealEngineCombatBindingFactoryException(
                     "message-widget ship-post self-check: getMessageWidget() null post-seams");
         }
-        Method post = widget.getClass().getMethod("o00000", Object[].class);
+        Method post = EngineSymBridgeFactory.BF_MESSAGE_WIDGET_POST_METHOD.method(widget.getClass());
         // Label with the actually-deployed variant (descriptor rosters need not be
         // Mudskippers); the posted ship is spec[0] = the player seat, so its variant id matches.
         Object entry = post.invoke(widget, new Object[] { new Object[] {
@@ -1160,7 +1177,7 @@ public final class RealEngineCombatBindingFactory {
         }
         try {
             ClassLoader loader = RealEngineCombatBindingFactory.class.getClassLoader();
-            Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+            Class<?> engineClass = ENGINE_CLASS.load(loader);
             Object engine = engineClass.getMethod("getInstance").invoke(null);
             if (engine == null) {
                 throw new RealEngineCombatBindingFactoryException(
@@ -1191,16 +1208,16 @@ public final class RealEngineCombatBindingFactory {
 
         // The proxy's null getMessageWidget() killed a live round (Ship.advance
         // CR callouts dereference it unguarded). Allocate the REAL widget class (engine-internal
-        // com.fs.starfarer.class.C -- keyword package, reflective-only) WITHOUT running its ctor
+        // getMessageWidget() return type -- reflective-only) WITHOUT running its ctor
         // (listener registration + scanline-sprite fetch are render-lane); the context seeds the
         // add-path fields and self-posts at install.
-        Class<?> messageWidgetClass = Class.forName("com.fs.starfarer.class.C", true, loader);
+        Class<?> messageWidgetClass = EngineSymBridgeFactory.BF_MESSAGE_WIDGET_CLASS.load(loader);
         Object rawMessageWidget = allocateUnsafeInstance(unsafeSingleton(), messageWidgetClass);
-        Constructor<?> faderConstructor = Class.forName("com.fs.graphics.util.Fader", true, loader)
+        Constructor<?> faderConstructor = EngineSymBridgeFactory.BF_FADER_CLASS.load(loader)
                 .getConstructor(float.class, float.class, float.class);
 
-        Class<?> viewportClass = Class.forName(COMBAT_VIEWPORT_CLASS, false, loader);
-        Class<?> debrisSystemClass = Class.forName(DEBRIS_SYSTEM_CLASS, false, loader);
+        Class<?> viewportClass = Class.forName(COMBAT_VIEWPORT_CLASS.className(), false, loader);
+        Class<?> debrisSystemClass = Class.forName(DEBRIS_SYSTEM_CLASS.className(), false, loader);
         Method getViewport = engineClass.getMethod("getViewport");
         Method getDebrisSystem = engineClass.getMethod("getDebrisSystem");
         Method setEverythingNearViewport = viewportClass.getMethod("setEverythingNearViewport", boolean.class);
@@ -1673,7 +1690,7 @@ public final class RealEngineCombatBindingFactory {
     private static Object[] resolveWeaponGroupTubeMirrorHandles(ClassLoader loader) {
         try {
             Class<?> groupApi = Class.forName(WEAPON_GROUP_API, false, loader);
-            Class<?> groupConcrete = Class.forName(WEAPON_GROUP_CLASS, false, loader);
+            Class<?> groupConcrete = Class.forName(WEAPON_GROUP_CLASS.className(), false, loader);
             Class<?> groupType = Class.forName(WEAPON_GROUP_TYPE_ENUM, true, loader);
             return new Object[] {
                     groupApi.getMethod("getType"),
@@ -1803,7 +1820,10 @@ public final class RealEngineCombatBindingFactory {
      * the fresh MISSILE's birth facing for the poll-path {@code LaunchFacingLaw}. Null slots
      * on failure: the binding degrades every {@code freshSpawnBearingDeg} (and the v8 muzzle
      * pair, and the facing) to NaN (the detector's v2-composition fallback), never the mount
-     * tier.
+     * tier. Plus slot 5,
+     * {@code DamagingProjectileAPI.getExplosionSpecIfExplosion} (a public default method,
+     * present on every engine this binds), the blast identity the scan skips: blasts now carry
+     * their launcher's weapon, so the weapon gate alone no longer keeps them out.
      */
     private static Method[] resolveProjectileSpawnReadHandles(ClassLoader loader) {
         try {
@@ -1814,10 +1834,11 @@ public final class RealEngineCombatBindingFactory {
                     projectileApi.getMethod("getWeapon"),
                     entityApi.getMethod("getVelocity"),
                     entityApi.getMethod("getLocation"),
-                    entityApi.getMethod("getFacing")
+                    entityApi.getMethod("getFacing"),
+                    projectileApi.getMethod("getExplosionSpecIfExplosion")
             };
         } catch (Throwable ignore) {
-            return new Method[5];
+            return new Method[6];
         }
     }
 
@@ -2163,7 +2184,7 @@ public final class RealEngineCombatBindingFactory {
             // constant's name() is still the source-level string
             // ("USE_SELECTED_GROUP"), not the field's name, so an Enum.valueOf by field name throws
             // and the strict tier would fail every real-engine boot.
-            Object useSelectedGroup = commandEnum.getField("oO0000").get(null);
+            Object useSelectedGroup = EngineSymBridgeFactory.BF_USE_SELECTED_GROUP_FIELD.field(commandEnum).get(null);
             out[0] = getSystem;
             out[1] = getTravelDrive;
             out[2] = getPhaseCloak;
@@ -2211,10 +2232,10 @@ public final class RealEngineCombatBindingFactory {
      */
     private static Method[] resolveRetreatApplySeam(ClassLoader loader, Class<?> shipClass) {
         try {
-            Class<?> retreatManeuver = Class.forName(RETREAT_MANEUVER_CLASS, false, loader);
+            Class<?> retreatManeuver = Class.forName(RETREAT_MANEUVER_CLASS.className(), false, loader);
             return new Method[] {
                     shipClass.getMethod("setRetreating", boolean.class, boolean.class),
-                    retreatManeuver.getMethod("o00000", shipClass, boolean.class),
+                    EngineSymBridgeFactory.BF_RETREAT_ENGAGE_METHOD.method(retreatManeuver),
                     shipClass.getMethod("turnOffTravelDrive"),
                     shipClass.getMethod("isRetreating")
             };

@@ -2,6 +2,7 @@ package cc.starsector.client;
 
 import cc.starsector.client.net.ServerBeamState;
 import cc.starsector.client.net.ServerSnapshotFrame;
+import cc.starsector.client.net.WireWorldLaw;
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.combat.CollisionClass;
 import com.fs.starfarer.api.combat.CombatEngineLayers;
@@ -125,8 +126,8 @@ final class DemDronePresenter {
     /** Track absence tolerance in consecutive FRESH frames (the missile-lane G). */
     private static final int ABSENCE_FRESH_MISSES = 6;
     /** Presented-length clamp floor (su) — a far point atop the child never drives the
-     *  beam range to zero. */
-    private static final float MIN_BEAM_LEN = 10f;
+     *  beam range to zero; the ceiling is {@link WireWorldLaw#MAX_ARC_SU} ({@link #boundedBeamLen}). */
+    static final float MIN_BEAM_LEN = 10f;
 
     /** Vanilla's own absent-key default for {@code firingTime}. */
     private static final float DEFAULT_FIRING_TIME = 1.25f;
@@ -596,7 +597,7 @@ final class DemDronePresenter {
                 drone.setAngularVelocity(child.getAngularVelocity());
                 float dx = e.farX - loc.x;
                 float dy = e.farY - loc.y;
-                float len = Math.max((float) Math.sqrt(dx * dx + dy * dy), MIN_BEAM_LEN);
+                float len = boundedBeamLen((float) Math.sqrt(dx * dx + dy * dy));
                 float bearing = (float) Math.toDegrees(Math.atan2(dy, dx));
                 drone.getMutableStats().getBeamWeaponRangeBonus()
                         .modifyFlat("cc_dem", len - rangeOf(e.key));
@@ -654,7 +655,7 @@ final class DemDronePresenter {
      *  idiom; mirrors {@link PredictReconcileCombatPlugin}'s {@code InertShipAI}). */
     private static final class InertShipAI implements ShipAIPlugin {
         private final ShipwideAIFlags flags = new ShipwideAIFlags();
-        private final ShipAIConfig config = new ShipAIConfig();
+        private final ShipAIConfig config = new ShipAIConfig(null); // null = no hull-hint override: the plain field defaults
 
         @Override public void advance(float amount) { /* inert: issue no fire/maneuver commands */ }
         @Override public void setDoNotFireDelay(float amount) { /* no-op */ }
@@ -723,6 +724,17 @@ final class DemDronePresenter {
                     "weapon-spec range read threw -> fallback range this lookup (uncached)");
         }
         return range;
+    }
+
+    /**
+     * The presented beam length: the drone-to-far-point distance held
+     * between {@link #MIN_BEAM_LEN} and {@link WireWorldLaw#MAX_ARC_SU}. WHY the ceiling: the far point is a host
+     * number bounded per axis only, so the distance can reach about 2.8e7 su and would become the beam's range bonus;
+     * a lawful DEM beam is a few thousand su at most. A clamp, never a refusal: the bearing and the mouse target
+     * still aim at the far point, only the reach is held. NaN comes back as NaN (the caller's distance is finite).
+     */
+    static float boundedBeamLen(float len) {
+        return Math.min(Math.max(len, MIN_BEAM_LEN), WireWorldLaw.MAX_ARC_SU);
     }
 
     /** Vanilla getValue's array form ({@code [min,max]}) read at its MAX; scalar/absent =

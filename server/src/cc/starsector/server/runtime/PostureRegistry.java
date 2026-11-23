@@ -485,10 +485,17 @@ public final class PostureRegistry {
     // Start as "unknown env" (the scrub covered one name on the direct branch only; it is deleted for this
     // line — one mechanism, both branches). Rows: PostureEnforceContractRows.exemptFamiliesPass,
     // verify-ops-serve-preflight.ps1 r5.
+    // CC_STARSECTOR_CORE / CC_GAME_PIN: the game pin's levers (which
+    // game build a shell targets, and the starsector-core path it EXPORTS into every dot-sourcing shell for the
+    // contract rows' jar lookup) — read by PowerShell and by server/test rows only, never by this JVM (the serve's
+    // game root rides its cwd + classpath). The first roll after the 0.98.5a cut-over died here as "unknown
+    // env CC_STARSECTOR_CORE": every postured serve started under a repo script was refused. The FIFTH sighting of
+    // this class; CC_JDK_PIN above is the sibling precedent. Row: PostureEnforceContractRows.exemptFamiliesPass.
     private static final java.util.Set<String> EXEMPT_ENVS = java.util.Set.of(
             "CC_STAND_HOLDS_BUILD_MUTEX", "CC_PARITY_FRAME_LEDGER", "CC_SERVER_EXTRA_JVM_FLAGS",
             "CC_MATCH_SEAT1NAME", "CC_MATCH_SEAT2NAME", "CC_USAGE_METER_DATA_DIR", "CC_KIT_ENVSYNC",
-            "CC_RUN_SNAP_SSD", "CC_SERVE_JDK_SSD", "CC_SSD_ROOT", "CC_JDK_PIN");
+            "CC_RUN_SNAP_SSD", "CC_SERVE_JDK_SSD", "CC_SSD_ROOT", "CC_JDK_PIN",
+            "CC_STARSECTOR_CORE", "CC_GAME_PIN");
 
     /** Registered env twins — an env var in this set is census-known, never "unknown". */
     private static final java.util.Set<String> REGISTERED_ENVS;

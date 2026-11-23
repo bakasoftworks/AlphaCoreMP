@@ -1,5 +1,7 @@
 package cc.starsector.server.bridge;
 
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymBridgeRoster;
 import cc.starsector.server.platform.AllSkillsAttach;
 import cc.starsector.server.platform.RegistryVariantClone;
 import cc.starsector.server.runtime.CustomVariantConfig;
@@ -34,9 +36,9 @@ import org.json.JSONObject;
  * overwrite=true ONLY for the catalog lane's live UPDATE of an id this serve registered —
  * a plain map put; a ship already flying keeps
  * the spec instance it was built from, the next {@code createFleetMember} resolves the new one) →
- * post-put resolvability assert. The registry's reflective class + method names
- * are the SAME strings {@link RealEngineDemoRoster} pins; they are named here a
- * second time only because that class keeps them private.
+ * post-put resolvability assert. The registry's reflective class + put method
+ * are engine-name table rows: the class row is the one {@link RealEngineDemoRoster}
+ * reads, the put overload is this lane's own row.
  *
  * <p>Engine pass, in the design's check order (the pure half already ran on the reader thread):
  * #3 the ctor resolves hull/weapons (a throw = {@code custom_engine_rejected}); #5 every fitted
@@ -51,7 +53,7 @@ import org.json.JSONObject;
  * #14 {@code getUnusedOP(spawnStats) ≥ 0}; #15 register a CLONE (the throwaway member keeps its
  * own spec; the registry singleton is never handed to an engine object).
  *
- * <p>Single-writer law: the {@code B} map is an unsynchronized static HashMap read on the sim
+ * <p>Single-writer law: the registry map is an unsynchronized static HashMap read on the sim
  * thread — {@link #register} and {@link #registerRealized} MUST run on the serve thread (the caller's drain band); the boot
  * keyset snapshot ({@code RealEngineDemoRoster.variantRegistryIds}) shares that thread.
  * Persistence: the accepted JSON is written to
@@ -59,9 +61,6 @@ import org.json.JSONObject;
  */
 public final class RealEngineVariantRegistrar implements CustomVariantLane.Registrar {
 
-    private static final String HULL_VARIANT_SPEC_CLASS = "com.fs.starfarer.loading.specs.HullVariantSpec";
-    private static final String VARIANT_REGISTRY_CLASS = "com.fs.starfarer.loading.B";
-    private static final String VARIANT_REGISTRY_PUT = "o00000";
     private static final String FLEET_MEMBER_TYPE = "com.fs.starfarer.api.fleet.FleetMemberType";
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     private static final String SHIELD_API = "com.fs.starfarer.api.combat.ShieldAPI";
@@ -139,7 +138,7 @@ public final class RealEngineVariantRegistrar implements CustomVariantLane.Regis
         ClassLoader loader = RealEngineVariantRegistrar.class.getClassLoader();
         Object settings = RealEngineVariantFacts.settings();
         try {
-            Class<?> hullVariantClass = Class.forName(HULL_VARIANT_SPEC_CLASS, true, loader);
+            Class<?> hullVariantClass = EngineSym.HULL_VARIANT_SPEC_CLASS.load(loader);
             Class<?> variantApi = Class.forName(SHIP_VARIANT_API, false, loader);
             Class<?> memberApi = Class.forName(FLEET_MEMBER_API, false, loader);
             Class<?> charStatsApi = Class.forName(MUTABLE_CHAR_STATS_API, false, loader);
@@ -329,8 +328,8 @@ public final class RealEngineVariantRegistrar implements CustomVariantLane.Regis
             // #15: register a CLONE (overwrite=false for a mint; true = the catalog lane's live UPDATE of
             // this serve's own registration), then assert resolvable.
             Object registryCopy = RegistryVariantClone.cloneVariant(variant, "custom-register");
-            Class<?> registry = Class.forName(VARIANT_REGISTRY_CLASS, true, loader);
-            registry.getMethod(VARIANT_REGISTRY_PUT, hullVariantClass, boolean.class)
+            Class<?> registry = EngineSym.VARIANT_REGISTRY_CLASS.load(loader);
+            EngineSymBridgeRoster.BRIDGE_ROSTER_VARIANT_REGISTRY_PUT_METHOD.method(registry)
                     .invoke(null, registryCopy, overwrite);
             if (!RealEngineDemoRoster.variantResolvable(canonical.variantId())) {
                 // The registry put did not stick = OUR side, never the submitter's.

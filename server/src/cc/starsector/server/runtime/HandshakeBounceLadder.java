@@ -45,8 +45,8 @@ public final class HandshakeBounceLadder {
 
     /**
      * Classify a HELLO payload that is not the door's own version ({@link Handshake13#VERSION}) as
-     * the newest legacy grammar it fully matches — version 19 first ({@link #classifyV19OrNull}), then
-     * 18 ({@link #classifyV18OrNull}), then
+     * the newest legacy grammar it fully matches — version 20 first ({@link #classifyV20OrNull}), then
+     * 19 ({@link #classifyV19OrNull}), then 18 ({@link #classifyV18OrNull}), then
      * 17 ({@link #classifyV17OrNull}), then 16 ({@link #classifyV16OrNull}), then
      * 15 ({@link #classifyV15OrNull}), then 14 ({@link #classifyV14OrNull}), then
      * 13 ({@link #classifyV13OrNull}), then 12 ({@link #classifyV12OrNull}, wired here by THE FLIP),
@@ -55,6 +55,10 @@ public final class HandshakeBounceLadder {
      * highest version whose complete grammar it satisfies.
      */
     public static StaleHello classifyOrNull(byte[] payload) {
+        StaleHello v20 = classifyV20OrNull(payload);
+        if (v20 != null) {
+            return v20;
+        }
         StaleHello v19 = classifyV19OrNull(payload);
         if (v19 != null) {
             return v19;
@@ -237,7 +241,7 @@ public final class HandshakeBounceLadder {
 
     /**
      * A version-18 kit's own F1 flag set, FROZEN at {@code 0x3F}: {@code Handshake13.FLAGS_DEFINED} at 18 (the v17 set
-     * + the pilot-replica report bit {@code 0x20}). The version-19 and version-20 bumps defined no new bit, so this rung
+     * + the pilot-replica report bit {@code 0x20}). The version-19, 20 and 21 bumps defined no new bit, so this rung
      * and the door's own set coincide today; a future bit widens the door's set, never this rung (a byte-18 F1 carrying
      * it is garbage).
      */
@@ -257,8 +261,8 @@ public final class HandshakeBounceLadder {
 
     /**
      * A version-19 kit's own F1 flag set, FROZEN at {@code 0x3F}: {@code Handshake13.FLAGS_DEFINED} at 19 (the v18 set;
-     * the 19 bump defined no bit). The version-20 bump defined none either, so this rung and the door's own set coincide
-     * today; a future bit widens the door's set, never this rung (a byte-19 F1 carrying it is garbage).
+     * the 19 bump defined no bit). The version-20 and version-21 bumps defined none either, so this rung and the door's
+     * own set coincide today; a future bit widens the door's set, never this rung (a byte-19 F1 carrying it is garbage).
      */
     private static final int V19 = 19, V19_FLAGS_DEFINED = 0x3F;
 
@@ -275,7 +279,29 @@ public final class HandshakeBounceLadder {
         return classifyOpenOrNull(payload, V19, V19_FLAGS_DEFINED);
     }
 
-    /** The shared F1 grammar of the v13..v19 rungs at one literal version byte and that version's frozen flag set
+    /**
+     * A version-20 kit's own F1 flag set, FROZEN at {@code 0x3F}: {@code Handshake13.FLAGS_DEFINED} at 20 (the v19 set;
+     * the 20 bump defined no bit). The version-21 bump defined none either, so this rung and the door's own set coincide
+     * today; a future bit widens the door's set, never this rung (a byte-20 F1 carrying it is garbage).
+     */
+    private static final int V20 = 20, V20_FLAGS_DEFINED = 0x3F;
+
+    /**
+     * The v20 rung: a WELL-FORMED version-20 F1. The version-21 bump changed no F1 byte (it gates the game-version
+     * cut: every version-20 kit was built for 0.98a); the F1 is the version-19 grammar at byte 0 =
+     * the literal 20 with that kit's flag set ({@link #V20_FLAGS_DEFINED}) → {@code StaleHello(20, nonce)}, else
+     * {@code null}. A version-20 (v0.6.7–v0.6.9) kit at a version-21 door (its join probe included) meets this rung and
+     * reads {@code kit_outdated}; the rung sits before any door-fingerprint check, so it answers the same whether a host
+     * armed that check or not, and an unarmed door never admits a 0.98a kit. A version-21 kit built for another
+     * 0.98.5a release candidate passes every rung: only an armed door fingerprint refuses it, and none was published.
+     *
+     *
+     */
+    public static StaleHello classifyV20OrNull(byte[] payload) {
+        return classifyOpenOrNull(payload, V20, V20_FLAGS_DEFINED);
+    }
+
+    /** The shared F1 grammar of the v13..v20 rungs at one literal version byte and that version's frozen flag set
      * (the body of the v13 rung, moved verbatim when the v14 rung joined). */
     private static StaleHello classifyOpenOrNull(byte[] payload, int version, int flagsDefined) {
         if (payload == null || payload.length != Handshake13.OPEN_PAYLOAD_BYTES || (payload[0] & 0xFF) != version
@@ -310,7 +336,7 @@ public final class HandshakeBounceLadder {
      * {@link Handshake13#VERSION}, {@code [10] == 0}, every byte from 11 to the end 0. WHY {@code >= 123}, never
      * {@code == 123}: the door's own decode takes any F1 of 11 B or more and the encoder sizes the pad to the cookie,
      * so a later bump that grows the cookie grows the F1; the reply is constant (96 B framed), so reply &lt;= request
-     * holds at every admitted length — a 1:1 reflector at worst, the 13..19 rungs' posture. WHY the flags byte
+     * holds at every admitted length — a 1:1 reflector at worst, the 13..20 rungs' posture. WHY the flags byte
      * {@code [9]} is NOT gated: a later kit may define the two free bits, and this door reads no flag of a kit it
      * cannot admit. WHY {@code >} and never {@code >=}: the door's own byte is an admit (an armed door) or garbage
      * (an un-armed one), never "this server is older".
@@ -372,7 +398,9 @@ public final class HandshakeBounceLadder {
     public static byte[] encodeReject(StaleHello stale, int startingRoundId, int tickRate,
             long serverLife) {
         return switch (stale.version()) {
-            case 19 -> HandshakeCodec.WelcomePayload.encodeRejectedKitOutdatedV19(
+            case 20 -> HandshakeCodec.WelcomePayload.encodeRejectedKitOutdatedV20(
+                    stale.nonce(), startingRoundId, tickRate, serverLife);
+            case 19 ->HandshakeCodec.WelcomePayload.encodeRejectedKitOutdatedV19(
                     stale.nonce(), startingRoundId, tickRate, serverLife);
             case 18 -> HandshakeCodec.WelcomePayload.encodeRejectedKitOutdatedV18(
                     stale.nonce(), startingRoundId, tickRate, serverLife);

@@ -35,12 +35,24 @@ public final class RosterAppendControlMessage {
      *  the server hull was placed with {@code burnDur 0}, so the client twin mints with no
      *  parity burn; other bits reject) — a v4 kit's 8-field parser would mis-frame the flags
      *  byte as the next row's wireId, so the schema bumps and an old kit fails closed at the
-     *  stream (roll FIRST; no handshake bump — the v4 precedent). */
-    public static final int SCHEMA_VERSION = 5;
+     *  stream (roll FIRST; no handshake bump — the v4 precedent).
+     *  v6: every row gains a trailing {@code u32 fleetKeyDigest} after the flags byte, and the
+     *  flags gain bit2 = FLEET_FIELDED (the row is a fielded-fleet record write) + bit3 =
+     *  FLEET_ROUND_OPEN (the write belongs to the round-open pre-pass; lawful only beside bit2);
+     *  a non-zero digest without bit2 rejects. A v5 kit would mis-frame the digest as the next
+     *  row's wireId, so the schema bumps and the pair mismatch ends loud at the first frame; the
+     *  handshake does not move (no published kit carries schema 5 at that handshake).
+     *
+     *  v7: the v6 bytes plus flag bit4 = FLEET_VACATED (the row removes its wire id's fleet-record
+     *  entry; lawful only alone, on an inert row). A v6 reader would refuse the bit only at the
+     *  first removal, hours into a serve; the bump makes the pair mismatch end loud at the first
+     *  frame instead. The handshake does not move (no published kit carries schema 6).
+     * */
+    public static final int SCHEMA_VERSION = 7;
     public static final String CODEC_OWNER = "server.protocol.roster_append.codec";
     public static final String VALIDATION_OWNER = "server.protocol.roster_append.validation";
     public static final String RELEVANCE_RULE_ID = "roster_append.fan_all_sessions";
-    public static final String COMPATIBILITY_PREDICATE_ID = "roster_append_schema_v5";
+    public static final String COMPATIBILITY_PREDICATE_ID = "roster_append_schema_v7";
     public static final String FAILURE_CODE = "ROSTER_APPEND_PROTOCOL_REJECTED";
     public static final ProtocolDataClass DATA_CLASS = ProtocolDataClass.DURABLE_EVENT;
 

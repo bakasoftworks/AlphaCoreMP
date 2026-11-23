@@ -15,6 +15,7 @@ import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.SettingsAPI;
 import com.fs.starfarer.api.characters.MutableCharacterStatsAPI;
 import com.fs.starfarer.api.characters.PersonAPI;
+import com.fs.starfarer.api.combat.HullModEffect;
 import com.fs.starfarer.api.combat.MutableShipStatsAPI;
 import com.fs.starfarer.api.combat.MutableStat;
 import com.fs.starfarer.api.combat.ShipAPI.HullSize;
@@ -329,6 +330,15 @@ final class EditorOracle {
         o.put("fluxDiss", num(h.getFluxDissipation()));
         o.put("collisionRadius", num(h.getCollisionRadius()));
         o.put("builtInMods", new JSONArray(nzList(h.getBuiltInMods())));
+        // The built-ins this hull lets the player S-mod for free (no OP, outside
+        // the S-mod cap), ALWAYS present ([] when none); the picker offers its S-mod toggle on exactly these.
+        JSONArray sModdable = new JSONArray();
+        for (String bim : new java.util.LinkedHashSet<>(nzList(h.getBuiltInMods()))) {
+            if (sModdableBuiltInRefusal(h, bim) == null) {
+                sModdable.put(bim);
+            }
+        }
+        o.put("sModdableBuiltIns", sModdable);
         o.put("builtInWings", new JSONArray(nzList(h.getBuiltInWings())));
         JSONObject builtInWeapons = new JSONObject();
         Map<String, String> biw = h.getBuiltInWeapons();
@@ -668,9 +678,23 @@ final class EditorOracle {
                 problem(problems, 11, DoorRejectReasons.CUSTOM_SHAPE_INVALID, "hullmod cannot be built in", p);
             }
         }
+        // An S-modded built-in is named once, is built in on this hull, and passes
+        // the engine's own built-in S-mod eligibility (sModdableBuiltInRefusal, the same law the hull payload uses).
+        // The ids were bounded and shape-checked by the definition record before they reach here.
+        Set<String> seenSModdedBuiltIns = new HashSet<>();
         for (String s : def.sModdedBuiltIns()) {
+            if (!seenSModdedBuiltIns.add(s)) {
+                problem(problems, 11, DoorRejectReasons.CUSTOM_SHAPE_INVALID, "sModdedBuiltIns lists a hullmod twice", s);
+                continue;
+            }
             if (!builtInMods.contains(s)) {
                 problem(problems, 11, DoorRejectReasons.CUSTOM_SHAPE_INVALID, "sModdedBuiltIns must be built in on this hull", s);
+                continue;
+            }
+            String noSMod = sModdableBuiltInRefusal(hull, s);
+            if (noSMod != null) {
+                problem(problems, 11, DoorRejectReasons.CUSTOM_SHAPE_INVALID,
+                        "a built-in that cannot be S-modded (" + noSMod + ")", s);
             }
         }
         // 6 wings (policy here; count vs bays after stats)
@@ -1421,6 +1445,8 @@ final class EditorOracle {
         for (String m : def.permaMods()) {
             v.addPermaMod(m, def.sMods().contains(m));
         }
+        // the refit's own S-mod-a-built-in mutation (ModPickerDialogV3 adds the id to this set, nothing else)
+        v.getSModdedBuiltIns().addAll(def.sModdedBuiltIns());
         for (ClientVariantDefinition.WeaponGroup g : def.weaponGroups()) {
             WeaponGroupSpec spec = new WeaponGroupSpec(g.alternating() ? WeaponGroupType.ALTERNATING
                     : WeaponGroupType.LINKED);
@@ -1436,6 +1462,56 @@ final class EditorOracle {
             v.setWingId(builtInWings + i, def.wings().get(i));
         }
         return v;
+    }
+
+    /** Set by the first built-in S-mod law fault of this process; later faults stay silent (they still refuse). */
+    private static volatile boolean sModLawFaultLogged;
+
+    /**
+     * Why the built-in hullmod {@code modId} may NOT carry an S-mod on {@code hull}, or {@code null} when it may.
+     * Mirrors the engine's own eligibility (Misc.hasSModdableBuiltIns and the refit picker's S-mod toggle on a
+     * built-in): built in on this hull; not hidden; not hidden everywhere; no {@code dmod} tag; no
+     * {@code no_build_in} tag; an effect that HAS an S-mod effect whose S-mod effect is not a penalty. Such an S-mod
+     * costs no OP and never counts against the S-mod cap (Misc.getCurrSpecialMods counts the variant's S-mods only).
+     * The ONE home of this law: the hull payload's {@code sModdableBuiltIns} and the validate rule both ask it. A
+     * null spec or effect, or an engine call that throws, does not qualify (the first throw is logged). The
+     * returned words are constants: bounded, safe for the wire and the log.
+     *
+     */
+    static String sModdableBuiltInRefusal(ShipHullSpecAPI hull, String modId) {
+        try {
+            if (hull == null || modId == null || !hull.isBuiltInMod(modId)) {
+                return "not built in on this hull";
+            }
+            HullModSpecAPI m = hullModOrNull(modId);
+            if (m == null) {
+                return "unknown hullmod";
+            }
+            if (m.isHidden() || m.isHiddenEverywhere()) {
+                return "hidden";
+            }
+            if (m.hasTag("dmod")) {
+                return "d-mod";
+            }
+            if (m.hasTag("no_build_in")) {
+                return "cannot be built in";
+            }
+            HullModEffect effect = m.getEffect();
+            if (effect == null || !effect.hasSModEffect()) {
+                return "no S-mod effect";
+            }
+            if (effect.isSModEffectAPenalty()) {
+                return "its S-mod effect is a penalty";
+            }
+            return null;
+        } catch (RuntimeException | LinkageError fault) {
+            if (!sModLawFaultLogged) {
+                sModLawFaultLogged = true;
+                PilotWatchLog.info("editor: built-in S-mod law fault " + fault.getClass().getSimpleName() + " on "
+                        + EditorText.sanitize(modId, 64) + " (does not qualify; later faults silent)");
+            }
+            return "its hullmod effect failed";
+        }
     }
 
     static ShipHullSpecAPI hullOrNull(String id) {

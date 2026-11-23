@@ -40,12 +40,15 @@ import java.util.WeakHashMap;
  * the hit. The mult already scales the arc's EMP (flux) component, so the flux component is never written
  * (the damage object is fresh per arc, but an explosion's is shared across its victims).
  *
- * {@link #BLAST} = a weaponless, non-missile damaging projectile (a damaging explosion) whose source is an
- * ALIVE treated replica: COUNTED ONLY, never zeroed — a presented foe missile's own explosion-spec burst
- * carries the very same identity (the replica as source, no weapon), and that burst is the predicted-hit
- * class. The replica's own death explosion already reads not
- * alive at its first apply.
+ * {@link #BLAST} = a non-missile damaging projectile that is an engine blast (a damaging explosion,
+ * {@link EngineBlastLaw#isEngineBlast}) whose source is an ALIVE treated replica: COUNTED ONLY, never zeroed —
+ * a presented foe missile's own explosion-spec burst carries the very same identity (the replica as source,
+ * an explosion spec), and that burst is the predicted-hit class.
+ * The weapon is no test: the current engine hands a missile or fuse burst its LAUNCHER's weapon,
+ * while a ship-death or script-spawned blast stays weaponless. The replica's own death explosion already
+ * reads not alive at its first apply.
  *
+ * BLAST keyed on the engine's blast identity.
  *
  * <p><b>Never zeroed</b>: a damaging projectile WITH a weapon (a presented foe shot = the predicted hit), a
  * missile, a beam, a null param, anything dealt by the OWN ship (its own tether arcs keep their local
@@ -111,7 +114,7 @@ public final class ReplicaScriptDamageGate {
             return ARC;
         }
         if (param instanceof DamagingProjectileAPI && !(param instanceof MissileAPI) && sourceAlive
-                && ((DamagingProjectileAPI) param).getWeapon() == null) {
+                && EngineBlastLaw.isEngineBlast((DamagingProjectileAPI) param)) {
             return BLAST;
         }
         return NONE;

@@ -1,5 +1,6 @@
 package cc.starsector.server.bridge;
 
+import cc.starsector.server.names.EngineSym;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -54,7 +55,6 @@ import java.util.List;
  * round boundary — all on the serve loop's thread; no locking by design).
  */
 public final class FinaleCreepAuthor {
-    static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
     static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     static final String STATS_API = "com.fs.starfarer.api.combat.MutableShipStatsAPI";
     static final String STAT_CLASS = "com.fs.starfarer.api.combat.MutableStat";
@@ -190,7 +190,7 @@ public final class FinaleCreepAuthor {
         disarm("re_arm");
         try {
             ClassLoader loader = FinaleCreepAuthor.class.getClassLoader();
-            Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
+            Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
             Class<?> shipApi = Class.forName(SHIP_API, false, loader);
             Class<?> statsApi = Class.forName(STATS_API, false, loader);
             Class<?> statClass = Class.forName(STAT_CLASS, false, loader);

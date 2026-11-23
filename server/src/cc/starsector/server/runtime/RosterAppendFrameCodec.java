@@ -34,8 +34,14 @@ import java.util.zip.CRC32;
  * with no parity burn; bit1 = {@link #FLAG_ALL_SKILLS_CAPTAIN}: the hull's
  * restored captain IS its all-skills seat mint, exclusive with an officer line; other bits
  * reject). v4 = v3 bytes with the optional
- * {@code |aiCoreId} officer-line field; {@link #readArchivedFrameAfterMagic} still reads v4
- * reels (flags absent ⇒ not at rest), the LIVE read is exact-schema.
+ * {@code |aiCoreId} officer-line field. Body v6 appends {@code | u32 fleetKeyDigest} after
+ * every row's flags byte and defines flag bit2 {@link #FLAG_FLEET_FIELDED} + bit3
+ * {@link #FLAG_FLEET_ROUND_OPEN}. Body v7 = the v6 bytes
+ * plus flag bit4 {@link #FLAG_FLEET_VACATED}: a fleet-record REMOVAL row, never a hull announce.
+ *
+ * {@link #readArchivedFrameAfterMagic} still reads v4 reels (flags absent ⇒ not at rest), v5
+ * reels (no digest, the fleet bits absent) and v6 reels (bit4 still reserved), each through its
+ * own schema's layout and flag set; the LIVE read is exact-schema.
  * Side is descriptor-ABSOLUTE; no spawn pose (the client's
  * first-sight adopt spawns at the first authoritative wire pose). Rows per frame cap at
  * {@link #MAX_ROWS_PER_FRAME}; the emitter chunks larger waves into multiple frames BY
@@ -86,10 +92,50 @@ public final class RosterAppendFrameCodec {
      */
     public static final int FLAG_ALL_SKILLS_CAPTAIN = 0x02;
 
+    /**
+     * v6 row {@code flags} bit2: this row is a fielded-fleet RECORD WRITE — from here on its wire
+     * id holds (the row's absolute side, the goal of its variant) in the round's record, and the
+     * row's {@code fleetKeyDigest} is the digest of that side's fleet key the hull READ. Every
+     * digest value is lawful beside this bit, 0 included (0 is a real digest, never "absent").
+     *
+     */
+    public static final int FLAG_FLEET_FIELDED = 0x04;
+
+    /**
+     * v6 row {@code flags} bit3: the record write belongs to the ROUND-OPEN pre-pass (its digest
+     * is the side's whole round-open key, the same value on every such row of that side). Lawful
+     * ONLY beside {@link #FLAG_FLEET_FIELDED}: alone it is refused on both ends.
+     */
+    public static final int FLAG_FLEET_ROUND_OPEN = 0x08;
+
+    /**
+     * v7 row {@code flags} bit4: this row REMOVES its wire id's entry from the round's fleet
+     * record (the seat is no longer occupied and its hull is no longer in the world). Its
+     * {@code fleetKeyDigest} is the digest of the row side's fleet key right AFTER the removal
+     * (every value lawful, 0 included). One bit pattern per meaning: the flags byte is EXACTLY this
+     * bit, and every other field is the inert shape {@link AppendRow#fleetVacatedRow} mints (side =
+     * the removed entry's ABSOLUTE side, variantId = shipName = its goal id, cr 0, no carrier, no
+     * bay, no officer line); any other shape is refused on both ends by the row ctor. Only the
+     * record fold reads it: it never announces, mints or moves a hull. It rides schema 7, not a
+     * quiet bit on 6, so a stale reader ends loud at its first frame instead of at the first
+     * removal hours into a serve.
+     */
+    public static final int FLAG_FLEET_VACATED = 0x10;
+
     /** The pre-flags schema the ARCHIVED reel read still accepts (v4 = v3 bytes, no flags byte). */
     private static final int ARCHIVED_SCHEMA_V4 = 4;
     /** The first schema whose rows carry the {@code u8 flags} tail. */
     private static final int FLAGS_SCHEMA_V5 = 5;
+    /** The first schema whose rows carry the {@code u32 fleetKeyDigest} after the flags byte. */
+    private static final int DIGEST_SCHEMA_V6 = 6;
+    /** The first schema that defines {@link #FLAG_FLEET_VACATED}; its row layout is v6's. */
+    private static final int VACATED_SCHEMA_V7 = 7;
+    /** The flag bits schema 5 defines: a v5 reel's bit2 / bit3 were reserved there, never re-read as v6's. */
+    private static final int FLAGS_KNOWN_V5 = FLAG_AT_REST | FLAG_ALL_SKILLS_CAPTAIN;
+    /** The flag bits schema 6 defines: a v6 reel's bit4 was reserved there, never re-read as v7's. */
+    private static final int FLAGS_KNOWN_V6 = FLAGS_KNOWN_V5 | FLAG_FLEET_FIELDED | FLAG_FLEET_ROUND_OPEN;
+    /** The flag bits schema 7 defines; any other bit rejects. */
+    private static final int FLAGS_KNOWN_V7 = FLAGS_KNOWN_V6 | FLAG_FLEET_VACATED;
 
     /**
      * One appended hull: {wireId, ABSOLUTE side, variantId, shipName, crPerMille,
@@ -112,10 +158,61 @@ public final class RosterAppendFrameCodec {
      * <p>v5 {@code allSkillsCaptain}: the
      * {@link #FLAG_ALL_SKILLS_CAPTAIN} fact — set only by {@link #allSkillsCaptain}, never beside
      * an officer line; every other shape reads {@code false}.
+     *
+     * <p>v6 fleet-record write: {@code fleetFielded} =
+     * {@link #FLAG_FLEET_FIELDED}, {@code fleetRoundOpen} = {@link #FLAG_FLEET_ROUND_OPEN} (lawful
+     * only with {@code fleetFielded}), {@code fleetKeyDigest} = the raw bits of the u32 wire field:
+     * a signed {@code int} whose every value (both signs, 0 included) is lawful WITH
+     * {@code fleetFielded} (or v7 {@code fleetVacated}), and which must be 0 without either. Built by {@link #withFleetWrite};
+     * every older constructor and factory mints neither bit and digest 0, and
+     * {@link #withoutFleetWrite} strips them.
+     *
+     * <p>v7 record removal: {@code fleetVacated} =
+     * {@link #FLAG_FLEET_VACATED}; lawful only ALONE (no other flag bit) on the inert hull shape,
+     * beside any digest (0 included). Built by {@link #fleetVacatedRow}; every other constructor
+     * and factory mints {@code false}.
      */
     public record AppendRow(long wireId, int side, String variantId, String shipName,
             int crPerMille, long carrierWireId, int bayIndex, String officerLine, boolean atRest,
-            boolean allSkillsCaptain) {
+            boolean allSkillsCaptain, boolean fleetFielded, boolean fleetRoundOpen,
+            boolean fleetVacated, int fleetKeyDigest) {
+        /**
+         * The v6 shape: every bit but the v7 removal bit — the shape every construct site before
+         * the removal row mints.
+         */
+        public AppendRow(long wireId, int side, String variantId, String shipName,
+                int crPerMille, long carrierWireId, int bayIndex, String officerLine,
+                boolean atRest, boolean allSkillsCaptain, boolean fleetFielded,
+                boolean fleetRoundOpen, int fleetKeyDigest) {
+            this(wireId, side, variantId, shipName, crPerMille, carrierWireId, bayIndex,
+                    officerLine, atRest, allSkillsCaptain, fleetFielded, fleetRoundOpen, false,
+                    fleetKeyDigest);
+        }
+
+        /**
+         * The v5 shape: no fleet-record write (neither v6 bit, digest 0) — the shape every
+         * pre-fleet-record construct site mints.
+         */
+        public AppendRow(long wireId, int side, String variantId, String shipName,
+                int crPerMille, long carrierWireId, int bayIndex, String officerLine,
+                boolean atRest, boolean allSkillsCaptain) {
+            this(wireId, side, variantId, shipName, crPerMille, carrierWireId, bayIndex,
+                    officerLine, atRest, allSkillsCaptain, false, false, false, 0);
+        }
+
+        /**
+         * A fleet-record REMOVAL row ({@link #FLAG_FLEET_VACATED} alone): wire id {@code wireId}
+         * (u32, &gt; 0) leaves the round's record; {@code side} = the removed entry's ABSOLUTE side
+         * (0 or 1); {@code goalId} = the entry's goal variant id, riding as both variantId and
+         * shipName; {@code digest} = the side's fleet-key digest right after the removal (any
+         * int, both signs and 0 lawful). Every other field is the inert shape the row law requires.
+         *
+         */
+        public static AppendRow fleetVacatedRow(long wireId, int side, String goalId, int digest) {
+            return new AppendRow(wireId, side, goalId, goalId, 0, 0L, BAY_NONE, "", false, false,
+                    false, false, true, digest);
+        }
+
         /** Non-fighter row (deploy/wave/probe/pod/fly-in lanes): no carrier, no bay, no captain. */
         public AppendRow(long wireId, int side, String variantId, String shipName,
                 int crPerMille) {
@@ -229,6 +326,27 @@ public final class RosterAppendFrameCodec {
             if (carrierWireId == wireId) {
                 throw new IllegalArgumentException("a hull cannot be its own carrier: " + wireId);
             }
+            if (fleetVacated) {
+                // A removal row is ONE bit pattern (the flags
+                // byte exactly 0x10, every hull field inert), so no reader can take it for a hull
+                // announce and a host cannot ride a captain, a carrier or a CR on a row only the
+                // record fold reads. Checked BEFORE the officer line is parsed below. Numbers only
+                // in the text (wire id, flags hex, cr, carrier, bay), never the row's strings.
+                int flags = flagBits(atRest, allSkillsCaptain, fleetFielded, fleetRoundOpen, true);
+                if (flags != FLAG_FLEET_VACATED) {
+                    throw new IllegalArgumentException("roster-append row " + wireId + ": flags 0x"
+                            + Integer.toHexString(flags) + " - the vacated bit 0x"
+                            + Integer.toHexString(FLAG_FLEET_VACATED) + " must stand alone");
+                }
+                if (crPerMille != 0 || carrierWireId != 0L || bayIndex != BAY_NONE
+                        || !officerLine.isEmpty() || !variantId.equals(shipName)) {
+                    throw new IllegalArgumentException("roster-append row " + wireId
+                            + ": a vacated row's hull fields must be inert (cr " + crPerMille
+                            + ", carrier " + carrierWireId + ", bay " + bayIndex + ", officer line "
+                            + (officerLine.isEmpty() ? "none" : "present") + ", variant == name "
+                            + variantId.equals(shipName) + ")");
+                }
+            }
             if (allSkillsCaptain && !officerLine.isEmpty()) {
                 // One captain fact per row — the bit
                 // names a person the line cannot carry, so both at once is a codec bug; the server
@@ -242,6 +360,22 @@ public final class RosterAppendFrameCodec {
                 throw new IllegalArgumentException("roster-append row " + wireId
                         + ": a carrier-born row cannot carry the all-skills bit");
             }
+            if (fleetRoundOpen && !fleetFielded) {
+                // The two fleet-record laws, one home for both
+                // ends — encode cannot build these shapes, and the decode wrap below turns each into
+                // the frame refusal. Numbers only in the text (flags hex, digest hex, wire id).
+                throw new IllegalArgumentException("roster-append row " + wireId
+                        + ": flags 0x" + Integer.toHexString(FLAG_FLEET_ROUND_OPEN)
+                        + " round-open without the fielded bit 0x"
+                        + Integer.toHexString(FLAG_FLEET_FIELDED));
+            }
+            if (!fleetFielded && !fleetVacated && fleetKeyDigest != 0) {
+                throw new IllegalArgumentException("roster-append row " + wireId
+                        + ": fleetKeyDigest 0x" + Integer.toHexString(fleetKeyDigest)
+                        + " is non-zero without the fielded bit 0x"
+                        + Integer.toHexString(FLAG_FLEET_FIELDED) + " or the vacated bit 0x"
+                        + Integer.toHexString(FLAG_FLEET_VACATED));
+            }
             if (!officerLine.isEmpty()) {
                 if (carrierWireId != 0L) {
                     // A bay-born fighter never carries a captain (the wing's carrier does).
@@ -252,6 +386,35 @@ public final class RosterAppendFrameCodec {
                 // throws IllegalArgumentException; the decode idiom wraps it in IOException).
                 OfficerRosterCodec.decodeOne(officerLine, variantId);
             }
+        }
+
+        /**
+         * This row as a fielded-fleet record write: {@link #FLAG_FLEET_FIELDED} set,
+         * {@link #FLAG_FLEET_ROUND_OPEN} = {@code roundOpen}, {@code digest} = the side's fleet-key
+         * digest the hull read (any int, 0 included). Every other component is kept, the v7
+         * removal bit too, so a removal row refuses (its bit must stand alone).
+         *
+         */
+        public AppendRow withFleetWrite(boolean roundOpen, int digest) {
+            return new AppendRow(wireId, side, variantId, shipName, crPerMille, carrierWireId,
+                    bayIndex, officerLine, atRest, allSkillsCaptain, true, roundOpen, fleetVacated,
+                    digest);
+        }
+
+        /**
+         * This row with neither fleet bit and digest 0 — the flagless copy a stored or re-seeded
+         * row must be (a re-sent row is never a second record write). Every other component is kept.
+         * A REMOVAL row refuses: it is never stored or re-sent, and stripping its bit would turn it
+         * into a hull announce of its goal id.
+         *
+         */
+        public AppendRow withoutFleetWrite() {
+            if (fleetVacated) {
+                throw new IllegalArgumentException("roster-append row " + wireId
+                        + ": a vacated row has no flagless copy");
+            }
+            return new AppendRow(wireId, side, variantId, shipName, crPerMille, carrierWireId,
+                    bayIndex, officerLine, atRest, allSkillsCaptain, false, false, false, 0);
         }
 
         /** True when this row is a carrier-born fighter (carrier + bay present). */
@@ -320,26 +483,32 @@ public final class RosterAppendFrameCodec {
         Objects.requireNonNull(data, "data");
         short version = data.readShort();
         requireRegisteredSchema(version);
-        return decodeBody(readCheckedBody(data), true);
+        return decodeBody(readCheckedBody(data), Short.toUnsignedInt(version));
     }
 
     /**
      * The ARCHIVED-reel read (the reel tools: {@code DownFrameFamily}, {@code CcwrDespawnCensus},
-     * {@code CcwrEscapeParkAudit}, {@code CcwrMmntCensus}): accepts schema 4 OR 5 BY VALUE —
+     * {@code CcwrEscapeParkAudit}, {@code CcwrMmntCensus}): accepts schema 4, 5, 6 OR 7 BY VALUE —
      * the registry is NOT consulted (it registers only the live schema) — so a v4 reel recorded
      * before the v5 at-rest flag still walks; a v4 body has no flags byte and decodes
-     * {@code atRest=false} and {@code allSkillsCaptain=false}. Every other check is the live read's. The LIVE entry
+     * {@code atRest=false} and {@code allSkillsCaptain=false}. Each schema decodes through ITS OWN
+     * row layout, never re-interpreted as a later one: a v5 body has no {@code fleetKeyDigest}
+     * (decodes neither fleet bit, digest 0) and refuses bit2 / bit3, which were reserved at v5; a
+     * v6 body has v7's layout but refuses bit4 {@link #FLAG_FLEET_VACATED}, reserved at v6 (a
+     * schema-6 log holds no removal row). Every other check is the live read's. The LIVE entry
      * ({@link #readFrameAfterMagic}) stays exact-schema: a stale kit / peer fails closed there.
-     *
+     * The v6 arm:
+     * The v7 arm:
      */
     public static List<AppendRow> readArchivedFrameAfterMagic(DataInputStream data)
             throws IOException {
         Objects.requireNonNull(data, "data");
         int schema = Short.toUnsignedInt(data.readShort());
-        if (schema != ARCHIVED_SCHEMA_V4 && schema != FLAGS_SCHEMA_V5) {
+        if (schema != ARCHIVED_SCHEMA_V4 && schema != FLAGS_SCHEMA_V5 && schema != DIGEST_SCHEMA_V6
+                && schema != VACATED_SCHEMA_V7) {
             throw new IOException("unsupported roster-append frame schema: " + schema);
         }
-        return decodeBody(readCheckedBody(data), schema >= FLAGS_SCHEMA_V5);
+        return decodeBody(readCheckedBody(data), schema);
     }
 
     /** The post-schema envelope (header size, wire identity, declared body size, CRC32) → the body. */
@@ -380,17 +549,36 @@ public final class RosterAppendFrameCodec {
             data.writeInt((int) row.carrierWireId()); // v2
             data.writeByte(row.bayIndex());           // v2
             data.writeUTF(row.officerLine());         // v3 ("" = no captain)
-            data.writeByte((row.atRest() ? FLAG_AT_REST : 0)
-                    | (row.allSkillsCaptain() ? FLAG_ALL_SKILLS_CAPTAIN : 0)); // v5 flags
+            data.writeByte(flagBits(row.atRest(), row.allSkillsCaptain(), row.fleetFielded(),
+                    row.fleetRoundOpen(), row.fleetVacated())); // v5 flags + v6 / v7 bits
+            data.writeInt(row.fleetKeyDigest()); // v6, after the flags byte
         }
         data.flush();
         return bytes.toByteArray();
     }
 
-    /** One row's encoded size (the v5 layout; UTF = u16 length + modified-UTF-8 bytes; + u8 flags). */
+    /**
+     * A row's {@code u8 flags} byte from its bits: the ONE composition the encoder writes and the
+     * removal row's stand-alone law reads.
+     */
+    private static int flagBits(boolean atRest, boolean allSkillsCaptain, boolean fleetFielded,
+            boolean fleetRoundOpen, boolean fleetVacated) {
+        return (atRest ? FLAG_AT_REST : 0)
+                | (allSkillsCaptain ? FLAG_ALL_SKILLS_CAPTAIN : 0)
+                | (fleetFielded ? FLAG_FLEET_FIELDED : 0)
+                | (fleetRoundOpen ? FLAG_FLEET_ROUND_OPEN : 0)
+                | (fleetVacated ? FLAG_FLEET_VACATED : 0);
+    }
+
+    /**
+     * One row's encoded size (the v6 layout, which v7 keeps; UTF = u16 length + modified-UTF-8
+     * bytes; + u8 flags + u32 fleetKeyDigest). The chunker budgets with it, so it must equal the
+     * encoder's share.
+     */
     public static int rowBytes(AppendRow row) {
         return Integer.BYTES + 1 + utfBytes(row.variantId()) + utfBytes(row.shipName())
-                + Short.BYTES + Integer.BYTES + 1 + utfBytes(row.officerLine()) + 1;
+                + Short.BYTES + Integer.BYTES + 1 + utfBytes(row.officerLine()) + 1
+                + Integer.BYTES;
     }
 
     private static int utfBytes(String s) {
@@ -436,8 +624,19 @@ public final class RosterAppendFrameCodec {
         return chunks;
     }
 
-    /** {@code hasFlags} = the frame's schema carries the v5 {@code u8 flags} row tail (live: always). */
-    private static List<AppendRow> decodeBody(byte[] body, boolean hasFlags) throws IOException {
+    /**
+     * Decodes a body by its frame's {@code schema} (4 to 7; the live read passes the registered
+     * one): v5+ rows carry the {@code u8 flags} tail, v6+ rows the {@code u32 fleetKeyDigest}
+     * after it, and the flags a row may set are its schema's own (a v5 bit2 / bit3 and a v6 bit4
+     * stay reserved bits). A short body ends in the stream's {@link java.io.EOFException}, never a
+     * partial row. The v7 flag set:
+     *
+     */
+    private static List<AppendRow> decodeBody(byte[] body, int schema) throws IOException {
+        boolean hasFlags = schema >= FLAGS_SCHEMA_V5;
+        boolean hasDigest = schema >= DIGEST_SCHEMA_V6;
+        int knownFlags = schema >= VACATED_SCHEMA_V7 ? FLAGS_KNOWN_V7
+                : hasDigest ? FLAGS_KNOWN_V6 : FLAGS_KNOWN_V5;
         DataInputStream data = new DataInputStream(new java.io.ByteArrayInputStream(body));
         int rowCount = data.readUnsignedByte();
         if (rowCount < 1 || rowCount > MAX_ROWS_PER_FRAME) {
@@ -455,13 +654,25 @@ public final class RosterAppendFrameCodec {
             String officerLine = data.readUTF(); // v3
             boolean atRest = false; // a v4 archived body has no flags byte
             boolean allSkills = false;
+            boolean fleetFielded = false; // a v4 / v5 archived body has neither fleet bit
+            boolean fleetRoundOpen = false;
+            boolean fleetVacated = false; // a v4..v6 body never carries bit4
+            int fleetKeyDigest = 0; // ... nor the digest field
             if (hasFlags) {
                 int flags = data.readUnsignedByte(); // v5
-                if ((flags & ~(FLAG_AT_REST | FLAG_ALL_SKILLS_CAPTAIN)) != 0) {
+                if ((flags & ~knownFlags) != 0) {
                     throw new IOException("roster-append frame row " + i + " unknown flags: " + flags);
                 }
                 atRest = (flags & FLAG_AT_REST) != 0;
                 allSkills = (flags & FLAG_ALL_SKILLS_CAPTAIN) != 0;
+                fleetFielded = (flags & FLAG_FLEET_FIELDED) != 0;
+                fleetRoundOpen = (flags & FLAG_FLEET_ROUND_OPEN) != 0;
+                fleetVacated = (flags & FLAG_FLEET_VACATED) != 0;
+                if (hasDigest) {
+                    // The fleet laws (bit3 needs bit2; a digest needs bit2 or bit4; bit4 alone on an
+                    // inert row) are the row ctor's, refused by the wrap below.
+                    fleetKeyDigest = data.readInt();
+                }
             }
             // The emit side folds, the DECODE side refuses (the kit's
             // ClientRosterAppendReader drops the frame on the same bytes) — a reel tool must never silently
@@ -473,7 +684,8 @@ public final class RosterAppendFrameCodec {
                 // The row ctor's own laws (an officer line beside the all-skills bit included)
                 // throw IllegalArgumentException; this wrap makes each one the frame refusal.
                 rows.add(new AppendRow(wireId, side, variantId, shipName, crPerMille,
-                        carrierWireId, bayIndex, officerLine, atRest, allSkills));
+                        carrierWireId, bayIndex, officerLine, atRest, allSkills, fleetFielded,
+                        fleetRoundOpen, fleetVacated, fleetKeyDigest));
             } catch (IllegalArgumentException badRow) {
                 throw new IOException("roster-append frame row " + i + " invalid", badRow);
             }

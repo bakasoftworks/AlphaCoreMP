@@ -1,22 +1,23 @@
 package cc.starsector.server.match;
 
+import cc.starsector.server.names.EngineSymBridgeRoster;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.List;
 
 /**
- * All-skills SIDE-0 FLEET CONTEXT: the engine's
+ * All-skills PER-SIDE FLEET CONTEXT: the engine's
  * commander-skill throttle
  * short-circuits to FULL effect when a ship's member resolves null {@code FleetDataAPI} or a
  * commander whose stats carry no fleet — exactly our fabricated contexts, so every
  * threshold-scaled commander skill (phase_corps & family) granted at maximum regardless of the
  * deployed fleet. The chosen shape is the ENGINE's own adapts-to-the-fleet scaling,
- * so this class builds a REAL {@code com.fs.starfarer.campaign.fleet.FleetData} carrying the
- * present battle's side-0 roster and satisfies both gates:
+ * so this class builds a REAL {@code com.fs.starfarer.campaign.fleet.FleetData} carrying ONE
+ * side's document roster (one fab a fielded side) and satisfies both gates:
  * <ol>
  * <li><b>Gate 1 (member fleet data)</b>: shadow {@code FleetMember}s are minted from the
- *     DESCRIPTOR's side-0 SHIP rows via the engine's own context-free seam
+ *     DESCRIPTOR's SHIP rows of that side via the engine's own context-free seam
  *     ({@code SettingsAPI.createFleetMember(SHIP, variantId)}, which is
  *     {@code new FleetMember(0, variantId, type)}) and added to
  *     the fab FleetData. Descriptor-derived, NOT live-fielded members: the client registry shape
@@ -24,20 +25,28 @@ import java.util.List;
  *     are occupancy-gated, so live members would give the two ends DIFFERENT sums — the
  *     descriptor is the one roster law both ends already share (stats are off-wire; identical
  *     throttle input by construction). Shadow members never enter combat, so the fab's
- *     member-side effects (fleetData rebind at lists-sync) touch nothing live. Callers hand the
- *     fab to every REAL side-0 member via
- *     {@code setFleetCommanderForStats(union, fab)} — the same member field the engine itself
- *     prefers at every resolution site ({@code getFleetData}, {@code getCommanderStats} and the combat
- *     fleet manager).</li>
+ *     member-side effects (fleetData rebind at lists-sync) touch nothing live. The fab reaches a
+ *     REAL member through the engine's own public {@code FleetMember.setFleetData(fab)} (the
+ *     carrier; the server's one call site is {@code AllSkillsAttach.installPairAndCarrier}): the
+ *     pair setter {@code setFleetCommanderForStats(union, fab)} stores the commander ONLY and
+ *     drops its fab argument, so a pair alone leaves the
+ *     member fleet-data-less and the throttle at maximum. The real member never enters the
+ *     fab's member list.</li>
  * <li><b>Gate 2 (commander stats fleet)</b>: the throttle only null-checks
- *     {@code cStats.getFleet()}; the sole real reads in the granted family go through
- *     {@code getFleet().getFleetData()} (the AuxiliarySupport and FieldRepairs skills).
+ *     {@code cStats.getFleet()}; the real reads go through {@code getFleet().getFleetData()}
+ *     (FieldRepairs is the live consumer in the granted sheet;
+ *     AuxiliarySupport reads the same way but is npc_only, never granted).
  *     A full {@code CampaignFleet} is campaign-context-bound headless (ctor: sprite + fleet
  *     view + {@code CampaignEngine} name sources), so the
  *     union commander's stats get a fail-closed {@link Proxy} token that answers
  *     {@code getFleetData()} with the REAL fab and THROWS loudly on any other engine read — no
  *     faked values, and an unexpected read surfaces as a crash naming the method instead of a
- *     silent wrong stat.</li>
+ *     silent wrong stat. The engine re-derive this class runs after the token install is a
+ *     NO-OP for our persons (every match person is minted with skipRefresh),
+ * so the caller re-applies the character-stats effects headless
+ *     after EVERY token install ({@code AllSkillsAttach} through {@code PersonStatsRefresh}: the
+ *     same modifier ids, so the re-apply overwrites and never stacks).
+ *     </li>
  * </ol>
  *
  * <p><b>Sync discipline</b> (why the fab never full-syncs): {@code FleetData.syncIfNeeded}'s
@@ -49,6 +58,20 @@ import java.util.List;
  * clears on campaign sync only). Known residue: shadow-member DP costs
  * are BASE variant values (the campaign path where fleetwide skills can modify member DP never
  * runs headless) — symmetric both ends, second-order only.
+ *
+ * <p><b>The entries mint</b> ({@link #mintEntries}; no caller is wired to it yet, the variant-id
+ * {@link #mint} above stays the one in use): its input is the fleet key's ENTRY list ({@code S:<variantId>} = a seat
+ * hull, {@code A:<variantId>} = an AI hull, stations included), and each shadow is built as its LIVE twin: the
+ * twin's captain kind (a seat's all-skills person; an AI hull's officers-table person, else the engine's default
+ * person) and the twin's commander (the side's union person on side 0 and on every seat; none for a side-1 AI or
+ * station hull, whose live twin stays bare), then the engine's OWN stats derive per shadow. So each shadow's cost is
+ * the engine's stat-modified deployment cost: Support Doctrine's discount lands on a default-captained hull through
+ * the union's fleetwide skills, as the base game computes it. ORDER: the members-lists-only hold is set before the
+ * first member is added and held across every shadow's derive, then {@code syncMemberLists()} clears the threshold
+ * cache the half-built derive filled, then the count and the freeze, and only then the hold is released. WHY the
+ * hold: on a re-mint the union person still carries the previous fleet token, so a threshold skill inside a shadow's
+ * derive reads this fab's members, and without the hold that read would run FleetData's FULL campaign sync headless.
+ *
  *
  * <p>SERVER-ONLY: this class is java.lang.reflect throughout and
  * classloader B DENIES java.lang.reflect in the mod jar (the B-deny gate measured the
@@ -74,19 +97,182 @@ public final class AllSkillsFleetData {
     private static final String PERSON_API = "com.fs.starfarer.api.characters.PersonAPI";
     private static final String MUTABLE_CHAR_STATS_API =
             "com.fs.starfarer.api.characters.MutableCharacterStatsAPI";
-    /**
-     * The engine's own campaign FleetData class — an UNOBFUSCATED name in 0.98a-RC8 (verified
-     * against the engine bytecode); its
-     * {@code (String namePrefix, String nameSourceFactionId)} ctor is campaign-free with BOTH
-     * args null (the faction id is the only {@code CampaignEngine} touch).
-     */
-    private static final String OBF_FLEET_DATA = "com.fs.starfarer.campaign.fleet.FleetData";
     private static final String BASE_SKILL_DESC =
             "com.fs.starfarer.api.impl.campaign.skills.BaseSkillEffectDescription";
     private static final String PHASE_CORPS =
             "com.fs.starfarer.api.impl.campaign.skills.PhaseCorps";
 
+    /** The entry prefix of a seat hull in the fleet key's canonical entry form. */
+    public static final String SEAT_ENTRY_PREFIX = "S:";
+    /** The entry prefix of an AI hull (stations included) in the fleet key's canonical entry form. */
+    public static final String AI_ENTRY_PREFIX = "A:";
+    /** An unknown prefix is named in the refusal clipped to this many characters (a bounded token). */
+    private static final int PREFIX_TOKEN_MAX = 16;
+
     private AllSkillsFleetData() {
+    }
+
+    /**
+     * What only the server's attach code may do to a shadow member: mint the captain kinds its live twins carry, and
+     * write the commander pair through the server's one pair handle (that setter is looked up by name in exactly one
+     * place in the server tree, so this class never names it).
+     *
+     */
+    public interface ShadowTwin {
+        /** A fresh captain of the kind a seat hull's live attach gives: the all-skills sheet, a non-default person. */
+        Object seatCaptain() throws Exception;
+
+        /**
+         * A fresh, detached captain the live officer attach would give an AI hull of {@code variantId}, or null when
+         * it would give none (the shadow keeps the engine's own default person).
+         */
+        Object aiCaptainOrNull(String variantId) throws Exception;
+
+        /** Pair {@code shadow} with {@code commander}; the engine keeps the commander and drops the fab argument. */
+        void pair(Object shadow, Object commander, Object fab) throws Exception;
+    }
+
+    /**
+     * Build one side's fleet context from the key's ENTRY list, each shadow its live twin (class doc, "The entries
+     * mint"): {@code entries} = the canonical entries in key order, each {@code S:<variantId>} or
+     * {@code A:<variantId>}; any other prefix THROWS naming it, before any engine work. {@code side} = the absolute
+     * fielded side (0 or 1): it picks the commander rule and names the echo. Then exactly as {@link #mint}: the gate-2
+     * token goes on {@code unionPersonApi}'s stats and the CALLER re-applies its character-stats effects. Fail-closed:
+     * a seat captain that cannot be minted, a short roster or any engine miss THROWS.
+     *
+     */
+    public static AllSkillsFleetLaw.Mint mintEntries(ClassLoader loader, int side, List<String> entries,
+            Object unionPersonApi, ShadowTwin twin) {
+        if (entries == null || entries.isEmpty()) {
+            throw new IllegalStateException("all-skills fleet-context entries mint: empty entry list");
+        }
+        int n = entries.size();
+        boolean[] seat = new boolean[n];
+        String[] variantIds = new String[n];
+        for (int i = 0; i < n; i++) {
+            String entry = entries.get(i);
+            if (entry != null && entry.startsWith(SEAT_ENTRY_PREFIX)) {
+                seat[i] = true;
+            } else if (entry == null || !entry.startsWith(AI_ENTRY_PREFIX)) {
+                throw new IllegalArgumentException("all-skills fleet-context entries mint: entry " + i
+                        + " has the unknown prefix '" + prefixToken(entry) + "' (" + SEAT_ENTRY_PREFIX
+                        + " = a seat hull, " + AI_ENTRY_PREFIX + " = an AI hull)");
+            }
+            variantIds[i] = entry.substring((seat[i] ? SEAT_ENTRY_PREFIX : AI_ENTRY_PREFIX).length());
+            if (variantIds[i].isEmpty()) {
+                throw new IllegalArgumentException("all-skills fleet-context entries mint: entry " + i
+                        + " names no variant id");
+            }
+        }
+        if (side != 0 && side != 1) {
+            throw new IllegalStateException("all-skills fleet-context entries mint: side " + side
+                    + " - a fielded side is 0 or 1");
+        }
+        if (unionPersonApi == null || twin == null) {
+            throw new IllegalStateException("all-skills fleet-context entries mint: null "
+                    + (unionPersonApi == null ? "union person" : "shadow twin"));
+        }
+        try {
+            Object settings = settingsOrThrow(loader);
+            Class<?> settingsApi = Class.forName(SETTINGS_API, false, loader);
+            Class<?> memberApi = Class.forName(FLEET_MEMBER_API, false, loader);
+            Class<?> memberType = Class.forName(FLEET_MEMBER_TYPE, false, loader);
+            Class<?> fleetDataApi = Class.forName(FLEET_DATA_API, false, loader);
+            Class<?> campaignFleetApi = Class.forName(CAMPAIGN_FLEET_API, false, loader);
+            Class<?> personApi = Class.forName(PERSON_API, false, loader);
+            Class<?> charStatsApi = Class.forName(MUTABLE_CHAR_STATS_API, false, loader);
+
+            Method createFleetMember =
+                    settingsApi.getMethod("createFleetMember", memberType, String.class);
+            Object shipType = memberType.getField("SHIP").get(null);
+            Method setShipName = memberApi.getMethod("setShipName", String.class);
+            Method getRepairTracker = memberApi.getMethod("getRepairTracker");
+            Method isMothballed = memberApi.getMethod("isMothballed");
+            Method setCaptain = memberApi.getMethod("setCaptain", personApi);
+            Method updateStats = memberApi.getMethod("updateStats");
+
+            Object fab = EngineSymBridgeRoster.BRIDGE_ROSTER_FLEET_DATA_CLASS.load(loader)
+                    .getConstructor(String.class, String.class)
+                    .newInstance((String) null, (String) null);
+            Method addFleetMember = fleetDataApi.getMethod("addFleetMember", memberApi);
+            Method setOnlySync = fleetDataApi.getMethod("setOnlySyncMemberLists", boolean.class);
+            Method syncMemberLists = fleetDataApi.getMethod("syncMemberLists");
+            Method setForceNoSync = fleetDataApi.getMethod("setForceNoSync", boolean.class);
+            Method getNumMembers = fleetDataApi.getMethod("getNumMembers");
+
+            // THE HOLD, before the first add: every sync this fab runs until the freeze is members-lists-only.
+            setOnlySync.invoke(fab, Boolean.TRUE);
+            for (int i = 0; i < n; i++) {
+                Object shadow = createFleetMember.invoke(settings, shipType, variantIds[i]);
+                if (shadow == null) {
+                    throw new IllegalStateException("createFleetMember(SHIP, '" + variantIds[i]
+                            + "') returned null");
+                }
+                setShipName.invoke(shadow, "CC-SHADOW-" + (i + 1));
+                if (getRepairTracker.invoke(shadow) == null) {
+                    throw new IllegalStateException("shadow member '" + variantIds[i]
+                            + "' has a null RepairTracker - the fab lists-sync would silently"
+                            + " empty the roster (invalid-load-order guard)");
+                }
+                if (Boolean.TRUE.equals(isMothballed.invoke(shadow))) {
+                    throw new IllegalStateException("shadow member '" + variantIds[i]
+                            + "' minted MOTHBALLED - it would silently drop from every sum");
+                }
+                Object captain = seat[i] ? twin.seatCaptain() : twin.aiCaptainOrNull(variantIds[i]);
+                if (seat[i] && captain == null) {
+                    throw new IllegalStateException("seat shadow '" + variantIds[i] + "' got no all-skills"
+                            + " captain - a default person would take the officerless discounts (fail-closed)");
+                }
+                if (captain != null) {
+                    setCaptain.invoke(shadow, captain);
+                }
+                if (seat[i] || side == 0) {
+                    twin.pair(shadow, unionPersonApi, fab);
+                }
+                addFleetMember.invoke(fab, shadow);
+                // The engine's own derive: captain personal skills, the union's fleetwide skills, hullmods.
+                updateStats.invoke(shadow);
+            }
+            // Clear what the half-built derive cached, count under the hold, freeze, and only then release it.
+            syncMemberLists.invoke(fab);
+            int synced = ((Number) getNumMembers.invoke(fab)).intValue();
+            setForceNoSync.invoke(fab, Boolean.TRUE);
+            setOnlySync.invoke(fab, Boolean.FALSE);
+            if (synced != n) {
+                throw new IllegalStateException("fab FleetData synced " + synced + " members for " + n
+                        + " entries - a short roster inflates every threshold bonus (fail-closed)");
+            }
+
+            Object token = Proxy.newProxyInstance(loader, new Class<?>[] {campaignFleetApi},
+                    new FleetTokenHandler(fab));
+            installFleetToken(loader, unionPersonApi, token);
+
+            String echo = engineEcho(loader, side, fab, unionPersonApi, personApi, charStatsApi,
+                    fleetDataApi, n);
+            return new AllSkillsFleetLaw.Mint(fab, token, echo);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            Throwable cause = (e instanceof java.lang.reflect.InvocationTargetException
+                    && e.getCause() != null) ? e.getCause() : e;
+            throw new IllegalStateException(
+                    "all-skills fleet-context entries mint failed: " + cause, cause);
+        }
+    }
+
+    /** The text before an entry's first ':' (the whole entry when it has none), clipped: a bounded token. */
+    private static String prefixToken(String entry) {
+        if (entry == null) {
+            return "null";
+        }
+        int colon = entry.indexOf(':');
+        String head = colon < 0 ? entry : entry.substring(0, colon);
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < head.length() && out.length() < PREFIX_TOKEN_MAX; i++) {
+            char c = head.charAt(i);
+            out.append((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ? c : '?');
+        }
+        return out.toString();
     }
 
     /**
@@ -109,13 +295,15 @@ public final class AllSkillsFleetData {
     }
 
     /**
-     * Build the side-0 fleet context: shadow-mint the roster, fab the engine FleetData, freeze
-     * its sync, install the gate-2 token on {@code unionPersonApi}'s stats and re-derive its
-     * character-stats effects (they first applied fleet-less at skill set — the engine's own
-     * {@code refreshCharacterStatsEffects(false)} idiom).
+     * Build one side's fleet context: shadow-mint that side's roster, fab the engine FleetData,
+     * freeze its sync, install the gate-2 token on {@code unionPersonApi}'s stats (replacing any
+     * earlier token) and run the engine's own re-derive ({@code refreshCharacterStatsEffects(false)}
+     * — a no-op for a skipRefresh person, so the CALLER
+     * re-applies the character-stats effects after this returns). {@code side} = the absolute
+     * side (0 or 1) the echo names. Side parameter.
      */
-    public static AllSkillsFleetLaw.Mint mint(ClassLoader loader, List<String> variantIds,
-            Object unionPersonApi) {
+    public static AllSkillsFleetLaw.Mint mint(ClassLoader loader, int side,
+            List<String> variantIds, Object unionPersonApi) {
         if (variantIds == null || variantIds.isEmpty()) {
             throw new IllegalStateException("all-skills fleet-context mint: empty variant list");
         }
@@ -139,8 +327,10 @@ public final class AllSkillsFleetData {
             Method getRepairTracker = memberApi.getMethod("getRepairTracker");
             Method isMothballed = memberApi.getMethod("isMothballed");
 
-            // The fab: the engine's OWN FleetData, campaign-free with null name sources.
-            Object fab = Class.forName(OBF_FLEET_DATA, true, loader)
+            // The fab: the engine's OWN FleetData, campaign-free with null name sources. Its
+            // (String namePrefix, String nameSourceFactionId) ctor takes BOTH args null: the faction id
+            // is its only CampaignEngine touch.
+            Object fab = EngineSymBridgeRoster.BRIDGE_ROSTER_FLEET_DATA_CLASS.load(loader)
                     .getConstructor(String.class, String.class)
                     .newInstance((String) null, (String) null);
             Method addFleetMember = fleetDataApi.getMethod("addFleetMember", memberApi);
@@ -188,7 +378,7 @@ public final class AllSkillsFleetData {
                     new FleetTokenHandler(fab));
             installFleetToken(loader, unionPersonApi, token);
 
-            String echo = engineEcho(loader, fab, unionPersonApi, personApi, charStatsApi,
+            String echo = engineEcho(loader, side, fab, unionPersonApi, personApi, charStatsApi,
                     fleetDataApi, variantIds.size());
             return new AllSkillsFleetLaw.Mint(fab, token, echo);
         } catch (RuntimeException e) {
@@ -224,6 +414,29 @@ public final class AllSkillsFleetData {
         }
     }
 
+    /**
+     * Take the gate-2 token OFF {@code personApi}'s stats ({@code setFleet(null)}) and run the
+     * engine re-derive — for a side whose new document has no roster: its union person must not
+     * keep answering the previous fab. The caller re-applies the character-stats effects after.
+     *
+     */
+    public static void clearCommanderFleetToken(ClassLoader loader, Object personApi) {
+        if (personApi == null) {
+            throw new IllegalStateException("all-skills fleet-context: token clear with no person"
+                    + " — fail-closed");
+        }
+        try {
+            installFleetToken(loader, personApi, null);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            Throwable cause = (e instanceof java.lang.reflect.InvocationTargetException
+                    && e.getCause() != null) ? e.getCause() : e;
+            throw new IllegalStateException(
+                    "all-skills fleet-context token clear failed: " + cause, cause);
+        }
+    }
+
     private static void installFleetToken(ClassLoader loader, Object personApi, Object token)
             throws Exception {
         Object stats = Class.forName(PERSON_API, false, loader).getMethod("getStats")
@@ -234,22 +447,22 @@ public final class AllSkillsFleetData {
         Class<?> charStatsApi = Class.forName(MUTABLE_CHAR_STATS_API, false, loader);
         charStatsApi.getMethod("setFleet", Class.forName(CAMPAIGN_FLEET_API, false, loader))
                 .invoke(stats, token);
-        // Character-level threshold effects (AuxiliarySupport family) first applied at skill
-        // set with a null fleet — re-derive them now that both gates resolve. Engine idiom:
-        // FleetData.setCommander does exactly this re-derive on commander change.
+        // The engine's own re-derive on a fleet change (FleetData.setCommander runs exactly this).
+        //Every match person carries skipRefresh, so for ours it does nothing: the
+        // caller re-applies the character-stats effects headless after every token install.
         charStatsApi.getMethod("refreshCharacterStatsEffects", boolean.class)
                 .invoke(stats, Boolean.FALSE);
     }
 
     /**
      * The canonical echo, computed by the ENGINE's own statics over the fab (never re-derived
-     * project-side): member count, the phase/combat DP sums, bays, the phase threshold constant
-     * and the resulting phase_corps speed/peak bonuses. Byte-identical across ends for the same
-     * descriptor — the watch parity assert consumes it verbatim.
+     * project-side): the absolute side, member count, the phase/combat DP sums, bays, the phase
+     * threshold constant and the resulting phase_corps speed/peak bonuses. Byte-identical across
+     * ends for the same descriptor side — the watch parity assert consumes it verbatim.
      */
-    private static String engineEcho(ClassLoader loader, Object fab, Object unionPersonApi,
-            Class<?> personApi, Class<?> charStatsApi, Class<?> fleetDataApi, int members)
-            throws Exception {
+    private static String engineEcho(ClassLoader loader, int side, Object fab,
+            Object unionPersonApi, Class<?> personApi, Class<?> charStatsApi,
+            Class<?> fleetDataApi, int members) throws Exception {
         Class<?> base = Class.forName(BASE_SKILL_DESC, true, loader);
         Class<?> phaseCorps = Class.forName(PHASE_CORPS, true, loader);
         Object unionStats = personApi.getMethod("getStats").invoke(unionPersonApi);
@@ -267,7 +480,7 @@ public final class AllSkillsFleetData {
                 float.class, float.class, float.class);
         float pcSpeed = ((Number) bonus.invoke(calc, speedMax, phaseDp, phaseThr)).floatValue();
         float pcPeak = ((Number) bonus.invoke(calc, peakMax, phaseDp, phaseThr)).floatValue();
-        return AllSkillsFleetLaw.echoLine(members, phaseDp, phaseThr, pcSpeed, pcPeak,
+        return AllSkillsFleetLaw.echoLine(side, members, phaseDp, phaseThr, pcSpeed, pcPeak,
                 combatDp, bays);
     }
 
@@ -284,8 +497,8 @@ public final class AllSkillsFleetData {
     /**
      * Gate-2 token semantics: {@code getFleetData()} answers with the REAL fab; {@code Object}
      * methods behave; EVERYTHING else throws naming the method — the engine only null-checks
-     * the commander's fleet on the throttle path and the two real reads in the granted family
-     * go through {@code getFleetData()} (class doc), so any other read is an unmapped engine
+     * the commander's fleet on the throttle path and the real skill reads go through
+     * {@code getFleetData()} (class doc), so any other read is an unmapped engine
      * path that must surface loudly, never get a faked value.
      */
     public static final class FleetTokenHandler implements InvocationHandler {

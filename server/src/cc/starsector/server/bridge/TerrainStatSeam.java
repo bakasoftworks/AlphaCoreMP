@@ -1,5 +1,6 @@
 package cc.starsector.server.bridge;
 
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.runtime.TerrainStatLaw;
 import cc.starsector.server.runtime.WireKnob;
 import cc.starsector.server.runtime.WireKnobState;
@@ -32,7 +33,6 @@ import java.util.Set;
  */
 public final class TerrainStatSeam {
 
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     private static final String STATS_API = "com.fs.starfarer.api.combat.MutableShipStatsAPI";
     // The class lives in api.util (jar listing; SideTotalsCapture uses the same name) — the
@@ -188,8 +188,7 @@ public final class TerrainStatSeam {
      */
     public static int reapplyAll() {
         try {
-            Class<?> engineClass = Class.forName(ENGINE_CLASS, true,
-                    TerrainStatSeam.class.getClassLoader());
+            Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(TerrainStatSeam.class.getClassLoader());
             Object engine = engineClass.getMethod("getInstance").invoke(null);
             Object ships = engine == null ? null : engineClass.getMethod("getShips").invoke(engine);
             int n = 0;

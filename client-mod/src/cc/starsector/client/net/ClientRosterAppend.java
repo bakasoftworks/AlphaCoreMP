@@ -59,11 +59,13 @@ public record ClientRosterAppend(List<Row> rows, int roundEpoch) {
      * {@code WireTextLaw.isPrintableWireChar} refuses; messages here never
      * echo the ids. v2:
      * {@code carrierWireId} ({@code 0} = none) + {@code bayIndex}
-     * ({@link #BAY_NONE} = none) place a carrier-born fighter for the wing HUD lane.
+     * ({@link #BAY_NONE} = none) place a carrier-born fighter for the wing HUD lane. A v7
+     * {@code fleetVacated} row is the one exception to "one hull": a record removal, never a hull.
      */
     public record Row(long wireId, int side, String variantId, String shipName,
             int crPerMille, long carrierWireId, int bayIndex,
-            OfficerRosterCodec.OfficerSpec officerOrNull, boolean atRest, boolean allSkillsCaptain) {
+            OfficerRosterCodec.OfficerSpec officerOrNull, boolean atRest, boolean allSkillsCaptain,
+            boolean fleetFielded, boolean fleetRoundOpen, boolean fleetVacated, int fleetKeyDigest) {
         /** Non-fighter row shape (tests / the pre-v2 callers): no carrier, no captain, not at rest. */
         public Row(long wireId, int side, String variantId, String shipName, int crPerMille) {
             this(wireId, side, variantId, shipName, crPerMille, 0L, BAY_NONE, null, false, false);
@@ -84,6 +86,24 @@ public record ClientRosterAppend(List<Row> rows, int roundEpoch) {
                     atRest, false);
         }
 
+        /** The v5 shape: no fleet bits, digest 0 (every caller that predates schema 6). */
+        public Row(long wireId, int side, String variantId, String shipName, int crPerMille,
+                long carrierWireId, int bayIndex, OfficerRosterCodec.OfficerSpec officerOrNull,
+                boolean atRest, boolean allSkillsCaptain) {
+            this(wireId, side, variantId, shipName, crPerMille, carrierWireId, bayIndex, officerOrNull,
+                    atRest, allSkillsCaptain, false, false, 0);
+        }
+
+        /** The v6 shape: no vacated bit (every caller that predates schema 7).
+         * */
+        public Row(long wireId, int side, String variantId, String shipName, int crPerMille,
+                long carrierWireId, int bayIndex, OfficerRosterCodec.OfficerSpec officerOrNull,
+                boolean atRest, boolean allSkillsCaptain, boolean fleetFielded, boolean fleetRoundOpen,
+                int fleetKeyDigest) {
+            this(wireId, side, variantId, shipName, crPerMille, carrierWireId, bayIndex, officerOrNull,
+                    atRest, allSkillsCaptain, fleetFielded, fleetRoundOpen, false, fleetKeyDigest);
+        }
+
         /**
          * v3: {@code officerOrNull} = the captain the SERVER attached to this
          * hull, decoded by {@link ClientRosterAppendReader} from the row's
@@ -102,6 +122,28 @@ public record ClientRosterAppend(List<Row> rows, int roundEpoch) {
          * source), so the replica mints the seat-shaped all-skills captain when the kit's all-skills
          * match flag is ON too. EXCLUSIVE with {@code officerOrNull}: a row carrying both is refused
          * here ({@link ClientRosterAppendReader} fails the frame closed); false on every legacy shape.
+         *
+         * <p>v6, all three set by the server's fielding
+         * caller, folded by RosterAppendLane; false / false / 0 on every legacy shape:
+         * <ul>
+         * <li>{@code fleetFielded} = flags bit2: this row is a fleet-record write (its wire id holds
+         * its side + its variant's goal in the round's record from here on).</li>
+         * <li>{@code fleetRoundOpen} = flags bit3: that write belongs to the round-open pre-pass
+         * (the reader admits it only beside bit2).</li>
+         * <li>{@code fleetKeyDigest} = the u32 digest, as the signed int's bit pattern (every value
+         * lawful on a fielded row, 0 included), of the side's fleet key the hull read; on a vacated
+         * row the side's key right after the removal; 0 on a row with neither bit (the reader
+         * refuses anything else).</li>
+         * </ul>
+         *
+         * <p>v7 {@code fleetVacated} = flags bit4: this row
+         * REMOVES its wire id's entry from the round's record and announces no hull; false on every
+         * legacy shape. Its other fields are REQUIRED inert, refused here otherwise: no officer, no
+         * carrier / bay, cr 0, shipName equal to variantId (the removed entry's goal id). A row ctor
+         * law, not a reader habit, so a vacated row can never also read as a lawful hull announce
+         * (one bit pattern, one meaning; the server codec holds the same law).
+         * The reader enforces the bit/digest laws (bit4 alone or absent included); this record does
+         * not re-check them.
          */
         public Row {
             Objects.requireNonNull(variantId, "variantId");
@@ -148,6 +190,24 @@ public record ClientRosterAppend(List<Row> rows, int roundEpoch) {
             }
             if (carrierWireId == wireId) {
                 throw new IllegalArgumentException("a hull cannot be its own carrier: " + wireId);
+            }
+            if (fleetVacated) {
+                if (officerOrNull != null) {
+                    throw new IllegalArgumentException("a vacated row cannot carry an officer, wireId="
+                            + wireId);
+                }
+                if (carrierWireId != 0L) {
+                    throw new IllegalArgumentException("a vacated row cannot carry a carrier/bay: "
+                            + carrierWireId + "/" + bayIndex);
+                }
+                if (crPerMille != 0) {
+                    throw new IllegalArgumentException("a vacated row's crPerMille must be 0, got "
+                            + crPerMille);
+                }
+                if (!shipName.equals(variantId)) {
+                    throw new IllegalArgumentException(
+                            "a vacated row's shipName must equal its variantId, wireId=" + wireId);
+                }
             }
         }
 

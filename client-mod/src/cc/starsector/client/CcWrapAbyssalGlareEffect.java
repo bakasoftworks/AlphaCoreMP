@@ -162,7 +162,7 @@ public class CcWrapAbyssalGlareEffect extends AbyssalGlareEffect {
         look.movementDurOverride = GlareLaw.arcTravelTime(length, RiftLightningEffect.RIFT_LIGHTNING_SPEED);
         look.segmentLengthMult = 8f;
         look.zigZagReductionFactor = 0.15f;
-        EmpArcEntityAPI arc = engine.spawnEmpArcVisual(new Vector2f(from), source, new Vector2f(end), source,
+        EmpArcEntityAPI arc = ArcBelt.spawn(engine, new Vector2f(from), source, new Vector2f(end), source,
                 80f, RiftLightningEffect.RIFT_LIGHTNING_COLOR, Color.white, look);
         if (arc != null) {
             arc.setCoreWidthOverride(40f);

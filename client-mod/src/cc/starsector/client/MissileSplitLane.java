@@ -17,10 +17,8 @@ import com.fs.starfarer.combat.entities.Missile;
 import com.fs.starfarer.combat.entities.MovingRay;
 import com.fs.starfarer.combat.entities.PlasmaShot;
 import com.fs.starfarer.combat.entities.Ship;
-import com.fs.starfarer.combat.systems.o00O;
-import com.fs.starfarer.loading.Q;
-import com.fs.starfarer.loading.specs.F;
-import com.fs.starfarer.loading.specs.oO0o;
+import com.fs.starfarer.loading.specs.return_;
+import com.fs.starfarer.loading.specs.dosuper;
 import com.fs.starfarer.renderers.damage.DebrisParticleSystem;
 import org.json.JSONObject;
 import org.lwjgl.util.vector.Vector2f;
@@ -125,6 +123,8 @@ final class MissileSplitLane {
      *  NAMED decline to the approx lane, never a silent repeat of the 35/35 NPE.
      *  {@code java.lang.invoke} = the loader-B legal lane (java.lang.reflect is B-denied). */
     private static final java.lang.invoke.MethodHandle SMOKE_BURST;
+    /** The smoke spec's JSON factory {@code (JSONObject)→spec}; non-null whenever {@link #SMOKE_BURST} is. */
+    private static final java.lang.invoke.MethodHandle SMOKE_SPEC_PARSE;
     private static final java.lang.invoke.MethodHandle SPEC_STORE;
     private static final java.lang.invoke.MethodHandle SPLIT_FACTORY;
     private static final java.lang.invoke.MethodHandle DAMAGE_CTOR;
@@ -139,6 +139,7 @@ final class MissileSplitLane {
 
     static {
         java.lang.invoke.MethodHandle smoke = null;
+        java.lang.invoke.MethodHandle smokeSpecParse = null;
         java.lang.invoke.MethodHandle store = null;
         java.lang.invoke.MethodHandle factory = null;
         java.lang.invoke.MethodHandle dmgCtor = null;
@@ -157,13 +158,16 @@ final class MissileSplitLane {
             // The method NAME is a string the compat agent's class-load
             // rename cannot reach, so it goes through EngineNames keyed by the Windows-build owner + descriptor;
             // the MethodType below stays compiled class literals, which the agent does rename.
+            // Except the engine weapon class, whose name was a Java keyword
+            // on 0.98.5a-RC4: it alone loads by name through EngineNames.cls, like the damage class below.
+            Class<?> engineWeapon = Class.forName(EngineNames.cls("com.fs.starfarer.combat.systems.Q"));
             factory = lookup.findStatic(com.fs.starfarer.loading.specs.a.class,
-                    EngineNames.member("com.fs.starfarer.loading.specs.a", "super",
-                            "(Lcom/fs/starfarer/combat/entities/Ship;Lcom/fs/starfarer/combat/systems/o00O;"
+                    EngineNames.member("com.fs.starfarer.loading.specs.a", "o00000",
+                            "(Lcom/fs/starfarer/combat/entities/Ship;Lcom/fs/starfarer/combat/systems/Q;"
                                     + "Ljava/lang/Object;Lorg/lwjgl/util/vector/Vector2f;F"
                                     + "Lorg/lwjgl/util/vector/Vector2f;)Ljava/lang/Object;"),
                     java.lang.invoke.MethodType.methodType(Object.class,
-                            Ship.class, o00O.class, Object.class,
+                            Ship.class, engineWeapon, Object.class,
                             Vector2f.class, float.class, Vector2f.class));
         } catch (Throwable t) {
             failures.append("[SPLIT_FACTORY] ").append(t).append(' ');
@@ -172,12 +176,12 @@ final class MissileSplitLane {
             // The C7 FIX: vanilla MirvAI's damage placeholder — the factory ctor
             // clones spec.getDamage() unconditionally, so this is a PRECONDITION of the spawn,
             // not cosmetics. Placed AFTER the factory try: the ordering law above still holds
-            // (the pixel-minting piece resolves FIRST and ALONE). The type is reachable only by
-            // string — `com.fs.starfarer.combat.E` is a class AND a package.
-            Class<?> dmg = Class.forName(EngineNames.cls("com.fs.starfarer.combat.E.F"));
+            // (the pixel-minting piece resolves FIRST and ALONE). On 0.98.5a-RC4 the type was reachable
+            // only by string — `com.fs.starfarer.combat.E` was a class AND a package there.
+            Class<?> dmg = Class.forName(EngineNames.cls("com.fs.starfarer.combat.o0OO.F"));
             dmgCtor = lookup.findConstructor(dmg, java.lang.invoke.MethodType.methodType(
                     void.class, float.class, boolean.class, DamageType.class));
-            setDamage = lookup.findVirtual(F.class, "setDamage",
+            setDamage = lookup.findVirtual(return_.class, "setDamage",
                     java.lang.invoke.MethodType.methodType(void.class, dmg));
         } catch (Throwable t) {
             // All-or-nothing: the call site needs BOTH, and half a pair is a null-deref waiting.
@@ -186,16 +190,28 @@ final class MissileSplitLane {
             failures.append("[SPEC_SET_DAMAGE] ").append(t).append(' ');
         }
         try {
-            store = lookup.findStatic(Q.class, "Õ" + "00000", // raw UTF-8 U+00D5, JEP 400
+            // Both names were Java keywords on 0.98.5a-RC4, so both are by-name lookups, and BOTH go through
+            // EngineNames: the other build spells the method differently too (the raw
+            // "class" never resolved there).
+            store = lookup.findStatic(Class.forName(EngineNames.cls("com.fs.starfarer.loading.Q")),
+                    EngineNames.member("com.fs.starfarer.loading.Q", "Õ00000",
+                            "(Ljava/lang/String;)Ljava/lang/Object;"),
                     java.lang.invoke.MethodType.methodType(Object.class, String.class));
         } catch (Throwable t) {
             failures.append("[SPEC_STORE] ").append(t).append(' ');
         }
         try {
+            // The smoke spec's JSON factory was named with a Java keyword on
+            // 0.98.5a-RC4, so it is a handle too, its name keyed through EngineNames like the factory above. It
+            // resolves FIRST in this try, so a resolved smoke burst always has its spec parser.
+            smokeSpecParse = lookup.findStatic(dosuper.class,
+                    EngineNames.member("com.fs.starfarer.loading.specs.dosuper", "super",
+                            "(Lorg/json/JSONObject;)Lcom/fs/starfarer/loading/specs/dosuper;"),
+                    java.lang.invoke.MethodType.methodType(dosuper.class, JSONObject.class));
             Class<?> fxHolder = Class.forName(
-                    EngineNames.cls("com.fs.starfarer.combat.entities.ship.A.class"));
+                    EngineNames.cls("com.fs.starfarer.combat.entities.ship.A.E"));
             smoke = lookup.findStatic(fxHolder, "o00000", java.lang.invoke.MethodType.methodType(
-                    void.class, oO0o.class, Vector2f.class, float.class, Vector2f.class));
+                    void.class, dosuper.class, Vector2f.class, float.class, Vector2f.class));
         } catch (Throwable t) {
             failures.append("[SMOKE_BURST] ").append(t).append(' ');
         }
@@ -212,6 +228,7 @@ final class MissileSplitLane {
             failures.append("[DEBRIS_*] ").append(t).append(' ');
         }
         SMOKE_BURST = smoke;
+        SMOKE_SPEC_PARSE = smokeSpecParse;
         SPEC_STORE = store;
         SPLIT_FACTORY = factory;
         DAMAGE_CTOR = dmgCtor;
@@ -463,7 +480,7 @@ final class MissileSplitLane {
             Vector2f smokeVel = explode ? new Vector2f() : vel; //
             if (SMOKE_BURST != null) {
                 try {
-                    oO0o smokeSpec = oO0o.o00000(params.getJSONObject("smokeSpec"));
+                    dosuper smokeSpec = (dosuper) SMOKE_SPEC_PARSE.invoke(params.getJSONObject("smokeSpec"));
                     SMOKE_BURST.invoke(smokeSpec, fxLoc, fxFacing, smokeVel);
                 } catch (Throwable ignore) {
                     // fail-soft: skip smoke, keep sound+debris
@@ -587,10 +604,10 @@ final class MissileSplitLane {
             // Every arm of this gate now NAMES itself. Before, four distinct declines AND a
             // swallowed clone throw all arrived at the same untokened `child == null`, which is
             // how an earlier read came to attribute the failure to a method that cannot return null.
-            F vanillaChildSpec = null;
+            return_ vanillaChildSpec = null;
             String gate = null;
             boolean cloneThrew = false;
-            if (!(childSpec instanceof F)) {
+            if (!(childSpec instanceof return_)) {
                 gate = "spec_not_F:" + childSpec.getClass().getName();
             } else if (SPLIT_FACTORY == null) {
                 gate = "factory_unresolved";
@@ -601,7 +618,8 @@ final class MissileSplitLane {
                 gate = "damage_handles_unresolved";
             } else if (!(ship instanceof Ship)) {
                 gate = "ship_not_engine:" + ship.getClass().getName();
-            } else if (!(weapon instanceof o00O)) {
+            } else if (!SPLIT_FACTORY.type().parameterType(1).isInstance(weapon)) {
+                // the factory's weapon parameter IS the engine weapon class (a Java keyword name on this build)
                 gate = "weapon_not_engine:" + weapon.getClass().getName();
             } else {
                 // Which prep step threw — the try now covers THREE mutations, and one
@@ -609,7 +627,7 @@ final class MissileSplitLane {
                 // (predict_missile_split_clone_threw) is unchanged; graders join on it.
                 String prep = "clone";
                 try {
-                    vanillaChildSpec = ((F) childSpec).clone();
+                    vanillaChildSpec = ((return_) childSpec).clone();
                     prep = "range";
                     vanillaChildSpec.setMaxRange(projectileRange);
                     prep = "damage";
@@ -645,7 +663,7 @@ final class MissileSplitLane {
                 String factoryFail = null;
                 String fallbackFail = null;
                 splitAttempts++; // SHOTS, not events (an earlier count conflated the two units)
-                if (childSpec instanceof F) {
+                if (childSpec instanceof return_) {
                     // Vanilla passes the RAW parent velocity — the direction
                     // spread rides the factory's moveSpeed·dir(ang) add.
                     childVel = new Vector2f(vel);
@@ -656,7 +674,7 @@ final class MissileSplitLane {
                             vanillaChildSpec.setMoveSpeed(
                                     spreadSpeed + spreadSpeedRange * (float) Math.random());
                             Object minted = SPLIT_FACTORY.invoke(
-                                    (Ship) ship, (o00O) weapon, (Object) vanillaChildSpec,
+                                    (Ship) ship, weapon, (Object) vanillaChildSpec,
                                     spawnLoc, ang, childVel);
                             if (minted instanceof CombatEntityAPI) {
                                 child = (CombatEntityAPI) minted;

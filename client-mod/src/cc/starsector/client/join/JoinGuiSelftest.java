@@ -482,7 +482,7 @@ final class JoinGuiSelftest {
      */
     private static void selftestGameVersion(Path tmp) throws Exception {
         String row = "game-version";
-        String e = "0.98a-RC8";
+        String e = "0.98.5a-RC4";
         String modInfo = "{\n  \"id\":\"cc_client\",\n  \"gameVersion\":\"" + e + "\",\n  \"jars\":[]\n}\n";
         byte[] good = gvClass(e, false, 0x0019, 1);
         JoinGameVersion.Result r = JoinGameVersion.fromClass(e, good);
@@ -492,7 +492,7 @@ final class JoinGuiSelftest {
         Path kit = gvKit(tmp, "gv-match", modInfo, false, good);
         List<String> logged = new ArrayList<>();
         check(JoinLaunchGates.checkGame(kit, logged::add) == null && logged.equals(List.of(
-                "join-gates: game_version expected=0.98a-RC8 found=0.98a-RC8 verdict=OK why=match")),
+                "join-gates: game_version expected=0.98.5a-RC4 found=0.98.5a-RC4 verdict=OK why=match")),
                 row + ": a matching install passes the gate with one log row (flips if a match refuses, or the row"
                         + " drops / grows a path)");
 
@@ -505,7 +505,7 @@ final class JoinGuiSelftest {
                 && no.message.contains("Install Starsector " + e) && !no.message.contains("gv-mismatch"),
                 row + ": a different game version refuses as game_version naming the kit's and the game's versions and"
                         + " the install to get, no path (flips if a mismatch launches, or the text drops a version)");
-        check(logged.equals(List.of("join-gates: game_version expected=0.98a-RC8 found=0.97a-RC11 verdict=MISMATCH"
+        check(logged.equals(List.of("join-gates: game_version expected=0.98.5a-RC4 found=0.97a-RC11 verdict=MISMATCH"
                 + " why=differs")), row + ": the refused press logs both versions (flips if the row drops one)");
 
         String bad = row + ": ";
@@ -542,7 +542,7 @@ final class JoinGuiSelftest {
         gvUnchecked(bad + "a ConstantValue of length 3", gvPatch(good, fieldAt + 10, 0, 0, 0, 3), "bad_constant");
         gvUnchecked(bad + "a ConstantValue naming a Utf8, not a String", gvPatch(good, fieldAt + 14, 0, 8),
                 "bad_class");
-        gvUnchecked(bad + "a found value with a space", gvClass("0.98a RC8", false, 0x0019, 1), "bad_found");
+        gvUnchecked(bad + "a found value with a space", gvClass("0.98.5a RC4", false, 0x0019, 1), "bad_found");
         gvUnchecked(bad + "an empty found value", gvClass("", false, 0x0019, 1), "bad_found");
         String max = "a".repeat(JoinGameVersion.TOKEN_MAX);
         gvUnchecked(bad + "a found value past the token cap", gvClass(max + "a", false, 0x0019, 1), "bad_found");
@@ -560,7 +560,7 @@ final class JoinGuiSelftest {
                 good), install);
         check(r.kind == JoinGameVersion.Kind.OK, row + ": a # comment line naming another gameVersion is skipped as"
                 + " the game skips it (flips if the comment is read: a false MISMATCH)");
-        for (String lawless : new String[] {"", "0.98a RC8", "0.98a-RC8\\u0000"}) {
+        for (String lawless : new String[] {"", "0.98.5a RC4", "0.98.5a-RC4\\u0000"}) {
             r = JoinGameVersion.check(gvKit(tmp, "gv-root", modInfo.replace(e, lawless), false, good), install);
             check("bad_game_version".equals(r.why) && r.kind == JoinGameVersion.Kind.UNCHECKED,
                     row + ": gameVersion '" + lawless + "' is outside the version charset, UNCHECKED (flips if an"
@@ -638,7 +638,7 @@ final class JoinGuiSelftest {
 
     /** {@code cls} reads UNCHECKED with exactly {@code why} (a parser throw would read {@code fault}). */
     private static void gvUnchecked(String what, byte[] cls, String why) {
-        JoinGameVersion.Result r = JoinGameVersion.fromClass("0.98a-RC8", cls);
+        JoinGameVersion.Result r = JoinGameVersion.fromClass("0.98.5a-RC4", cls);
         check(r.kind == JoinGameVersion.Kind.UNCHECKED && r.found == null && why.equals(r.why),
                 what + " reads UNCHECKED " + why + " (flips if that bound is lost; got " + r.kind + " " + r.why + ")");
     }
@@ -978,6 +978,30 @@ final class JoinGuiSelftest {
                 && r7.equals(refused.refusal) && JoinLaunchGates.refusedLine(r7).equals(refused.line),
                 "one-adopt: a document whose match.id is none = REFUSED, no descriptor, the refused line naming OUR"
                         + " reason + field (flips if a refused document is adopted, or its line drops the reason)");
+        // MATCH-DOC-4096: the window's half of the local-field law.
+        String shapeToken = MatchDocumentLaws.REASON_OUT_OF_RANGE + " shape";
+        for (String shape : new String[] {"vanilla:1v1", "vanilla:bastion:fortress", "1v1x", "arena"}) {
+            JoinLaunchGates.Adopted a = JoinLaunchGates.adopt(listing.withDocument(
+                    lawful.replace("match.shape=1v1", "match.shape=" + shape), true, null));
+            check(a.kind == JoinLaunchGates.Adopted.Kind.REFUSED && a.descriptor == null
+                    && shapeToken.equals(a.refusal) && !a.line.contains(shape),
+                    "one-adopt shape-law: a served document of shape " + shape + " = REFUSED as " + shapeToken
+                            + ", its shape never echoed (flips if the window stages a shape no server mints: a"
+                            + " vanilla: shape makes the game field the whole roster locally)");
+        }
+        for (String shape : new String[] {"bots:3", "seats:2", "gauntlet:1", "teams:2:1", "bastion:fortress"}) {
+            check(JoinLaunchGates.adopt(listing.withDocument(lawful.replace("match.shape=1v1",
+                    "match.shape=" + shape), true, null)).kind == JoinLaunchGates.Adopted.Kind.FETCHED,
+                    "one-adopt shape-law: a served " + shape + " document = FETCHED (flips if the shape law refuses"
+                            + " a shape a server mints)");
+        }
+        // A 1v1 is a registry shape, so only station rows count and the
+        // window's station test is always false: the crowd spawns at wire sight, never in the local build.
+        JoinLaunchGates.Adopted crowd = JoinLaunchGates.adopt(listing.withDocument(
+                lawful.replace("roster.1.count=1", "roster.1.count=8"), true, null));
+        check(crowd.kind == JoinLaunchGates.Adopted.Kind.FETCHED && crowd.refusal == null,
+                "one-adopt local-field: a served 1v1 of 9 hulls = FETCHED, refusal " + crowd.refusal + " (flips if the"
+                        + " window counts a 1v1's wire-sight rows: the whole-roster cap of the legacy local build)");
         JoinLaunchGates.Adopted garbled = JoinLaunchGates.adopt(listing.withDocument("garbage ccmatch", true, null));
         check(garbled.kind == JoinLaunchGates.Adopted.Kind.REFUSED && garbled.descriptor == null
                 && garbled.refusal != null && garbled.refusal.startsWith(MatchDocumentLaws.REASON_MALFORMED + " ")

@@ -30,9 +30,9 @@ public class CcWrapRiftBeamEffect extends RiftBeamEffect {
     }
 
     @Override
-    public void spawnMine(ShipAPI source, Vector2f mineLoc) {
+    public void spawnMine(ShipAPI source, WeaponAPI weapon, Vector2f mineLoc) {
         if (!CcReplicaEffectGate.isTreatedReplica(source)) {
-            super.spawnMine(source, mineLoc);
+            super.spawnMine(source, weapon, mineLoc);
             return;
         }
         // Vanilla would spawnProjectile("riftbeam_minelayer") here — the exact ghost-mine mint

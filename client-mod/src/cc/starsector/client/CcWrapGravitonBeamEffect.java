@@ -16,6 +16,10 @@ import com.fs.starfarer.api.impl.combat.GravitonBeamEffect;
  * the read-only census below ({@link #advance}) runs purely so {@code doorShut} counts the frames
  * the parent would have installed/refreshed the debuff.
  * Gate on the SOURCE ship (the force-fired replica), never the target — audit risk note.
+ *
+ * <p>NOT INSTALLED: the "visually lossless" premise above was wrong, so the
+ * vanilla effect runs on replica beams ({@code ClientBeamEffectSwap.AUDITED_VANILLA} javadoc = why). The class
+ * stays for {@link #risingEdge}, which the ion cadence and its selftest row call.
  */
 public class CcWrapGravitonBeamEffect extends GravitonBeamEffect {
 

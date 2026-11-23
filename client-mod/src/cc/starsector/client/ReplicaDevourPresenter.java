@@ -38,8 +38,9 @@ import org.lwjgl.util.vector.Vector2f;
  * wire-mirrored. It READS the mirrored grid for the tick's armor/hull NUMBERS,
  * printed through the engine's floaty call behind {@code Misc.shouldShowDamageFloaty}, and
  * rolls the carry-back on every tick that yielded (the server's cells are unknown here; the mirrored
- * grid stands in). The fighter exclusion is kept: attack-swarm wings carry nothing back. The firer's
- * swarm write is LOCAL (member counts never ride the wire), 0 wire bytes.
+ * grid stands in). The fighter exclusion is kept: attack-swarm wings carry nothing back; so is the
+ * hulk exclusion: a victim already a hulk feeds no swarm. The firer's swarm write is LOCAL (member
+ * counts never ride the wire), 0 wire bytes.
  */
 final class ReplicaDevourPresenter extends DisintegratorEffect {
 
@@ -64,7 +65,7 @@ final class ReplicaDevourPresenter extends DisintegratorEffect {
     static int ticksNoYield;     // Ticks with no yield (no cell under the point / type mult <= 0 / no firer or grid)
     static int ticksPrinted;     // Yielding ticks that printed vanilla's armor/hull number
     static int ticksHidden;      // Yielding ticks Misc.shouldShowDamageFloaty hid (or the API threw)
-    static float hullTickSum;    // Σ hull number (its > 1 print gate) over the printed ticks (the server-shape number)
+    static float hullTickSum;    // Σ hull number (its >= 1 print gate) over the printed ticks (the server-shape number)
     static float armorPrintedSum; // Σ armor printed over the same ticks
     private static int tickRows;
 
@@ -243,7 +244,7 @@ final class ReplicaDevourPresenter extends DisintegratorEffect {
 
     /**
      * The tick's NUMBERS through the engine's own floaty call, behind {@code Misc.shouldShowDamageFloaty}
-     * (firer, victim): the armor sum at the point when above 0, the hull sum 20 su above it when above 1.
+     * (firer, victim): the armor sum at the point when above 0, the hull sum 20 su above it when at least 1.
      * TRUE = the gate let the tick print (counts {@link #ticksPrinted} + the two printed sums + the
      * {@link #TAG_TICK} census); a gate that hides it, or an API that throws, counts {@link #ticksHidden}.
      * Presentation only — the victim's cells and hull are the wire's.
@@ -259,7 +260,7 @@ final class ReplicaDevourPresenter extends DisintegratorEffect {
                 if (armor > 0F) {
                     engine.addFloatingDamageText(new Vector2f(at), armor, Misc.FLOATY_ARMOR_DAMAGE_COLOR, target, source);
                 }
-                if (hull > 1F) {
+                if (hull >= 1F) {
                     engine.addFloatingDamageText(new Vector2f(at.x, at.y + 20F), hull, Misc.FLOATY_HULL_DAMAGE_COLOR,
                             target, source);
                 }
@@ -273,7 +274,7 @@ final class ReplicaDevourPresenter extends DisintegratorEffect {
         }
         ticksPrinted++;
         armorPrintedSum += armor > 0F ? armor : 0F;
-        hullTickSum += hull > 1F ? hull : 0F;
+        hullTickSum += hull >= 1F ? hull : 0F;
         CcReplicaEffectGate.visualMinted(TAG_TICK);
         return true;
     }
@@ -331,9 +332,11 @@ final class ReplicaDevourPresenter extends DisintegratorEffect {
 
     /**
      * The carry-back, rewritten from the functional spec: a tick that yielded
-     * adds ONE member to the living, non-fighter firer's swarm at {@code loc}, fading in over 0.3 s (it then
-     * drifts home with its cloud), unless the {@link #CARRY_BACK_SKIP_CHANCE} roll skips it
-     * ({@link #carriesBack}). LOCAL only: member counts never ride the wire; nothing here touches the victim.
+     * on a victim that is not a hulk adds ONE member to the living, non-fighter firer's swarm at {@code loc},
+     * fading in over 0.3 s (it then drifts home with its cloud), unless the {@link #CARRY_BACK_SKIP_CHANCE}
+     * roll skips it ({@link #carriesBack}). A missing victim counts as a hulk (no member): vanilla's twin
+     * dereferences it, so it never carries back without one. LOCAL only: member counts never ride the wire;
+     * nothing here touches the victim.
      *
      *
      */
@@ -341,7 +344,9 @@ final class ReplicaDevourPresenter extends DisintegratorEffect {
     protected void damageDealt(Vector2f loc, float armorDamage, float hullDamage) {
         boolean alive = source != null && source.isAlive();
         boolean fighter = source != null && source.isFighter();
-        if (!carriesBack(alive, fighter, sourceSwarm != null, (float) Math.random(), armorDamage, hullDamage)) {
+        boolean victimHulk = target == null || target.isHulk();
+        if (!carriesBack(alive, fighter, sourceSwarm != null, victimHulk, (float) Math.random(), armorDamage,
+                hullDamage)) {
             return;
         }
         RoilingSwarmEffect.SwarmMember member = sourceSwarm.addMember();
@@ -356,14 +361,15 @@ final class ReplicaDevourPresenter extends DisintegratorEffect {
 
     /**
      * The carry-back verdict, pure ({@code ApiRwERows} drives it): a living, non-fighter firer with a
-     * swarm, a {@code roll} in [0, 1) at or above {@link #CARRY_BACK_SKIP_CHANCE}, and a tick that yielded
-     * (either sum above 0). Over many yielding ticks the member rate is 1 minus the skip chance (0.75).
+     * swarm, a victim that is not a hulk, a {@code roll} in [0, 1) at or above
+     * {@link #CARRY_BACK_SKIP_CHANCE}, and a tick that yielded (either sum above 0). Over many yielding
+     * ticks the member rate is 1 minus the skip chance (0.75).
      *
      *
      */
-    static boolean carriesBack(boolean firerAlive, boolean firerFighter, boolean firerHasSwarm, float roll,
-            float armorSum, float hullSum) {
-        return firerAlive && !firerFighter && firerHasSwarm && roll >= CARRY_BACK_SKIP_CHANCE
+    static boolean carriesBack(boolean firerAlive, boolean firerFighter, boolean firerHasSwarm, boolean victimHulk,
+            float roll, float armorSum, float hullSum) {
+        return firerAlive && !firerFighter && firerHasSwarm && !victimHulk && roll >= CARRY_BACK_SKIP_CHANCE
                 && (armorSum > 0F || hullSum > 0F);
     }
 }

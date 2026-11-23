@@ -11,6 +11,7 @@ import cc.starsector.server.bridge.EngineCombatBinding;
 import cc.starsector.server.bridge.PilotApplyState;
 import cc.starsector.server.bridge.RealEngineDemoRoster;
 import cc.starsector.server.bridge.TransferPodSpawner;
+import cc.starsector.server.match.AllSkillsFleetLaw;
 import cc.starsector.server.match.ContentFingerprints;
 import cc.starsector.server.match.MatchDescriptor;
 import cc.starsector.server.match.MatchDescriptorCodec;
@@ -330,6 +331,18 @@ public final class PilotServeSession {
     private int heldStreakTicks;
     private ShipNetworkIdRegistry stableIdRegistry;
     private List<byte[]> roundRosterAppendFrames;
+    /** Retires a superseded equal re-write's slot of {@link #roundRosterAppendFrames} for replay; it
+     *  follows the log by identity, so the round wrap's new log needs no reset call.
+     * */
+    private final SeatAnnounceTracker.EqualRewriteLedger equalRewriteLedger =
+            new SeatAnnounceTracker.EqualRewriteLedger();
+    /** The fleet-record removal echoes a round prints: the first this many, the per-ship fleet
+     *  echo's number, reset where the round's log is new. */
+    static final int FLEET_VACATE_ECHO_CAP = 64;
+    /** Fleet-record removals this round ({@code >= 0}; reset with the round's log). */
+    private long fleetVacatesThisRound;
+    /** Removals past {@link #FLEET_VACATE_ECHO_CAP} in their round, never echoed ({@code >= 0}; serve lifetime). */
+    private long fleetVacateEchoesOverCap;
     /** The per-session paced catch-up cursors over
      *  {@link #roundRosterAppendFrames} + the port over the tick's live map. */
     private RosterAppendCatchup<PilotIntentDatagramServer.PeerSession> rappCatchup;
@@ -1547,6 +1560,7 @@ public final class PilotServeSession {
         rappCatchup.resetRound(rappCatchupPort, rappCatchupPort,
                 roundRosterAppendFrames == null ? 0 : roundRosterAppendFrames.size());
         roundRosterAppendFrames = new ArrayList<>();
+        fleetVacatesThisRound = 0L;
         // W2b E4: the round's module-seat drain lane — minted only when the
         // MODULE verbs armed (fortress + bound mount hook — the twin
         // gate; the arbiter itself now always exists); null keeps every module call
@@ -1601,25 +1615,31 @@ public final class PilotServeSession {
                         redeploy.crPerMille()));
             }
         }
-        // The wrap's deferred seat re-points ride THIS fan,
-        // after the MRST. A carried-pick row for the same wire id wins: both are built from the SAME
-        // reset fly-in (identical bytes), so one row suffices. Cleared here — never leaks a round.
-        pendingWrapRepoints.removeIf(
-                r -> carriedPickRows.stream().anyMatch(c -> c.wireId() == r.wireId()));
-        carriedPickRows.addAll(pendingWrapRepoints);
+        // The round-open PREFIX.
+        // Every reset fielding deferred ONE flagged fleet-record row at the wrap (the re-point's, or
+        // its own on an equal variant); those rows lead THIS round's log, fanned after the MRST. For
+        // their wire ids the flagged row REPLACES the flagless carried-pick row (same reset fly-in,
+        // same five fields; only the flagged one is the write). A carried row survives only for a
+        // reset fielding that deferred nothing. Cleared here — never leaks a round.
+        List<RosterAppendFrameCodec.AppendRow> roundOpenRows = new ArrayList<>(pendingWrapRepoints);
+        int fieldedRows = roundOpenRows.size();
         pendingWrapRepoints.clear();
+        carriedPickRows.removeIf(
+                c -> roundOpenRows.stream().anyMatch(r -> r.wireId() == c.wireId()));
+        roundOpenRows.addAll(carriedPickRows);
         // The round-open tracker seed — a seat whose
         // last announced row ≠ its descriptor and that carried no row (vacant at the wrap)
-        // seeds that row, so a post-wrap joiner believes what the survivors hold.
+        // seeds that row (flagless), so a post-wrap joiner believes what the survivors hold.
         int trackerRows = SeatAnnounceTracker.addTrackerSeedRows(
-                lastAnnouncedVariantBySeat, carriedPickRows);
-        if (!carriedPickRows.isEmpty()) {
-            fanRosterAppendChunks(door, carriedPickRows, roundRosterAppendFrames);
+                lastAnnouncedVariantBySeat, roundOpenRows);
+        if (!roundOpenRows.isEmpty()) {
+            fanRosterAppendChunks(door, roundOpenRows, roundRosterAppendFrames);
             System.out.println("npeer-serve round_pick_rows_replayed round=" + round
-                    + " rows=" + carriedPickRows.size()
-                    + " carried=" + (carriedPickRows.size() - trackerRows)
+                    + " rows=" + roundOpenRows.size()
+                    + " carried=" + (roundOpenRows.size() - trackerRows - fieldedRows)
                     + " tracker=" + trackerRows
-                    + " (carried picks + wrap re-points + the tracker's"
+                    + " fielded=" + fieldedRows
+                    + " (the round-open record writes + carried picks + the tracker's"
                     + " vacant-seat rows ride this round's late-joiner replay)");
         }
         // pre-seed the round's deploy-ledger hulls so their wire ids
@@ -1683,7 +1703,8 @@ public final class PilotServeSession {
                 fireLaneDischargeDetector, afTargetLane, stableIdRegistry,
                 lastAnnouncedVariantBySeat, roundRosterAppendFrames, graceLane,
                 podLane, hooks.transferRekey(), transferTargets, growthKnownKeys,
-                round, censusVariantId);
+                round, censusVariantId,
+                parkedSeatId -> removeFleetEntryIfSeatGone(door, parkedSeatId));
         // The stall-tag law: the transfer lane's convicted stall events
         // (pod_spawn / transfer_commit) self-name in worst_frame causes= rows.
         transferLane.setStallTagLedger(worstFrames);
@@ -2643,13 +2664,20 @@ public final class PilotServeSession {
                 // cc.server.rappCatchupPerTick <= 0: the LEGACY one-shot replay, verbatim (the
                 // rollback lever; RosterAppendCatchupContractRows R2 pins that it kills a
                 // >1024-frame joiner — the row that proves the paced path is what saves it).
+                // A retired (null) slot is stepped over, counted.
+                int retiredSkipped = 0;
                 for (byte[] appendFrame : roundRosterAppendFrames) {
+                    if (appendFrame == null) {
+                        retiredSkipped++;
+                        continue;
+                    }
                     door.sendCtrlToSession(session, appendFrame);
                 }
                 System.out.println("npeer-serve roster_append_catchup session="
                         + session.sessionId()
                         + " frames=" + roundRosterAppendFrames.size()
-                        + " round=" + round + " frame=" + frame);
+                        + " round=" + round + " frame=" + frame
+                        + " retired_skipped=" + retiredSkipped);
             }
             // In-flight transfer BEGINs replay AFTER the RAPP
             // catch-up — the DELIBERATE MMNT-ordering inversion (a replayed BEGIN
@@ -2917,6 +2945,14 @@ public final class PilotServeSession {
                 && moduleLane.drainVacatesAndDismounts(lastSimTick + 1) > 0) {
             transferLane.markCensusDirty();
         }
+        // this pump's TRUE vacates leave the fleet record
+        // when no hull holds them. AFTER the module drain, so a module rider's leave (dismounted
+        // just above) is seen; the grace pump below never ends a mount, and this runs before the
+        // tick's fly-ins. Indexed walk: the list is empty on almost every tick, nothing allocates.
+        List<Integer> vacatedSeats = transferLane.vacatedThisPump();
+        for (int i = 0; i < vacatedSeats.size(); i++) {
+            removeFleetEntryIfSeatGone(door, vacatedSeats.get(i));
+        }
         // W5: grace pump, pre-advance AFTER the module drain — a module
         // seat's dismount above clears its pending grace mark before the pump
         // resolves marks (module seats never enter GRACE: the restored station AI
@@ -3062,8 +3098,10 @@ public final class PilotServeSession {
             // the client keeps sampling the DEAD variant's shape trio until its own
             // respawn edge (the phantom-volley re-arm). Same-variant refields
             // never arm (measured benign, 114848 controls).
-            if (SeatAnnounceTracker.announceSeatVariantIfRepointed(door, seatId, flyIn,
-                    lastAnnouncedVariantBySeat, roundRosterAppendFrames)) {
+            // the fielding entry — this fly-in's fleet-record write fans ONE flagged row either
+            // way; the return is the unchanged re-point gate's.
+            if (SeatAnnounceTracker.announceFieldingRecordWrite(door, seatId, flyIn,
+                    lastAnnouncedVariantBySeat, roundRosterAppendFrames, null, equalRewriteLedger)) {
                 pilotStep.fireClassLane().latchMaskStalenessGate(
                         flyIn.wireId(), lastSimTick + 1, seatId);
                 // The mask gate's server-side twin — the class
@@ -3080,6 +3118,59 @@ public final class PilotServeSession {
         }
         long preSeatEndNanos = System.nanoTime();
         fw.preSeatEndNanos = preSeatEndNanos;
+    }
+
+    /**
+     * The fleet record's one removal: an entry is held while its seat is OCCUPIED or the seat's
+     * hull is MOUNTED, and leaves at the first sim-thread moment neither holds. Reads
+     * MatchSeatAuthority's own truth NOW (mounted or occupied = return); else asks the fly-in hook
+     * to remove the seat's FIXED wire id ({@code >= 1}) and, on an answer, fans exactly ONE removal
+     * row live onto the round's log through the ledger, then the echo. No entry held = no row, no
+     * count, no echo, never a throw. Called at the three seams where the predicate can turn false
+     * (this pump's TRUE vacates after the module drain, a pilotless hull's loss, a landed parked
+     * takeover); a repeated call is harmless, and a seam that never calls it fails SAFE (the entry
+     * stays until the round ends). Sim thread, inside a served frame only: never while the wrap's
+     * deferred rows wait, so a removal row is never deferred.
+     * <p>Known fail-safe residues (no seam runs again, the entry stays): a claim that lands between a
+     * TRUE vacate and the pump and is then released DISPLACED by the table-full backstop (never on
+     * the TRUE list); a vacated seat stranded on a pod (mounted while the pilotless pod lives); a
+     * module rider's transfer re-key moves no entry (the seat stays occupied; its later TRUE
+     * vacate dismounts it and the after-drain seam runs).
+     *
+     */
+    private void removeFleetEntryIfSeatGone(PilotIntentDatagramServer door, int seatId) throws IOException {
+        if (authority.isMounted(seatId) || authority.occupiedSeatIds().contains(seatId)) {
+            return;
+        }
+        Long wireId = seatWireIdBySeatId.get(seatId);
+        if (wireId == null || wireId < 1L) {
+            return;
+        }
+        NPeerHooks.SeatFlyInHook.FleetRemoval removal = hooks.flyIn().removeFleetEntry(wireId);
+        if (removal == null) {
+            return;
+        }
+        SeatAnnounceTracker.announceFleetVacated(door, RosterAppendFrameCodec.AppendRow.fleetVacatedRow(
+                wireId, removal.side(), removal.goalId(), removal.fleetKeyDigest()),
+                roundRosterAppendFrames, equalRewriteLedger);
+        fleetVacatesThisRound++;
+        if (fleetVacatesThisRound <= FLEET_VACATE_ECHO_CAP) {
+            // A both-ends grader greps this text: it is fixed.
+            System.out.println("cc-allskills fleet_ctx vacate id=" + wireId + " side=" + removal.side()
+                    + " key=" + AllSkillsFleetLaw.hex8(removal.fleetKeyDigest()));
+            return;
+        }
+        fleetVacateEchoesOverCap++;
+        if (fleetVacatesThisRound == FLEET_VACATE_ECHO_CAP + 1) {
+            System.out.println("npeer-serve fleet_vacate_echo_capped cap=" + FLEET_VACATE_ECHO_CAP
+                    + " over_cap_total=" + fleetVacateEchoesOverCap
+                    + " (later removals this round are counted, not echoed)");
+        }
+    }
+
+    /** Fleet-record removals past the round's echo cap this serve ({@code >= 0}). */
+    long fleetVacateEchoesOverCap() {
+        return fleetVacateEchoesOverCap;
     }
 
     /** The pre_wave bracket: the wave, probe and adhoc drains and the asteroid pre-advance; the intent-start stamp
@@ -4174,7 +4265,7 @@ public final class PilotServeSession {
             Integer lostSeatId = seatIdByWireId.get(despawn.entityId());
             if (lostSeatId != null) {
                 // A parked takeover's commit frees the displaced
-                // seat's own wire id (loss already recorded at the drain pre-step) —
+                // seat's own wire id (loss already recorded in the drain's commit block, after the verb landed) —
                 // consume that one-shot id-verified echo FIRST; mutually exclusive
                 // with the dismount echo by cause, all other despawns fail-closed.
                 if (authority.consumeTakeoverDespawnEcho(
@@ -4197,6 +4288,10 @@ public final class PilotServeSession {
                                 ? SeatStateCause.HULL_DEATH : SeatStateCause.HULL_DEPARTED;
                 authority.recordMountLoss(lostSeatId, lossCause, snap.simTick());
                 hooks.flyIn().vacate(lostSeatId, despawn.entityId());
+                // A pilotless hull's loss ends its entry (a
+                // seated death keeps it: the seat is occupied). The two swallowed-echo arms above
+                // call nothing.
+                removeFleetEntryIfSeatGone(door, lostSeatId);
                 // W2b E4: a module-mounted seat's body leaving the world frees the
                 // seat AND deadens the slot — later claims on it deny/stale-loud.
                 String deadToken = rebindArbiter.mountedTokenOrNull(lostSeatId);
@@ -5636,8 +5731,11 @@ public final class PilotServeSession {
             // no mask-gate / resolver-rebind / pick-diff latch here — mintRound's fresh
             // step/lane serves the rebind + pick-diff reset; the mask gate's wrap stale-mask premise: unmeasured.
             if (resetSeatId != null) {
-                SeatAnnounceTracker.announceSeatVariantIfRepointed(door, resetSeatId, resetFlyIn,
-                        lastAnnouncedVariantBySeat, roundRosterAppendFrames, pendingWrapRepoints);
+                // Every reset fielding is a record write —
+                // it defers ONE flagged row (the re-point's, or the fielding's own on an equal variant).
+                SeatAnnounceTracker.announceFieldingRecordWrite(door, resetSeatId, resetFlyIn,
+                        lastAnnouncedVariantBySeat, roundRosterAppendFrames, pendingWrapRepoints,
+                        equalRewriteLedger);
             }
         }
         wrapVacatedTotal += authority.resetRoundSeats(deployable);
@@ -6069,7 +6167,8 @@ public final class PilotServeSession {
             }
             // The EXISTING line name + its field order (session frames round frame — the
             // run-wave-rig W-C check anchors `frames=N round=R`), new meters appended; sent= keeps
-            // its RAPP-frames meaning, sent_all= counts every segment.
+            // its RAPP-frames meaning, sent_all= counts every segment, and retired_skipped= the
+            // retired log slots the RAPP walk stepped over (never sent, never budgeted).
             System.out.println("npeer-serve roster_append_catchup session=" + sessionId
                     + " frames=" + logSize
                     + " round=" + round + " frame=" + frame
@@ -6077,7 +6176,8 @@ public final class PilotServeSession {
                     + " ticks=" + (frame - cursor.startTick())
                     + " stalled_ticks=" + cursor.stalledTicks()
                     + " sent_all=" + cursor.sent()
-                    + " spool_max=" + cursor.spoolMax());
+                    + " spool_max=" + cursor.spoolMax()
+                    + " retired_skipped=" + cursor.rappSkipped());
         }
 
         @Override

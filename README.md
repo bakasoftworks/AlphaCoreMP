@@ -1,6 +1,6 @@
 # AlphaCoreMP - Starsector combat layer multiplayer
 
-AlphaCoreMP is an unofficial fan-made mod, not affiliated with the developers of Starsector. You need your own purchased copy of Starsector 0.98a-RC8 - nothing here includes the game.
+AlphaCoreMP is an unofficial fan-made mod, not affiliated with the developers of Starsector. You need your own purchased copy of Starsector 0.98.5a-RC8 - nothing here includes the game.
 
 Each player flies their own ship in one shared battle against waves of AI ships, or in two teams against each other, on a dedicated server that another player (the host) runs. Players join from Windows or Linux. The server runs on Windows or Linux and supports up to 255 players per server, although exact playercount feasibility will depend on the host's CPU and how complex a battle is. It is likely that the average player's framerate will choke long before the server's simulation does.
 
@@ -10,7 +10,7 @@ Three READMEs cover the three ways in. The short version of each is below, and t
 
 Get `cc-joiner-kit-<date>.zip` from the newest entry on the [Releases](../../releases) page (under Assets). The kit has to match the host's server, so if the host sends you a kit, use that one.
 
-1. You need your own Starsector 0.98a-RC8 and the host's connect code (`address:port:password`).
+1. You need your own Starsector 0.98.5a-RC8 and the host's connect code (`address:port:password`).
 2. Extract the zip and copy its `CC_Client` folder into `mods\` in your Starsector folder (the one with `starsector.exe`).
 3. Double-click `mods\CC_Client\join-cc.bat` (choose Run, or "More info" then "Run anyway", if Windows warns). The join window opens in your browser: paste the connect code, pick a ship and a team if you like, click "Launch".
 4. In the game launcher click "Play Starsector", then choose Missions, "Multiplayer Test", and press Play.
@@ -23,7 +23,7 @@ Full guide: [the joiner kit README](readme/kit-README.md). The same file is insi
 
 Get `cc-server-<date>.zip` (Windows) or `cc-server-linux-<date>.zip` (Linux) from the same [Releases](../../releases) entry. The matching joiner kit is inside the package's `kits` folder, and on the release page as its own download.
 
-1. You need Windows 64-bit or Linux x86-64, Starsector 0.98a-RC8 installed and activated on this computer, and a UDP port players can reach (ProtonVPN port forwarding, or a router forward of UDP 51337).
+1. You need Windows 64-bit or Linux x86-64, Starsector 0.98.5a-RC8 installed and activated on this computer, and a UDP port players can reach (ProtonVPN port forwarding, or a router forward of UDP 51337).
 2. Extract the whole zip into a new, empty folder of its own on a local disk, outside OneDrive and other synced folders, such as `C:\AlphaCoreMP-server`.
 3. Run `ops-web.bat` (Linux: `sh ops-web.sh`, after the Linux steps in the full README). A black window opens, and your browser opens the ops GUI page.
 4. On "Setup": in "Network", press "Fill from ProtonVPN", or with a router forward leave "Listen on host" at `0.0.0.0`, type the forwarded port and put your public address into "Players connect to". Type your Starsector folder into "Game folder". Set a "Match password" (8 to 64 letters, digits or hyphens).
@@ -36,7 +36,7 @@ Full guide: [the server README](readme/host-README.md). The same file is inside 
 
 This repository is the source of the mod and the server. You do not need it to play or to host on the released server.
 
-- Build on Windows or Linux with PowerShell 7, Starsector 0.98a-RC8, a JDK 17 or newer and a JDK 25:
+- Build on Windows or Linux with PowerShell 7, Starsector 0.98.5a-RC8, a JDK 17 or newer and a JDK 25:
 
       .\build.ps1 -GameDir "<Starsector folder>" -Jdk17Bin "<JDK 17>\bin" -Jdk25Bin "<JDK 25>\bin"
 

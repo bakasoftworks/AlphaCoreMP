@@ -42,8 +42,9 @@ public record ShipCrSnapshot(long entityId, float cr, float timeDeployedSec, flo
             throw new IllegalArgumentException("entityId must be > 0; got " + entityId);
         }
         if (!Float.isFinite(cr) || cr < 0f) {
-            // Lenient upper bound on purpose: engine CR lives in [0,1] but the pin
-            // consumer clamps locally; only corrupt (negative/non-finite) values die here.
+            // Lenient upper bound on purpose: engine CR lives in [0,1]; the deploy seed is held to 1
+            // at its source (RealEngineDemoRoster.chooseDeployCr) and the client's pose attach holds
+            // a wire value over 1 to 1; only corrupt (negative/non-finite) values die here.
             throw new IllegalArgumentException("cr must be finite and >= 0; got " + cr);
         }
         if (!Float.isFinite(timeDeployedSec) || timeDeployedSec < 0f) {

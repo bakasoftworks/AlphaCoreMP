@@ -5,6 +5,8 @@ import cc.starsector.server.bridge.EngineBackedCombatStepBoundary;
 import cc.starsector.server.bridge.EngineBackedCombatWorldState;
 import cc.starsector.server.bridge.EngineCombatBinding;
 import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymProbesB;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -30,22 +32,12 @@ import java.util.Locale;
  */
 public final class RealEngineFighterWingProbeMain {
 
-    // ---- PINNED 0.98a-RC8 identities, byte-identical to RealEngineZeroFluxBandProbeMain. ----
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
-    private static final String HULL_VARIANT_SPEC_CLASS = "com.fs.starfarer.loading.specs.HullVariantSpec";
-    private static final String VARIANT_REGISTRY_CLASS = "com.fs.starfarer.loading.B";
-    private static final String VARIANT_REGISTRY_METHOD = "o00000";
-    private static final String FLEET_MEMBER_CLASS = "com.fs.starfarer.campaign.fleet.FleetMember";
+    // ---- PINNED 0.98.5a-RC4 identities. ----
     private static final String FLEET_MEMBER_TYPE_API = "com.fs.starfarer.api.fleet.FleetMemberType";
     private static final String FLEET_MEMBER_API = "com.fs.starfarer.api.fleet.FleetMemberAPI";
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     private static final String SHIP_VARIANT_API = "com.fs.starfarer.api.combat.ShipVariantAPI";
     private static final String LAUNCH_BAY_API = "com.fs.starfarer.api.combat.FighterLaunchBayAPI";
-    private static final String FLEET_MANAGER_CLASS = "com.fs.starfarer.combat.CombatFleetManager";
-    private static final String OO_CLASS = "com.fs.starfarer.combat.CombatFleetManager$oo";
-    private static final String O0_CLASS = "com.fs.starfarer.combat.CombatFleetManager$O0";
-    private static final String M_CLASS = "com.fs.starfarer.combat.ai.M";
     private static final String LWJGL_VECTOR2F_CLASS = "org.lwjgl.util.vector.Vector2f";
 
     private static final String P = "fighter-wing-probe";
@@ -80,19 +72,19 @@ public final class RealEngineFighterWingProbeMain {
         EngineBackedCombatStepBoundary step = new EngineBackedCombatStepBoundary(world, binding);
 
         ClassLoader loader = RealEngineFighterWingProbeMain.class.getClassLoader();
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
-        Class<?> shipClass = Class.forName(SHIP_CLASS, false, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
+        Class<?> shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         Class<?> shipApiClass = Class.forName(SHIP_API, false, loader);
         Class<?> shipVariantApiClass = Class.forName(SHIP_VARIANT_API, false, loader);
         Class<?> launchBayApiClass = Class.forName(LAUNCH_BAY_API, false, loader);
-        Class<?> fleetManagerClass = Class.forName(FLEET_MANAGER_CLASS, false, loader);
-        Class<?> ooClass = Class.forName(OO_CLASS, false, loader);
-        Class<?> o0Class = Class.forName(O0_CLASS, false, loader);
-        Class<?> mClass = Class.forName(M_CLASS, false, loader);
-        Class<?> fleetMemberClass = Class.forName(FLEET_MEMBER_CLASS, false, loader);
+        Class<?> fleetManagerClass = Class.forName(EngineSym.COMBAT_FLEET_MANAGER_CLASS.className(), false, loader);
+        Class<?> ooClass = Class.forName(EngineSymProbesB.PROBES_B_DEPLOY_REQUEST_CLASS.className(), false, loader);
+        Class<?> o0Class = Class.forName(EngineSym.DEPLOYED_MEMBER_CLASS.className(), false, loader);
+        Class<?> mClass = Class.forName(EngineSymProbesB.PROBES_B_FIGHTER_WING_CLASS.className(), false, loader);
+        Class<?> fleetMemberClass = Class.forName(EngineSym.FLEET_MEMBER_CLASS.className(), false, loader);
         Class<?> memberTypeClass = Class.forName(FLEET_MEMBER_TYPE_API, false, loader);
         Class<?> fleetMemberApiClass = Class.forName(FLEET_MEMBER_API, false, loader);
-        Class<?> hullVariantClass = Class.forName(HULL_VARIANT_SPEC_CLASS, false, loader);
+        Class<?> hullVariantClass = Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader);
         Class<?> vector2fClass = Class.forName(LWJGL_VECTOR2F_CLASS, false, loader);
 
         Object engine = engineClass.getMethod("getInstance").invoke(null);
@@ -137,8 +129,8 @@ public final class RealEngineFighterWingProbeMain {
         java.lang.reflect.Constructor<?> fmWingCtor =
                 fleetMemberClass.getConstructor(int.class, String.class, memberTypeClass);
         Object typeFighterWing = memberTypeClass.getField("FIGHTER_WING").get(null);
-        Method registryResolve = Class.forName(VARIANT_REGISTRY_CLASS, true, loader)
-                .getMethod(VARIANT_REGISTRY_METHOD, String.class);
+        Method registryResolve = EngineSym.VARIANT_REGISTRY_LOOKUP_METHOD.method(
+                EngineSym.VARIANT_REGISTRY_CLASS.load(loader));
 
         long tick = 0;
         step.withEngagedCarrierBandSnap(false);

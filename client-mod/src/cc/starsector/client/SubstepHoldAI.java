@@ -80,7 +80,7 @@ final class SubstepHoldAI implements ShipAIPlugin {
     private static long firstNs = -1L;
 
     private final ShipwideAIFlags flags = new ShipwideAIFlags();
-    private final ShipAIConfig config = new ShipAIConfig();
+    private final ShipAIConfig config = new ShipAIConfig(null); // null = no hull-hint override: the plain field defaults
     private final PredictReconcileCombatPlugin plugin;
     private final ShipAPI ship;
     private final CombatEngineAPI engine; // cached at install: the gate read runs per replica per frame

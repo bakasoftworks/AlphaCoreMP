@@ -44,6 +44,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * (per-session delivery order == log order — mutable-per-id rows never arrive stale), and the
  * withheld XFER view is replaced by the completion snapshot.
  *
+ * <p>RETIRED slots: a null log slot is an equal re-write a
+ * newer row of its wire id superseded ({@link SeatAnnounceTracker.EqualRewriteLedger}); the walk
+ * steps over it without a send and without spending the step's budget or the {@link #GLOBAL_CAP}
+ * ledger ({@link Cursor#rappSkipped()} counts it). The index never shifts, so a cursor past the
+ * slot is unaffected and a cursor before it never reads it.
+ *
  * <p>INVARIANT: a session's catch-up flag is true iff its cursor holds a RAPP segment; the RAPP
  * completion and EVERY removal path (completion, death, round reset) clear it — a session left
  * flagged would never receive a live RAPP again. A SEAT-only cursor never sets it.
@@ -186,6 +192,7 @@ public final class RosterAppendCatchup<S> {
         LinkedHashMap<Integer, byte[]> snmr;
         int sent;
         int rappSent;
+        int rappSkipped;
         int stalledTicks;
         int spoolMax;
         // Serve-thread-only step bookkeeping (never read by the reader thread).
@@ -209,6 +216,10 @@ public final class RosterAppendCatchup<S> {
         /** RAPP log frames sent (the completion line's {@code sent=}, whose meaning predates the
          *  other segments). */
         public synchronized int rappSent() { return rappSent; }
+
+        /** Retired (null) RAPP log slots the walk stepped over, never sent and never budgeted.
+         * */
+        public synchronized int rappSkipped() { return rappSkipped; }
 
         public int stalledTicks() { return stalledTicks; }
 
@@ -634,7 +645,13 @@ public final class RosterAppendCatchup<S> {
                     sent++;
                 } else if (c.rapp) {
                     if (c.next < size(log)) {
-                        port.send(session, log.get(c.next++));
+                        byte[] frame = log.get(c.next++);
+                        if (frame == null) {
+                            // A retired slot: no send, no budget.
+                            c.rappSkipped++;
+                            continue;
+                        }
+                        port.send(session, frame);
                         sent++;
                         c.rappSent++;
                     } else {
@@ -805,9 +822,18 @@ public final class RosterAppendCatchup<S> {
     /** Round-line tokens (appended after roundCounterTail at the call sites);
      *  {@code cursor_global_budget_ticks} = ticks this round whose {@link #GLOBAL_CAP} ran out
      *  while a cursor could still send; {@code cursor_drain_us} / {@code cursor_drain_sends} = the
-     *  send measure ({@link #drainNanosThisRound}). */
+     *  send measure ({@link #drainNanosThisRound}); {@code rapp_log_retired} = the log's retired
+     *  (null) slots, counted here once a round.
+     * */
     public String roundTokens(List<byte[]> log) {
+        int retired = 0;
+        for (int i = 0, n = size(log); i < n; i++) {
+            if (log.get(i) == null) {
+                retired++;
+            }
+        }
         return " rapp_log_frames=" + (log == null ? 0 : log.size())
+                + " rapp_log_retired=" + retired
                 + " rapp_catchups=" + completedThisRound
                 + " rapp_catchup_ticks_max=" + ticksMaxThisRound
                 + " rapp_catchup_abandoned=" + abandonedThisRound

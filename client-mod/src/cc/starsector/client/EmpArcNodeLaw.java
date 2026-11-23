@@ -184,7 +184,7 @@ final class EmpArcNodeLaw {
                 return;
             }
             Vector2f from = Misc.getPointWithinRadius(to, OWN_DISABLE_ARC_ORIGIN_RADIUS);
-            EmpArcEntityAPI arc = engine.spawnEmpArcVisual(from, ship, new Vector2f(to), ship,
+            EmpArcEntityAPI arc = ArcBelt.spawn(engine, from, ship, new Vector2f(to), ship,
                     OWN_DISABLE_ARC_THICKNESS, VoltaicDischargeOnFireEffect.EMP_FRINGE_COLOR, Color.white);
             if (arc != null) {
                 arc.setSingleFlickerMode();

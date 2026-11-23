@@ -81,7 +81,7 @@ public class CcWrapVoltaicCannonEffect extends VoltaicCannonEffect {
                 continue;
             }
             CcReplicaEffectGate.doorShut(TAG);
-            EmpArcEntityAPI arc = engine.spawnEmpArcVisual(point, target, EmpArcNodeLaw.pick(target, point, true),
+            EmpArcEntityAPI arc = ArcBelt.spawn(engine, point, target, EmpArcNodeLaw.pick(target, point, true),
                     target, ARC_WIDTH, fringe, Color.white, look);
             if (arc != null) {
                 arc.setRenderGlowAtStart(false);

@@ -4,6 +4,7 @@ import com.fs.starfarer.api.combat.CombatEngineAPI;
 import com.fs.starfarer.api.combat.DamagingProjectileAPI;
 import com.fs.starfarer.api.combat.ShipAPI;
 import com.fs.starfarer.api.combat.WeaponAPI;
+import com.fs.starfarer.api.impl.combat.dweller.DwellerShroud;
 import com.fs.starfarer.api.impl.combat.threat.RoilingSwarmEffect;
 import com.fs.starfarer.api.impl.combat.threat.SwarmLauncherEffect;
 import com.fs.starfarer.api.impl.combat.threat.ThreatShipConstructionScript;
@@ -49,6 +50,12 @@ public class CcWrapSwarmLauncherEffect extends SwarmLauncherEffect {
         // spawns a wing, so currWing stays null and waitUntilOneLeft stays false forever — the
         // wing-tracking clauses reduce to the two swarm-population gates below (both reads).
         RoilingSwarmEffect swarm = RoilingSwarmEffect.getSwarmFor(ship);
+        // A dweller shroud is not a fragment swarm, so it
+        // never counts toward the would-fire gate; vanilla's advance drops it the same way.
+        //
+        if (swarm instanceof DwellerShroud) {
+            swarm = null;
+        }
         int active = swarm == null ? 0 : swarm.getNumActiveMembers();
         Integer required = FRAGMENT_NUM.get(getWingId(weapon));
         boolean wouldFire = required != null && active >= required;

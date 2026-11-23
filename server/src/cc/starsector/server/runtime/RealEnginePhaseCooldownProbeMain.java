@@ -5,6 +5,7 @@ import cc.starsector.server.bridge.EngineBackedCombatWorldState;
 import cc.starsector.server.bridge.EngineCombatBinding;
 import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
 import cc.starsector.server.match.MatchDescriptors;
+import cc.starsector.server.names.EngineSym;
 import cc.starsector.server.platform.AllSkillsAttach;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -24,16 +25,20 @@ import java.util.concurrent.atomic.AtomicLong;
  * onto {@code MutableShipStatsAPI.getPhaseCloakCooldownBonus()}
  * — SystemsExpertise's generic system-cooldown −33% does NOT
  * apply; EXACTLY 3 vanilla movers exist ({@code phase_mastery} −50% base,
- * {@code field_modulation} −50% ELITE, {@code experimentalphasecoils} −80% hullmod — absent on
- * {@code grendel_Hypervelocity}). Expected ladder: base 2.0 / all-skills captain 0.5.
+ * {@code field_modulation} ELITE −33.333% at 0.98.5a-RC4 (−50% at 0.98a-RC8),
+ * {@code experimentalphasecoils} −80% hullmod — absent on {@code grendel_Hypervelocity}).
+ * Both oracles follow the live engine (see {@link #allSkillsOracle}): base = the phasecloak spec's own
+ * stat-free cooldown read; all-skills = base times the multiplier of each mover the all-skills captain is
+ * granted. {@code phase_mastery} carries the {@code npc_only} tag, so the captain never holds it: the live
+ * engine reads 3.0 → 2.0 at 0.98.5a-RC4 (the spec base was 2.0 at 0.98a-RC8).
  *
  * <p><b>Three-way read per hull</b> (each a distinct failure seam): (i)
- * {@code stats.getPhaseCloakCooldownBonus().computeEffective(2.0)} + the modifier-id maps —
+ * {@code stats.getPhaseCloakCooldownBonus().computeEffective(specBase)} + the modifier-id maps —
  * did the captain's skills LAND on the stat; (ii)
  * {@code cloak.getSpecAPI().getCooldown(stats)} — the live stats-aware spec read; (iii)
  * {@code cloak.getCooldown()} — the chargeTracker-HELD value, seeded at system construction
- * from (ii) — a 0.5 on (i)/(ii) with a
- * 2.0 here = seed-ordering staleness, the felt bug with a healthy stat.
+ * from (ii) — the all-skills value on
+ * (i)/(ii) with the base here = seed-ordering staleness, the felt bug with a healthy stat.
  *
  * <p><b>A/B differential</b> (the core; AllSkillsProbe part-B idiom): two bare fleetData-less
  * {@code grendel_Hypervelocity} members spawned on side 1 (no side-0 commander contamination,
@@ -44,10 +49,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * AI row) is dumped as an informative reference row only (foe officers are curated BY DESIGN).
  *
  * <p>Verdicts (all exit 0 — reproduction and refutation both count): {@code MECHANISM_FAITHFUL}
- * (2.0/0.5 as the ladder predicts ⇒ residual is perception/variant-gap → debrief the reporter);
- * {@code COOLDOWN_NOT_REDUCED} (all-skills hull still felt-2.0; cause names the seam:
+ * (base/all-skills as the live oracle predicts ⇒ residual is perception/variant-gap → debrief the reporter);
+ * {@code COOLDOWN_NOT_REDUCED} (all-skills hull still felt at the base; cause names the seam:
  * {@code skills_missing_on_captain} | {@code statbonus_unmoved} | {@code felt_seed_stale});
- * {@code BASE_UNEXPECTED}; {@code PARTIAL_OR_MIXED}. Exit 2 = boot/spawn boundary captured;
+ * {@code BASE_UNEXPECTED} (the two hulls' stat-free spec reads disagree or are not a positive number);
+ * {@code PARTIAL_OR_MIXED}. Exit 2 = boot/spawn boundary captured;
  * 1 = infrastructure. A MEASUREMENT main (never wired into the product serve loop); llvmpipe
  * headless, zero watch spend.
  *
@@ -64,13 +70,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class RealEnginePhaseCooldownProbeMain {
 
-    // ---- PINNED 0.98a-RC8 identities (probe-local pin convention; RealEnginePhaseProbeMain). ----
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
-    private static final String HULL_VARIANT_SPEC_CLASS = "com.fs.starfarer.loading.specs.HullVariantSpec";
-    private static final String VARIANT_REGISTRY_CLASS = "com.fs.starfarer.loading.B";
-    private static final String VARIANT_REGISTRY_METHOD = "o00000";
-    private static final String FLEET_MEMBER_CLASS = "com.fs.starfarer.campaign.fleet.FleetMember";
+    // ---- PINNED engine identities: 0.98a-RC8 names, each still resolves at 0.98.5a-RC4. ----
     private static final String FLEET_MEMBER_TYPE_API = "com.fs.starfarer.api.fleet.FleetMemberType";
     private static final String FLEET_MEMBER_API = "com.fs.starfarer.api.fleet.FleetMemberAPI";
     private static final String LWJGL_VECTOR2F_CLASS = "org.lwjgl.util.vector.Vector2f";
@@ -83,9 +83,25 @@ public final class RealEnginePhaseCooldownProbeMain {
     private static final String STAT_BONUS_CLASS = "com.fs.starfarer.api.combat.StatBonus";
     private static final String STAT_MOD_CLASS = "com.fs.starfarer.api.combat.MutableStat$StatMod";
 
-    /** The code-verified ladder: CSV phasecloak base / all-combat-skills captain. */
-    private static final float EXPECT_BASE = 2.0f;
-    private static final float EXPECT_ALLSKILLS = 0.5f;
+    /**
+     * Public API reads behind the live all-skills oracle ({@link #allSkillsOracle}).
+     *
+     *
+     */
+    private static final String GLOBAL_CLASS = "com.fs.starfarer.api.Global";
+    private static final String SETTINGS_API = "com.fs.starfarer.api.SettingsAPI";
+    private static final String SKILL_SPEC_API = "com.fs.starfarer.api.characters.SkillSpecAPI";
+    private static final String FIELD_MODULATION_CLASS = "com.fs.starfarer.api.impl.campaign.skills.FieldModulation";
+    private static final String PHASE_COOLDOWN_REDUCTION_FIELD = "PHASE_COOLDOWN_REDUCTION";
+    private static final String SKILL_PHASE_MASTERY = "phase_mastery";
+    private static final String SKILL_FIELD_MODULATION = "field_modulation";
+    /** The all-skills grant filter's tag: a spec carrying it is never granted to the all-skills captain. */
+    private static final String TAG_NPC_ONLY = "npc_only";
+    /**
+     * Phase Mastery's base-tier cooldown multiplier: its effect applies this as a literal, so no field holds a live
+     * value to read. The one hard number in the oracle, read from the 0.98.5a-RC4 {@code PhaseMastery.Level2}.
+     */
+    private static final float PHASE_MASTERY_COOLDOWN_MULT = 0.5f;
     private static final float EPS = 1e-3f;
 
     private static final String P = "phase-cd";
@@ -221,12 +237,25 @@ public final class RealEnginePhaseCooldownProbeMain {
         tick = cycleTimeline(rig, step, binding, shipNone, "no_officer", fixedDt, tick,
                 cycleCapFrames, cycleDwellFrames);
 
-        // ---- verdict: every branch names its discriminant (assert 2.0/0.5). ----
-        boolean baseOk = near(rowNone.specBase, EXPECT_BASE) && near(rowAll.specBase, EXPECT_BASE);
-        boolean noneOk = near(rowNone.bonusEff, EXPECT_BASE) && near(rowNone.felt, EXPECT_BASE)
-                && near(rowNone.specLive, EXPECT_BASE);
-        boolean allOk = near(rowAll.bonusEff, EXPECT_ALLSKILLS) && near(rowAll.felt, EXPECT_ALLSKILLS)
-                && near(rowAll.specLive, EXPECT_ALLSKILLS);
+        // ---- verdict: every branch names its discriminant (assert base → all-skills from the live oracle). ----
+        //
+        float base = rowNone.specBase;
+        Oracle oracle;
+        try {
+            oracle = allSkillsOracle(rig.loader, base);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            Throwable cause = unwrap(e);
+            System.out.println(P + "-end verdict=INFRA reasons=oracle_unreadable boundary="
+                    + cause.getClass().getName() + ": " + cause.getMessage());
+            System.exit(1);
+            return;
+        }
+        float expectAll = oracle.expectAll;
+        boolean baseOk = base > 0.0f && !Float.isInfinite(base) && near(rowAll.specBase, base);
+        boolean noneOk = near(rowNone.bonusEff, base) && near(rowNone.felt, base)
+                && near(rowNone.specLive, base);
+        boolean allOk = near(rowAll.bonusEff, expectAll) && near(rowAll.felt, expectAll)
+                && near(rowAll.specLive, expectAll);
         String verdict;
         String cause;
         if (!baseOk) {
@@ -234,12 +263,13 @@ public final class RealEnginePhaseCooldownProbeMain {
             cause = "spec_base_none_" + f4(rowNone.specBase) + "_all_" + f4(rowAll.specBase);
         } else if (noneOk && allOk) {
             verdict = "MECHANISM_FAITHFUL";
-            cause = "ladder_holds_2.0_to_0.5";
-        } else if (near(rowAll.felt, EXPECT_BASE)) {
+            cause = "ladder_holds_" + f4(base) + "_to_" + f4(expectAll);
+        } else if (near(rowAll.felt, base)) {
             verdict = "COOLDOWN_NOT_REDUCED";
-            if (rowAll.phaseMastery < 1.0f || rowAll.fieldModulation < 2.0f) {
+            if ((oracle.pmGranted && rowAll.phaseMastery < 1.0f)
+                    || (oracle.fmGranted && rowAll.fieldModulation < 2.0f)) {
                 cause = "skills_missing_on_captain";
-            } else if (near(rowAll.bonusEff, EXPECT_BASE)) {
+            } else if (near(rowAll.bonusEff, base)) {
                 cause = "statbonus_unmoved";
             } else {
                 cause = "felt_seed_stale_bonus_" + f4(rowAll.bonusEff);
@@ -251,6 +281,9 @@ public final class RealEnginePhaseCooldownProbeMain {
         }
         System.out.println(P + "-end verdict=" + verdict + " cause=" + cause
                 + " base_ok=" + baseOk + " no_officer_ok=" + noneOk + " all_skills_ok=" + allOk
+                + " spec_base=" + f4(base) + " expect_all=" + f4(expectAll)
+                + " pm_granted=" + oracle.pmGranted + " pm_mult=" + f4(oracle.pmMult)
+                + " fm_granted=" + oracle.fmGranted + " fm_mult=" + f4(oracle.fmMult)
                 + " felt_none=" + f4(rowNone.felt) + " felt_all=" + f4(rowAll.felt)
                 + " felt_none_end=" + f4(feltNoneEnd) + " felt_all_end=" + f4(feltAllEnd)
                 + " bonus_eff_all=" + f4(rowAll.bonusEff)
@@ -406,10 +439,10 @@ public final class RealEnginePhaseCooldownProbeMain {
             System.out.println(P + " row=" + label + " captain=" + captain
                     + " pm_level=" + f1(phaseMastery) + " fm_level=" + f1(fieldModulation)
                     + " spec_base=" + f4(specBase) + " spec_live=" + f4(specLive)
-                    + " bonus_eff2=" + f4(bonusEff) + " felt=" + f4(felt)
+                    + " bonus_eff=" + f4(bonusEff) + " felt=" + f4(felt)
                     + " charge_up=" + f4(chargeUp) + " charge_down=" + f4(chargeDown)
                     + " phase_mods=" + phaseMods
-                    + " sys_eff2=" + f4(sysEff) + " sys_mods=" + sysMods);
+                    + " sys_eff=" + f4(sysEff) + " sys_mods=" + sysMods);
         }
     }
 
@@ -497,13 +530,13 @@ public final class RealEnginePhaseCooldownProbeMain {
             row.specBase = ((Number) specGetCooldown.invoke(spec, new Object[]{null})).floatValue();
             row.specLive = ((Number) specGetCooldown.invoke(spec, stats)).floatValue();
             Object phaseBonus = statsGetPhaseBonus.invoke(stats);
-            row.bonusEff = ((Number) bonusComputeEffective.invoke(phaseBonus, EXPECT_BASE)).floatValue();
+            row.bonusEff = ((Number) bonusComputeEffective.invoke(phaseBonus, row.specBase)).floatValue();
             row.felt = ((Number) sysGetCooldown.invoke(cloak)).floatValue();
             row.chargeUp = ((Number) sysGetChargeUp.invoke(cloak)).floatValue();
             row.chargeDown = ((Number) sysGetChargeDown.invoke(cloak)).floatValue();
             row.phaseMods = mods(phaseBonus);
             Object sysBonus = statsGetSystemBonus.invoke(stats);
-            row.sysEff = ((Number) bonusComputeEffective.invoke(sysBonus, EXPECT_BASE)).floatValue();
+            row.sysEff = ((Number) bonusComputeEffective.invoke(sysBonus, row.specBase)).floatValue();
             row.sysMods = mods(sysBonus);
             try {
                 Object captain = shipGetCaptain.invoke(ship);
@@ -567,12 +600,12 @@ public final class RealEnginePhaseCooldownProbeMain {
         ClassLoader loader = RealEnginePhaseCooldownProbeMain.class.getClassLoader();
         Rig rig = new Rig();
         rig.loader = loader;
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
-        rig.shipClass = Class.forName(SHIP_CLASS, false, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
+        rig.shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         rig.fleetMemberApiClass = Class.forName(FLEET_MEMBER_API, false, loader);
         rig.vec2Class = Class.forName(LWJGL_VECTOR2F_CLASS, false, loader);
-        rig.hullVariantClass = Class.forName(HULL_VARIANT_SPEC_CLASS, false, loader);
-        rig.fleetMemberClass = Class.forName(FLEET_MEMBER_CLASS, false, loader);
+        rig.hullVariantClass = Class.forName(EngineSym.HULL_VARIANT_SPEC_CLASS.className(), false, loader);
+        rig.fleetMemberClass = Class.forName(EngineSym.FLEET_MEMBER_CLASS.className(), false, loader);
         rig.memberTypeClass = Class.forName(FLEET_MEMBER_TYPE_API, false, loader);
         Class<?> personApi = Class.forName(PERSON_API, false, loader);
         Class<?> charStatsApi = Class.forName(CHAR_STATS_API, false, loader);
@@ -589,8 +622,8 @@ public final class RealEnginePhaseCooldownProbeMain {
         rig.repoGetList = rig.getObjects.invoke(rig.engine).getClass()
                 .getMethod("getList", Class.class);
         rig.getFleetManager = engineClass.getMethod("getFleetManager", int.class);
-        rig.getVariantRegistry = Class.forName(VARIANT_REGISTRY_CLASS, true, loader)
-                .getMethod(VARIANT_REGISTRY_METHOD, String.class);
+        rig.getVariantRegistry = EngineSym.VARIANT_REGISTRY_LOOKUP_METHOD
+                .method(EngineSym.VARIANT_REGISTRY_CLASS.load(loader));
         rig.getVariant = rig.shipClass.getMethod("getVariant");
         rig.getShipAI = rig.shipClass.getMethod("getShipAI");
         rig.setShipAI = findOneArg(rig.shipClass, "setShipAI");
@@ -636,6 +669,57 @@ public final class RealEnginePhaseCooldownProbeMain {
 
     private static boolean near(float value, float expect) {
         return Math.abs(value - expect) < EPS;
+    }
+
+    /** The all-skills oracle: which movers the captain is granted, each one's multiplier, the product. */
+    private static final class Oracle {
+        boolean pmGranted;
+        boolean fmGranted;
+        float pmMult = 1.0f;
+        float fmMult = 1.0f;
+        float expectAll = Float.NaN;
+    }
+
+    /**
+     * The all-skills cooldown oracle, read from the live engine: {@code base} (the spec's stat-free read) times the
+     * multiplier of each vanilla skill mover the all-skills captain is granted. A mover counts only when its live
+     * skill spec is a combat-officer skill without the {@code npc_only} tag, the grant filter of the shared all-skills
+     * enumerator. Field Modulation's elite multiplier is {@code 1 - PHASE_COOLDOWN_REDUCTION / 100} from the class's
+     * live public static, the field its elite effect reads when it applies (33.333 at 0.98.5a-RC4, 50 at 0.98a-RC8);
+     * Phase Mastery's multiplier is the one hard number ({@link #PHASE_MASTERY_COOLDOWN_MULT}), and at 0.98.5a-RC4 its
+     * spec is tagged {@code npc_only}, so it is not applied. Throws when a spec or the static cannot be read.
+     *
+     *
+     */
+    private static Oracle allSkillsOracle(ClassLoader loader, float base) throws ReflectiveOperationException {
+        Object settings = Class.forName(GLOBAL_CLASS, true, loader).getMethod("getSettings").invoke(null);
+        Method getSkillSpec = Class.forName(SETTINGS_API, false, loader).getMethod("getSkillSpec", String.class);
+        Class<?> skillSpecApi = Class.forName(SKILL_SPEC_API, false, loader);
+        Method isCombatOfficerSkill = skillSpecApi.getMethod("isCombatOfficerSkill");
+        Method hasTag = skillSpecApi.getMethod("hasTag", String.class);
+        Oracle oracle = new Oracle();
+        boolean[] granted = new boolean[2];
+        String[] ids = {SKILL_PHASE_MASTERY, SKILL_FIELD_MODULATION};
+        for (int i = 0; i < ids.length; i++) {
+            Object spec = getSkillSpec.invoke(settings, ids[i]);
+            if (spec == null) {
+                throw new IllegalStateException("skill spec missing: " + ids[i]);
+            }
+            granted[i] = Boolean.TRUE.equals(isCombatOfficerSkill.invoke(spec))
+                    && !Boolean.TRUE.equals(hasTag.invoke(spec, TAG_NPC_ONLY));
+        }
+        oracle.pmGranted = granted[0];
+        oracle.fmGranted = granted[1];
+        if (oracle.pmGranted) {
+            oracle.pmMult = PHASE_MASTERY_COOLDOWN_MULT;
+        }
+        if (oracle.fmGranted) {
+            float reduction = Class.forName(FIELD_MODULATION_CLASS, true, loader)
+                    .getField(PHASE_COOLDOWN_REDUCTION_FIELD).getFloat(null);
+            oracle.fmMult = 1.0f - reduction / 100.0f;
+        }
+        oracle.expectAll = base * oracle.pmMult * oracle.fmMult;
+        return oracle;
     }
 
     private static Method findOneArg(Class<?> cls, String name) {

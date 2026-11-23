@@ -410,7 +410,7 @@ else
     CCJAVA="$ROOT/jre_linux/bin/java"
     read_stock_args
     note "starsector.sh's java command could not be read ($CCLINEWHY), so the stock Starsector" \
-        "0.98a-RC8 line is used instead - memory settings changed in starsector.sh do not apply to this launch."
+        "launch line is used instead - memory settings changed in starsector.sh do not apply to this launch."
 fi
 drop_listed
 log_row "java line=$CCLINESRC${CCLINEWHY:+ why=$CCLINEWHY} options=${#CCLINE[@]}"

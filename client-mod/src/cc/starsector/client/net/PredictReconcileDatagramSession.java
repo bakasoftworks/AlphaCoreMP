@@ -363,6 +363,12 @@ public final class PredictReconcileDatagramSession implements PredictSession {
      * give-back (answered with the cookied re-send; slot + doubling kept). */
     private volatile long reHelloCookieGiveBacksSuppressed;
     private volatile long reAdmits;
+    /** {@link #reAdmits} as read at the take of the CTRL payload
+     *  being routed now (written under {@link #lock} at the take; the consumer thread's routing reads it).
+     *  The CTRL queue is cleared under the same lock at every re-admit, so this is exactly the admission
+     *  the payload arrived under, even when a re-admit lands between its take and its routing. Range
+     *  0 .. {@link #reAdmits}; never decreases. */
+    private volatile long ctrlTakeReAdmits;
     /** Ms of inbound silence before the current episode armed (presentation). */
     private volatile long reconnectSilentBeforeArmMillis;
     /** this episode is the DELIBERATE re-baseline (armReAdmission, fallbackReason
@@ -1081,6 +1087,7 @@ public final class PredictReconcileDatagramSession implements PredictSession {
                     }
                     if (!ctrlQueue.isEmpty()) {
                         ctrlPayload = ctrlQueue.removeFirst();
+                        ctrlTakeReAdmits = reAdmits; // the admission this payload arrived under (lock held)
                         break;
                     }
                     // Tick-group drain (conflation ON): the newest tick's chunks leave FIFO, ONE per
@@ -2341,6 +2348,13 @@ public final class PredictReconcileDatagramSession implements PredictSession {
         return reAdmits;
     }
 
+    /** The admission generation of the CTRL payload being routed
+     *  ({@link #ctrlTakeReAdmits}). The roster-append lane reads it per frame on the consumer thread, so
+     *  a frame taken before a re-admit but handed over after it is never mistaken for the replay's. */
+    public long ctrlTakeReAdmits() {
+        return ctrlTakeReAdmits;
+    }
+
     @Override
     public long serverLife() {
         return serverLife;
@@ -2971,6 +2985,8 @@ public final class PredictReconcileDatagramSession implements PredictSession {
                                                // (its refusals die with it too)
         lastValidArrivalMillis = nowMillis();
         missionExitByeSent = false; // W5-D1: mission-exit goodbye episode over — BYEs latch again
+        // every CTRL payload taken from here on carries the bumped count (ctrlTakeReAdmits): the
+        // roster-append lane's re-admit edge drops its stale queue at the replay's first frame
         reAdmits++;
         reconnecting = false;
         lock.notifyAll();

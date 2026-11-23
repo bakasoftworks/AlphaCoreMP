@@ -5,6 +5,7 @@ import cc.starsector.server.bridge.EngineBackedCombatWorldState;
 import cc.starsector.server.bridge.EngineCombatBinding;
 import cc.starsector.server.bridge.RealEngineCombatBindingFactory;
 import cc.starsector.server.match.MatchDescriptors;
+import cc.starsector.server.names.EngineSym;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -70,8 +71,6 @@ import java.util.TreeSet;
  */
 public final class RealEngineRamProbeMain {
 
-    private static final String ENGINE_CLASS = "com.fs.starfarer.combat.CombatEngine";
-    private static final String SHIP_CLASS = "com.fs.starfarer.combat.entities.Ship";
     private static final String SHIP_API = "com.fs.starfarer.api.combat.ShipAPI";
     private static final String ENTITY_API = "com.fs.starfarer.api.combat.CombatEntityAPI";
     private static final String SHIELD_API = "com.fs.starfarer.api.combat.ShieldAPI";
@@ -687,8 +686,8 @@ public final class RealEngineRamProbeMain {
     private static Rig buildRig() throws Exception {
         ClassLoader loader = RealEngineRamProbeMain.class.getClassLoader();
         Rig rig = new Rig();
-        Class<?> engineClass = Class.forName(ENGINE_CLASS, true, loader);
-        rig.shipClass = Class.forName(SHIP_CLASS, false, loader);
+        Class<?> engineClass = EngineSym.COMBAT_ENGINE_CLASS.load(loader);
+        rig.shipClass = Class.forName(EngineSym.SHIP_CLASS.className(), false, loader);
         Class<?> shipApi = Class.forName(SHIP_API, false, loader);
         Class<?> entityApi = Class.forName(ENTITY_API, false, loader);
         Class<?> shieldApi = Class.forName(SHIELD_API, false, loader);

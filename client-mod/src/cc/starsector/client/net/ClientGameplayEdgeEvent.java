@@ -46,9 +46,9 @@ package cc.starsector.client.net;
  * <p>{@code PALADIN_DET} (schema v10): {@code entityId} = the
  * SOURCE ship, {@code mountIndex} = firing mount ordinal or {@link #NO_MOUNT} (script dets
  * carry no weapon, so {@code NO_MOUNT} is the live case), and the two reused float slots
- * carry the det position {@link #detX()}/{@link #detY()} (both REQUIRED finite — the
- * server producer read the birth pose off the engine object; a miss skips emission,
- * never NaN).
+ * carry the det position {@link #detX()}/{@link #detY()} (both REQUIRED finite and inside
+ * the world bound, {@link WireWorldLaw#coordOk} — the server producer read the birth pose
+ * off the engine object; a miss skips emission, never NaN).
  *
  * <p>{@code ARC_HIT} (schema v13):
  * the server's {@code DamageListener} seam named an EMP-arc hit — {@code entityId} = the SOURCE
@@ -351,11 +351,16 @@ public final class ClientGameplayEdgeEvent {
             if (mountIndex < 0) {
                 throw new IllegalArgumentException("WEAPON_DISCHARGE mountIndex must be >= 0; got " + mountIndex);
             }
-            if (!Float.isFinite(aimFacingDeg) && !Float.isNaN(aimFacingDeg)) {
-                throw new IllegalArgumentException("aimFacingDeg must be finite or NaN; got " + aimFacingDeg);
+            // NaN is the lawful "unbound" marker and is kept; any other
+            // value is a facing the presenter hands the engine's projectile spawn, so it takes the world facing law
+            // (an infinity fails it too). Every lawful sender's value is an engine facing near [0, 360].
+            if (!Float.isNaN(aimFacingDeg) && !WireWorldLaw.facingOk(aimFacingDeg)) {
+                throw new IllegalArgumentException(
+                        "aimFacingDeg must be NaN or a finite facing inside the world bound; got " + aimFacingDeg);
             }
-            if (!Float.isFinite(flightBearingDeg) && !Float.isNaN(flightBearingDeg)) {
-                throw new IllegalArgumentException("flightBearingDeg must be finite or NaN; got " + flightBearingDeg);
+            if (!Float.isNaN(flightBearingDeg) && !WireWorldLaw.facingOk(flightBearingDeg)) {
+                throw new IllegalArgumentException(
+                        "flightBearingDeg must be NaN or a finite facing inside the world bound; got " + flightBearingDeg);
             }
             if (Float.isFinite(birthSpeed) ? birthSpeed < 0f : !Float.isNaN(birthSpeed)) {
                 throw new IllegalArgumentException(
@@ -388,8 +393,8 @@ public final class ClientGameplayEdgeEvent {
             if (mountIndex != NO_MOUNT) {
                 throw new IllegalArgumentException("SYSTEM_JUMP carries mountIndex NO_MOUNT; got " + mountIndex);
             }
-            if (!Float.isFinite(aimFacingDeg) || !Float.isFinite(flightBearingDeg)) {
-                throw new IllegalArgumentException("SYSTEM_JUMP destX/destY must both be finite; got "
+            if (!WireWorldLaw.coordOk(aimFacingDeg) || !WireWorldLaw.coordOk(flightBearingDeg)) {
+                throw new IllegalArgumentException("SYSTEM_JUMP destX/destY must both be finite and inside the world bound; got "
                         + aimFacingDeg + "/" + flightBearingDeg);
             }
         } else if (kind == Kind.MISSILE_SPLIT) {
@@ -402,8 +407,8 @@ public final class ClientGameplayEdgeEvent {
             if (mountIndex != NO_MOUNT) {
                 throw new IllegalArgumentException("MISSILE_SPLIT carries mountIndex NO_MOUNT; got " + mountIndex);
             }
-            if (!Float.isFinite(aimFacingDeg) || !Float.isFinite(flightBearingDeg)) {
-                throw new IllegalArgumentException("MISSILE_SPLIT splitX/splitY must both be finite; got "
+            if (!WireWorldLaw.coordOk(aimFacingDeg) || !WireWorldLaw.coordOk(flightBearingDeg)) {
+                throw new IllegalArgumentException("MISSILE_SPLIT splitX/splitY must both be finite and inside the world bound; got "
                         + aimFacingDeg + "/" + flightBearingDeg);
             }
         } else if (kind == Kind.MISSILE_END) {
@@ -418,8 +423,8 @@ public final class ClientGameplayEdgeEvent {
                 throw new IllegalArgumentException(
                         "MISSILE_END mountIndex must be an END_CAUSE_* code (0/1/2/3); got " + mountIndex);
             }
-            if (!Float.isFinite(aimFacingDeg) || !Float.isFinite(flightBearingDeg)) {
-                throw new IllegalArgumentException("MISSILE_END endX/endY must both be finite; got "
+            if (!WireWorldLaw.coordOk(aimFacingDeg) || !WireWorldLaw.coordOk(flightBearingDeg)) {
+                throw new IllegalArgumentException("MISSILE_END endX/endY must both be finite and inside the world bound; got "
                         + aimFacingDeg + "/" + flightBearingDeg);
             }
             // v15: the long slot names the VICTIM ship of the missile's last
@@ -461,8 +466,10 @@ public final class ClientGameplayEdgeEvent {
                 throw new IllegalArgumentException("PALADIN_DET mountIndex must be a mount ordinal >= 0 or NO_MOUNT ("
                         + NO_MOUNT + "); got " + mountIndex);
             }
-            if (!Float.isFinite(aimFacingDeg) || !Float.isFinite(flightBearingDeg)) {
-                throw new IllegalArgumentException("PALADIN_DET detX/detY must both be finite; got "
+            // The det point is where the presenter spawns the explosion,
+            // its particles and its sound, so it takes the world coordinate law (NaN and infinities fail it too).
+            if (!WireWorldLaw.coordOk(aimFacingDeg) || !WireWorldLaw.coordOk(flightBearingDeg)) {
+                throw new IllegalArgumentException("PALADIN_DET detX/detY must both be finite and inside the world bound; got "
                         + aimFacingDeg + "/" + flightBearingDeg);
             }
         } else if (kind == Kind.ARC_HIT) {
@@ -578,9 +585,11 @@ public final class ClientGameplayEdgeEvent {
                     throw new IllegalArgumentException(
                             "SYSTEM_WINDOW mote-target form must be phase ON; got " + phase);
                 }
-                if (!Float.isFinite(aimFacingDeg) || !Float.isFinite(flightBearingDeg)) {
+                // The world law, not a finite check -- the target is the far end of
+                // an engine arc whose build walks its length (ArcBelt holds the length itself).
+                if (!WireWorldLaw.coordOk(aimFacingDeg) || !WireWorldLaw.coordOk(flightBearingDeg)) {
                     throw new IllegalArgumentException(
-                            "SYSTEM_WINDOW mote-target x/y must both be finite; got "
+                            "SYSTEM_WINDOW mote-target x/y must both be finite and inside the world bound; got "
                                     + aimFacingDeg + "/" + flightBearingDeg);
                 }
                 if (targetWireId != TARGET_NONE && targetWireId < 1L) {
@@ -688,7 +697,8 @@ public final class ClientGameplayEdgeEvent {
     /**
      * A {@code PALADIN_DET} marker (v10) — the server factory's twin,
      * serving selftest authoring; {@code detX}/{@code detY} = the det birth position
-     * (both REQUIRED finite), {@code mountIndex} = mount ordinal or {@link #NO_MOUNT}.
+     * (both REQUIRED finite and inside the world bound), {@code mountIndex} = mount ordinal or
+     * {@link #NO_MOUNT}.
      */
     public static ClientGameplayEdgeEvent paladinDet(
             long simTick, long sourceEntityId, int mountIndex, float detX, float detY) {

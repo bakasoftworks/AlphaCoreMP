@@ -560,7 +560,7 @@ final class OwnMissileHandoffLane {
         pose.adoptPose(t, rec, tick);
     }
 
-    /** The decaying projection horizon (ticks): Δ × max(0, 1 − age/DECAY);
+    /** The decaying projection horizon (ticks): Δ × max(0, 1 − max(0, age)/DECAY);
      *  0 when the knob is 0 (raw adopt — the rollback shape) or the twin measured no
      *  horizon. */
     private static float hzTicks(MissilePoseLane.Twin t, long tick) {
@@ -568,6 +568,11 @@ final class OwnMissileHandoffLane {
             return 0f;
         }
         long age = tick - t.handoffTick;
+        // A tick that regresses behind the handoff tick grew the
+        // horizon without bound; the horizon never exceeds the measured one.
+        if (age < 0L) {
+            age = 0L;
+        }
         if (age >= OWN_HANDOFF_PROJ_DECAY_TICKS) {
             return 0f;
         }
@@ -738,8 +743,10 @@ final class OwnMissileHandoffLane {
         if (t.blendX == 0f && t.blendY == 0f && t.facingBlendDeg == 0f) {
             return 0f;
         }
-        float f = OWN_HANDOFF_BLEND_TICKS <= 0 ? 0f
-                : 1f - (tick - t.handoffTick) / (float) OWN_HANDOFF_BLEND_TICKS;
+        // A tick that regresses behind the handoff tick grew the factor without bound (it
+        // scales a position and a facing write); the age is floored at 0, so the factor never passes 1.
+        long age = Math.max(0L, tick - t.handoffTick);
+        float f = OWN_HANDOFF_BLEND_TICKS <= 0 ? 0f : 1f - age / (float) OWN_HANDOFF_BLEND_TICKS;
         if (f > 0f) {
             return f;
         }

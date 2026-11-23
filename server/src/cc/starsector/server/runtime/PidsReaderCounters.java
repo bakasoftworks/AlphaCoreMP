@@ -229,22 +229,27 @@ public final class PidsReaderCounters {
     public volatile long helloV14Bounced;
     /** version-15 and version-16 HELLOs bounced as an outdated kit (those rungs
      *  of the bounce ladder), never folded into the version-1 default tally. Written under the door lock. Readers:
-     *  {@code PidsHello13GuardRows} hs15-19-f1-bounce, the door line. Delete trigger: none (door meters). */
+     *  {@code PidsHello13GuardRows} hs15-20-f1-bounce, the door line. Delete trigger: none (door meters). */
     public volatile long helloV15Bounced;
     public volatile long helloV16Bounced;
     /** The version-17 tally, the v15 / v16 shape — the hs-17 kit a host still
      *  runs after the door moved to 18 bounces at the frozen v17 rung and counts HERE, never under v1's default arm.
-     *  Readers: {@code PidsHello13GuardRows} hs15-19-f1-bounce, the door line. Delete trigger: none (a door meter). */
+     *  Readers: {@code PidsHello13GuardRows} hs15-20-f1-bounce, the door line. Delete trigger: none (a door meter). */
     public volatile long helloV17Bounced;
     /** The version-18 tally, the v17 shape — the hs-18 kit (every v0.4.0–v0.6.0
      *  joiner kit) at an hs-19-or-later door bounces at the frozen v18 rung and counts HERE, never under v1's default
-     *  arm. Readers: {@code PidsHello13GuardRows} hs15-19-f1-bounce, the door line. Delete trigger: none (a door meter). */
+     *  arm. Readers: {@code PidsHello13GuardRows} hs15-20-f1-bounce, the door line. Delete trigger: none (a door meter). */
     public volatile long helloV18Bounced;
     /** The version-19 tally, the v18 shape — the hs-19 kit (every v0.6.1–v0.6.6
-     *  joiner kit) at the hs-20 door bounces at the frozen v19 rung and counts HERE, never under v1's default arm.
-     *  Written under the door lock. Readers: {@code PidsHello13GuardRows} hs15-19-f1-bounce + hs19-fp-bounce, the door
+     *  joiner kit) at an hs-20-or-later door bounces at the frozen v19 rung and counts HERE, never under v1's default
+     *  arm. Written under the door lock. Readers: {@code PidsHello13GuardRows} hs15-20-f1-bounce + hs19-fp-bounce, the door
      *  line. Delete trigger: none (a door meter). */
     public volatile long helloV19Bounced;
+    /** The version-20 tally, the v19 shape — the hs-20 kit (every v0.6.7–v0.6.9
+     *  joiner kit, built for the previous game version) at the hs-21 door bounces at the frozen v20 rung and counts
+     *  HERE, never under v1's default arm. Written under the door lock. Readers: {@code PidsHello13GuardRows}
+     *  hs15-20-f1-bounce + hs20-fp-bounce, the door line. Delete trigger: none (a door meter). */
+    public volatile long helloV20Bounced;
     /** F1s at a version byte ABOVE the door's own, each answered {@code server_outdated} (the newer-kit rung,
      *  {@code HandshakeBounceLadder.classifyNewerOrNull}) — its own tally, never a stale tier's. Written under the
      *  door lock. Readers: {@code PidsHello13GuardRows} hs-newer-bounce, the door line's {@code hello_newer_bounced=}.
@@ -441,6 +446,8 @@ public final class PidsReaderCounters {
                 // Appended LAST (appended-only grammar), a count only
                 + " hello_v19_bounced=" + helloV19Bounced
                 // Appended LAST (appended-only grammar), a count only
-                + " hello_newer_bounced=" + helloNewerBounced);
+                + " hello_newer_bounced=" + helloNewerBounced
+                // Appended LAST (appended-only grammar), a count only
+                + " hello_v20_bounced=" + helloV20Bounced);
     }
 }

@@ -68,7 +68,7 @@ final class ReplicaOrderSweep {
                         (com.fs.starfarer.combat.tasks.CombatTaskManager) fm.getTaskManager(dfm.isAlly());
                 com.fs.starfarer.combat.CombatFleetManager.O0 o0 =
                         (com.fs.starfarer.combat.CombatFleetManager.O0) dfm;
-                com.fs.starfarer.combat.tasks.Object orders = tm.getOrdersForFleetMember(o0);
+                com.fs.starfarer.combat.tasks.C orders = tm.getOrdersForFleetMember(o0);
                 CombatAssignmentType type = orders == null ? null : tm.getTypeForOrders(orders);
                 sb.append("type=").append(type)
                   .append(" direct=").append(tm.hasDirectOrders(o0))

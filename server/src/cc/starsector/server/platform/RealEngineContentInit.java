@@ -1,5 +1,7 @@
 package cc.starsector.server.platform;
 
+import cc.starsector.server.names.EngineSym;
+import cc.starsector.server.names.EngineSymContentInit;
 import java.io.File;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -36,13 +38,13 @@ import java.util.Map;
  *
  * <p><b>Option R — literal identities, pinned + centralized.</b>
  * Every engine-internal {@code com.fs.*} identity this resolver feeds into live reflection is rendered
- * <em>literally</em>, byte-identical to the MEASURE lane the GREEN was proved under
+ * <em>literally</em>, at 0.98a-RC8 byte-identical to the MEASURE lane the GREEN was proved under
  * (resolving by a different method risks selecting a different overload, so GREEN might not
- * transfer). They are confined to the {@code PINNED 0.98a-RC8} constant block below; the adapter
+ * transfer). Their names live on the engine-name table ({@link EngineSymContentInit} and the shared {@link EngineSym}
+ * rows), which the build's resolve leg proves against the pinned game build; the adapter
  * BOUNDARY ({@code EngineCombatBinding} + the {@code *View} interfaces) stays identity-clean — this
  * class is exactly the documented "caller" that resolves version-specific handles and hands them in.
- * Descriptor-grade resolution is the documented upgrade for the next game RC (standing
- * portability-drill trigger), not now.
+ *
  *
  * <p><b>HOOK-0043 (OPEN, launch-time discovery).</b> Under a Pbuffer-only context it was measured that
  * {@code Display.update()} throws "Display not created"; the scout proved {@code init(Map)} completes
@@ -71,47 +73,23 @@ import java.util.Map;
  */
 public final class RealEngineContentInit {
 
-    // ---- PINNED 0.98a-RC8 (descriptor-grade identity owed at the next RC — standing
-    // portability-drill trigger). Option R: literal here, boundary clean. ----
+    // ---- PINNED 0.98.5a-RC8: the engine class and member names are rows of the engine-name table
+    // (EngineSymContentInit, EngineSym); the two values below are not names. Option R: boundary clean. ----
 
-    /** Settings singleton holder; its static load method seeds {@code Global.getSettings()}. */
-    private static final String SETTINGS_CLASS = "com.fs.starfarer.settings.StarfarerSettings";
     /**
      * The first 12 hex chars of SHA-256(field name) of a static {@code org.json.JSONObject} settings field. It pins
      * the {@code graphics} sub-object (assigned from the root inside the load), so a non-empty one proves the load
      * ran — a root-level key (e.g. {@code ruleCommandPackages}) is read through the published {@code SettingsAPI}.
      */
-    private static final String SETTINGS_JSON_FIELD_NAME_HASH = "c1a976909838";
-    /** Resource registry (singleton + the seed methods named "class"/"new"). */
-    private static final String RESOURCE_CLASS = "com.fs.util.C";
-    /** Engine-internal method on the resource registry: add-absolute-and-cwd (no-arg) / add-directory(String). */
-    private static final String RESOURCE_ADD_DIR_METHOD = "class";
-    /** Engine-internal method on the resource registry: add-classpath (no-arg). */
-    private static final String RESOURCE_ADD_CLASSPATH_METHOD = "new";
-    /**
-     * Engine-internal method on the resource registry: front-insert add-mod-directory
-     * taking {@code (String path, boolean isMod, Object modSpec)} — adds at index 0 so mod files
-     * overlay base content (the {@code StarfarerLauncher} per-enabled-mod registration).
-     *
-     */
-    private static final String RESOURCE_ADD_MOD_DIR_METHOD = "o00000";
+    private static final String SETTINGS_JSON_FIELD_NAME_HASH = "3a2413292987";
     /** The "../starfarer.res/res" content directory the launcher seeds. */
     private static final String RESOURCE_DIRECTORY = "../starfarer.res/res";
-    /** Mod manager singleton (drives enabled-mod list + the mods path setting). */
-    private static final String MOD_MANAGER_CLASS = "com.fs.starfarer.launcher.ModManager";
-    /** ScriptStore — its static {@code List} jar-path field is where launcher registers mod jars. */
-    private static final String SCRIPT_STORE_CLASS = "com.fs.starfarer.loading.scripts.ScriptStore";
-    /** Texture registry; its declared no-arg getter named "super" returns the texture map. */
-    private static final String TEXTURE_REGISTRY_CLASS = "com.fs.graphics.oOoO";
-    /** Engine-internal no-arg getter on the texture registry returning the {@code Map} of textures. */
-    private static final String TEXTURE_MAP_GETTER = "super";
-    /** The texture loader whose {@code init(Map)} populates the registry headless. */
-    private static final String RESOURCE_LOADER_STATE_CLASS = "com.fs.starfarer.loading.ResourceLoaderState";
 
     // ---- Public API with readable names (identity-clean even under descriptor-grade). ----
     private static final String SETTINGS_API_CLASS = "com.fs.starfarer.api.SettingsAPI";
     private static final String GLOBAL_CLASS = "com.fs.starfarer.api.Global";
     private static final String SOUND_PLAYER_API_CLASS = "com.fs.starfarer.api.SoundPlayerAPI";
+    private static final String FOCUS_MANAGER_API_CLASS = "com.fs.starfarer.api.ui.FocusManagerAPI";
     private static final String LWJGL_DISPLAY_CLASS = "org.lwjgl.opengl.Display";
     private static final String JSON_OBJECT_CLASS = "org.json.JSONObject";
     /** MagicLib's mod id and the class its seam rewrites (the belt define, {@link #defineMagicSubsystemBelt}). */
@@ -184,7 +162,7 @@ public final class RealEngineContentInit {
         try {
             // ---- Seed + publish Global settings (the loader reads Global.getSettings()) ----
             seedSettingsResources(loader);
-            Class<?> settingsClass = Class.forName(SETTINGS_CLASS, true, loader);
+            Class<?> settingsClass = EngineSymContentInit.CONTENT_INIT_SETTINGS_CLASS.load(loader);
             Method settingsLoad = uniqueMethod(settingsClass, true, Void.TYPE, new Class<?>[0],
                     new String[] { "java.io.IOException", "org.json.JSONException" });
             invokeStaticNoArg(settingsClass.getName(), settingsLoad);
@@ -205,7 +183,8 @@ public final class RealEngineContentInit {
             Object settingsApi = settingsApiFactory.invoke(null);
             if (settingsApi == null) {
                 throw new RealEngineContentInitException(
-                        SETTINGS_CLASS + "." + settingsApiFactory.getName() + "() returned null SettingsAPI");
+                        EngineSymContentInit.CONTENT_INIT_SETTINGS_CLASS.className() + "."
+                                + settingsApiFactory.getName() + "() returned null SettingsAPI");
             }
             Class<?> globalClass = Class.forName(GLOBAL_CLASS, true, loader);
             globalClass.getMethod("setSettings", settingsApiClass).invoke(null, settingsApi);
@@ -232,6 +211,34 @@ public final class RealEngineContentInit {
                         "Global.setSoundPlayer/getSoundPlayer round-trip did not return the published proxy");
             }
 
+            /*
+             * Publish the engine's OWN FocusManagerAPI, as the launcher does between setSettings and
+             * CombatMain.main, so a server-side mod that reads Global.getFocusManager() gets the real adapter, never
+             * null (no reader exists in the engine or the vanilla scripts today; a mod built against this build may
+             * call it). Fails closed on a missing or ambiguous factory, a null return, or a readback that is not the
+             * published instance.
+             *
+             *
+             */
+            Class<?> focusManagerApiClass = Class.forName(FOCUS_MANAGER_API_CLASS, false, loader);
+            String focusFactoryClassName = EngineSymContentInit.CONTENT_INIT_FOCUS_MANAGER_FACTORY_CLASS.className();
+            Method focusManagerFactory = uniqueMethod(Class.forName(focusFactoryClassName, false, loader),
+                    true, focusManagerApiClass, new Class<?>[0], null);
+            Object focusManager = focusManagerFactory.invoke(null);
+            if (focusManager == null) {
+                throw new RealEngineContentInitException(
+                        focusFactoryClassName + "." + focusManagerFactory.getName()
+                                + "() returned null FocusManagerAPI");
+            }
+            globalClass.getMethod("setFocusManager", focusManagerApiClass).invoke(null, focusManager);
+            Object focusReadback = globalClass.getMethod("getFocusManager").invoke(null);
+            if (focusReadback != focusManager) {
+                throw new RealEngineContentInitException(
+                        "Global.setFocusManager/getFocusManager round-trip did not return the published instance");
+            }
+            System.out.println("real-engine-content-init focus_manager published=true"
+                    + " (the launcher's own factory, read back from Global)");
+
             // ---- Replicate the launcher's mod-jar registration BEFORE init reaches script_store load.
             // Fail-soft (records error) so the true boundary surfaces at init(Map), not masked here;
             // the demo's enabled_mods = ["cc_client"] => this registers the client jar. ----
@@ -252,13 +259,13 @@ public final class RealEngineContentInit {
             reloadSettingsAfterModDirs(settingsClass, settingsLoad, settingsJsonField, settingsApi);
 
             // ---- Snapshot the texture registry map before/after the loader runs ----
-            Class<?> textureRegistryClass = Class.forName(TEXTURE_REGISTRY_CLASS, true, loader);
-            Method textureMapGetter = textureRegistryClass.getDeclaredMethod(TEXTURE_MAP_GETTER);
+            Class<?> textureRegistryClass = EngineSymContentInit.CONTENT_INIT_TEXTURE_REGISTRY_CLASS.load(loader);
+            Method textureMapGetter = EngineSymContentInit.CONTENT_INIT_TEXTURE_MAP_METHOD.method(textureRegistryClass);
             textureMapGetter.setAccessible(true);
             textureMapSizeBefore = mapSizeOrMin(textureMapGetter.invoke(null));
 
             // ---- Construct the real ResourceLoaderState + drive init(Map) under the substrate ----
-            Class<?> loaderStateClass = Class.forName(RESOURCE_LOADER_STATE_CLASS, true, loader);
+            Class<?> loaderStateClass = EngineSymContentInit.CONTENT_INIT_RESOURCE_LOADER_STATE_CLASS.load(loader);
             Constructor<?> ctor = loaderStateClass.getDeclaredConstructor();
             ctor.setAccessible(true);
             Object state = ctor.newInstance();
@@ -422,16 +429,16 @@ public final class RealEngineContentInit {
      * (its {@code <init>} reads the mods path setting, needed before mod-jar registration).
      */
     private static void seedSettingsResources(ClassLoader loader) throws Exception {
-        Class<?> resourceClass = Class.forName(RESOURCE_CLASS, true, loader);
+        Class<?> resourceClass = EngineSymContentInit.CONTENT_INIT_RESOURCE_CLASS.load(loader);
         Method resourceSingleton = uniqueMethod(resourceClass, true, resourceClass, new Class<?>[0], null);
         Object resourceRegistry = resourceSingleton.invoke(null);
 
-        resourceClass.getDeclaredMethod(RESOURCE_ADD_DIR_METHOD).invoke(resourceRegistry);
-        resourceClass.getDeclaredMethod(RESOURCE_ADD_DIR_METHOD, String.class)
+        EngineSymContentInit.CONTENT_INIT_RESOURCE_ADD_BASE_DIRS_METHOD.method(resourceClass).invoke(resourceRegistry);
+        EngineSymContentInit.CONTENT_INIT_RESOURCE_ADD_DIR_METHOD.method(resourceClass)
                 .invoke(resourceRegistry, RESOURCE_DIRECTORY);
-        resourceClass.getDeclaredMethod(RESOURCE_ADD_CLASSPATH_METHOD).invoke(resourceRegistry);
+        EngineSymContentInit.CONTENT_INIT_RESOURCE_ADD_CLASSPATH_METHOD.method(resourceClass).invoke(resourceRegistry);
 
-        Class<?> modManagerClass = Class.forName(MOD_MANAGER_CLASS, true, loader);
+        Class<?> modManagerClass = EngineSym.MOD_MANAGER_CLASS.load(loader);
         modManagerClass.getDeclaredMethod("getInstance").invoke(null);
     }
 
@@ -447,7 +454,7 @@ public final class RealEngineContentInit {
         String result;
         try {
             boolean magicLib = false;
-            Class<?> modManagerClass = Class.forName(MOD_MANAGER_CLASS, true, loader);
+            Class<?> modManagerClass = EngineSym.MOD_MANAGER_CLASS.load(loader);
             Object modManager = modManagerClass.getMethod("getInstance").invoke(null);
             for (Object spec : (List<?>) modManagerClass.getMethod("getEnabledMods").invoke(modManager)) {
                 magicLib |= MAGICLIB_MOD_ID.equals(spec.getClass().getMethod("getId").invoke(spec));
@@ -486,11 +493,11 @@ public final class RealEngineContentInit {
     @SuppressWarnings("unchecked")
     private static void registerEnabledModJarsIntoScriptStore(ClassLoader loader) {
         try {
-            Class<?> modManagerClass = Class.forName(MOD_MANAGER_CLASS, true, loader);
+            Class<?> modManagerClass = EngineSym.MOD_MANAGER_CLASS.load(loader);
             Object modManager = modManagerClass.getMethod("getInstance").invoke(null);
             List<?> enabledMods = (List<?>) modManagerClass.getMethod("getEnabledMods").invoke(modManager);
 
-            Class<?> scriptStoreClass = Class.forName(SCRIPT_STORE_CLASS, true, loader);
+            Class<?> scriptStoreClass = EngineSymContentInit.CONTENT_INIT_SCRIPT_STORE_CLASS.load(loader);
             Method jarListGetter = null;
             for (Method m : scriptStoreClass.getMethods()) {
                 if (!Modifier.isStatic(m.getModifiers())
@@ -549,13 +556,12 @@ public final class RealEngineContentInit {
      */
     private static void registerEnabledModDataDirsIntoResourceRegistry(ClassLoader loader) {
         try {
-            Class<?> resourceClass = Class.forName(RESOURCE_CLASS, true, loader);
+            Class<?> resourceClass = EngineSymContentInit.CONTENT_INIT_RESOURCE_CLASS.load(loader);
             Method resourceSingleton = uniqueMethod(resourceClass, true, resourceClass, new Class<?>[0], null);
             Object resourceRegistry = resourceSingleton.invoke(null);
-            Method addModDir = resourceClass.getDeclaredMethod(
-                    RESOURCE_ADD_MOD_DIR_METHOD, String.class, boolean.class, Object.class);
+            Method addModDir = EngineSymContentInit.CONTENT_INIT_RESOURCE_ADD_MOD_DIR_METHOD.method(resourceClass);
 
-            Class<?> modManagerClass = Class.forName(MOD_MANAGER_CLASS, true, loader);
+            Class<?> modManagerClass = EngineSym.MOD_MANAGER_CLASS.load(loader);
             Object modManager = modManagerClass.getMethod("getInstance").invoke(null);
             List<?> enabledMods = (List<?>) modManagerClass.getMethod("getEnabledMods").invoke(modManager);
 
