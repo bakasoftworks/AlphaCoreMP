@@ -1365,6 +1365,9 @@ public final class HeadlessCombatContext implements AutoCloseable {
         // rollback via the engine's public removeListener or later probes notify stale
         // managers. Populated during install, drained LIFO here.
         ArrayList<Object> addedEngineListeners = new ArrayList<>();
+        // The engine's listener list as this install found it: the rollback lets go of
+        // everything the round added that the named list below misses (the wave admiral's deployment planner).
+        RealEngineInstallListenerLedger listenerLedger = RealEngineInstallListenerLedger.open(c.engine);
         rollbackActions.add(() -> {
             invoke(c.setPreDeploy, c.engine, "CombatEngine.setPreDeploy.restore",
                     Boolean.valueOf(priorPreDeploy));
@@ -1372,6 +1375,10 @@ public final class HeadlessCombatContext implements AutoCloseable {
             for (int i = addedEngineListeners.size() - 1; i >= 0; i--) {
                 invoke(c.removeListener, c.engine, "CombatEngine.removeListener.restore",
                         addedEngineListeners.get(i));
+            }
+            String listenersLetGo = listenerLedger.letGoAdded(c.removeListener);
+            if (listenersLetGo != null) {
+                System.out.println("engine-deploy rollback listeners " + listenersLetGo);
             }
             invoke(c.setFleetManagers, c.engine, "CombatEngine.setFleetManagers.restore", priorFleetManagers);
             invoke(c.setObjects, c.engine, "CombatEngine.setObjects.restore", priorObjects);

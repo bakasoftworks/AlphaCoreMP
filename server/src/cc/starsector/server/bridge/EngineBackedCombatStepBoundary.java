@@ -86,7 +86,16 @@ public final class EngineBackedCombatStepBoundary implements CombatStepBoundary 
         if (engagedCarrierBandSnap) {
             EngagedCarrierBandSnap.apply(binding.shipList(), effectiveStepAmount(fixedDt));
         }
+        // The engine's own per-frame animation-layer advance, where and with the dt the
+        // windowed game makes it (before its engine advance, dt * timeMult). Inside
+        // the adv_eng / adv_cpu bracket on purpose: it is engine frame work. OFF = one volatile read.
+        cc.starsector.server.platform.RealEngineAnimLayerAdvance.advance(fixedDt * worldState.timeMult());
+        // The engine's own two statements around its inner step:
+        // the AI's hulk-obstacle cache is dropped right before and right after, so each tick's AI
+        // reads a list built THAT tick (it was built once and frozen for the process). OFF = one volatile read each.
+        cc.starsector.server.platform.RealEngineHulkCacheBracket.beforeStep();
         binding.invokeAdvanceInner(effectiveStepAmount(fixedDt));
+        cc.starsector.server.platform.RealEngineHulkCacheBracket.afterStep();
         long cpuEndNanos = threadCpuSupported ? threadCpu.getCurrentThreadCpuTime() : -1L;
         long advanceEndNanos = System.nanoTime();
         // post-step: repace piloted hulls' cloak trackers to wall time.

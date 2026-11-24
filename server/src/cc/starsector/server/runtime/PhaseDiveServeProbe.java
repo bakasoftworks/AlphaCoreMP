@@ -4,10 +4,10 @@ import static cc.starsector.server.runtime.ServeProbeSupport.call;
 import static cc.starsector.server.runtime.ServeProbeSupport.floatOf;
 import static cc.starsector.server.runtime.ServeProbeSupport.hullIdOf;
 
+import cc.starsector.server.bridge.SweptIdentityMap;
 import cc.starsector.server.protocol.PhaseDiveEvent;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -80,8 +80,11 @@ final class PhaseDiveServeProbe {
     private Object engine;
 
     private final Map<Object, Tracked> trackedByShip = new IdentityHashMap<>();
-    private final Set<Object> nonAnchorShips =
-            Collections.newSetFromMap(new IdentityHashMap<>());
+    /** SWEPT: the scan touches every live ship each tick, so an entry untouched for
+     *  {@link #NON_ANCHOR_SWEEP_TICKS} belongs to a removed body and dies (see {@link SweptIdentityMap}). */
+    private final SweptIdentityMap<Boolean> nonAnchorShips = new SweptIdentityMap<>();
+    static final long NON_ANCHOR_SWEEP_TICKS = 1200;
+    private long nonAnchorSweptTick;
     private final Set<Long> diveLatchedWireIds = new LinkedHashSet<>();
     private final List<PhaseDiveEvent> pendingDiveStarts = new ArrayList<>();
 
@@ -146,11 +149,11 @@ final class PhaseDiveServeProbe {
         }
         try {
             logDroppedTracked(simTick, ships);
-            pruneNonAnchorShips(simTick, ships);
+            pruneNonAnchorShips(simTick);
             Map<Long, Long> wireIds = null;
             for (Map.Entry<Object, Long> entry : ships.entrySet()) {
                 Object ship = entry.getKey();
-                if (ship == null || nonAnchorShips.contains(ship)) {
+                if (ship == null || nonAnchorShips.containsKey(ship)) {
                     continue;
                 }
                 Tracked t = trackedByShip.get(ship);
@@ -202,7 +205,7 @@ final class PhaseDiveServeProbe {
         }
         List<?> scripts = (List<?>) getListeners.invoke(ship, scriptClass);
         if (scripts == null || scripts.size() != 1) {
-            nonAnchorShips.add(ship);
+            nonAnchorShips.put(ship, Boolean.TRUE);
             return null;
         }
         Tracked t = new Tracked();
@@ -396,17 +399,26 @@ final class PhaseDiveServeProbe {
     /**
      * The non-anchor verdict cache strongly
      * retained every engine ship ever seen (logDroppedTracked prunes only trackedByShip), so
-     * a long serve grew it without bound. Past a slack bound (2x live + 64) it is trimmed to
-     * the live roster — amortised O(live), never per-frame work. No summary line exists on
-     * this probe, so the prune line IS the export (cumulative meter pruned_total=).
+     * a long serve grew it without bound. No summary line exists on this probe, so the prune
+     * line IS the export (cumulative meter pruned_total=).
+     *
+     * <p>AGE-BOUNDED: the first cut trimmed only past a slack bound (2x live
+     * + 64), which a heap dump showed keeping 80 removed Ships with no age limit. Now a sweep at the
+     * HEAD of the scan every {@link #NON_ANCHOR_SWEEP_TICKS}; the same scan then touches every live
+     * ship, so an entry dies only when two sweeps pass with its body unseen. A tick that runs
+     * backwards (a round wrap) sweeps too. Cost: one compare a tick, two table swaps a sweep.
      */
-    private void pruneNonAnchorShips(long simTick, Map<Object, Long> ships) {
-        if (nonAnchorShips.size() <= 2 * ships.size() + 64) {
+    private void pruneNonAnchorShips(long simTick) {
+        if (simTick >= nonAnchorSweptTick && simTick - nonAnchorSweptTick < NON_ANCHOR_SWEEP_TICKS) {
             return;
         }
+        nonAnchorSweptTick = simTick;
         int before = nonAnchorShips.size();
-        nonAnchorShips.retainAll(ships.keySet());
+        nonAnchorShips.sweep();
         int pruned = before - nonAnchorShips.size();
+        if (pruned == 0) {
+            return;
+        }
         nonAnchorPrunedTotal += pruned;
         System.out.println("npeer-serve phase_dive_probe tick=" + simTick
                 + " pruned=" + pruned + " kept=" + nonAnchorShips.size()

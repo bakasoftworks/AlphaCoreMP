@@ -22,7 +22,8 @@ import java.util.Map;
  * ({@code RealEngineCombatBindingFactory.resetForRedeploy}), so before this port it carried the
  * identical unbounded-heap retention — the entire persistent-server thesis exposed. Each corrective
  * re-runs the engine's <em>own</em> between-battle cleanup at the per-round boundary (faithful, not a
- * reimplementation): the four mechanisms, in apply order, are
+ * reimplementation): the six mechanisms, in apply order (save the plugin sweep, which runs
+ * last and only when the re-mint did not), are
  *
  * <ol>
  *   <li><b>Entity sweep</b> (scout corrective 2). The engine's repository swap that
@@ -46,7 +47,10 @@ import java.util.Map;
  *       retention from the renderer into {@code removing}. Fix = the engine's own
  *       {@code CombatEngine.destroyInstance} statements: {@code clear()}
  *       both named managers. <b>Must run after the entity sweep</b> (the sweep is what queues the
- *       round's animations).</li>
+ *       round's animations). CORRECTED: {@code advanceAll} is the UPDATE half of the
+ *       game's frame loop, needs no GL, and the serve now makes that call each tick
+ *       ({@link RealEngineAnimLayerAdvance}); this clear is then followed by a re-register of the
+ *       engine's own particle systems, which it would otherwise drop for good.</li>
  *   <li><b>Particle clear</b> (scout corrective 4). {@code GenericTextureParticle}
  *       FX accumulate in the engine-held {@code DynamicParticleGroup}s (the uncapped groups inside
  *       the explosion/debris FX systems plus the engine's own group fields) because group aging
@@ -60,6 +64,11 @@ import java.util.Map;
  *       registered (omega {@code ShardSpawner} fades) advances into the next round on dead-round
  *       state. Fix = remove every plugin not in the round-open baseline via the engine's PUBLIC
  *       {@code removePlugin}; baseline law at {@link #pluginBaseline}.</li>
+ *   <li><b>Battle stores, then the plugin re-mint</b> (correctives 6 + 7): the stores and the
+ *       script plugins a NEW engine opens a battle with, which this one engine otherwise carries from round to
+ *       round (the baseline plugins' own fields and the custom-data map held every dead round's fleet
+ *       managers). The design = {@link RealEngineFreshBattleState}; when its re-mint runs it does the plugin
+ *       sweep's work too and REPLACES the baseline, and when it cannot the sweep above runs as before.</li>
  * </ol>
  *
  * <p><b>Single master switch, no per-corrective toggles.</b> The scout shipped one {@code cc.soak.*}
@@ -131,6 +140,9 @@ public final class RealEngineRoundHeapDrain {
     private Method removePlugin;
     private boolean pluginSweepEnabled;
 
+    // ---- Correctives 6 + 7: the stores and the script plugins a NEW engine opens a battle with. ----
+    private RealEngineFreshBattleState freshBattleState;
+
     /**
      * Round-open plugin BASELINE (corrective 5): the identity set of every
      * {@code EveryFrameCombatPlugin} registered on the engine when {@code create()} finished —
@@ -166,6 +178,7 @@ public final class RealEngineRoundHeapDrain {
         drain.resolveAnimClear(loader);
         drain.resolveParticleClear(engineClass, loader);
         drain.resolvePluginSweep(engineClass, loader);
+        drain.freshBattleState = RealEngineFreshBattleState.resolve(engine); // never throws; prints its own row
         System.out.println("real-engine-heap-drain resolve"
                 + " entity_sweep=" + drain.entitySweepEnabled
                 + " fog_remint=" + drain.fogRemintEnabled
@@ -400,7 +413,8 @@ public final class RealEngineRoundHeapDrain {
 
     /**
      * Apply the correctives in the proven scout order — entity sweep, then fog re-mint, then
-     * anim clear, then particle clear, then the plugin sweep — on the OUTGOING round's engine state, between served rounds
+     * anim clear, then particle clear — then the fresh battle stores, then the plugin re-mint, or the
+     * plugin sweep in its place when no re-mint ran — on the OUTGOING round's engine state, between served rounds
      * (no {@code advanceInner} in flight). Each step is fail-soft and disables itself on error so a
      * later round does not re-throw. Returns a compact per-corrective outcome string for the caller's
      * reset log. Never throws.
@@ -409,13 +423,29 @@ public final class RealEngineRoundHeapDrain {
         String entitySweepOutcome = entitySweepEnabled ? sweepEntities() : "off";
         String fogRemintOutcome = fogRemintEnabled ? remintFog() : "off";
         String animClearOutcome = animClearEnabled ? clearAnimations() : "off";
+        if (!animClearEnabled) {
+            // A round whose clear did not run (off, or just disabled by a throw) made no
+            // re-register either, so the per-tick layer advance goes off with it rather than run on a stale set.
+            RealEngineAnimLayerAdvance.disarm();
+        }
         String particleClearOutcome = particleClearEnabled ? clearParticles() : "off";
-        String pluginSweepOutcome = pluginSweepEnabled ? sweepPlugins() : "off";
+        // Correctives 6 + 7, in a new battle's own order: the engine's stores first (a new
+        // plugin's init may write custom data), then the script plugins. A null re-mint touched nothing: the
+        // old sweep (script-added plugins only) runs in its place. The listener manager is renewed INSIDE the
+        // re-mint, never by freshStores: plugins that stay keep the manager their init registered on.
+        //
+        String battleStoresOutcome = freshBattleState == null ? "off" : freshBattleState.freshStores();
+        RealEngineFreshBattleState.Remint remint =
+                freshBattleState == null ? null : freshBattleState.remintPlugins(pluginBaseline);
+        String pluginSweepOutcome = remint != null ? "swept_" + remint.scriptAdded
+                : pluginSweepEnabled ? sweepPlugins() : "off";
         return "entity_sweep=" + entitySweepOutcome
                 + " fog_remint=" + fogRemintOutcome
                 + " anim_clear=" + animClearOutcome
                 + " particle_clear=" + particleClearOutcome
-                + " plugin_sweep=" + pluginSweepOutcome;
+                + " plugin_sweep=" + pluginSweepOutcome
+                + " battle_stores=" + battleStoresOutcome
+                + " plugin_remint=" + (remint != null ? remint.outcome : "off");
     }
 
     private String sweepEntities() {
@@ -451,7 +481,11 @@ public final class RealEngineRoundHeapDrain {
         try {
             animClearMethod.invoke(animGetInstance.invoke(null, ANIM_MANAGER_CE));
             animClearMethod.invoke(animGetInstance.invoke(null, ANIM_MANAGER_CE_NON_PAUSE));
-            return "cleared";
+            // The clear also dropped the particle systems the engine constructor
+            // registered once; with the layer advanced each tick they must be registered again, as a fresh
+            // engine's constructor would (-1 = the per-tick advance is OFF: the plain clear, as before).
+            int reRegistered = RealEngineAnimLayerAdvance.reRegisterEngineOwned();
+            return reRegistered < 0 ? "cleared" : "cleared_rereg_" + reRegistered;
         } catch (Throwable t) {
             animClearEnabled = false;
             return "error_clear_disabled_" + t.getClass().getSimpleName();

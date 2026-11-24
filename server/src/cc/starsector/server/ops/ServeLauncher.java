@@ -110,6 +110,19 @@ public final class ServeLauncher {
     public static final int MAX_RELAUNCHES = 5;
     /** Pause before each relaunch (D6: the rows drive {@link ServeSupervisor} with a short one). */
     public static final long RELAUNCH_DELAY_MS = 2000L;
+    /**
+     * A life that ran at least this long and then failed starts the relaunch budget over ({@link ServeSupervisor}
+     * sets its relaunch count back to 0 before the budget check and writes {@code life=N budget_refunded=true
+     * ran_s=<s>}). WHY 10 minutes: the budget exists to stop a crash LOOP, and a setting the server cannot use fails
+     * within about a minute; a life that served 10 minutes is no loop, and a serve that reaches its heap cap (an
+     * out-of-memory exit, code 3) dies hours apart, so without the refund its starts ran out over a few days and
+     * the server stayed down for good. So the launcher gives up only when {@link #MAX_RELAUNCHES} + 1 starts in a
+     * row each ended inside 10 minutes (after a refund the long life is the first of them). No config row: a fixed
+     * law, not a knob.
+     *
+     *
+     */
+    public static final long RELAUNCH_REFUND_AFTER_MS = 600_000L;
 
     static final String RUN_DIR = "run";
     static final String LOCK_FILE = "serve.lock";
@@ -686,7 +699,7 @@ public final class ServeLauncher {
         Map<String, String> env = childEnv(inheritedEnv, opsStatus, opsCmd, llvmpipe,
                 box.getOrDefault(ROW_BIND_HOST, "").trim(), c.bindPortFromBox ? String.valueOf(c.bindPort) : "", windows, pkg);
         ServeSupervisor supervisor = new ServeSupervisor(flight, stopFile, receipt, c.workDir, c.argv, env,
-                MAX_RELAUNCHES, RELAUNCH_DELAY_MS, out, c.bindPort, timerApplier(box));
+                MAX_RELAUNCHES, RELAUNCH_DELAY_MS, out, c.bindPort, timerApplier(box), RELAUNCH_REFUND_AFTER_MS);
         if (retentionRow != null) {
             supervisor.rowAfterPid(retentionRow);
         }

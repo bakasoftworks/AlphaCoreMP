@@ -2,6 +2,15 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.7.1 - 2026-11-23
+
+- AI ships and autofire weapons now see wrecks where they are. Before, the server judged "is a wreck in the line of fire" against a wreck list frozen at server start-up.
+- Once-per-battle state no longer carries over from the server's start-up warm-up or an earlier round: a station's stealth minefield and the Phase Anchor emergency dive start fresh each round.
+- Server memory: explosion and debris effects no longer pile up, and a new round frees most of what the last round held. Ships, fighters and wrecks that leave the battle are still kept until the round ends, so a very long round still grows.
+- Hosts: a server that runs out of memory now exits and is started again; before, it could go silent. `despawn` now also removes the ship from its side's deployed-ship list, and `switch-team <seat> instant` moves a carrier's fighter-wing records with it. Mod scripts that stop once combat is over now keep running on the server.
+- Corrections to the 0.7.0 notes: Graviton Beam shield damage shown was up to about 10% low (5, 8 or 10% by beam count); the `switch-team <seat> instant` crash needed a ship whose player had left and another player's transfer to it.
+- Hosts and players update together: a 0.7.0 kit cannot join a 0.7.1 server, and a 0.7.1 kit cannot join a 0.7.0 server.
+
 ## 0.7.0 - 2026-11-23
 
 - For Starsector 0.98.5a-RC8 only. Hosts and players update together: the new server package and the new joiner kit. A 0.6.9 or older kit cannot join. 0.6.9 stays the last release for Starsector 0.98a.

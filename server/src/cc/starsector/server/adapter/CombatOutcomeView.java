@@ -15,14 +15,18 @@ package cc.starsector.server.adapter;
  * {@code EngineCombatBinding.combatOutcomeFromRosterOrNull()}.
  *
  * <p><b>Headless caveat
- * (the load-bearing RE finding).</b> Two engine signals are unreliable headless, so a
- * headless server uses neither as its authoritative producer:
+ * (the load-bearing RE finding).</b> The engine's own end judge is not the headless
+ * server's outcome source, so a headless server uses neither engine signal as its
+ * authoritative producer:
  * <ul>
- *   <li>{@code isCombatOver()} is <em>render-coupled</em>: the engine's implementation returns
- *       {@code true} only once the combat-over flag is set <em>and</em> the end-of-combat
- *       visual {@code Fader} has reached full brightness. A headless server drives no
- *       fader, so {@link #combatOver()} can stay {@code false} long after the match is
- *       decided — end on {@link #decided()}, not {@link #combatOver()}.</li>
+ *   <li>{@code isCombatOver()} returns {@code true} only once the engine's own end check
+ *       has latched the combat-over flag <em>and</em> the end-of-combat {@code Fader} has
+ *       reached full brightness; that fader advances inside the engine's own step, so it
+ *       does reach full brightness headless.
+ * The real-engine serve holds the engine's
+ *       {@code setDoNotEndCombat(true)}, as every client does, so that end check never runs
+ *       and {@link #combatOver()} reads {@code false} there — end on
+ *       {@link #decided()}, not {@link #combatOver()}.</li>
  *   <li>{@code getWinningSideId()} is computed from {@code CombatFleetManager} deployment
  *       bookkeeping that the headless roster install deliberately empties, so
  *       headless it latches a <em>spurious early winner</em> blind to the ships actually
@@ -38,11 +42,11 @@ public interface CombatOutcomeView {
 
     /**
      * The engine's own combat-over flag, as reported by the public
-     * {@code CombatEngineAPI.isCombatOver()}. <b>Render-coupled</b> (see the type
-     * Javadoc): unreliable headless because the engine's implementation additionally
-     * gates it on the end-of-combat visual fade. Exposed for diagnostics / parity
-     * with the engine; prefer {@link #decided()} for the authoritative match-end
-     * signal.
+     * {@code CombatEngineAPI.isCombatOver()}: the engine's own end judge, not the
+     * headless outcome source (see the type Javadoc), and {@code false} on the real-engine
+     * serve, which holds {@code setDoNotEndCombat(true)} so that judge never runs.
+     * Exposed for diagnostics / parity with the engine; prefer
+     * {@link #decided()} for the authoritative match-end signal.
      */
     boolean combatOver();
 

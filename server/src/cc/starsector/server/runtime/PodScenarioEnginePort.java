@@ -409,8 +409,9 @@ public final class PodScenarioEnginePort implements PodScenarioDriver.Port {
 
     /**
      * Despawn the unit an admin has selected with R-hover:
-     * remove a NON-SEAT hull by wire id through the engine's own {@code removeObject} — the
-     * {@link TransferPodSpawner#removeShipOrFalse} primitive, a VANISH, never a kill: no hulk, no
+     * remove a NON-SEAT hull by wire id WITH its fleet record — {@link TransferPodSpawner#removeShipOrFalse}
+     * (the record holder's own {@code removeDeployed(ship, true)}; the bare {@code removeObject}
+     * for a record-less hull), a VANISH, never a kill: no hulk, no
      * explosion, so the despawn classifier publishes DEPARTED (a healthy removal,
      * {@code DespawnReasonEvidence}) and every client evicts the replica corpse-free. Refusals are
      * constant receipt texts plus the digits (never an echo): a seat's wire (every seat's FIXED id
@@ -422,9 +423,14 @@ public final class PodScenarioEnginePort implements PodScenarioDriver.Port {
      * waves) — EXCEPT a station module or a fighter (the designed
      * module refusal never shipped; a module / wing member is owned by its parent hull and
      * {@code removeObject} under a live parent is unexercised engine behaviour — refused, and a
-     * kind read the engine cannot answer refuses too, fail-closed). Sim thread only (the operator
+     * kind read the engine cannot answer refuses too, fail-closed) — and EXCEPT a hull one of whose
+     * child modules carries a seat's wire: the
+     * removal takes the children with the parent, and a seat can be mounted on a module of the
+     * fortress station base ({@link SeatRebind#mountStationModule}), so "never a player's ship"
+     * is read through the parent too (a child list the engine cannot give refuses, fail-closed).
+     * Sim thread only (the operator
      * switch); fail-soft — an admin typo never kills the serve. The decision is the pure
-     * {@link #despawnByWire(String, DespawnSeams)} over six seams so a contract row
+     * {@link #despawnByWire(String, DespawnSeams)} over seven seams so a contract row
      * ({@code DespawnByWireContractRows}) pins every branch without an engine.
      */
     public String despawnByWire(String digits) {
@@ -460,13 +466,18 @@ public final class PodScenarioEnginePort implements PodScenarioDriver.Port {
             }
 
             @Override
+            public List<String> childModuleStablesOrNull(Object ship) {
+                return podSpawner.childModuleStablesOrNull(ship);
+            }
+
+            @Override
             public boolean remove(Object ship) {
                 return podSpawner.removeShipOrFalse(ship, "despawn");
             }
         });
     }
 
-    /** The six engine/registry reads {@link #despawnByWire(String)} decides over — an interface so
+    /** The seven engine/registry reads {@link #despawnByWire(String)} decides over — an interface so
      * the law is contract-testable with stubs. */
     public interface DespawnSeams {
         /** Any seat's FIXED wire id (a transferred-into hull is a seat id too). */
@@ -485,13 +496,19 @@ public final class PodScenarioEnginePort implements PodScenarioDriver.Port {
          * the engine could not be asked. */
         Boolean isModuleOrFighterOrNull(Object ship);
 
-        /** The engine's own {@code removeObject}; false = it threw (already logged). */
+        /** The stable ids of the ship's child modules (empty = it has none), or null when the
+         * engine could not list them or one id could not be read. */
+        List<String> childModuleStablesOrNull(Object ship);
+
+        /** The hull out of the world WITH its fleet record and its child modules
+         * ({@link TransferPodSpawner#removeShipOrFalse}); false = the engine threw (already logged). */
         boolean remove(Object ship);
     }
 
     /** The pure decision behind {@link #despawnByWire(String)}: every refusal is a constant text
      * plus the digits, in this order — bad id, a player's ship, no ship, a transfer pod, not on
-     * the field, a module or fighter (or an unanswerable kind read), the engine refusing. */
+     * the field, a module or fighter (or an unanswerable kind read), child modules the engine
+     * cannot list, a player seated on one of its modules, the engine refusing. */
     public static String despawnByWire(String digits, DespawnSeams seams) {
         long wire;
         try {
@@ -528,6 +545,20 @@ public final class PodScenarioEnginePort implements PodScenarioDriver.Port {
         Boolean owned = seams.isModuleOrFighterOrNull(ship);
         if (owned == null || owned) {
             return "despawn refused: #" + wire + " is a module or fighter";
+        }
+        // the removal takes the child modules with the parent: the seat law is read through it
+        List<String> children = seams.childModuleStablesOrNull(ship);
+        if (children == null) {
+            return "despawn refused: #" + wire + " has modules that could not be read";
+        }
+        for (String child : children) {
+            if (child == null) {
+                return "despawn refused: #" + wire + " has modules that could not be read";
+            }
+            Long childWire = snapshot.get(child);
+            if (childWire != null && seams.isSeatWire(childWire.longValue())) {
+                return "despawn refused: #" + wire + " has a player on one of its modules";
+            }
         }
         return seams.remove(ship)
                 ? "despawned #" + wire

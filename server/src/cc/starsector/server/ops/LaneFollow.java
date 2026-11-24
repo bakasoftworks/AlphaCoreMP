@@ -172,7 +172,8 @@ public final class LaneFollow {
         public String detailText() {
             // Exit 78 is FINAL (ServeSupervisor writes
             // refused_exit and never relaunches it) - the old "supervisor relaunching" mislabel.
-            return "life " + life + "/" + (START_MAX_RELAUNCHES + 1) + " exited code " + exitCode
+            return "life " + life + (life > START_MAX_RELAUNCHES + 1 ? "" : "/" + (START_MAX_RELAUNCHES + 1))
+                    + " exited code " + exitCode
                     + (exceptionLine.isEmpty() ? "" : " - " + exceptionLine)
                     + (exitCode == EXIT_REFUSED_FINAL ? " - the server REFUSED (exit 78, final)"
                             : exhausted ? " - relaunch budget exhausted"

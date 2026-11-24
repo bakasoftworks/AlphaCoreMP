@@ -43,4 +43,14 @@ public final class EngineSymContentInit {
 
     // Hulk-cut tesselator: its one static Random (the field name is engine-internal, so it is resolved by type) is re-armed per round.
     public static final EngineRow CONTENT_INIT_TESSELATOR_CLASS = EngineRow.cls("CONTENT_INIT_TESSELATOR_CLASS", "com/fs/starfarer/util/Tesselator"); //
+
+    // AI hulk-obstacle cache: the two static no-arg resets the outer engine advance makes right before and right after its inner step.
+    public static final EngineRow CONTENT_INIT_AI_HULK_CACHE_PRE_STEP_METHOD = EngineRow.staticMethod("CONTENT_INIT_AI_HULK_CACHE_PRE_STEP_METHOD", "com/fs/starfarer/combat/ai/L", "\u00D200000", "()V"); //
+    public static final EngineRow CONTENT_INIT_AI_HULK_CACHE_POST_STEP_METHOD = EngineRow.staticMethod("CONTENT_INIT_AI_HULK_CACHE_POST_STEP_METHOD", "com/fs/starfarer/combat/ai/L", "o00000", "()V"); //
+
+    // Roster install rollback: the engine's one list of battle-event listeners (addListener / removeListener edit it), read to let a round's added listeners go.
+    public static final EngineRow CONTENT_INIT_ENGINE_LISTENER_LIST_FIELD = EngineRow.field("CONTENT_INIT_ENGINE_LISTENER_LIST_FIELD", "com/fs/starfarer/combat/CombatEngine", "\u00F8\u00D40000", "Ljava/util/List;"); //
+
+    // Fresh battle state: the script store's mint-all, the call setCombatMap and init() make to give a battle one NEW instance of every plugin class.
+    public static final EngineRow CONTENT_INIT_SCRIPT_STORE_MINT_ALL_METHOD = EngineRow.staticMethod("CONTENT_INIT_SCRIPT_STORE_MINT_ALL_METHOD", "com/fs/starfarer/loading/scripts/ScriptStore", "\u00D400000", "(Ljava/lang/Class;)Ljava/util/List;"); //
 }

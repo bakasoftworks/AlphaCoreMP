@@ -790,10 +790,45 @@ public final class TransferPodSpawner implements TransferPodLane.Port {
     }
 
     /**
+     * The stable ids of {@code ship}'s child modules, for the {@code /despawn} seat law:
+     * the removal takes every child module with its parent
+     * ({@link #removeWithRecord}), so the verb must know whether one of them is a seat's body
+     * before it lets the parent go. Empty = no child module. Null = the engine could not be asked,
+     * the ship has no child list, or one child's id could not be read — the caller refuses
+     * (fail-closed), never reads null as "no modules".
+     */
+    public List<String> childModuleStablesOrNull(Object ship) {
+        Handles h = handlesOrNull();
+        if (h == null || ship == null) {
+            return null;
+        }
+        try {
+            Method childModules = methodTakingOrNull(ship, "getChildModulesCopy", 0, null);
+            Object modules = childModules == null ? null : childModules.invoke(ship);
+            if (!(modules instanceof List<?>)) {
+                return null;
+            }
+            List<String> stables = new java.util.ArrayList<String>();
+            for (Object module : (List<?>) modules) {
+                String stable = module == null ? null : stableIdOrNull(module);
+                if (stable == null) {
+                    return null;
+                }
+                stables.add(stable);
+            }
+            return stables;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            System.out.println("npeer-serve ship_modules_read_failed err=" + e);
+            return null;
+        }
+    }
+
+    /**
      * {@link #despawnPod}'s law on ANY engine ship handle, with the outcome
      * returned — the {@code /despawn} operator arm mails it as the receipt (D5 law), so the
-     * failure is a receipt AND a LOUD row, never a swallowed miss. Same engine door
-     * ({@code removeObject}: a vanish, no hulk — the pod precedent), same fail-soft shape.
+     * failure is a receipt AND a LOUD row, never a swallowed miss. Same vanish (no hulk — the
+     * pod precedent), same fail-soft shape; the hull's fleet record leaves with it
+     * ({@link #removeWithRecord}).
      */
     public boolean removeShipOrFalse(Object ship, String site) {
         Handles h = handlesOrNull();
@@ -805,12 +840,83 @@ public final class TransferPodSpawner implements TransferPodLane.Port {
             if (engine == null) {
                 return false;
             }
-            h.removeObject.invoke(engine, ship);
+            removeWithRecord(engine, ship, h.removeObject, site);
             return true;
         } catch (ReflectiveOperationException | RuntimeException e) {
             System.out.println("npeer-serve ship_remove_failed site=" + site + " err=" + e);
             return false;
         }
+    }
+
+    /**
+     * Remove {@code ship} from the world WITH its fleet record.
+     * A bare {@code removeObject} takes the
+     * hull out of the world and leaves its {@code DeployedFleetMember} in its side's deployed set:
+     * the deployment points stay spent, the wire side totals and vanilla's side scripts keep
+     * counting a hull that is gone, and the record holds the Ship until the round resets. So, for
+     * side 0 then 1: when that side's manager holds a record for the ship, the engine's own
+     * {@code removeDeployed(ship, true)} —
+     * the call its retreat makes, WITHOUT the retreat report (a vanish is not a
+     * retreat): it frees the points, drops the record, removes the hull AND its child modules and
+     * saves the member status. One {@code ship_record_removed site= side= left=} row a record;
+     * {@code left=0} = the engine kept it (a WING's record answers the lookup for its fighters,
+     *and the ship overload never matches it) and the hull falls through to
+     * the bare door. A hull with NO record takes the bare door plus its child modules — the
+     * engine's own no-record branch in {@code retreat}; before this the
+     * modules of a record-less parent stayed orphaned in the world. Static over plain objects so a stub engine
+     * pins it game-free; a throw is the caller's LOUD row.
+     */
+    public static void removeWithRecord(Object engine, Object ship, Method removeObject,
+            String site) throws ReflectiveOperationException {
+        Method getFleetManager = engine.getClass().getMethod("getFleetManager", int.class);
+        for (int side = 0; side <= 1; side++) {
+            Object manager = getFleetManager.invoke(engine, side);
+            if (manager == null) {
+                continue;
+            }
+            Method lookup = methodTakingOrNull(manager, "getDeployedFleetMember", 1, ship);
+            Method remove = methodTakingOrNull(manager, "removeDeployed", 2, ship);
+            if (lookup == null || remove == null || lookup.invoke(manager, ship) == null) {
+                continue;
+            }
+            remove.invoke(manager, ship, true);
+            boolean left = lookup.invoke(manager, ship) == null;
+            System.out.println("npeer-serve ship_record_removed site=" + site + " side=" + side
+                    + " left=" + (left ? 1 : 0));
+            if (left) {
+                return;
+            }
+        }
+        removeObject.invoke(engine, ship);
+        Method childModules = methodTakingOrNull(ship, "getChildModulesCopy", 0, null);
+        Object modules = childModules == null ? null : childModules.invoke(ship);
+        if (modules instanceof List<?>) {
+            for (Object module : (List<?>) modules) {
+                if (module != null) {
+                    removeObject.invoke(engine, module);
+                }
+            }
+        }
+    }
+
+    /** The public {@code name} method of {@code target} with {@code arity} parameters whose FIRST
+     * accepts {@code firstArg} (a two-parameter one takes a {@code boolean} second: the
+     * {@code removeDeployed(ship, boolean)} shape, never its wing twin); null when absent. */
+    private static Method methodTakingOrNull(Object target, String name, int arity,
+            Object firstArg) {
+        for (Method m : target.getClass().getMethods()) {
+            if (!m.getName().equals(name) || m.getParameterCount() != arity) {
+                continue;
+            }
+            if (arity >= 1 && !m.getParameterTypes()[0].isInstance(firstArg)) {
+                continue;
+            }
+            if (arity == 2 && m.getParameterTypes()[1] != boolean.class) {
+                continue;
+            }
+            return m;
+        }
+        return null;
     }
 
     @Override

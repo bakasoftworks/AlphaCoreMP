@@ -63,7 +63,12 @@ final class PilotedCloakWallClock {
         float elapsed;
         long visits;
         long rewinds;
+        long lastFrame; // the walk frame of the last visit: the age the sweep in frameStats reads
     }
+
+    /** A record no visit touched for this many walk frames belongs to a hull no longer piloted: it is dropped
+     *  (the 64-record wholesale clear alone kept a removed hull's tracker with no age limit). */
+    private static final long STALE_AFTER_FRAMES = 1200L;
 
     /** Previous visit per tracker object (identity: a reminted hull gets a fresh tracker). */
     private final IdentityHashMap<Object, Rec> lastByTracker = new IdentityHashMap<>();
@@ -117,7 +122,9 @@ final class PilotedCloakWallClock {
         if (rec == null) {
             rec = new Rec();
             lastByTracker.put(tracker, rec);
-        } else if (rec.state == state && wallPaced(state)) {
+        }
+        rec.lastFrame = walkFrames;
+        if (rec.visits > 0L && rec.state == state && wallPaced(state)) {
             float delta = elapsed - rec.elapsed;
             if (delta > wallDt * (1f + EPS_FRAC) && delta <= wallDt * CAP_MULT) {
                 float rewound = rec.elapsed + wallDt;
@@ -155,6 +162,9 @@ final class PilotedCloakWallClock {
         walkFrames++;
         walkOwned += owned;
         walkResolved += resolved;
+        if (walkFrames % STALE_AFTER_FRAMES == 0L && !lastByTracker.isEmpty()) {
+            lastByTracker.values().removeIf(rec -> walkFrames - rec.lastFrame > STALE_AFTER_FRAMES);
+        }
         if (walkFrames == ROLLUP_FIRST_FRAMES || walkFrames % ROLLUP_EVERY_FRAMES == 0L) {
             StringBuilder perHull = new StringBuilder();
             for (Rec rec : lastByTracker.values()) {

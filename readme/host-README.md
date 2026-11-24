@@ -399,7 +399,7 @@ Everything below is inside this folder.
 ### The headline reads
 
 - REFUSED: the line under it starts "REFUSED before launch: `<reason>`", then the launcher's "serve-launcher refused:" line (`serve.bat`'s window shows it too) says what to change (see [Why a start was refused](#why-a-start-was-refused)).
-- FAILED: a start failed (the line under it says what). While starts are left, the launcher starts it again (up to 6 starts in all); after the last one, or after code 78, nothing restarts (see [Exit codes](#exit-codes)).
+- FAILED: a start failed (the line under it says what). While starts are left, the launcher starts it again (up to 6 starts in all; a start that ran 10 minutes or longer resets the count); after the last one, or after code 78, nothing restarts (see [Exit codes](#exit-codes)).
 - SERVER GONE (no clean end - killed or crashed): the server ended without a clean end; "Start server" starts a new one.
 - STALE (server wedged? snapshot stopped): the server process is alive but stopped reporting; if it stays so, "Kill (fallback)" ends it.
 - WRONG KEY: the address holds a key the ops GUI does not accept (an old one): open the printed address, or add `#` and the key from `run\console.token`. CONSOLE UNREACHABLE: the ops GUI is not running (was its black window closed?) or the ssh tunnel is down: start `ops-web.bat` again. OPS GUI CLOSED: "Close ops GUI" was pressed on this page; double-click `ops-web.bat` to start it again.
@@ -411,7 +411,7 @@ Everything below is inside this folder.
 `serve.bat` ends with the launcher's own code.
 
 - 0: the server was stopped (`stop.bat`) or ended on its own without error
-- 1: the server kept failing and the limit of 6 starts was used up; the window (or the ops GUI page) shows its last error line and the path of its error log. A setting the server cannot use fails this way within about a minute: the error line names the setting; fix it in `cc-server.properties` and start again.
+- 1: the server kept failing soon after each start and the limit of 6 starts was used up (a start that ran 10 minutes or longer resets the count); the window (or the ops GUI page) shows its last error line and the path of its error log. A setting the server cannot use fails this way within about a minute: the error line names the setting; fix it in `cc-server.properties` and start again. A server that ran out of memory says so in the same window ("the server ran out of memory") and is started again like any other failure: raise `heap.max` in `launcher.properties` to give it more.
 - 2: refused before starting: one "serve-launcher refused:" line says why and what to change (see [Why a start was refused](#why-a-start-was-refused))
 - 3: a file is missing or changed - run `update.bat` again with the zip you downloaded (Linux: `sh update.sh <zip>`). `serve.bat` also ends with 3 when `jre\bin\java.exe` is missing.
 - 4: a stop (`stop.bat` or the ops GUI's "Kill (fallback)") arrived while the server was starting; nothing started. Start again when you mean to.

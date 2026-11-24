@@ -1501,8 +1501,15 @@ public final class EngineCombatBinding {
     private final Map<Long, Float> rosterHullBaseline = new HashMap<>();
     private final Map<Long, Long> rosterReseedLogTick = new HashMap<>();
     /** Per-INSTANCE last compact stat-sig (first sight / CHANGED prints the verbose line);
-     *  identity-keyed so a respawn (new engine object) re-prints; cleared past 2048 (wave churn). */
-    private final Map<Object, String> lastSigByShip = new IdentityHashMap<>();
+     *  identity-keyed so a respawn (new engine object) re-prints; cleared past 2048 (wave churn).
+     *  SWEPT: a plain identity map held every removed body's Ship until that clear, which a
+     *  bastion's one continuous round rarely reaches; an entry no pass touched for {@link #SIG_SWEEP_TICKS} now dies
+     *  (see {@link SweptIdentityMap}; the clock = {@link #sweepSigMaps}, counted in OBSERVED ticks). */
+    private final SweptIdentityMap<String> lastSigByShip = new SweptIdentityMap<>();
+    /** One sweep period of the two per-instance sig maps: every observed ship is touched each tick, so an entry
+     *  this old belongs to a body the pass no longer sees (dead, departed, or a seat's replaced hull). */
+    static final long SIG_SWEEP_TICKS = 1200;
+    private long sigSweptTick;
     private static final int TSTAT_LINE_MAX = 600;
     private int tstatLines;
 
@@ -1518,7 +1525,7 @@ public final class EngineCombatBinding {
      *  compact {@link ShipDealtSig}; dealt-side changes don't correlate with being HIT, so a
      *  600-tick recheck lattice per ship replaces the taken-sig's drop-time cadence (bounds
      *  reflection cost; catches the post-spawn-writer class D-DMGDIV proved real). */
-    private final Map<Object, String> lastDsigByShip = new IdentityHashMap<>();
+    private final SweptIdentityMap<String> lastDsigByShip = new SweptIdentityMap<>(); // swept with lastSigByShip
     private final Map<Long, Long> lastDsigCheckTick = new HashMap<>();
     private static final long DSIG_RECHECK_TICKS = 600;
     private static final int DSIG_LINE_MAX = 600;
@@ -1554,6 +1561,7 @@ public final class EngineCombatBinding {
     public void logHullDrops(long simTick, ShipNetworkIdRegistry stableIdRegistry,
             HullSourceLedger hullSources) {
         try {
+            sweepSigMaps(simTick);
             logHullDropsPass(simTick, stableIdRegistry, hullSources);
         } finally {
             if (hullSources != null) {
@@ -1640,6 +1648,22 @@ public final class EngineCombatBinding {
                 // fail-soft per ship
             }
         }
+    }
+
+    /**
+     * The sweep clock of {@link #lastSigByShip} / {@link #lastDsigByShip}. It runs at
+     * the HEAD of a hull-drop pass and that same pass then touches every body it observes, so an entry dies only
+     * when two sweeps pass with its body unobserved in between — a body still in play is never dropped, whatever
+     * gap the passes had. A tick that runs backwards (a round wrap restarts the count) sweeps too. Cost on the
+     * sim thread: one compare a pass, and two table swaps every {@link #SIG_SWEEP_TICKS}.
+     */
+    private void sweepSigMaps(long simTick) {
+        if (simTick >= sigSweptTick && simTick - sigSweptTick < SIG_SWEEP_TICKS) {
+            return;
+        }
+        sigSweptTick = simTick;
+        lastSigByShip.sweep();
+        lastDsigByShip.sweep();
     }
 
     /** ONE ship's hull observation — the shared law behind both prefixes (see {@link #logHullDrops}).
@@ -4097,7 +4121,8 @@ public final class EngineCombatBinding {
      * Combat-wide OUTCOME / end-condition read off the engine field: the
      * public {@code CombatEngineAPI.getWinningSideId()} ({@code -1} until a side is
      * eliminated, then a concrete {@code FleetSide} ordinal) and {@code isCombatOver()}
-     * (the engine's own combat-over flag, render-coupled in the engine — see
+     * (the engine's own combat-over flag, latched by the engine's end check, which the
+     * real-engine serve's {@code setDoNotEndCombat(true)} keeps from running — see
      * {@link CombatOutcomeView}). Returns {@code null} (fail-soft) when either handle is
      * unbound or a read yields a non-Number side id / non-Boolean flag.
      *

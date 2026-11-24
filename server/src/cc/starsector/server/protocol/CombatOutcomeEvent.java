@@ -18,13 +18,13 @@ import java.util.Objects;
  * them declares a winner.
  *
  * <p>An outcome event is by construction <em>decided</em>: {@code winningSideId >= 0}
- * (a concrete {@code FleetSide} ordinal, e.g. 0 or 1). The render-coupled
- * {@code combatOver} flag the engine also exposes is carried verbatim for diagnostics
- * / parity, but it is <em>not</em> the trigger: per the load-bearing finding
- * (see {@link CombatOutcomeView}) a headless server decides the match on the
- * render-free {@code winningSideId() >= 0}, because the engine's public
- * {@code isCombatOver()} gates on an end-of-combat visual fade a headless server never
- * drives. So {@code combatOver} may well be {@code false} on a perfectly valid decided
+ * (a concrete {@code FleetSide} ordinal, e.g. 0 or 1). The {@code combatOver} flag the
+ * engine also exposes is carried verbatim for diagnostics / parity, but it is <em>not</em>
+ * the trigger: per the load-bearing finding (see {@link CombatOutcomeView})
+ * a headless server decides the match on the roster-derived {@code winningSideId() >= 0},
+ * because the engine's public {@code isCombatOver()} is the engine's own end judge, which
+ * the real-engine serve holds closed with {@code setDoNotEndCombat(true)}.
+ * So {@code combatOver} may well be {@code false} on a perfectly valid decided
  * outcome event.
  */
 public record CombatOutcomeEvent(int winningSideId, boolean combatOver, long simTick) {

@@ -695,11 +695,26 @@ public final class RealEngineCombatBindingFactory {
                     + " unpauseApplied=" + unpauseApplied
                     + " pausedAfter=" + pausedAfter);
 
+            // Hold the engine's end check closed, as every client's engine does.
+            // Before the first step (no engine step runs inside create) and NOT under correctivesOff: parity.
+            System.out.println("real-engine-binding-factory end-latch " + holdEndLatch(engine));
+
             // round-open plugin BASELINE for the heap drain's corrective 5.
             // Here — the create tail — because the first drain resolve runs at warm-up pass 0's
             // RESET, after a warm-up round may already have leaked script-added plugins into the
             // list (they would be baselined and never swept). Fail-soft inside; logs its own row.
             RealEngineRoundHeapDrain.capturePluginBaseline(engine);
+            // Arm the per-tick animation-layer advance (the game's own once-a-frame
+            // call, which nothing made headless). Under the same master switch as the round correctives:
+            // correctivesOff = the raw advanceInner-only serve. Fail-soft inside (OFF = the old behaviour).
+            System.out.println("real-engine-binding-factory anim-layer "
+                    + (correctivesOff() ? "OFF correctivesOff"
+                            : cc.starsector.server.platform.RealEngineAnimLayerAdvance.arm(engine)));
+            // Arm the engine's own bracket around its inner step (the AI's hulk-obstacle
+            // cache reset the outer advance makes, which nothing made headless). Same master switch; fail-soft.
+            System.out.println("real-engine-binding-factory hulk-cache-bracket "
+                    + (correctivesOff() ? "OFF correctivesOff"
+                            : cc.starsector.server.platform.RealEngineHulkCacheBracket.arm()));
             return binding;
         } catch (RealEngineCombatBindingFactoryException e) {
             throw e;
@@ -948,12 +963,6 @@ public final class RealEngineCombatBindingFactory {
     }
 
     /**
-     * Whether the single master switch {@code cc.predict.correctivesOff} disables ALL round-boundary
-     * correctives (default OFF = correctives ON, per the RELAXED verdict).
-     * Read server-side via {@link ServerConfig} (sysprop &gt; env &gt; config file &gt; default);
-     * shares the property NAME with the client-side predict correctives — each JVM reads its own.
-     */
-    /**
      * The binding's owned-set source: ALL descriptor seat wire ids when a
      * descriptor deployed this round (occupancy-independent), else the deployed SEAT ships (the
      * legacy {@code {1,2}} path, byte-identical). On a full-deploy descriptor the two arrays are
@@ -964,9 +973,60 @@ public final class RealEngineCombatBindingFactory {
         return descriptorSeatIds.length > 0 ? descriptorSeatIds : RealEngineDemoRoster.deployedSeatShipIds();
     }
 
+    /**
+     * Whether the single master switch {@code cc.predict.correctivesOff} disables ALL round-boundary
+     * correctives (default OFF = correctives ON, per the RELAXED verdict).
+     * Read server-side via {@link ServerConfig} (sysprop &gt; env &gt; config file &gt; default);
+     * shares the property NAME with the client-side predict correctives — each JVM reads its own.
+     *
+     * <p>The switch also turns off engine state a NEW battle opens with: the fresh stores, the plugin re-mint, the
+     * hulk-cache bracket. So a switched-off serve does not only grow: it plays unlike each
+     * client's engine (one Phase Anchor dive a process, a dead minefield source). {@link #holdEndLatch} is outside it.
+     */
     private static boolean correctivesOff() {
         return "true".equalsIgnoreCase(ServerConfig.resolve(
                 "cc.predict.correctivesOff", "CC_PREDICT_CORRECTIVES_OFF", "predict.correctivesOff", "false"));
+    }
+
+    /**
+     * Hold the engine's own end-of-combat check closed through its public {@code setDoNotEndCombat(true)},
+     *the flag every client's engine already
+     * holds (the measured latch =).
+     *
+     * <p><b>Why.</b> A serve's match end is the roster's, never the engine's end judge, yet the judge
+     * still ran. On a shape whose side is empty at the first check (the fortress, a gated boot) it latched
+     * {@code isCombatOver()} true with a winner inside the first second and kept both for the PROCESS (no reset
+     * clears them), where each client reads false / -1 all match: a mod script that asks the engine whether combat
+     * is over got a different answer on the serve. With the flag held the check's body never runs:
+     * no mass retreat of a side it judges beaten, no winner write, no end fader, no end-trigger scan. Its interval
+     * tracker and the fader advance still step, so the timer re-roll stream does
+     * not move. A parity item, not a memory corrective, so NOT under {@code correctivesOff}. The engine's only
+     * clearing writer is {@code endCombat}, which nothing on a serve calls.
+     *
+     * <p>Fail-soft: a throw on the set prints {@code FAILED err=<class>} and the serve runs as before; a readback
+     * that throws prints {@code unread} for its own cell. Public + an {@code Object} engine so a stand-in pins it
+     * game-free.
+     *
+     * @return the boot row's tail: {@code do_not_end=<flag> over=<isCombatOver()> winner=<getWinningSideId()>}
+     */
+    public static String holdEndLatch(Object engine) {
+        try {
+            engine.getClass().getMethod("setDoNotEndCombat", boolean.class).invoke(engine, true);
+        } catch (Throwable t) {
+            Throwable cause = t instanceof InvocationTargetException && t.getCause() != null ? t.getCause() : t;
+            return "FAILED err=" + cause.getClass().getName();
+        }
+        return "do_not_end=" + readOrUnread(engine, "doNotEndCombat")
+                + " over=" + readOrUnread(engine, "isCombatOver")
+                + " winner=" + readOrUnread(engine, "getWinningSideId");
+    }
+
+    private static String readOrUnread(Object engine, String getter) {
+        try {
+            return String.valueOf(engine.getClass().getMethod(getter).invoke(engine));
+        } catch (Throwable t) {
+            return "unread";
+        }
     }
 
     /**

@@ -15,10 +15,11 @@ import java.util.Optional;
  * entity that leaves the world, this folds the per-tick outcome reads and emits
  * exactly one outcome event when the match is first decided. The trigger is the
  * <em>render-free</em> {@link CombatOutcomeView#decided()} (winning side assigned),
- * <em>not</em> the engine's render-coupled {@code isCombatOver()} — the load-bearing
- * finding: a headless server has no
- * render loop to drive the end-of-combat visual fade, so it must end the session on
- * {@code decided()}. The {@code combatOver} flag observed at the decision is carried
+ * <em>not</em> the engine's {@code isCombatOver()} — the load-bearing finding:
+ *
+ * that flag is the verdict of the engine's own end judge, not the server's outcome source, and the
+ * real-engine serve holds that judge closed with {@code setDoNotEndCombat(true)}, so the
+ * session ends on {@code decided()}. The {@code combatOver} flag observed at the decision is carried
  * on the event verbatim, for diagnostics/parity, but it does not gate emission.
  *
  * <p>A match is decided exactly once: after the first decided read the detector latches

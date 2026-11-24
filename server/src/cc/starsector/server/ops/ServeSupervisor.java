@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -29,7 +30,9 @@ import cc.starsector.server.platform.ActivationGate;
  * {@code supervisor_pid=<pid>} (first), then on a packed start that swept old flight folders
  * {@code retention kept=<k> removed=<n> failed=<f> freed_mib=<m>} ({@link ServeRetention.Result#receiptRow}, handed in
  * through {@link #rowAfterPid}), per life {@code life=N pid=<pid>},
- * {@code life=N timer_optout=<rc>} ({@link TimerOptOut}), {@code life=N exit=<code>}; terminal
+ * {@code life=N timer_optout=<rc>} ({@link TimerOptOut}), {@code life=N exit=<code>}, then on a failed life (not
+ * 0, not 78, not stopped mid-life) {@code life=N budget_refunded=true ran_s=<whole seconds>} (it ran at least the
+ * refund threshold and no stop is seen, below) and {@code life=N out_of_memory=true} (below); terminal
  * {@code clean_exit=true lives=N} (0), {@code stopped=true lives=N} (0),
  * {@code refused_exit=true lives=N} (78), {@code relaunch_budget_exhausted=true lives=N} (1).
  * A life whose process could not be started counts as {@code life=N exit=-1} (the loop never dies
@@ -50,6 +53,25 @@ import cc.starsector.server.platform.ActivationGate;
  * line goes to the console FIRST (the activation refusal is {@code System.err} then exit 78;
  * stdout's last line is posture noise), then one plain line naming the code and the err-log path.
  *
+ * <p><b>The budget refunds after a long life.</b> A life that ran at least {@code refundAfterMillis}
+ * ({@link ServeLauncher#RELAUNCH_REFUND_AFTER_MS} = 10 minutes in production; the clock runs from the started
+ * process to the wait's return) and then failed sets the relaunch count back to 0 BEFORE the budget check and
+ * writes {@code life=N budget_refunded=true ran_s=<s>} right after its {@code exit=} row. WHY: the budget stops a
+ * crash LOOP; a serve that reaches its heap cap dies hours apart, and without the refund its six starts ran out
+ * over a few days and the server stayed down. A life that could not be started ({@code exit=-1}), a stop, exit 0
+ * and exit 78 never refund.
+ *
+ * <p><b>An out-of-memory exit is told.</b> Every serve JVM runs with {@code -XX:+ExitOnOutOfMemoryError}, so a
+ * heap that hits {@code -Xmx} ends the process: HotSpot prints {@link #OOM_LINE_PREFIX} at the start of a stdout
+ * line and exits {@link #EXIT_OUT_OF_MEMORY}. When a failed life's code is 3 AND the bounded tail of its
+ * {@code out.log} or {@code err.log} has a line starting with that literal ({@link #tailHasLineStarting}; a
+ * boolean, the log bytes are never echoed: the serve's logs can hold player text), the receipt gets
+ * {@code life=N out_of_memory=true} and the console ONE fixed line naming {@code heap.max} in
+ * {@code launcher.properties} (the row the launcher reads into {@code -Xmx}); when that life ends the budget, the
+ * terminal line names it too, so the host does not read code 3 as the launcher's own "a file is missing or
+ * changed".
+ *
+ *
  *
  */
 public final class ServeSupervisor {
@@ -68,6 +90,16 @@ public final class ServeSupervisor {
     static final int LAST_LINE_MAX_BYTES = 64 * 1024;
     /** Grace between {@code destroy()} and {@code destroyForcibly()} on a stop. */
     static final long STOP_GRACE_MILLIS = 5_000L;
+    /**
+     * The start of the line HotSpot prints on stdout as {@code -XX:+ExitOnOutOfMemoryError} ends the JVM
+     * ({@code Terminating due to java.lang.OutOfMemoryError: Java heap space}, then exit 3). Matched at a line start
+     * only, as a fixed literal: a chat or log line that merely quotes it mid-line is no out-of-memory exit.
+     *
+     *
+     */
+    static final String OOM_LINE_PREFIX = "Terminating due to java.lang.OutOfMemoryError";
+    /** HotSpot's exit code after {@link #OOM_LINE_PREFIX} (the JVM's own, so it says nothing about the launcher's 3). */
+    static final int EXIT_OUT_OF_MEMORY = 3;
     private static final int RECEIPT_TRIES = 8;
     private static final long RECEIPT_RETRY_MILLIS = 25L;
 
@@ -82,6 +114,7 @@ public final class ServeSupervisor {
     private final PrintStream console;
     private final int bindPort;
     private final TimerOptOut.Applier applier;
+    private final long refundAfterMillis;
 
     private final Object wake = new Object();
     private final CountDownLatch finished = new CountDownLatch(1);
@@ -125,8 +158,23 @@ public final class ServeSupervisor {
     public ServeSupervisor(Path flightDir, Path stopFile, Path receipt, Path workDir, List<String> argv,
             Map<String, String> env, int maxRelaunches, long relaunchDelayMillis, PrintStream console, int bindPort,
             TimerOptOut.Applier applier) {
-        if (argv.isEmpty() || maxRelaunches < 0 || relaunchDelayMillis < 0 || applier == null) {
-            throw new IllegalArgumentException("supervisor needs a command, maxRelaunches >= 0, delay >= 0, an applier");
+        this(flightDir, stopFile, receipt, workDir, argv, env, maxRelaunches, relaunchDelayMillis, console, bindPort,
+                applier, ServeLauncher.RELAUNCH_REFUND_AFTER_MS);
+    }
+
+    /**
+     * @param refundAfterMillis a life that ran at least this long and then failed refunds the relaunch budget
+     *     (>= 1; {@link ServeLauncher#RELAUNCH_REFUND_AFTER_MS} through every other ctor and the launcher; a row
+     *     passes a short one so its lives stay under seconds)
+     *
+     */
+    public ServeSupervisor(Path flightDir, Path stopFile, Path receipt, Path workDir, List<String> argv,
+            Map<String, String> env, int maxRelaunches, long relaunchDelayMillis, PrintStream console, int bindPort,
+            TimerOptOut.Applier applier, long refundAfterMillis) {
+        if (argv.isEmpty() || maxRelaunches < 0 || relaunchDelayMillis < 0 || applier == null
+                || refundAfterMillis < 1) {
+            throw new IllegalArgumentException("supervisor needs a command, maxRelaunches >= 0, delay >= 0, an applier,"
+                    + " refundAfterMillis >= 1");
         }
         this.flightDir = flightDir;
         this.stopFile = stopFile;
@@ -139,6 +187,7 @@ public final class ServeSupervisor {
         this.console = console;
         this.bindPort = bindPort;
         this.applier = applier;
+        this.refundAfterMillis = refundAfterMillis;
     }
 
     /** Runs the lives loop to its terminal row; returns 0 (clean or stopped), 1 (budget) or 78 (refused). */
@@ -192,8 +241,11 @@ public final class ServeSupervisor {
             int code;
             boolean stoppedHere = false;
             Process p;
+            long startedNanos = 0L;
+            long ranNanos = -1L;
             try {
                 p = pb.start();
+                startedNanos = System.nanoTime();
             } catch (IOException | RuntimeException startFailed) {
                 ServeLauncher.say(console,"serve-launcher: the server process could not be started ("
                         + startFailed.getClass().getSimpleName() + ")");
@@ -210,6 +262,7 @@ public final class ServeSupervisor {
                 final int lifeNo = life;
                 applier.apply(p, rc -> appendRow(receipt, "life=" + lifeNo + " timer_optout=" + rc, console));
                 stoppedHere = awaitOrStop(p);
+                ranNanos = System.nanoTime() - startedNanos;
                 code = p.exitValue();
             }
             appendRow(receipt, "life=" + life + " exit=" + code, console);
@@ -230,13 +283,32 @@ public final class ServeSupervisor {
                 appendRow(receipt, "refused_exit=true lives=" + life, console);
                 return ActivationGate.EXIT_REFUSED;
             }
-            if (stopSignalled()) {
+            // The refund and the out-of-memory tell (class javadoc). Both
+            // rows follow this life's exit= row; a stop, exit 0 and exit 78 returned above, and a stop seen now
+            // refunds nothing and restarts nothing.
+            boolean stopNow = stopSignalled();
+            if (!stopNow && ranNanos >= TimeUnit.MILLISECONDS.toNanos(refundAfterMillis)) {
+                relaunches = 0;
+                appendRow(receipt, "life=" + life + " budget_refunded=true ran_s="
+                        + TimeUnit.NANOSECONDS.toSeconds(ranNanos), console);
+            }
+            boolean exhausted = relaunches >= maxRelaunches;
+            boolean outOfMemory = code == EXIT_OUT_OF_MEMORY
+                    && (tailHasLineStarting(outLog, OOM_LINE_PREFIX) || tailHasLineStarting(errLog, OOM_LINE_PREFIX));
+            if (outOfMemory) {
+                appendRow(receipt, "life=" + life + " out_of_memory=true", console);
+                ServeLauncher.say(console, "serve-launcher: the server ran out of memory (life " + life
+                        + "). To give it more, raise heap.max in launcher.properties"
+                        + (stopNow || exhausted ? "." : "; it is started again with the same limit."));
+            }
+            if (stopNow) {
                 terminalRow("stopped=true lives=" + life);
                 return 0;
             }
-            if (relaunches >= maxRelaunches) {
+            if (exhausted) {
                 reportTerminalFailure(errLog, code, "the restart limit of " + (maxRelaunches + 1)
-                        + " starts is used up");
+                        + " starts is used up" + (outOfMemory
+                        ? "; the server ran out of memory; raise heap.max in launcher.properties" : ""));
                 appendRow(receipt, "relaunch_budget_exhausted=true lives=" + life, console);
                 return 1;
             }
@@ -350,19 +422,11 @@ public final class ServeSupervisor {
      * {@link #LAST_LINE_MAX_BYTES} bytes; missing / unreadable / all blank = {@code ""}.
      */
     public static String lastNonBlankLine(Path file) {
-        String tail;
-        try (SeekableByteChannel ch = Files.newByteChannel(file, StandardOpenOption.READ)) {
-            long size = ch.size();
-            int n = (int) Math.min(size, LAST_LINE_MAX_BYTES);
-            ch.position(size - n);
-            ByteBuffer buf = ByteBuffer.allocate(n);
-            while (buf.hasRemaining() && ch.read(buf) > 0) {
-                // fill
-            }
-            tail = new String(buf.array(), 0, buf.position(), StandardCharsets.UTF_8);
-        } catch (IOException | RuntimeException missing) {
+        Tail read = readTail(file);
+        if (read == null) {
             return "";
         }
+        String tail = new String(read.bytes(), StandardCharsets.UTF_8);
         String[] lines = tail.split("\r?\n|\r");
         for (int i = lines.length - 1; i >= 0; i--) {
             String t = lines[i].trim();
@@ -377,6 +441,53 @@ public final class ServeSupervisor {
             return sb.toString();
         }
         return "";
+    }
+
+    /**
+     * Whether a WHOLE line in the final {@link #LAST_LINE_MAX_BYTES} bytes of {@code file} starts with {@code prefix}
+     * (an ASCII literal, compared byte for byte; no trim, so a line that only quotes it after other text never
+     * matches). When the window starts mid-file its first, cut line is skipped. Missing / unreadable = false. Returns
+     * a boolean only: no byte of the file reaches a console or a receipt.
+     *
+     *
+     */
+    static boolean tailHasLineStarting(Path file, String prefix) {
+        Tail t = readTail(file);
+        if (t == null) {
+            return false;
+        }
+        // ISO-8859-1 maps each byte to one char, so an ASCII prefix matches only its own bytes (never a decoded
+        // multi-byte sequence)
+        String[] lines = new String(t.bytes(), StandardCharsets.ISO_8859_1).split("\r?\n|\r", -1);
+        for (int i = t.fromFileStart() ? 0 : 1; i < lines.length; i++) {
+            if (lines[i].startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The final bytes of a file and whether they begin at its first byte (else the first line is cut). */
+    private record Tail(byte[] bytes, boolean fromFileStart) {
+    }
+
+    /**
+     * Reads at most the final {@link #LAST_LINE_MAX_BYTES} bytes of {@code file}; null = missing / unreadable.
+     *
+     */
+    private static Tail readTail(Path file) {
+        try (SeekableByteChannel ch = Files.newByteChannel(file, StandardOpenOption.READ)) {
+            long size = ch.size();
+            int n = (int) Math.min(size, LAST_LINE_MAX_BYTES);
+            ch.position(size - n);
+            ByteBuffer buf = ByteBuffer.allocate(n);
+            while (buf.hasRemaining() && ch.read(buf) > 0) {
+                // fill
+            }
+            return new Tail(Arrays.copyOf(buf.array(), buf.position()), size <= n);
+        } catch (IOException | RuntimeException missing) {
+            return null;
+        }
     }
 
     /**

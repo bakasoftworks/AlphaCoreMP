@@ -48,7 +48,9 @@ import java.util.SortedSet;
  * under pre-deploy gating (W1), the player seat written to the engine's own field (W3). This is
  * the proven {@link HeadlessCombatContext#builder() engineDeployRosterInstall} treatment
  * (battery 20/20, the demo-program R2 done-condition: ships are engine-alive to every
- * {@code isShipAlive} consumer with NO {@code setDoNotEndCombat} crutch). The handle-resolution
+ * {@code isShipAlive} consumer with NO {@code setDoNotEndCombat} crutch; the product serve has since held that
+ * flag for another reason, client parity, in {@code RealEngineCombatBindingFactory.holdEndLatch}:
+ * the R2 proof ran without it). The handle-resolution
  * here is the product-owned port of the scout's proven block
  * of handle resolution; the difference is that the scout
  * sourced its {@code HullVariantSpec} from a pre-built gate ship, while this resolves it by id

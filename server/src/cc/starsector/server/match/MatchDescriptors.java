@@ -1543,7 +1543,8 @@ public final class MatchDescriptors {
      * (side 1, engine AI). Field mirrors {@code bastion:1:1} (seat row kept for boot-shape
      * parity; occupancy-0 leaves the seat hull absent) with the Grendel row swapped to the
      * {@code phase_anchor}-carrying HVD hull. The emergency dive is a battle-GLOBAL one-shot
-     * ({@code phaseAnchor_canDive}), so a probe gets exactly one repro arm per boot.
+     * ({@code phaseAnchor_canDive}, a custom-data key) and every round reset opens a new custom-data
+     * map, so a probe gets exactly one repro arm per round.
      */
     public static MatchDescriptor bastionAnchor() {
         SecureRandom rng = new SecureRandom();

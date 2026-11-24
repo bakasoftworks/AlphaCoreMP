@@ -37,6 +37,8 @@ import java.util.Set;
  * registration; without it the hull sits in NEITHER set, so vanilla's side scripts never
  * rewrite its coord/EW bonus and the wire side-totals skip its flat — a test run's measured
  * 358-vs-374 speed gap);</li>
+ * <li>each WING's own deployed record, old side to new ({@link #moveWingRecords}: a launch bay
+ * registers one record a wing on its carrier's side, and the hull's eviction never matches it);</li>
  * <li>stale AI TARGETS: the engine re-validates a cached target only on hulk/expired/piece,
  * so the flipped hull's own target and every ship still
  * holding the flipped hull (or one of its parts) as its target are dropped — the next AI pass
@@ -63,6 +65,16 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
     private int joined;
     private int dpNewBefore = -1;
     private int dpNewAfter = -1;
+    /** The last flip's wing-record accounting, written by {@link #moveWingRecords}: the hull's
+     * LIVE wing records, how many of them the NEW side's manager reads back, and (counted apart,
+     * never moved) the wings whose record the engine had already retired. */
+    private int wingRecords;
+    private int wingRecordsMoved;
+    private int wingRecordsRetired;
+    /** {@link #moveWingRecord}'s answer for a record that sits in NEITHER side's deployed set: the
+     * engine retired it and the bay still hands the wing out. No write was made and it is no port
+     * error; the flip row counts it as {@code wing_retired=}. */
+    public static final String WING_RECORD_RETIRED = "retired record (in neither deployed set)";
     /** The engine's two deployed ledgers, resolved ONCE per JVM by TYPE + contents against the
      * public copies (never by field name, {@link #resolveLedgerFields}): the
      * {@code Set} whose iteration order equals {@code getDeployedCopyDFM()} and the {@code List}
@@ -127,6 +139,8 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
             // The NEW side's deployed set gets the hull's entry AFTER the member owner
             // write (the entry's isAlly() reads the member) — the inverse of the eviction above.
             joinNewSideDeployedSet(hull, member, newOwner);
+            // after BOTH ledger resolves above: the wings' own records follow the hull
+            moveWingRecords(hull, oldOwner, newOwner);
             int dropped = dropStaleTargets(parts);
             // The flip proves ITSELF on the row — verified= is a read-back of
             // owner AND originalOwner on every part (== parts when the engine took the flip),
@@ -146,7 +160,9 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
                     + " verified=" + verified + " dp_old_before=" + dpOldBefore
                     + " dp_old_after=" + dpOldAfter + " dp_left=" + dpLeft
                     + " joined=" + joined + " dp_new_before=" + dpNewBefore
-                    + " dp_new_after=" + dpNewAfter);
+                    + " dp_new_after=" + dpNewAfter
+                    + " wing_records=" + wingRecordsMoved + "/" + wingRecords
+                    + " wing_retired=" + wingRecordsRetired);
             return ((Number) method(hull, "getOwner").invoke(hull)).intValue() == newOwner;
         } catch (Throwable t) {
             logError("flip_owner", t);
@@ -290,6 +306,187 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
         }
         dpNewAfter = currStrengthOrNeg(manager);
         joined = lookup.invoke(manager, hull) == entry ? 1 : 0;
+    }
+
+    /**
+     * Move each wing's OWN deployed record to the new side.
+     * A launch bay mints a {@code FIGHTER_WING} fleet
+     * member and registers ONE record for its wing on its carrier's side manager.
+     *
+     * {@link #leaveOldSideDeployedSet} passes {@code Ship} parts only and the ship overload of
+     * {@code removeDeployed} matches {@code shipIfShip} records, so before this a
+     * flipped carrier's wing records stayed in the OLD side's deployed set, each with a member
+     * that still read the old owner. Fail-soft per wing (one {@code seat_team_port_error
+     * op=wing_record} row; the flip itself stands); the counts land on the {@code seat_team_flip}
+     * row as {@code wing_records=<moved>/<live> wing_retired=<n>}: a wing whose record the engine
+     * already retired ({@link #WING_RECORD_RETIRED}) is left alone and is no port error, so
+     * moved == live reads a clean flip and live + retired is the hull's wing count.
+     */
+    private void moveWingRecords(Object hull, int oldOwner, int newOwner) {
+        wingRecords = 0;
+        wingRecordsMoved = 0;
+        wingRecordsRetired = 0;
+        try {
+            Object wings = method(hull, "getAllWings").invoke(hull);
+            if (!(wings instanceof List<?>) || ((List<?>) wings).isEmpty()) {
+                return;
+            }
+            Object engine = engineOrNull();
+            Method getFleetManager = engine == null ? null
+                    : engine.getClass().getMethod("getFleetManager", int.class);
+            Object oldManager = getFleetManager == null || (oldOwner != 0 && oldOwner != 1)
+                    ? null : getFleetManager.invoke(engine, oldOwner);
+            Object newManager = getFleetManager == null ? null
+                    : getFleetManager.invoke(engine, newOwner);
+            for (Object wing : (List<?>) wings) {
+                if (wing == null) {
+                    continue;
+                }
+                String miss;
+                try {
+                    miss = moveWingRecord(wing, oldManager, newManager, newOwner,
+                            deployedSetField, everDeployedListField);
+                } catch (Throwable t) {
+                    wingRecords++;
+                    logError("wing_record", t);
+                    continue;
+                }
+                if (WING_RECORD_RETIRED.equals(miss)) {
+                    wingRecordsRetired++;
+                    continue;
+                }
+                wingRecords++;
+                if (miss == null) {
+                    wingRecordsMoved++;
+                } else {
+                    System.out.println("npeer-serve seat_team_port_error op=wing_record err="
+                            + miss);
+                }
+            }
+        } catch (Throwable t) {
+            logError("wing_records", t);
+        }
+    }
+
+    /**
+     * One wing's deployed record, old side to new; null = the NEW manager reads the SAME record
+     * back, {@link #WING_RECORD_RETIRED} = the engine had already retired it (nothing written, no
+     * port error), else the miss in constant words (no engine text beyond a class name). Every
+     * refusal but the LAST precedes the first write and leaves the record where it was; the last
+     * ("the new side does not read the record back") follows every write, the record already out
+     * of the old set. The steps:
+     * <ol>
+     * <li>the record FIRST, from the wing's own {@code getDfm()}
+     *
+     * — once it has left the old set the old manager cannot look it up;</li>
+     * <li>the old manager must HOLD that record before it is told to let go:
+     * the engine retires a wing's record while the bay keeps handing
+     * the wing out ({@code fighterWingDestroyed} into {@code removeDeployed(wing, false)}:
+     * a live carrier out of combat readiness
+     * with every fighter and replacement gone), and a record in neither set joined to the new
+     * side would sit in its deployed set for good, its wing already out of the engine. So a
+     * record the old side does not hold = {@link #WING_RECORD_RETIRED}, and no old manager = a
+     * refusal: nothing proves the record live;</li>
+     * <li>the old manager's own {@code removeDeployed(FighterWingAPI, false)}:
+     * with {@code false} no fighter is touched; the record leaves the
+     * deployed set and its control group, then the member status is saved. That save is the
+     * call's LAST statement and builds a placeholder Ship for a wing with no live fighter,
+     *so a throw is read against the lookup: record gone = the
+     * move goes on (one {@code seat_team_wing_status_threw} row — the label also covers a throw
+     * from the control-group un-assign, which follows the set removal
+     * too), record kept = a miss;</li>
+     * <li>the wing member's owner and ally flag: the bay copied both from the carrier at mint
+     * and the record's
+     * {@code getOwner()} / {@code isAlly()} read the member
+     * — the hull's own pair of writes;</li>
+     * <li>the SAME record into the new manager's two ledgers, {@code addWing}'s way
+     * (no points are booked for a wing). The bay's field and the wing keep
+     * pointing at it; the old side's all-ever list keeps it too, as it keeps the hull's.</li>
+     * </ol>
+     * Static over plain objects so stub managers pin it game-free.
+     */
+    public static String moveWingRecord(Object wing, Object oldManager, Object newManager,
+            int newOwner, Field deployedSet, Field everDeployedList) throws Exception {
+        Method getDfm = null;
+        for (Method m : wing.getClass().getMethods()) {
+            if (m.getName().equals("getDfm") && m.getParameterCount() == 0) {
+                getDfm = m;
+                break;
+            }
+        }
+        Object rec = getDfm == null ? null : getDfm.invoke(wing);
+        if (rec == null) {
+            return "no record on " + wing.getClass().getName();
+        }
+        if (newManager == null) {
+            return "no new-side manager";
+        }
+        Method newLookup = oneArgMethodFor(newManager, "getDeployedFleetMember", wing);
+        if (newLookup == null) {
+            return "no getDeployedFleetMember(wing)";
+        }
+        if (newLookup.invoke(newManager, wing) == rec) {
+            return null; // already the new side's record
+        }
+        Object set = deployedSet == null ? null : deployedSet.get(newManager);
+        if (!(set instanceof Set<?>)) {
+            return "deployed set unresolved";
+        }
+        if (oldManager == null) {
+            return "no old-side manager";
+        }
+        Method oldLookup = oneArgMethodFor(oldManager, "getDeployedFleetMember", wing);
+        Method remove = null;
+        for (Method m : oldManager.getClass().getMethods()) {
+            if (m.getName().equals("removeDeployed") && m.getParameterCount() == 2
+                    && m.getParameterTypes()[1] == boolean.class
+                    && m.getParameterTypes()[0].isInstance(wing)) {
+                remove = m;
+                break;
+            }
+        }
+        if (oldLookup == null || remove == null) {
+            return "no removeDeployed(wing, boolean)";
+        }
+        // the new side does not hold it (the early return above), so an old side that does not
+        // either = a retired record; one manager on both sides lands here the same way
+        Object held = oldLookup.invoke(oldManager, wing);
+        if (held == null) {
+            return WING_RECORD_RETIRED;
+        }
+        if (held != rec) {
+            return "the old side holds another record";
+        }
+        Throwable threw = null;
+        try {
+            remove.invoke(oldManager, wing, false);
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            threw = e.getCause() != null ? e.getCause() : e;
+        }
+        if (oldLookup.invoke(oldManager, wing) != null) {
+            return "the old side kept the record"
+                    + (threw == null ? "" : " (" + threw.getClass().getName() + ")");
+        }
+        if (threw != null) {
+            System.out.println("npeer-serve seat_team_wing_status_threw err="
+                    + threw.getClass().getName());
+        }
+        Object member = rec.getClass().getMethod("getMember").invoke(rec);
+        if (member != null) {
+            member.getClass().getMethod("setOwner", int.class).invoke(member, newOwner);
+            member.getClass().getMethod("setAlly", boolean.class).invoke(member, false);
+        }
+        @SuppressWarnings("unchecked")
+        Set<Object> deployed = (Set<Object>) set;
+        deployed.add(rec);
+        Object list = everDeployedList == null ? null : everDeployedList.get(newManager);
+        if (list instanceof List<?> && !((List<?>) list).contains(rec)) {
+            @SuppressWarnings("unchecked")
+            List<Object> ever = (List<Object>) list;
+            ever.add(rec);
+        }
+        return newLookup.invoke(newManager, wing) == rec
+                ? null : "the new side does not read the record back";
     }
 
     /** Resolve the two ledger fields ONCE from a manager whose deployed set is NON-empty: the

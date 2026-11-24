@@ -5150,12 +5150,14 @@ public final class PilotServeSession {
             // spawns on the wave stagger's leftover budget).
             case SPAWN_FOE, SPAWN_FRIEND -> waveVerbs.spawn(door, command, round, frame);
             case DESPAWN -> {
-                // The R-targeted hull VANISHES through the
-                // engine's own removeObject on this sim thread (the transfer-pod primitive) — never
+                // The R-targeted hull VANISHES on this sim
+                // thread WITH its fleet record and child modules (the record holder's own
+                // removeDeployed(ship, true); the bare removeObject for a record-less hull) — never
                 // a kill: no hulk, no explosion, so the EDSP classifier reads a healthy removal as
                 // DEPARTED and every client evicts the replica corpse-free (FoeStateLaneCoordinator's
                 // non-fighter DEPARTED path). The port holds every refusal (a seat's
-                // wire, a pod, an unknown or off-field id); the REAL outcome mails as the receipt
+                // wire, a pod, an unknown or off-field id, a module or fighter, a hull with a
+                // player on one of its modules); the REAL outcome mails as the receipt
                 // (D5 law). No wire change: roster absence + the EDSP reason carry it.
                 String despawnReceipt = podPort == null ? "despawn refused: no round engine"
                         : podPort.despawnByWire(command.text());
