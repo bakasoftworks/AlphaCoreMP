@@ -194,6 +194,10 @@ public final class MatchRecordMeta {
                 "cc.predict.eventReplay", "CC_PREDICT_EVENT_REPLAY", "predict.eventReplay", "false"));
         meta.put("knob.correctivesOff", ServerConfig.resolve(
                 "cc.predict.correctivesOff", "CC_PREDICT_CORRECTIVES_OFF", "predict.correctivesOff", "false"));
+        meta.put("knob.releaseDeparted", ServerConfig.resolve(
+                "cc.server.releaseDeparted", "CC_SERVER_RELEASE_DEPARTED", "server.releaseDeparted", "true"));
+        meta.put("knob.releaseDepartedMask", ServerConfig.resolve("cc.server.releaseDepartedMask",
+                "CC_SERVER_RELEASE_DEPARTED_MASK", "server.releaseDepartedMask", ""));
         meta.put("knob.mapHalf", ServerConfig.resolve(
                 "cc.predict.mapHalf", "CC_PREDICT_MAP_HALF", "map.half", Float.toString(9000f)));
         meta.put("knob.flyinBurnSec", ServerConfig.resolve(

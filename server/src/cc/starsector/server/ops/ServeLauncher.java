@@ -30,6 +30,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -703,6 +704,7 @@ public final class ServeLauncher {
         if (retentionRow != null) {
             supervisor.rowAfterPid(retentionRow);
         }
+        supervisor.recordDiskGate(c.recordDiskGate);
         Thread hook = new Thread(supervisor::requestStop, "serve-launcher-stop");
         Runtime.getRuntime().addShutdownHook(hook);
         try {
@@ -753,6 +755,10 @@ public final class ServeLauncher {
         /** The {@link #ROW_KEEP_FLIGHTS} count this start sweeps to, 2..10000;
          * 0 = no sweep (owner mode, the row's 0, or the rows were never reached). */
         int keepFlights;
+        /** The record-disk floor this start checked, re-run before every
+         * relaunch ({@link ServeLauncher#recordDiskGate}); null = no floor (not {@code record=full}, not packed, or
+         * the rows were never reached). */
+        Supplier<String> recordDiskGate;
     }
 
     /**
@@ -1178,7 +1184,8 @@ public final class ServeLauncher {
      * flight ({@code record=off} = the template itself, {@code c.argv} untouched); then, {@code record=full} in a
      * PACKED server only (the owner's own launch path never refuses on disk space), the disk floor
      * ({@link #R_RECORD_DISK}) on the usable space of {@code <pkg>/run} through {@link #diskFree} (an unreadable
-     * store warns once and the start goes on). Sets {@code c.record}.
+     * store warns once and the start goes on), read through {@link #recordDiskGate}, the gate the supervisor re-runs
+     * before each relaunch. Sets {@code c.record} and {@code c.recordDiskGate}.
      *
      *
      */
@@ -1208,22 +1215,43 @@ public final class ServeLauncher {
         } catch (IllegalArgumentException bad) {
             return Refusal.of(R_TEMPLATE_TOKEN, "the launch template " + template + " cannot be used: " + bad.getMessage());
         }
+        // The Start floor and every relaunch's re-check are ONE gate, so the
+        // two can never drift
+        c.recordDiskGate = recordDiskGate(pkg, mode, packed, cap, out);
+        if (c.recordDiskGate == null) {
+            return null;
+        }
+        String disk = c.recordDiskGate.get();
+        return disk == null ? null : Refusal.of(R_RECORD_DISK, disk);
+    }
+
+    /**
+     * The {@link #R_RECORD_DISK} floor as a gate: the Start's own check ({@link #recordRows}) and, handed to
+     * {@link ServeSupervisor#recordDiskGate(Supplier)}, the re-check before every relaunch (each life of a {@code record=full}
+     * serve opens a new capped recording). Null = no floor: not {@code record=full}, or not a packed server (owner
+     * mode never refuses on disk space, at Start or at a relaunch). The gate answers null when {@code <pkg>/run}'s
+     * store has at least {@link ServeRecord#diskFloorMiB} free, or when its free space cannot be read (one warning
+     * line on {@code out}, recording goes on unchecked); else {@link ServeRecord#diskText}.
+     *
+     *
+     */
+    static Supplier<String> recordDiskGate(Path pkg, ServeRecord.Mode mode, boolean packed, int capMiB,
+            PrintStream out) {
         if (mode != ServeRecord.Mode.FULL || !packed) {
             return null;
         }
         Path run = pkg.resolve(RUN_DIR);
-        long freeMiB;
-        try {
-            freeMiB = Math.max(0L, diskFree.usableBytes(run)) / (1024L * 1024L);
-        } catch (IOException | RuntimeException unreadable) {
-            say(out, "serve-launcher warning: the free space of " + run + " could not be read ("
-                    + unreadable.getClass().getSimpleName() + "); recording goes on unchecked");
-            return null;
-        }
-        if (freeMiB < ServeRecord.diskFloorMiB(cap)) {
-            return Refusal.of(R_RECORD_DISK, ServeRecord.diskText(run, freeMiB, cap));
-        }
-        return null;
+        return () -> {
+            long freeMiB;
+            try {
+                freeMiB = Math.max(0L, diskFree.usableBytes(run)) / (1024L * 1024L);
+            } catch (IOException | RuntimeException unreadable) {
+                say(out, "serve-launcher warning: the free space of " + run + " could not be read ("
+                        + unreadable.getClass().getSimpleName() + "); recording goes on unchecked");
+                return null;
+            }
+            return freeMiB < ServeRecord.diskFloorMiB(capMiB) ? ServeRecord.diskText(run, freeMiB, capMiB) : null;
+        };
     }
 
     /**

@@ -2,6 +2,11 @@
 
 What changed in each AlphaCoreMP release, newest first. The downloads ride each release on its GitHub release page.
 
+## 0.7.2 - 2026-11-27
+
+- Server memory: ships, fighters and wrecks that leave the battle are now freed during the round, not at its end. In a heavy wave battle the server's memory grew about 30 MiB an hour, measured, down from about 290. The player's game does not have this fix yet.
+- Hosts: with `record=full`, the server now re-checks the disk's free space before each automatic restart, as it already did at each start. With too little left it stops and the ops GUI says why, instead of restarting onto a full disk.
+
 ## 0.7.1 - 2026-11-23
 
 - AI ships and autofire weapons now see wrecks where they are. Before, the server judged "is a wreck in the line of fire" against a wreck list frozen at server start-up.

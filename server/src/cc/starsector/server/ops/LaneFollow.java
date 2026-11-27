@@ -166,8 +166,16 @@ public final class LaneFollow {
     /** What the supervisor's receipt says about the LAST life that exited non-zero while the
      * launch is still PENDING: {@code exceptionLine} = the first exception line of that life's
      * stderr ({@code lives/life-N.err.log}), {@code ""} when none; {@code exhausted} = the
-     * relaunch budget is spent (the parent exits 1 next). */
-    public record LifeFailure(int life, int exitCode, boolean exhausted, String exceptionLine) {
+     * relaunch budget is spent (the parent exits 1 next); {@code diskRefused} = the supervisor's
+     * relaunch disk check ended the Start ({@code record_disk_refused=true}, exit 1 too): without it
+     * the line said "supervisor relaunching" over a Start that had ended. */
+    public record LifeFailure(int life, int exitCode, boolean exhausted, boolean diskRefused,
+            String exceptionLine) {
+        /** The four-field shape every caller before the disk check used ({@code diskRefused} = false). */
+        public LifeFailure(int life, int exitCode, boolean exhausted, String exceptionLine) {
+            this(life, exitCode, exhausted, false, exceptionLine);
+        }
+
         /** The ONE printable detail/headline line the window shows (single-line law). */
         public String detailText() {
             // Exit 78 is FINAL (ServeSupervisor writes
@@ -176,6 +184,7 @@ public final class LaneFollow {
                     + " exited code " + exitCode
                     + (exceptionLine.isEmpty() ? "" : " - " + exceptionLine)
                     + (exitCode == EXIT_REFUSED_FINAL ? " - the server REFUSED (exit 78, final)"
+                            : diskRefused ? " - not started again: too little free disk space to record"
                             : exhausted ? " - relaunch budget exhausted"
                             : " - supervisor relaunching");
         }
@@ -189,7 +198,9 @@ public final class LaneFollow {
 
     /** The receipt's terminal verdicts ({@code ServeSupervisor.loop} / {@code ServeLauncher}'s
      * pre-check refusal): exactly one is the receipt's last row once the launcher is done. */
-    public enum Terminal { REFUSED_PRELAUNCH, REFUSED_EXIT, STOPPED, BUDGET_EXHAUSTED, CLEAN_EXIT }
+    public enum Terminal {
+        REFUSED_PRELAUNCH, REFUSED_EXIT, STOPPED, BUDGET_EXHAUSTED, RECORD_DISK_REFUSED, CLEAN_EXIT
+    }
 
     /**
      * One parsed terminal row. {@code reason} = the
@@ -209,6 +220,8 @@ public final class LaneFollow {
                     return "stopped=true lives=" + lives;
                 case BUDGET_EXHAUSTED:
                     return "relaunch_budget_exhausted=true lives=" + lives;
+                case RECORD_DISK_REFUSED:
+                    return "record_disk_refused=true lives=" + lives;
                 default:
                     return "clean_exit=true lives=" + lives;
             }
@@ -216,7 +229,7 @@ public final class LaneFollow {
     }
 
     private static final Pattern TERMINAL_LIVES_ROW = Pattern.compile(
-            "(stopped|clean_exit|refused_exit|relaunch_budget_exhausted)=true lives=([0-9]{1,6})");
+            "(stopped|clean_exit|refused_exit|relaunch_budget_exhausted|record_disk_refused)=true lives=([0-9]{1,6})");
     private static final Pattern TERMINAL_REFUSED_ROW = Pattern.compile(
             "refused_prelaunch=true reason=([a-z0-9_]{1,64})");
 
@@ -243,6 +256,7 @@ public final class LaneFollow {
                 case "stopped" -> Terminal.STOPPED;
                 case "clean_exit" -> Terminal.CLEAN_EXIT;
                 case "refused_exit" -> Terminal.REFUSED_EXIT;
+                case "record_disk_refused" -> Terminal.RECORD_DISK_REFUSED;
                 default -> Terminal.BUDGET_EXHAUSTED;
             };
             last = new TerminalRow(kind, "", Integer.parseInt(m.group(2)));
@@ -397,10 +411,15 @@ public final class LaneFollow {
         int life = -1;
         int exit = 0;
         boolean exhausted = false;
+        boolean diskRefused = false;
         for (String raw : receiptLines) {
             String line = raw.trim();
             if (line.startsWith("relaunch_budget_exhausted=true")) {
                 exhausted = true;
+                continue;
+            }
+            if (line.startsWith("record_disk_refused=true")) {
+                diskRefused = true;
                 continue;
             }
             if (!line.startsWith("life=")) {
@@ -417,7 +436,7 @@ public final class LaneFollow {
                 life = -1;
             }
         }
-        return life > 0 && exit != 0 ? new LifeFailure(life, exit, exhausted, "") : null;
+        return life > 0 && exit != 0 ? new LifeFailure(life, exit, exhausted, diskRefused, "") : null;
     }
 
     /** The first head line of a life's stderr, as ONE printable ASCII line (at most
@@ -484,7 +503,7 @@ public final class LaneFollow {
             if (f == null) {
                 return null;
             }
-            return new LifeFailure(f.life(), f.exitCode(), f.exhausted(), firstExceptionLine(
+            return new LifeFailure(f.life(), f.exitCode(), f.exhausted(), f.diskRefused(), firstExceptionLine(
                     dir.resolve("lives").resolve("life-" + f.life() + ".err.log")));
         } catch (IOException | RuntimeException e) {
             return null;

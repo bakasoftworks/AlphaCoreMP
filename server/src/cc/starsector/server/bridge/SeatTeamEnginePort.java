@@ -75,14 +75,16 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
      * engine retired it and the bay still hands the wing out. No write was made and it is no port
      * error; the flip row counts it as {@code wing_retired=}. */
     public static final String WING_RECORD_RETIRED = "retired record (in neither deployed set)";
-    /** The engine's two deployed ledgers, resolved ONCE per JVM by TYPE + contents against the
-     * public copies (never by field name, {@link #resolveLedgerFields}): the
-     * {@code Set} whose iteration order equals {@code getDeployedCopyDFM()} and the {@code List}
-     * whose contents equal {@code getAllEverDeployedCopy()}. Resolution needs a manager with a
-     * NON-empty deployed set (an empty one is content-equal to the death ledger, the other
-     * DFM-typed set), so it is attempted on the old manager before the eviction too. */
+    /** The engine's deployed {@code Set}, resolved ONCE per JVM by TYPE + contents against the
+     * public copy (never by field name, {@link #resolveLedgerFields}): the
+     * {@code Set} whose iteration order equals {@code getDeployedCopyDFM()}. Resolution needs a
+     * manager with a NON-empty deployed set (an empty one is content-equal to the death ledger,
+     * the other DFM-typed set), so it is attempted on the old manager before the eviction too.
+     * The other ledger, the all-ever-deployed list, needs no field: the engine's public
+     * {@code getAllEverDeployed()} answers the live list itself ({@link #allEverDeployedOrNull}),
+     * so no content match can go ambiguous once entries leave it.
+     * */
     private static Field deployedSetField;
-    private static Field everDeployedListField;
 
     @Override
     public int ownerOf(Object hull) {
@@ -243,9 +245,11 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
      * — a hull in NEITHER set keeps its last-written coord bonus forever (8 vs the side's 2 = the
      * measured 358-vs-374 speed gap) and its flat leaves both wire totals. HULL only: modules,
      * fighters and drones are never deployed-set entries of their own (undeployed=1 of 20
-     * parts). No build-renamable internal name is used: the ledgers resolve by type + contents
-     * ({@link #resolveLedgerFields}), the entry class by its public {@code (FleetMember, Ship)}
-     * constructor. Sets {@code joined} = 1 when the new manager's own
+     * parts). No build-renamable internal name is used: the deployed set resolves by type + contents
+     * ({@link #resolveLedgerFields}), the all-ever list is the engine's public
+     * {@code getAllEverDeployed()} ({@link #allEverDeployedOrNull}), the entry class by its public
+     * {@code (FleetMember, Ship)} constructor.
+     * Sets {@code joined} = 1 when the new manager's own
      * {@code getDeployedFleetMember(hull)} reads the fresh entry back; fail-soft otherwise (one
      * {@code seat_team_port_error op=join_*} row, the flip itself stands).
      */
@@ -298,7 +302,7 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
             Set<Object> deployed = (Set<Object>) set;
             deployed.add(entry);
         }
-        Object list = everDeployedListField == null ? null : everDeployedListField.get(manager);
+        Object list = allEverDeployedOrNull(manager);
         if (list instanceof List<?>) {
             @SuppressWarnings("unchecked")
             List<Object> ever = (List<Object>) list;
@@ -345,7 +349,7 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
                 String miss;
                 try {
                     miss = moveWingRecord(wing, oldManager, newManager, newOwner,
-                            deployedSetField, everDeployedListField);
+                            deployedSetField);
                 } catch (Throwable t) {
                     wingRecords++;
                     logError("wing_record", t);
@@ -400,13 +404,18 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
      * {@code getOwner()} / {@code isAlly()} read the member
      * — the hull's own pair of writes;</li>
      * <li>the SAME record into the new manager's two ledgers, {@code addWing}'s way
-     * (no points are booked for a wing). The bay's field and the wing keep
-     * pointing at it; the old side's all-ever list keeps it too, as it keeps the hull's.</li>
+     * (no points are booked for a wing): the deployed set through
+     * {@code deployedSet}, the all-ever list as the new manager's own public
+     * {@code getAllEverDeployed()} answers it ({@link #allEverDeployedOrNull}; a null answer
+     * leaves the list unwritten, and a record it already holds is not added twice). The bay's
+     * field and the wing keep pointing at it; the old side's all-ever list keeps it too, as it
+     * keeps the hull's.</li>
      * </ol>
      * Static over plain objects so stub managers pin it game-free.
+     *
      */
     public static String moveWingRecord(Object wing, Object oldManager, Object newManager,
-            int newOwner, Field deployedSet, Field everDeployedList) throws Exception {
+            int newOwner, Field deployedSet) throws Exception {
         Method getDfm = null;
         for (Method m : wing.getClass().getMethods()) {
             if (m.getName().equals("getDfm") && m.getParameterCount() == 0) {
@@ -479,7 +488,7 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
         @SuppressWarnings("unchecked")
         Set<Object> deployed = (Set<Object>) set;
         deployed.add(rec);
-        Object list = everDeployedList == null ? null : everDeployedList.get(newManager);
+        Object list = allEverDeployedOrNull(newManager);
         if (list instanceof List<?> && !((List<?>) list).contains(rec)) {
             @SuppressWarnings("unchecked")
             List<Object> ever = (List<Object>) list;
@@ -489,12 +498,13 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
                 ? null : "the new side does not read the record back";
     }
 
-    /** Resolve the two ledger fields ONCE from a manager whose deployed set is NON-empty: the
+    /** Resolve the deployed-set field ONCE from a manager whose deployed set is NON-empty: the
      * {@code Set}-typed instance field whose iteration order equals {@code getDeployedCopyDFM()}
      * (the death ledger is the other DFM-typed set — content-distinct from a non-empty deployed
-     * set) and the {@code List}-typed field whose contents equal
-     * {@code getAllEverDeployedCopy()}. An ambiguous match (two fields equal) leaves the field
-     * null — the join then reports itself unresolved rather than guess. */
+     * set). An ambiguous match (two fields equal) leaves the field null — the join then reports
+     * itself unresolved rather than guess. The all-ever list is never resolved here: both its
+     * writers read it through {@link #allEverDeployedOrNull}.
+     * */
     private void resolveLedgerFields(Object manager) throws Exception {
         if (deployedSetField != null) {
             return;
@@ -504,13 +514,8 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
             return;
         }
         List<?> copy = (List<?>) copyValue;
-        Object everValue = method(manager, "getAllEverDeployedCopy").invoke(manager);
-        List<?> ever = everValue instanceof List<?> && !((List<?>) everValue).isEmpty()
-                ? (List<?>) everValue : null;
         Field setMatch = null;
-        Field listMatch = null;
         int setMatches = 0;
-        int listMatches = 0;
         for (Field f : manager.getClass().getDeclaredFields()) {
             if (Modifier.isStatic(f.getModifiers())) {
                 continue;
@@ -522,20 +527,10 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
                     setMatch = f;
                     setMatches++;
                 }
-            } else if (ever != null && List.class.isAssignableFrom(f.getType())) {
-                f.setAccessible(true);
-                Object v = f.get(manager);
-                if (v instanceof List<?> && v.equals(ever)) {
-                    listMatch = f;
-                    listMatches++;
-                }
             }
         }
         if (setMatches == 1) {
             deployedSetField = setMatch;
-        }
-        if (listMatches == 1) {
-            everDeployedListField = listMatch;
         }
     }
 
@@ -588,6 +583,27 @@ public final class SeatTeamEnginePort implements SeatTeamLane.HullPort {
             if (m.getName().equals(name) && m.getParameterCount() == 1
                     && m.getParameterTypes()[0].isInstance(arg)) {
                 return m;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The manager's LIVE all-ever-deployed list, the one ledger both writers ({@link
+     * #joinNewSideDeployedSet} for a hull, {@link #moveWingRecord} for a wing) add an entry to:
+     * the engine's public zero-arg {@code getAllEverDeployed()} answers the list field itself,
+     * where the API's copy getter answers a copy of the same field.
+     * Found by a {@code getMethods()} scan, the way
+     * {@link #moveWingRecord} finds {@code getDfm}, never through {@code method(...)}: a manager
+     * with no such getter answers null here instead of throwing, because the hull's join reads
+     * the list AFTER the DP booking and the set add, and a throw there would fail a half-written
+     * flip. Null (no getter, or the getter's own null) = the caller leaves the list unwritten.
+     *
+     */
+    private static Object allEverDeployedOrNull(Object manager) throws Exception {
+        for (Method m : manager.getClass().getMethods()) {
+            if (m.getName().equals("getAllEverDeployed") && m.getParameterCount() == 0) {
+                return m.invoke(manager);
             }
         }
         return null;

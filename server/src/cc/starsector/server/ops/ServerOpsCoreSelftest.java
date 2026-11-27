@@ -436,6 +436,12 @@ public final class ServerOpsCoreSelftest {
             check(done != null && done.life() == 6 && done.exhausted()
                     && done.detailText().endsWith(" - relaunch budget exhausted"),
                     "receipt: budget exhausted");
+            LifeFailure disk = parseLifeFailure(List.of("life=1 pid=9", "life=1 exit=1",
+                    "record_disk_refused=true lives=1"));
+            check(disk != null && disk.life() == 1 && disk.diskRefused() && !disk.exhausted()
+                    && disk.detailText().endsWith(" - not started again: too little free disk space to record"),
+                    "receipt: a disk-refused relaunch reads as ended (flips if parseLifeFailure drops the"
+                            + " record_disk_refused row and the line says 'supervisor relaunching' again)");
             Path lane = Files.createTempDirectory("cc-life");
             Path pointer = lane.resolve("latest.txt");
             Path flight = lane.resolve("flight-20260830-002633");
@@ -6339,7 +6345,7 @@ public final class ServerOpsCoreSelftest {
                 + " large)").equals(RECORD_ITEMS), "launch-texts: the Recording items drifted");
         check(("Saves files into this start's run folder for bug reports. full writes up to record.maxMiB (default"
                 + " 4096 MiB) of network traffic each time the server starts, and again each time it restarts itself"
-                + " after a crash (up to 6 per Start); it includes chat and names.").equals(RECORD_TIP),
+                + " after a crash (up to 6 in a row per Start); it includes chat and names.").equals(RECORD_TIP),
                 "launch-texts: the Recording tip drifted");
         check(("Sends a test packet from this computer to the Advertise address and waits for the running server to"
                 + " answer through the internet.").equals(REACH_TIP) && "Check from the internet".equals(REACH_LABEL),

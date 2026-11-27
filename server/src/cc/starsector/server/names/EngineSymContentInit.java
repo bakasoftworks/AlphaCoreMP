@@ -53,4 +53,16 @@ public final class EngineSymContentInit {
 
     // Fresh battle state: the script store's mint-all, the call setCombatMap and init() make to give a battle one NEW instance of every plugin class.
     public static final EngineRow CONTENT_INIT_SCRIPT_STORE_MINT_ALL_METHOD = EngineRow.staticMethod("CONTENT_INIT_SCRIPT_STORE_MINT_ALL_METHOD", "com/fs/starfarer/loading/scripts/ScriptStore", "\u00D400000", "(Ljava/lang/Class;)Ljava/util/List;"); //
+
+    // Departed-ship release: each side's fog tracker, the engine's getter of it and its own per-frame advance; a
+    // deployment entry's ship and wing slots; a wing record's private sample-fighter slot; the contrail emitter class
+    // and its private body slot.
+    public static final EngineRow CONTENT_INIT_FOG_TRACKER_CLASS = EngineRow.cls("CONTENT_INIT_FOG_TRACKER_CLASS", "com/fs/starfarer/combat/C/S"); //
+    public static final EngineRow CONTENT_INIT_FOG_TRACKER_ADVANCE_METHOD = EngineRow.method("CONTENT_INIT_FOG_TRACKER_ADVANCE_METHOD", "com/fs/starfarer/combat/C/S", "advance", "(F)V"); //
+    public static final EngineRow CONTENT_INIT_ENGINE_FOG_OF_WAR_METHOD = EngineRow.method("CONTENT_INIT_ENGINE_FOG_OF_WAR_METHOD", "com/fs/starfarer/combat/CombatEngine", "getFogOfWar", "(I)Lcom/fs/starfarer/combat/C/S;"); //
+    public static final EngineRow CONTENT_INIT_DEPLOYED_MEMBER_SHIP_FIELD = EngineRow.field("CONTENT_INIT_DEPLOYED_MEMBER_SHIP_FIELD", "com/fs/starfarer/combat/CombatFleetManager$O0", "shipIfShip", "Lcom/fs/starfarer/combat/entities/Ship;"); //
+    public static final EngineRow CONTENT_INIT_DEPLOYED_MEMBER_WING_FIELD = EngineRow.field("CONTENT_INIT_DEPLOYED_MEMBER_WING_FIELD", "com/fs/starfarer/combat/CombatFleetManager$O0", "wingIfFighter", "Lcom/fs/starfarer/combat/ai/oO0O;"); //
+    public static final EngineRow CONTENT_INIT_FIGHTER_WING_SAMPLE_FIELD = EngineRow.field("CONTENT_INIT_FIGHTER_WING_SAMPLE_FIELD", "com/fs/starfarer/combat/ai/oO0O", "\u00D5O0000", "Lcom/fs/starfarer/combat/entities/Ship;"); //
+    public static final EngineRow CONTENT_INIT_CONTRAIL_EMITTER_CLASS = EngineRow.cls("CONTENT_INIT_CONTRAIL_EMITTER_CLASS", "com/fs/starfarer/combat/entities/ContrailEmitter"); //
+    public static final EngineRow CONTENT_INIT_CONTRAIL_EMITTER_DELEGATE_FIELD = EngineRow.field("CONTENT_INIT_CONTRAIL_EMITTER_DELEGATE_FIELD", "com/fs/starfarer/combat/entities/ContrailEmitter", "delegate", "Lcom/fs/starfarer/combat/entities/ship/H$Oo;"); //
 }

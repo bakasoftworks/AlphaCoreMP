@@ -95,6 +95,10 @@ public final class EngineBackedCombatStepBoundary implements CombatStepBoundary 
         // reads a list built THAT tick (it was built once and frozen for the process). OFF = one volatile read each.
         cc.starsector.server.platform.RealEngineHulkCacheBracket.beforeStep();
         binding.invokeAdvanceInner(effectiveStepAmount(fixedDt));
+        // Each side's fog tracker ages its reveal entries in its own advance,
+        // with the raw frame dt, as the windowed game's map widget does each frame. Engine frame work, so inside the
+        // adv_eng / adv_cpu bracket. OFF = one volatile read.
+        cc.starsector.server.platform.RealEngineDepartedShipRelease.fogTick(fixedDt);
         cc.starsector.server.platform.RealEngineHulkCacheBracket.afterStep();
         long cpuEndNanos = threadCpuSupported ? threadCpu.getCurrentThreadCpuTime() : -1L;
         long advanceEndNanos = System.nanoTime();
@@ -105,6 +109,8 @@ public final class EngineBackedCombatStepBoundary implements CombatStepBoundary 
         binding.pilotedCloakWallClockPostStep(effectiveStepAmount(fixedDt));
         // side-1 deployment-point pool rollup (two public reads / 600 ticks).
         binding.strengthPoolRollup(simTick);
+        // The departed-ship release pass: returns unless the served tick is a multiple of 64; O(1) with nothing pending.
+        cc.starsector.server.platform.RealEngineDepartedShipRelease.pass(simTick);
         // Headless fragment-swarm census; OFF = one static boolean test.
         if (FragmentSwarmCensusProbe.ARMED) {
             FragmentSwarmCensusProbe.sample(binding.shipList(), simTick);

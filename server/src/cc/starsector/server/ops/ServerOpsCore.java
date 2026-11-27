@@ -2957,7 +2957,7 @@ public final class ServerOpsCore {
             "diagnostics (timing logs: up to a few hundred MB)", "full (also all network traffic: large)");
     public static final String RECORD_TIP = "Saves files into this start's run folder for bug reports. full writes up"
             + " to record.maxMiB (default 4096 MiB) of network traffic each time the server starts, and again each time"
-            + " it restarts itself after a crash (up to 6 per Start); it includes chat and names.";
+            + " it restarts itself after a crash (up to 6 in a row per Start); it includes chat and names.";
     public static final String REACH_LABEL = "Check from the internet";
     public static final String REACH_TIP = "Sends a test packet from this computer to the Advertise address and waits"
             + " for the running server to answer through the internet.";

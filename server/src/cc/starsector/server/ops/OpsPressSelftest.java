@@ -537,6 +537,7 @@ public final class OpsPressSelftest {
                 {"clean_exit=true lives=2", LaneFollow.Terminal.CLEAN_EXIT, 2, ""},
                 {"refused_exit=true lives=1", LaneFollow.Terminal.REFUSED_EXIT, 1, ""},
                 {"relaunch_budget_exhausted=true lives=6", LaneFollow.Terminal.BUDGET_EXHAUSTED, 6, ""},
+                {"record_disk_refused=true lives=1", LaneFollow.Terminal.RECORD_DISK_REFUSED, 1, ""},
                 {"refused_prelaunch=true reason=locked", LaneFollow.Terminal.REFUSED_PRELAUNCH, 0,
                         "locked"}};
         for (Object[] c : five) {

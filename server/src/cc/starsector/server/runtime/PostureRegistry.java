@@ -234,6 +234,12 @@ public final class PostureRegistry {
             // ServerConfig.resolveBoolean at every mark tenure edge; DEFAULT ON, the FILE row = the host's OFF lever).
             // BEHAVIOR: it picks which branch every viewer's rewritten scripts take. LITERALS (the census reads TEXT).
             new Knob("cc.pilotship.replicas", "CC_PILOTSHIP_REPLICAS", "pilotship.replicas", KnobClass.BEHAVIOR),
+            // The departed-ship release, default ON (the FILE row false = the rollback
+            // lever, hardwired at ratification). BEHAVIOR: its contrail-orphan release can move the shared Math.random() stream.
+            new Knob("cc.server.releaseDeparted", "CC_SERVER_RELEASE_DEPARTED", "server.releaseDeparted", KnobClass.BEHAVIOR),
+            // the release's holder mask (tokens h1,h2,shard,custom,sample,fog,anim or all) for its one-reel proof and
+            // soak A/B, retired at its verdict; registered so a postured boot never refuses it as an unknown sysprop
+            new Knob("cc.server.releaseDepartedMask", "CC_SERVER_RELEASE_DEPARTED_MASK", "server.releaseDepartedMask", KnobClass.INSTRUMENT),
             // The Math.random() caller census window (sim ticks) — premain-read
             // (sysprop / env, no file tier), a diagnostic re-sim delta; the stream is untouched.
             new Knob("cc.rngpin.census", "CC_RNGPIN_CENSUS", null, KnobClass.INSTRUMENT),

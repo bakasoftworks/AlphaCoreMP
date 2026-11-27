@@ -73,7 +73,8 @@ public final class ServerOpsKill {
 
     /** The supervisor's terminal receipt rows ({@code ServeSupervisor.loop}). */
     static final Pattern TERMINAL_ROW =
-            Pattern.compile("^(stopped|clean_exit|refused_exit|relaunch_budget_exhausted)=true( lives=\\d+)?$");
+            Pattern.compile("^(stopped|clean_exit|refused_exit|relaunch_budget_exhausted|record_disk_refused)"
+                    + "=true( lives=\\d+)?$");
     private static final Pattern LIFE_PID_ROW = Pattern.compile("^life=(\\d{1,9}) pid=(\\d{1,18})$");
     private static final Pattern LIFE_EXIT_ROW = Pattern.compile("^life=(\\d{1,9}) exit=");
     private static final Pattern SUPERVISOR_PID_ROW = Pattern.compile("^supervisor_pid=(\\d{1,18})$");

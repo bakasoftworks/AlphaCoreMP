@@ -715,6 +715,14 @@ public final class RealEngineCombatBindingFactory {
             System.out.println("real-engine-binding-factory hulk-cache-bracket "
                     + (correctivesOff() ? "OFF correctivesOff"
                             : cc.starsector.server.platform.RealEngineHulkCacheBracket.arm()));
+            // Arm the release of removed Ships from the engine's add-only
+            // sets. Same master switch; fail-soft inside. The growth seam installs at round open, after this tail, so
+            // its knob is read here rather than asked of the seam: without it nothing feeds the ledger (fog only).
+            boolean growthSeam = "true".equals(ServerConfig.resolve("cc.server.engineBornGrowth",
+                    "CC_SERVER_ENGINE_BORN_GROWTH", "server.engineBornGrowth", ""));
+            System.out.println("real-engine-binding-factory departed-release "
+                    + (correctivesOff() ? "OFF correctivesOff"
+                            : cc.starsector.server.platform.RealEngineDepartedShipRelease.arm(engine, growthSeam)));
             return binding;
         } catch (RealEngineCombatBindingFactoryException e) {
             throw e;

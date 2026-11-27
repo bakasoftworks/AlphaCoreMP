@@ -276,6 +276,8 @@ public final class EngineBornGrowthSeam {
             placementSkipLogged.clear();
             crKeepLogged.clear();
             resetCaptainState();
+            // The departed-ship release's round ledger: it keeps only these two classes' removals.
+            cc.starsector.server.platform.RealEngineDepartedShipRelease.openLedger(shipClass, wingClass);
             System.out.println("growth-seam installed repo=" + repo.getClass().getName()
                     + " prior_listener="
                     + (prior == null ? "none" : prior.getClass().getName()));
@@ -347,6 +349,8 @@ public final class EngineBornGrowthSeam {
             placementSkipLogged.clear();
             crKeepLogged.clear();
             resetCaptainState();
+            // The release's round-close row, once per install (the early return above); never throws.
+            cc.starsector.server.platform.RealEngineDepartedShipRelease.closeLedger();
         }
     }
 
@@ -776,6 +780,13 @@ public final class EngineBornGrowthSeam {
                 } catch (Throwable observeFailure) {
                     // observe() already swallows; this is the belt for the buckle.
                     System.out.println("growth-seam observe_threw reason=" + observeFailure);
+                }
+                // The departed-ship release's tap, outside observe's class
+                // lock, so it also sees the blank-id ships observe drops. Never throws (a throw latches it off).
+                if (addedCall) {
+                    cc.starsector.server.platform.RealEngineDepartedShipRelease.noteAdded(args[0]);
+                } else {
+                    cc.starsector.server.platform.RealEngineDepartedShipRelease.noteRemoved(args[0]);
                 }
                 if (prior != null) {
                     try {

@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import cc.starsector.server.platform.ActivationGate;
 
@@ -34,7 +35,8 @@ import cc.starsector.server.platform.ActivationGate;
  * 0, not 78, not stopped mid-life) {@code life=N budget_refunded=true ran_s=<whole seconds>} (it ran at least the
  * refund threshold and no stop is seen, below) and {@code life=N out_of_memory=true} (below); terminal
  * {@code clean_exit=true lives=N} (0), {@code stopped=true lives=N} (0),
- * {@code refused_exit=true lives=N} (78), {@code relaunch_budget_exhausted=true lives=N} (1).
+ * {@code refused_exit=true lives=N} (78), {@code relaunch_budget_exhausted=true lives=N} (1),
+ * {@code record_disk_refused=true lives=N} (1, {@link #recordDiskGate(Supplier)}).
  * A life whose process could not be started counts as {@code life=N exit=-1} (the loop never dies
  * on a start failure). Every row append retries 8 x 25 ms and then warns once and goes on: a
  * reader holding the receipt once killed the pwsh supervisor mid-serve.
@@ -70,6 +72,13 @@ import cc.starsector.server.platform.ActivationGate;
  * {@code launcher.properties} (the row the launcher reads into {@code -Xmx}); when that life ends the budget, the
  * terminal line names it too, so the host does not read code 3 as the launcher's own "a file is missing or
  * changed".
+ *
+ *
+ * <p><b>A relaunch re-checks the record disk.</b> Each life of a {@code record=full} serve opens a new capped wire
+ * recording, and since the refund one Start may run many lives, so the disk floor the Start checked once is checked
+ * again before EVERY relaunch ({@link #recordDiskGate(Supplier)}; never before life 1, the Start's own check owns that). Under
+ * the floor the loop ends: the plain disk sentence on the console, then {@code record_disk_refused=true lives=N},
+ * code 1. No gate = no check (an owner-mode launch has no Start floor, so its relaunch has none either).
  *
  *
  *
@@ -122,6 +131,8 @@ public final class ServeSupervisor {
     private volatile boolean started;
     /** {@link #rowAfterPid}'s row; null = none. */
     private volatile String leadRow;
+    /** {@link #recordDiskGate(Supplier)}'s check; null = none (every relaunch goes on, as before the gate existed). */
+    private volatile Supplier<String> recordDiskGate;
 
     /**
      * @param flightDir this launch's flight dir (its {@code lives/} holds each life's
@@ -190,7 +201,7 @@ public final class ServeSupervisor {
         this.refundAfterMillis = refundAfterMillis;
     }
 
-    /** Runs the lives loop to its terminal row; returns 0 (clean or stopped), 1 (budget) or 78 (refused). */
+    /** Runs the lives loop to its terminal row; returns 0 (clean or stopped), 1 (budget or record disk) or 78 (refused). */
     public int run() {
         started = true;
         try {
@@ -213,6 +224,21 @@ public final class ServeSupervisor {
             throw new IllegalStateException("rowAfterPid after run()");
         }
         leadRow = row;
+    }
+
+    /**
+     * The record-disk check run before every relaunch (class javadoc): {@code gate.get()} answers null to relaunch, or
+     * the plain sentence that says why not (it reaches the console inside the terminal line). Called before
+     * {@link #run}, at most once (a later call replaces it); null = no check. A gate that throws counts as a null
+     * answer after one console line: an unreadable disk never stops a serve, as at Start.
+     *
+     *
+     */
+    public void recordDiskGate(Supplier<String> gate) {
+        if (started) {
+            throw new IllegalStateException("recordDiskGate after run()");
+        }
+        recordDiskGate = gate;
     }
 
     private int loop() {
@@ -293,13 +319,18 @@ public final class ServeSupervisor {
                         + TimeUnit.NANOSECONDS.toSeconds(ranNanos), console);
             }
             boolean exhausted = relaunches >= maxRelaunches;
+            // The record-disk check runs only where a relaunch would follow
+            // (never after a stop or a used-up budget), and is read before the out-of-memory line so that line never
+            // promises a restart the disk then refuses.
+            String diskRefused = stopNow || exhausted ? null : recordDiskRefusal();
             boolean outOfMemory = code == EXIT_OUT_OF_MEMORY
                     && (tailHasLineStarting(outLog, OOM_LINE_PREFIX) || tailHasLineStarting(errLog, OOM_LINE_PREFIX));
             if (outOfMemory) {
                 appendRow(receipt, "life=" + life + " out_of_memory=true", console);
                 ServeLauncher.say(console, "serve-launcher: the server ran out of memory (life " + life
                         + "). To give it more, raise heap.max in launcher.properties"
-                        + (stopNow || exhausted ? "." : "; it is started again with the same limit."));
+                        + (stopNow || exhausted || diskRefused != null ? "."
+                                : "; it is started again with the same limit."));
             }
             if (stopNow) {
                 terminalRow("stopped=true lives=" + life);
@@ -312,8 +343,33 @@ public final class ServeSupervisor {
                 appendRow(receipt, "relaunch_budget_exhausted=true lives=" + life, console);
                 return 1;
             }
+            if (diskRefused != null) {
+                reportTerminalFailure(errLog, code, "it is not started again because " + diskRefused);
+                appendRow(receipt, "record_disk_refused=true lives=" + life, console);
+                return 1;
+            }
             relaunches++;
             pauseBeforeRelaunch();
+        }
+    }
+
+    /**
+     * {@link #recordDiskGate(Supplier)}'s answer: null = relaunch (no gate, enough space, or a gate that threw: one console line,
+     * then the serve goes on unchecked, as an unreadable disk does at Start), else the plain refusal sentence.
+     *
+     *
+     */
+    private String recordDiskRefusal() {
+        Supplier<String> gate = recordDiskGate;
+        if (gate == null) {
+            return null;
+        }
+        try {
+            return gate.get();
+        } catch (RuntimeException unreadable) {
+            ServeLauncher.say(console, "serve-launcher warning: the free disk space could not be checked before a"
+                    + " restart (" + unreadable.getClass().getSimpleName() + "); recording goes on unchecked");
+            return null;
         }
     }
 
